@@ -248,18 +248,18 @@ public final class Terminal: TerminalActions {
         }
         let y = screen.cursor.y
         if modes.insertMode { insertBlanks(count: width, at: x, row: y) }
-        clearWideRemnants(x: x, y: y)
-        if width == 2 { clearWideRemnants(x: x + 1, y: y) }
         var cell = penCell
         cell.content = s.value
         if width == 2 {
+            clearWideRemnants(x: x, y: y)
+            clearWideRemnants(x: x + 1, y: y)
             cell.attrs.insert(.wide)
             setCell(x, y, cell)
             var spacer = penCell
             spacer.attrs.insert(.wideSpacer)
             setCell(x + 1, y, spacer)
         } else {
-            setCell(x, y, cell)
+            placeCell(cell, x: x, y: y)
         }
         lastPrinted = s
         let next = x + width
@@ -294,6 +294,27 @@ public final class Terminal: TerminalActions {
         text.unicodeScalars.append(s)
         cell.content = Cell.graphemeFlag | UInt32(internGrapheme(text))
         setCell(x, y, cell)
+    }
+
+    /// Clears the orphaned half of any wide pair at (x, y) and writes `c` there, through a single
+    /// access to the row's cells rather than a read and a write through the nested arrays.
+    private func placeCell(_ c: Cell, x: Int, y: Int) {
+        screen.rows[y].dirty = true
+        screen.rows[y].cells.withUnsafeMutableBufferPointer { cells in
+            guard let p = cells.baseAddress else { return }
+            let old = p[x]
+            if old.attrs.contains(.wideSpacer), x > 0 {
+                var b = Cell()
+                b.bg = p[x - 1].bg
+                p[x - 1] = b
+            } else if old.attrs.contains(.wide), x + 1 < cols {
+                var b = Cell()
+                b.bg = old.bg
+                p[x + 1] = b
+            }
+            p[x] = c
+        }
+        touch()
     }
 
     /// If the cell at (x, y) is half of a wide glyph, blank both halves so no orphan half remains.

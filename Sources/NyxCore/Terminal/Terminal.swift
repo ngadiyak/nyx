@@ -77,7 +77,8 @@ public final class Terminal: TerminalActions {
     private var hyperlinkIndex: [String: Int] = [:]
     /// Number of scrollback lines the viewport is scrolled up by. 0 = live view.
     public internal(set) var viewportOffset = 0
-    /// Increments on every visible change. Renderers compare it to decide whether to redraw.
+    /// Increments at least once per visible change -- a run of printed characters bumps it once,
+    /// not once per cell. Renderers compare it to decide whether to redraw.
     public private(set) var generation: UInt64 = 0
     /// Text area size in pixels, set by the view, reported by XTWINOPS 14/16.
     public var pixelSize: (width: Int, height: Int) = (0, 0)

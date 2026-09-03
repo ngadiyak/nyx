@@ -225,3 +225,48 @@ private let ESC = "\u{1B}"
     t.run("a")
     #expect(t.generation != g)
 }
+
+@Test func recycledScrollbackRowIsFullyReset() {
+    // With a one-row ring the terminal starts reusing evicted scrollback rows after two scrolls.
+    let t = makeTerminal(cols: 5, rows: 2, scrollback: 1)
+    t.run(ESC + "]133;A\u{07}" + "abcdefgh")   // row 0 carries a prompt mark and soft-wraps
+    #expect(t.screen.rows[0].wrapped)
+    #expect(t.screen.rows[0].promptMark == 1)
+    // Two scrolls: the first pushes the marked row into the full ring, the second evicts it and
+    // recycles its buffer as the new blank row at the bottom.
+    t.run("\r\n\r\n")
+    for y in 0..<2 {
+        #expect(!t.screen.rows[y].wrapped)
+        #expect(t.screen.rows[y].promptMark == 0)
+        #expect(t.screen.rows[y].cells.allSatisfy { $0.content == 0 && $0.bg == .default })
+    }
+}
+
+@Test func recyclingEvictedRowsLeavesScrollbackIntact() {
+    let t = makeTerminal(cols: 10, rows: 2, scrollback: 2)
+    for i in 0..<6 { t.run("line\(i)\r\n") }
+    #expect(t.scrollback.count == 2)
+    #expect(t.scrollbackLine(0) == "line3")
+    #expect(t.scrollbackLine(1) == "line4")
+    #expect(t.line(0) == "line5")
+    #expect(t.line(1) == "")
+    // A recycled row is blanked to the current background (BCE), and the row just pushed into
+    // scrollback must not alias the buffer that came back out of it.
+    t.run(ESC + "[44m" + "x\r\n")
+    #expect(t.screen.rows[1].cells.allSatisfy { $0.content == 0 && $0.bg == .indexed(4) })
+    #expect(t.scrollbackLine(0) == "line4")
+    #expect(t.scrollbackLine(1) == "line5")
+}
+
+@Test func asciiRunClearsWideRemnantsAtBothEnds() {
+    // A run starting on the second half of a wide glyph blanks the first half...
+    let a = makeTerminal().run("漢" + ESC + "[2Gab")
+    #expect(a.cell(0, 0).content == 0)
+    #expect(!a.cell(0, 0).attrs.contains(.wide))
+    #expect(a.line(0) == " ab")
+    // ...and a run ending on the first half blanks the orphaned second half.
+    let b = makeTerminal().run("a漢" + ESC + "[1Gxy")
+    #expect(b.cell(2, 0).content == 0)
+    #expect(!b.cell(2, 0).attrs.contains(.wideSpacer))
+    #expect(b.line(0) == "xy")
+}

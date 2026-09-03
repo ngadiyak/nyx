@@ -90,3 +90,22 @@ import Testing
     #expect(Charset.decSpecial.map("A") == "A")
     #expect(Charset.ascii.map("q") == "q")
 }
+
+@Test func scrollbackPushReturnsEvictedRow() {
+    func row(_ c: UInt32) -> Row {
+        var r = Row(cols: 1)
+        r.cells[0].content = c
+        return r
+    }
+    var sb = Scrollback(capacity: 2)
+    #expect(sb.push(row(0x41)) == nil)                         // still filling
+    #expect(sb.push(row(0x42)) == nil)
+    #expect(sb.push(row(0x43))?.cells[0].content == 0x41)      // at capacity: the oldest comes back
+    #expect(sb.push(row(0x44))?.cells[0].content == 0x42)
+    #expect(sb.count == 2)
+    #expect(sb[0].cells[0].content == 0x43)
+    #expect(sb[1].cells[0].content == 0x44)
+
+    var none = Scrollback(capacity: 0)
+    #expect(none.push(row(0x41)) == nil)
+}

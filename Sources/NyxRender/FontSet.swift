@@ -25,11 +25,7 @@ public final class FontSet {
         self.pointSize = pointSize
         self.scale = scale
         let px = pointSize * scale
-        var base = CTFontCreateWithName(family as CFString, px, nil)
-        if (CTFontCopyFamilyName(base) as String).caseInsensitiveCompare(family) != .orderedSame,
-           !(CTFontCopyFullName(base) as String).localizedCaseInsensitiveContains(family) {
-            base = CTFontCreateWithName("Menlo" as CFString, px, nil)
-        }
+        let base = FontSet.resolveFont(named: family, size: px)
         regular = base
         bold = CTFontCreateCopyWithSymbolicTraits(base, px, nil, .boldTrait, .boldTrait) ?? base
         italic = CTFontCreateCopyWithSymbolicTraits(base, px, nil, .italicTrait, .italicTrait) ?? base
@@ -63,5 +59,15 @@ public final class FontSet {
         case (false, true): return self.italic
         case (true, true): return boldItalic
         }
+    }
+
+    private static func resolveFont(named name: String, size px: CGFloat) -> CTFont {
+        for key in [kCTFontFamilyNameAttribute, kCTFontNameAttribute, kCTFontDisplayNameAttribute] {
+            let desc = CTFontDescriptorCreateWithAttributes([key: name] as CFDictionary)
+            if let matched = CTFontDescriptorCreateMatchingFontDescriptor(desc, nil) {
+                return CTFontCreateWithFontDescriptor(matched, px, nil)
+            }
+        }
+        return CTFontCreateWithName("Menlo" as CFString, px, nil)
     }
 }

@@ -81,7 +81,7 @@ public final class GlyphAtlas {
         if bounds.width <= 0 || bounds.height <= 0 { bounds = CTLineGetBoundsWithOptions(line, []) }
         guard bounds.width > 0, bounds.height > 0 else { return nil }
 
-        let pad = 1
+        let pad = 2
         let minX = Int(floor(bounds.minX)), maxX = Int(ceil(bounds.maxX))
         let minY = Int(floor(bounds.minY)), maxY = Int(ceil(bounds.maxY))
         let w = maxX - minX + 2 * pad

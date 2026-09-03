@@ -1,4 +1,5 @@
 import Testing
+import CoreText
 @testable import NyxRender
 
 @Test func menloMetricsAreSane() {
@@ -21,4 +22,13 @@ import Testing
 @Test func unknownFamilyFallsBackToSomething() {
     let f = FontSet(family: "No Such Font 123", pointSize: 12, scale: 1)
     #expect(f.metrics.width > 0)
+}
+
+@Test func resolvesByFamilyAndPostScriptName() {
+    let byFamily = FontSet(family: "Menlo", pointSize: 12, scale: 1)
+    let byPostScript = FontSet(family: "Menlo-Regular", pointSize: 12, scale: 1)
+    let byOtherFamily = FontSet(family: "Courier New", pointSize: 12, scale: 1)
+    #expect(CTFontCopyPostScriptName(byFamily.regular) as String == "Menlo-Regular")
+    #expect(CTFontCopyPostScriptName(byPostScript.regular) as String == "Menlo-Regular")
+    #expect((CTFontCopyFamilyName(byOtherFamily.regular) as String) == "Courier New")
 }

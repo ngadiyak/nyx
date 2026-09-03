@@ -51,3 +51,14 @@ private func makeAtlas() throws -> GlyphAtlas {
     #expect(atlas.generation > g0)
     #expect(atlas.glyph(for: GlyphKey(text: .scalar(0x41), bold: false, italic: false)) != nil)
 }
+
+@Test func glyphBitmapIsUploadedTopDown() throws {
+    let atlas = try makeAtlas()
+    let g = try #require(atlas.glyph(for: GlyphKey(text: .scalar(0x2580), bold: false, italic: false)))
+    var bytes = [UInt8](repeating: 0, count: g.width * g.height * 4)
+    atlas.texture.getBytes(&bytes, bytesPerRow: g.width * 4, from: MTLRegionMake2D(g.x, g.y, g.width, g.height), mipmapLevel: 0)
+    func alpha(row: Int) -> Int { (0..<g.width).map { Int(bytes[(row * g.width + $0) * 4 + 3]) }.reduce(0, +) }
+    #expect(alpha(row: 2) > 0)                 // just inside the top padding: filled
+    #expect(alpha(row: g.height - 2) == 0)     // just inside the bottom padding: empty
+    #expect(g.top >= 0)
+}

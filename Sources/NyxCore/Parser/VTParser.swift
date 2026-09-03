@@ -162,7 +162,8 @@ public final class VTParserOf<A: TerminalActions> {
             return
         case 0x1B:
             leaveStringState()
-            enter(.escape)
+            resetCollectors()
+            state = .escape
             return
         default:
             break
@@ -275,13 +276,23 @@ public final class VTParserOf<A: TerminalActions> {
 
     // MARK: - Helpers
 
-    private func enter(_ s: State) {
-        intermediates.removeAll(keepingCapacity: true)
-        flatParams.removeAll(keepingCapacity: true)
-        paramEnds.removeAll(keepingCapacity: true)
+    /// Clears everything a sequence collects. Only ESC can begin one, so this runs once per
+    /// sequence rather than once per state transition into it; the `isEmpty` guards keep the
+    /// common case (no intermediates, no parameters) free of an `Array.removeAll` call.
+    private func resetCollectors() {
+        if !intermediates.isEmpty { intermediates.removeAll(keepingCapacity: true) }
+        if !flatParams.isEmpty { flatParams.removeAll(keepingCapacity: true) }
+        if !paramEnds.isEmpty { paramEnds.removeAll(keepingCapacity: true) }
         currentValue = 0
         hasDigits = false
-        if s == .oscString { oscBuffer.removeAll(keepingCapacity: true); oscOverflow = false }
+    }
+
+    /// Enters one of the states reachable only from `.escape`, which has already reset collectors.
+    private func enter(_ s: State) {
+        if s == .oscString {
+            if !oscBuffer.isEmpty { oscBuffer.removeAll(keepingCapacity: true) }
+            oscOverflow = false
+        }
         state = s
     }
 

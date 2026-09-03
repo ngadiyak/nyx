@@ -97,14 +97,9 @@ public final class GlyphAtlas {
         CTLineDraw(line, ctx)
 
         guard let (ax, ay) = allocate(w: w, h: h), let data = ctx.data else { return nil }
-        let src = data.assumingMemoryBound(to: UInt8.self)
-        var flipped = [UInt8](repeating: 0, count: w * h * 4)
-        flipped.withUnsafeMutableBytes { dst in
-            for row in 0..<h {
-                memcpy(dst.baseAddress! + row * w * 4, src + (h - 1 - row) * w * 4, w * 4)
-            }
-        }
-        texture.replace(region: MTLRegionMake2D(ax, ay, w, h), mipmapLevel: 0, withBytes: flipped, bytesPerRow: w * 4)
+        // CGBitmapContext memory is top-down (the bottom-left origin is a user-space convention),
+        // so the rows can be uploaded as they are: row 0 is the glyph's top.
+        texture.replace(region: MTLRegionMake2D(ax, ay, w, h), mipmapLevel: 0, withBytes: data, bytesPerRow: w * 4)
         return Glyph(x: ax, y: ay, width: w, height: h,
                      left: minX - pad, top: fonts.metrics.baseline - maxY - pad, isColor: isColor)
     }

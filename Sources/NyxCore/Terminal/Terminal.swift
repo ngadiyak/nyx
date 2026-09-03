@@ -564,33 +564,393 @@ public final class Terminal: TerminalActions {
         }
     }
 
-    // The following are completed in Task 6. Keep these stubs until then.
-    // Minimal SGR (final 'm') is implemented here now because `eraseUsesPenBackground` needs
-    // `pen.bg` to reflect CSI 44 m before ED runs; Task 6 will replace this with full SGR
-    // (attributes, 256-color, RGB, underline styles, hyperlinks).
-    func csiWithIntermediates(_ p: CSIParams, intermediates: [UInt8], final: UInt8) {}
-    func csiExtended(_ p: CSIParams, final: UInt8) {
-        guard final == 0x6D else { return }   // SGR
-        guard p.count > 0 else { pen = Pen(); return }
-        for i in 0..<p.count {
-            switch p.get(i) {
-            case 0: pen = Pen()
-            case 30...37: pen.fg = .indexed(UInt8(p.get(i) - 30))
-            case 39: pen.fg = .default
-            case 40...47: pen.bg = .indexed(UInt8(p.get(i) - 40))
-            case 49: pen.bg = .default
-            case 90...97: pen.fg = .indexed(UInt8(p.get(i) - 90 + 8))
-            case 100...107: pen.bg = .indexed(UInt8(p.get(i) - 100 + 8))
+    // MARK: - CSI with intermediates / private markers
+
+    func csiWithIntermediates(_ p: CSIParams, intermediates: [UInt8], final: UInt8) {
+        switch intermediates {
+        case [0x3F]:                                   // ?
+            switch final {
+            case 0x68: for i in 0..<p.count { setPrivateMode(p.get(i), true) }
+            case 0x6C: for i in 0..<p.count { setPrivateMode(p.get(i), false) }
+            case 0x73: for i in 0..<p.count { if let v = privateMode(p.get(i)) { savedModes[p.get(i)] = v } }
+            case 0x72: for i in 0..<p.count { if let v = savedModes[p.get(i)] { setPrivateMode(p.get(i), v) } }
+            case 0x4A: eraseDisplay(p.get(0))
+            case 0x4B: eraseLine(p.get(0))
             default: break
+            }
+        case [0x3F, 0x24]:                             // ? $ p  DECRQM (private)
+            if final == 0x70 { requestMode(p.get(0), isPrivate: true) }
+        case [0x24]:                                   // $ p  DECRQM (ANSI)
+            if final == 0x70 { requestMode(p.get(0), isPrivate: false) }
+        case [0x20]:                                   // SP q  DECSCUSR
+            if final == 0x71 { setCursorShape(p.get(0)) }
+        case [0x3E]:                                   // >
+            if final == 0x63 { respond("\u{1B}[>1;10;0c") }                                  // DA2
+            else if final == 0x71 { respond("\u{1B}P>|Nyx \(Terminal.version)\u{1B}\\") }   // XTVERSION
+        case [0x3D]:                                   // =
+            if final == 0x63 { respond("\u{1B}P!|00000000\u{1B}\\") }                        // DA3
+        default: break
+        }
+    }
+
+    func csiExtended(_ p: CSIParams, final: UInt8) {
+        switch final {
+        case 0x63: respond("\u{1B}[?62;22c")                                   // DA1
+        case 0x68: for i in 0..<p.count { setMode(p.get(i), true) }            // SM
+        case 0x6C: for i in 0..<p.count { setMode(p.get(i), false) }           // RM
+        case 0x6D: applySGR(p)                                                 // SGR
+        case 0x6E: deviceStatus(p.get(0))                                      // DSR
+        case 0x74: windowOps(p)                                                // XTWINOPS
+        default: break
+        }
+    }
+
+    // MARK: - Modes
+
+    private func setMode(_ m: Int, _ on: Bool) {
+        switch m {
+        case 4: modes.insertMode = on
+        case 20: modes.lineFeedNewLine = on
+        default: break
+        }
+    }
+
+    func setPrivateMode(_ m: Int, _ on: Bool) {
+        switch m {
+        case 1: modes.cursorKeysApp = on
+        case 3: eraseDisplay(2); setCursorAbsolute(row: 0, col: 0)
+        case 6: modes.originMode = on; setCursorAbsolute(row: 0, col: 0)
+        case 7: modes.autoWrap = on
+        case 9: modes.mouse = on ? .x10 : .none
+        case 12: modes.cursorBlink = on
+        case 25: modes.showCursor = on
+        case 1000: modes.mouse = on ? .normal : .none
+        case 1002: modes.mouse = on ? .button : .none
+        case 1003: modes.mouse = on ? .any : .none
+        case 1004: modes.focusEvents = on
+        case 1006: modes.mouseSGR = on
+        case 1047: switchScreen(alt: on, clear: on, saveCursor: false)
+        case 1048: if on { saveCursor() } else { restoreCursor() }
+        case 1049: switchScreen(alt: on, clear: on, saveCursor: true)
+        case 2004: modes.bracketedPaste = on
+        case 2026: modes.syncOutput = on
+        default: break
+        }
+    }
+
+    func privateMode(_ m: Int) -> Bool? {
+        switch m {
+        case 1: return modes.cursorKeysApp
+        case 6: return modes.originMode
+        case 7: return modes.autoWrap
+        case 9: return modes.mouse == .x10
+        case 12: return modes.cursorBlink
+        case 25: return modes.showCursor
+        case 1000: return modes.mouse == .normal
+        case 1002: return modes.mouse == .button
+        case 1003: return modes.mouse == .any
+        case 1004: return modes.focusEvents
+        case 1006: return modes.mouseSGR
+        case 1047, 1049: return modes.altScreen
+        case 2004: return modes.bracketedPaste
+        case 2026: return modes.syncOutput
+        default: return nil
+        }
+    }
+
+    private func requestMode(_ m: Int, isPrivate: Bool) {
+        let state: Int
+        if isPrivate {
+            state = privateMode(m).map { $0 ? 1 : 2 } ?? 0
+        } else {
+            switch m {
+            case 4: state = modes.insertMode ? 1 : 2
+            case 20: state = modes.lineFeedNewLine ? 1 : 2
+            default: state = 0
+            }
+        }
+        respond("\u{1B}[\(isPrivate ? "?" : "")\(m);\(state)$y")
+    }
+
+    func switchScreen(alt: Bool, clear: Bool, saveCursor save: Bool) {
+        guard alt != modes.altScreen else { return }
+        if alt {
+            if save { saveCursor() }
+            swap(&screen, &inactiveScreen)
+            swap(&savedCursor, &savedCursorOther)
+            modes.altScreen = true
+            if clear {
+                for y in 0..<rows { screen.rows[y] = Row(cols: cols, fill: blank) }
+                screen.cursor = Cursor(x: 0, y: 0)
+            }
+            screen.pendingWrap = false
+            screen.scrollTop = 0
+            screen.scrollBottom = rows - 1
+        } else {
+            swap(&screen, &inactiveScreen)
+            swap(&savedCursor, &savedCursorOther)
+            modes.altScreen = false
+            if save { restoreCursor() }
+        }
+        viewportOffset = 0
+        for y in 0..<rows { screen.rows[y].dirty = true }
+        touch()
+    }
+
+    private func setCursorShape(_ n: Int) {
+        switch n {
+        case 0, 1, 2: cursorShape = .block
+        case 3, 4: cursorShape = .underline
+        case 5, 6: cursorShape = .bar
+        default: return
+        }
+        modes.cursorBlink = n == 0 || n % 2 == 1
+    }
+
+    // MARK: - SGR
+
+    private func applySGR(_ p: CSIParams) {
+        if p.count == 0 { resetPen(); return }
+        let items = p.items
+        var i = 0
+        while i < items.count {
+            let sub = items[i]
+            let code = sub[0]
+            switch code {
+            case 0: resetPen()
+            case 1: pen.attrs.insert(.bold)
+            case 2: pen.attrs.insert(.dim)
+            case 3: pen.attrs.insert(.italic)
+            case 4:
+                let style = sub.count > 1 ? sub[1] : 1
+                pen.underline = UnderlineStyle(rawValue: UInt16(clamp(style, 0, 5))) ?? .single
+            case 5, 6: pen.attrs.insert(.blink)
+            case 7: pen.attrs.insert(.inverse)
+            case 8: pen.attrs.insert(.hidden)
+            case 9: pen.attrs.insert(.strike)
+            case 21: pen.underline = .double
+            case 22: pen.attrs.remove([.bold, .dim])
+            case 23: pen.attrs.remove(.italic)
+            case 24: pen.underline = .none
+            case 25: pen.attrs.remove(.blink)
+            case 27: pen.attrs.remove(.inverse)
+            case 28: pen.attrs.remove(.hidden)
+            case 29: pen.attrs.remove(.strike)
+            case 30...37: pen.fg = .indexed(UInt8(code - 30))
+            case 38, 48, 58:
+                var color: Color?
+                if sub.count > 1 {
+                    if sub[1] == 5, sub.count > 2 {
+                        color = .indexed(UInt8(clamp(sub[2], 0, 255)))
+                    } else if sub[1] == 2, sub.count >= 5 {
+                        let o = sub.count >= 6 ? 3 : 2
+                        color = .rgb(u8(sub[o]), u8(sub[o + 1]), u8(sub[o + 2]))
+                    }
+                } else if i + 1 < items.count {
+                    let mode = items[i + 1][0]
+                    if mode == 5, i + 2 < items.count {
+                        color = .indexed(u8(items[i + 2][0])); i += 2
+                    } else if mode == 2, i + 4 < items.count {
+                        color = .rgb(u8(items[i + 2][0]), u8(items[i + 3][0]), u8(items[i + 4][0])); i += 4
+                    }
+                }
+                if let c = color {
+                    switch code {
+                    case 38: pen.fg = c
+                    case 48: pen.bg = c
+                    default: pen.ul = c
+                    }
+                }
+            case 39: pen.fg = .default
+            case 40...47: pen.bg = .indexed(UInt8(code - 40))
+            case 49: pen.bg = .default
+            case 59: pen.ul = .default
+            case 90...97: pen.fg = .indexed(UInt8(code - 90 + 8))
+            case 100...107: pen.bg = .indexed(UInt8(code - 100 + 8))
+            default: break
+            }
+            i += 1
+        }
+    }
+
+    private func resetPen() {
+        let link = pen.hyperlink
+        pen = Pen()
+        pen.hyperlink = link
+    }
+
+    private func u8(_ v: Int) -> UInt8 { UInt8(clamp(v, 0, 255)) }
+
+    private func sgrString() -> String {
+        var parts = ["0"]
+        if pen.attrs.contains(.bold) { parts.append("1") }
+        if pen.attrs.contains(.dim) { parts.append("2") }
+        if pen.attrs.contains(.italic) { parts.append("3") }
+        if pen.underline != .none { parts.append("4:\(pen.underline.rawValue)") }
+        if pen.attrs.contains(.blink) { parts.append("5") }
+        if pen.attrs.contains(.inverse) { parts.append("7") }
+        if pen.attrs.contains(.hidden) { parts.append("8") }
+        if pen.attrs.contains(.strike) { parts.append("9") }
+        func color(_ c: Color, base: Int, ext: Int) -> String? {
+            switch c.kind {
+            case .default: return nil
+            case .indexed:
+                let i = Int(c.index)
+                if i < 8 { return "\(base + i)" }
+                if i < 16 { return "\(base + 60 + i - 8)" }
+                return "\(ext):5:\(i)"
+            case .rgb: return "\(ext):2::\(c.r):\(c.g):\(c.b)"
+            }
+        }
+        if let f = color(pen.fg, base: 30, ext: 38) { parts.append(f) }
+        if let b = color(pen.bg, base: 40, ext: 48) { parts.append(b) }
+        if pen.ul.kind != .default, let u = color(pen.ul, base: 0, ext: 58) { parts.append(u) }
+        return parts.joined(separator: ";")
+    }
+
+    // MARK: - Reports
+
+    private func deviceStatus(_ n: Int) {
+        switch n {
+        case 5: respond("\u{1B}[0n")
+        case 6:
+            let y = modes.originMode ? screen.cursor.y - screen.scrollTop : screen.cursor.y
+            respond("\u{1B}[\(y + 1);\(screen.cursor.x + 1)R")
+        default: break
+        }
+    }
+
+    private func windowOps(_ p: CSIParams) {
+        switch p.get(0) {
+        case 14: respond("\u{1B}[4;\(pixelSize.height);\(pixelSize.width)t")
+        case 16: respond("\u{1B}[6;\(pixelSize.height / rows);\(pixelSize.width / cols)t")
+        case 18: respond("\u{1B}[8;\(rows);\(cols)t")
+        default: break
+        }
+    }
+
+    // MARK: - OSC
+
+    public func osc(_ data: [UInt8]) {
+        defer { touch() }
+        let s = String(decoding: data, as: UTF8.self)
+        let code: Int
+        let rest: String
+        if let semi = s.firstIndex(of: ";") {
+            guard let c = Int(s[..<semi]) else { return }
+            code = c
+            rest = String(s[s.index(after: semi)...])
+        } else {
+            guard let c = Int(s) else { return }
+            code = c
+            rest = ""
+        }
+        switch code {
+        case 0, 2:
+            title = rest
+            events.append(.titleChanged(rest))
+        case 4:
+            handlePaletteOSC(rest)
+        case 7:
+            if let url = URL(string: rest), url.scheme == "file" {
+                let path = url.path
+                cwd = path
+                events.append(.cwdChanged(path))
+            }
+        case 8:
+            let parts = rest.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+            let uri = parts.count > 1 ? String(parts[1]) : ""
+            pen.hyperlink = uri.isEmpty ? 0 : UInt16(internHyperlink(uri))
+        case 9:
+            events.append(.notification(title: "", body: rest))
+        case 777:
+            let parts = rest.split(separator: ";", maxSplits: 2, omittingEmptySubsequences: false)
+            if parts.count >= 3, parts[0] == "notify" {
+                events.append(.notification(title: String(parts[1]), body: String(parts[2])))
+            }
+        case 10, 11, 12:
+            if rest == "?" {
+                let c = code == 10 ? palette.foreground : code == 11 ? palette.background : palette.cursor
+                respond("\u{1B}]\(code);\(c.xtermSpec)\u{1B}\\")
+            } else if let c = RGB(spec: rest) {
+                switch code {
+                case 10: palette.foreground = c
+                case 11: palette.background = c
+                default: palette.cursor = c
+                }
+                events.append(.colorsChanged)
+            }
+        case 52:
+            let parts = rest.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+            if parts.count == 2, parts[1] != "?", let d = Data(base64Encoded: String(parts[1])),
+               let text = String(data: d, encoding: .utf8) {
+                events.append(.clipboardWrite(text))
+            }
+        case 104:
+            if rest.isEmpty {
+                palette.colors = initialPalette.colors
+            } else {
+                for part in rest.split(separator: ";") {
+                    if let i = Int(part), (0..<256).contains(i) { palette.colors[i] = initialPalette.colors[i] }
+                }
+            }
+            events.append(.colorsChanged)
+        case 110: palette.foreground = initialPalette.foreground; events.append(.colorsChanged)
+        case 111: palette.background = initialPalette.background; events.append(.colorsChanged)
+        case 112: palette.cursor = initialPalette.cursor; events.append(.colorsChanged)
+        case 133:
+            let mark: UInt8
+            switch rest.first {
+            case "A": mark = 1
+            case "B": mark = 2
+            case "C": mark = 3
+            case "D": mark = 4
+            default: return
+            }
+            screen.rows[screen.cursor.y].promptMark = mark
+        default:
+            break
+        }
+    }
+
+    private func handlePaletteOSC(_ rest: String) {
+        let parts = rest.split(separator: ";", omittingEmptySubsequences: false).map(String.init)
+        var i = 0
+        while i + 1 < parts.count {
+            defer { i += 2 }
+            guard let idx = Int(parts[i]), (0..<256).contains(idx) else { continue }
+            if parts[i + 1] == "?" {
+                respond("\u{1B}]4;\(idx);\(palette.colors[idx].xtermSpec)\u{1B}\\")
+            } else if let c = RGB(spec: parts[i + 1]) {
+                palette.colors[idx] = c
+                events.append(.colorsChanged)
             }
         }
     }
-    public func osc(_ data: [UInt8]) {}
+
+    // MARK: - DCS
+
     public func dcsHook(_ params: CSIParams, intermediates: [UInt8], final: UInt8) {
         dcsData.removeAll(keepingCapacity: true); dcsFinal = final; dcsIntermediates = intermediates
     }
     public func dcsPut(_ byte: UInt8) { if dcsData.count < 4096 { dcsData.append(byte) } }
-    public func dcsUnhook() {}
+
+    public func dcsUnhook() {
+        guard dcsIntermediates == [0x24], dcsFinal == 0x71 else { return }   // DECRQSS
+        switch String(decoding: dcsData, as: UTF8.self) {
+        case "m": respond("\u{1B}P1$r\(sgrString())m\u{1B}\\")
+        case "r": respond("\u{1B}P1$r\(screen.scrollTop + 1);\(screen.scrollBottom + 1)r\u{1B}\\")
+        case " q":
+            let n: Int
+            switch cursorShape {
+            case .block: n = modes.cursorBlink ? 1 : 2
+            case .underline: n = modes.cursorBlink ? 3 : 4
+            case .bar: n = modes.cursorBlink ? 5 : 6
+            }
+            respond("\u{1B}P1$r\(n) q\u{1B}\\")
+        default: respond("\u{1B}P0$r\u{1B}\\")
+        }
+    }
 
     func respond(_ s: String) { responses += Array(s.utf8) }
 }

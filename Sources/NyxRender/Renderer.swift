@@ -91,7 +91,7 @@ public final class Renderer {
             instanceBuffer = device.makeBuffer(length: bytes * 2, options: .storageModeShared)
         }
         if !instances.isEmpty {
-            instances.withUnsafeBytes { memcpy(instanceBuffer!.contents(), $0.baseAddress!, $0.count) }
+            _ = instances.withUnsafeBytes { memcpy(instanceBuffer!.contents(), $0.baseAddress!, $0.count) }
         }
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = texture

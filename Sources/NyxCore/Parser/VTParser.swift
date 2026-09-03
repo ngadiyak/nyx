@@ -21,8 +21,11 @@ extension TerminalActions {
 
 /// Type-erasing receiver, so `VTParser` (below) can be built over any `TerminalActions` value.
 /// Costs one extra hop per action; `Terminal` instantiates `VTParserOf<Terminal>` and pays nothing.
+///
+/// The reference is strong: this is the public, non-specialised path, where the parser has no way
+/// to know that its receiver outlives it. The hot path does not come through here.
 public final class AnyTerminalActions: TerminalActions {
-    private unowned(unsafe) let base: TerminalActions
+    private let base: TerminalActions
 
     public init(_ base: TerminalActions) { self.base = base }
 
@@ -41,14 +44,16 @@ public final class AnyTerminalActions: TerminalActions {
 public typealias VTParser = VTParserOf<AnyTerminalActions>
 
 /// DEC ANSI-compatible escape sequence parser (Paul Williams' state machine) with an inline UTF-8 decoder.
-/// 8-bit C1 controls are not recognised: all bytes >= 0x80 are UTF-8.
+///
+/// 8-bit C1 controls are not recognised: all bytes >= 0x80 are UTF-8. That is also what lets
+/// `resetCollectors()` run from the ESC transition alone -- ESC is the only byte that can begin a
+/// sequence, so nothing else has to clear the intermediates or parameters.
 ///
 /// Generic over the receiver so that every action call specialises to a direct, inlinable call:
 /// dispatching a `TerminalActions` existential per byte cost a witness lookup plus
 /// `swift_unknownObjectRetain`/`Release` around each call.
 public final class VTParserOf<A: TerminalActions> {
     public static var maxOSCLength: Int { 65536 }
-    public static var maxParams: Int { 32 }
 
     private enum State {
         case ground, escape, escapeIntermediate

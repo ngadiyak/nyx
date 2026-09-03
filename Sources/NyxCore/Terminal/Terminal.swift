@@ -676,13 +676,12 @@ public final class Terminal: TerminalActions {
         guard alt != modes.altScreen else { return }
         if alt {
             if save { saveCursor() }
+            let cursor = screen.cursor
             swap(&screen, &inactiveScreen)
             swap(&savedCursor, &savedCursorOther)
             modes.altScreen = true
-            if clear {
-                for y in 0..<rows { screen.rows[y] = Row(cols: cols, fill: blank) }
-                screen.cursor = Cursor(x: 0, y: 0)
-            }
+            if clear { for y in 0..<rows { screen.rows[y] = Row(cols: cols, fill: blank) } }
+            screen.cursor = cursor
             screen.pendingWrap = false
             screen.scrollTop = 0
             screen.scrollBottom = rows - 1

@@ -9,6 +9,11 @@ import PackageDescription
 /// including everything `swift test` runs -- keep the checks, so a real overlapping access still
 /// gets caught. `-cross-module-optimization` lets `NyxRender`, `Nyx` and `nyx-bench` specialise
 /// and inline across the `NyxCore` boundary.
+///
+/// Note: `.unsafeFlags` makes this package unusable as a SwiftPM *dependency* -- SwiftPM refuses to
+/// resolve a package that declares them. That is fine for a leaf application, but if `NyxCore` is
+/// ever split out into its own reusable package, these flags have to move to a build-time setting
+/// or be dropped.
 let releaseSettings: [SwiftSetting] = [
     .unsafeFlags(["-enforce-exclusivity=unchecked", "-cross-module-optimization"], .when(configuration: .release))
 ]

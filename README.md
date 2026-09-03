@@ -3,7 +3,7 @@
 A fast, light, native terminal for macOS. Swift + Metal, no dependencies, no Xcode required.
 
     make run        # build & launch from SwiftPM
-    make test       # unit tests (156, swift-testing)
+    make test       # unit tests (swift-testing)
     make app        # build/Nyx.app
     make install    # copy to /Applications
     make bench      # parser throughput

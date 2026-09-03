@@ -4,6 +4,9 @@ public struct Row: Equatable {
     public var cells: [Cell]
     /// True when the line continues on the next row (soft wrap). Used by reflow and selection.
     public var wrapped = false
+    /// Maintained on every mutation but not consumed yet: the renderer rebuilds every row each
+    /// frame, and `Terminal.clearDirty()` (called by the view after a frame) just resets the flags.
+    /// This is the groundwork for the per-row partial redraw planned for phase 2.
     public var dirty = true
     /// OSC 133 mark: 1 = prompt start (A), 2 = input start (B), 3 = output start (C), 4 = end (D).
     public var promptMark: UInt8 = 0

@@ -81,8 +81,10 @@ public final class Terminal: TerminalActions {
     private var hyperlinkIndex: [String: Int] = [:]
     /// Number of scrollback lines the viewport is scrolled up by. 0 = live view.
     public internal(set) var viewportOffset = 0
-    /// Increments at least once per visible change -- a run of printed characters bumps it once,
-    /// not once per cell. Renderers compare it to decide whether to redraw.
+    /// A monotonically increasing counter of visible changes: it increments at least once per
+    /// change -- a run of printed characters bumps it once, not once per cell. Nothing in the app
+    /// reads it today (the view is driven by a dirty flag the session sets); it is used by the
+    /// tests and is available to any consumer that wants cheap change detection.
     public private(set) var generation: UInt64 = 0
     /// Text area size in pixels, set by the view, reported by XTWINOPS 14/16.
     public var pixelSize: (width: Int, height: Int) = (0, 0)

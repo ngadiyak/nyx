@@ -32,11 +32,13 @@ public struct SessionConfig {
 }
 
 /// Owns a PTY, its child process and a `Terminal`. A reader thread parses output; all access to the terminal goes through `withTerminal`.
+///
+/// The session stays alive until its child exits; call `terminate()` to end it. Callbacks fire on the reader thread.
 public final class TerminalSession {
     public var onUpdate: (() -> Void)?
     public var onEvent: ((TerminalEvent) -> Void)?
     public var onExit: ((Int32) -> Void)?
-    public private(set) var exitCode: Int32?
+    public var exitCode: Int32? { lock.lock(); defer { lock.unlock() }; return _exitCode }
     public var pid: pid_t { pty.pid }
 
     private let terminal: Terminal
@@ -44,12 +46,17 @@ public final class TerminalSession {
     private let lock = NSLock()
     private let writeQueue = DispatchQueue(label: "nyx.pty.write")
     private var thread: Thread?
+    private var _exitCode: Int32?
 
     public init(config: SessionConfig) throws {
         terminal = Terminal(cols: config.cols, rows: config.rows, scrollbackLimit: config.scrollbackLimit, palette: config.palette)
         pty = try PTY(path: config.shellPath, argv: config.argv, environment: config.environment,
                       cwd: config.cwd, cols: config.cols, rows: config.rows)
-        let t = Thread { [weak self] in self?.readLoop() }
+        // The reader thread holds `self` strongly: a session lives exactly as long as its child
+        // process. `terminate()` is the documented way to end it early (SIGHUP); once the child
+        // exits, the read loop returns, `wait()` reaps it, `onExit` fires, and only then does the
+        // thread release its reference to `self`, allowing `deinit` to close the fd.
+        let t = Thread { self.readLoop() }
         t.name = "nyx.pty.read"
         t.qualityOfService = .userInteractive
         thread = t
@@ -74,6 +81,8 @@ public final class TerminalSession {
         pty.resize(cols: cols, rows: rows)
     }
 
+    /// Sends SIGHUP to the child, like closing a real terminal. The session ends asynchronously:
+    /// the read loop observes EOF, `wait()` reaps the child, and `onExit` fires on the reader thread.
     public func terminate() {
         pty.terminate()
     }
@@ -98,7 +107,7 @@ public final class TerminalSession {
             onUpdate?()
         }
         let code = pty.wait()
-        exitCode = code
+        lock.lock(); _exitCode = code; lock.unlock()
         onExit?(code)
     }
 }

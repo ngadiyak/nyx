@@ -73,6 +73,17 @@ private func waitForExit(_ s: TerminalSession, timeout: TimeInterval = 5) -> Int
     #expect(code != nil)
 }
 
+@Test func sessionSurvivesDroppingLastReferenceUntilChildExits() throws {
+    let sem = DispatchSemaphore(value: 0)
+    var code: Int32?
+    do {
+        let s = try TerminalSession(config: config("exit 5"))
+        s.onExit = { code = $0; sem.signal() }
+    }
+    #expect(sem.wait(timeout: .now() + 5) == .success)
+    #expect(code == 5)
+}
+
 @Test func loginShellConfigUsesEnvironment() {
     let c = SessionConfig.loginShell(cols: 80, rows: 24, palette: .xtermDefault())
     #expect(c.argv.first?.hasPrefix("-") == true)

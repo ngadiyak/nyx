@@ -7,6 +7,9 @@ public struct CSIParams: Equatable {
     private var flat: [Int]
     /// `ends[i]` is one past the last index in `flat` belonging to parameter `i`.
     private var ends: [Int]
+    /// Number of parameters, i.e. the used prefix of `ends`. The parser reuses oversized buffers
+    /// across sequences rather than clearing them, so the arrays may be longer than this.
+    private let n: Int
 
     public init(_ items: [[Int]] = []) {
         flat = []
@@ -17,23 +20,33 @@ public struct CSIParams: Equatable {
             flat.append(contentsOf: item)
             ends.append(flat.count)
         }
+        n = ends.count
     }
 
-    init(flat: [Int], ends: [Int]) {
+    init(flat: [Int], ends: [Int], count: Int) {
         self.flat = flat
         self.ends = ends
+        n = count
     }
 
-    public var count: Int { ends.count }
+    public var count: Int { n }
+
+    public static func == (a: CSIParams, b: CSIParams) -> Bool {
+        guard a.n == b.n else { return false }
+        for i in 0..<a.n where a.ends[i] != b.ends[i] { return false }
+        let used = a.n == 0 ? 0 : a.ends[a.n - 1]
+        for i in 0..<used where a.flat[i] != b.flat[i] { return false }
+        return true
+    }
 
     /// The nested form: one array of sub-parameters per parameter. Allocates; prefer `get`/`value`.
     public var items: [[Int]] {
         var out: [[Int]] = []
-        out.reserveCapacity(ends.count)
+        out.reserveCapacity(n)
         var start = 0
-        for end in ends {
-            out.append(Array(flat[start..<end]))
-            start = end
+        for i in 0..<n {
+            out.append(Array(flat[start..<ends[i]]))
+            start = ends[i]
         }
         return out
     }
@@ -43,19 +56,19 @@ public struct CSIParams: Equatable {
 
     /// Number of sub-parameters of parameter `i` (0 when absent).
     public func subCount(_ i: Int) -> Int {
-        i < ends.count ? ends[i] - start(of: i) : 0
+        i < n ? ends[i] - start(of: i) : 0
     }
 
     /// Sub-parameter `j` of parameter `i`, or 0 when absent.
     public func value(_ i: Int, _ j: Int) -> Int {
-        guard i < ends.count else { return 0 }
+        guard i < n else { return 0 }
         let k = start(of: i) + j
         return k < ends[i] ? flat[k] : 0
     }
 
     /// The first value of parameter `i`, or `def` when the parameter is absent or zero.
     public func get(_ i: Int, _ def: Int = 0) -> Int {
-        guard i < ends.count else { return def }
+        guard i < n else { return def }
         let s = start(of: i)
         guard s < ends[i] else { return def }
         let v = flat[s]
@@ -64,7 +77,7 @@ public struct CSIParams: Equatable {
 
     /// All sub-parameters of parameter `i` (empty when absent).
     public func sub(_ i: Int) -> [Int] {
-        guard i < ends.count else { return [] }
+        guard i < n else { return [] }
         return Array(flat[start(of: i)..<ends[i]])
     }
 }

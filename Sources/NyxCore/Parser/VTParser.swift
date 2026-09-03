@@ -70,7 +70,9 @@ public final class VTParserOf<A: TerminalActions> {
     /// with one end index per parameter in `paramEnds`. Both buffers are reused between sequences,
     /// so a CSI costs no allocation (the previous nested `[[Int]]` allocated per parameter).
     private var flatParams: [Int] = []
+    private var flatCount = 0
     private var paramEnds: [Int] = []
+    private var endCount = 0
     private var currentValue = 0
     private var hasDigits = false
     private var oscBuffer: [UInt8] = []
@@ -83,8 +85,9 @@ public final class VTParserOf<A: TerminalActions> {
         self.actions = actions
         ownedActions = owning
         oscBuffer.reserveCapacity(256)
-        flatParams.reserveCapacity(Self.maxParams * 2)
-        paramEnds.reserveCapacity(Self.maxParams)
+        // Preallocated and reused: clearing is a count reset, never an `Array.removeAll`.
+        flatParams = [Int](repeating: 0, count: Self.maxParams * 4)
+        paramEnds = [Int](repeating: 0, count: Self.maxParams)
     }
 
     public func feed(_ bytes: [UInt8]) {
@@ -281,8 +284,8 @@ public final class VTParserOf<A: TerminalActions> {
     /// common case (no intermediates, no parameters) free of an `Array.removeAll` call.
     private func resetCollectors() {
         if !intermediates.isEmpty { intermediates.removeAll(keepingCapacity: true) }
-        if !flatParams.isEmpty { flatParams.removeAll(keepingCapacity: true) }
-        if !paramEnds.isEmpty { paramEnds.removeAll(keepingCapacity: true) }
+        flatCount = 0
+        endCount = 0
         currentValue = 0
         hasDigits = false
     }
@@ -311,30 +314,43 @@ public final class VTParserOf<A: TerminalActions> {
         oscOverflow = false
     }
 
+    @inline(__always)
+    private func appendFlat(_ v: Int) {
+        if flatCount < flatParams.count { flatParams[flatCount] = v } else { flatParams.append(v) }
+        flatCount += 1
+    }
+
+    /// Start of the parameter currently being collected, as an index into `flatParams`.
+    @inline(__always)
+    private var pendingStart: Int { endCount == 0 ? 0 : paramEnds[endCount - 1] }
+
     private func pushSubParam() {
-        flatParams.append(currentValue)
+        appendFlat(currentValue)
         currentValue = 0
         hasDigits = false
     }
 
     private func pushParam() {
-        flatParams.append(currentValue)
-        if paramEnds.count < Self.maxParams {
-            paramEnds.append(flatParams.count)
+        appendFlat(currentValue)
+        if endCount < Self.maxParams {
+            paramEnds[endCount] = flatCount
+            endCount += 1
         } else {
             // Over the cap: drop this parameter's values again.
-            flatParams.removeLast(flatParams.count - (paramEnds.last ?? 0))
+            flatCount = pendingStart
         }
         currentValue = 0
         hasDigits = false
     }
 
     private func finishParams() {
-        if hasDigits || flatParams.count > (paramEnds.last ?? 0) || !paramEnds.isEmpty { pushParam() }
+        if hasDigits || flatCount > pendingStart || endCount > 0 { pushParam() }
     }
 
     @inline(__always)
-    private func currentParams() -> CSIParams { CSIParams(flat: flatParams, ends: paramEnds) }
+    private func currentParams() -> CSIParams {
+        CSIParams(flat: flatParams, ends: paramEnds, count: endCount)
+    }
 
     private func startUTF8(_ b: UInt8) {
         switch b {

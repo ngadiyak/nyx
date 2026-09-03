@@ -240,6 +240,7 @@ final class TerminalView: NSView, NSTextInputClient {
         markedText = ""
         if let e = currentEvent, e.modifierFlags.contains(.control) || (optionAsMeta && e.modifierFlags.contains(.option)) {
             sendKey(e)
+            dirty.set()
             return
         }
         send(Array(text.utf8))

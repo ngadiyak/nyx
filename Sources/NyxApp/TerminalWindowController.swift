@@ -27,6 +27,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             terminalView = view
         } catch {
             NSAlert(error: error).runModal()
+            window.close()
         }
     }
 

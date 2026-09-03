@@ -77,11 +77,15 @@ public final class Renderer {
         atlas.setFonts(f)
     }
 
-    public func draw(_ frame: RenderFrame, in layer: CAMetalLayer, padding: Int) {
-        guard let drawable = layer.nextDrawable(), let cb = queue.makeCommandBuffer() else { return }
+    /// Returns false when the layer had no drawable to hand out, so the caller can keep the frame
+    /// marked stale and try again on the next tick instead of leaving stale pixels on screen.
+    @discardableResult
+    public func draw(_ frame: RenderFrame, in layer: CAMetalLayer, padding: Int) -> Bool {
+        guard let drawable = layer.nextDrawable(), let cb = queue.makeCommandBuffer() else { return false }
         render(frame, to: drawable.texture, commandBuffer: cb, padding: padding)
         cb.present(drawable)
         cb.commit()
+        return true
     }
 
     public func render(_ frame: RenderFrame, to texture: MTLTexture, commandBuffer: MTLCommandBuffer, padding: Int) {
@@ -119,6 +123,15 @@ public final class Renderer {
 
     private func rect(_ x: Float, _ y: Float, _ w: Float, _ h: Float, _ color: RGB, kind: UInt32 = 0) -> Instance {
         Instance(pos: SIMD2(x, y), size: SIMD2(w, h), uv0: .zero, uv1: .zero, color: rgba(color), kind: kind)
+    }
+
+    /// One textured quad for `g`, positioned by the glyph's own bearings relative to the cell origin.
+    private func glyphQuad(_ g: Glyph, cellX: Float, cellY: Float, color: RGB) -> Instance {
+        Instance(pos: SIMD2(cellX + Float(g.left), cellY + Float(g.top)),
+                 size: SIMD2(Float(g.width), Float(g.height)),
+                 uv0: SIMD2(Float(g.x), Float(g.y)),
+                 uv1: SIMD2(Float(g.x + g.width), Float(g.y + g.height)),
+                 color: rgba(color), kind: g.isColor ? 2 : 1)
     }
 
     private func resolve(_ c: Cell, _ p: Palette) -> (fg: RGB, bg: RGB) {
@@ -161,11 +174,7 @@ public final class Renderer {
                         let text: GlyphText = c.graphemeIndex.map { .cluster(f.graphemes[$0]) } ?? .scalar(c.content)
                         let key = GlyphKey(text: text, bold: c.attrs.contains(.bold), italic: c.attrs.contains(.italic))
                         if let g = atlas.glyph(for: key) {
-                            glyphs.append(Instance(pos: SIMD2(px + Float(g.left), py + Float(g.top)),
-                                                   size: SIMD2(Float(g.width), Float(g.height)),
-                                                   uv0: SIMD2(Float(g.x), Float(g.y)),
-                                                   uv1: SIMD2(Float(g.x + g.width), Float(g.y + g.height)),
-                                                   color: rgba(fg), kind: g.isColor ? 2 : 1))
+                            glyphs.append(glyphQuad(g, cellX: px, cellY: py, color: fg))
                         }
                     }
 
@@ -212,11 +221,7 @@ public final class Renderer {
                     instances.append(rect(px, py, w, ch, f.palette.foreground))
                     let text: GlyphText = s.unicodeScalars.count == 1 ? .scalar(s.unicodeScalars.first!.value) : .cluster(s)
                     if let g = atlas.glyph(for: GlyphKey(text: text, bold: false, italic: false)) {
-                        glyphs.append(Instance(pos: SIMD2(px + Float(g.left), py + Float(g.top)),
-                                               size: SIMD2(Float(g.width), Float(g.height)),
-                                               uv0: SIMD2(Float(g.x), Float(g.y)),
-                                               uv1: SIMD2(Float(g.x + g.width), Float(g.y + g.height)),
-                                               color: rgba(f.palette.background), kind: g.isColor ? 2 : 1))
+                        glyphs.append(glyphQuad(g, cellX: px, cellY: py, color: f.palette.background))
                     }
                     x += width
                 }

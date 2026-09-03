@@ -3,7 +3,7 @@ import Testing
 
 private func enc(_ key: Key, _ mods: KeyModifiers = [], text: String? = nil, app: Bool = false, meta: Bool = false) -> String? {
     KeyEncoder.encode(KeyEvent(key: key, modifiers: mods, text: text),
-                      options: KeyEncoderOptions(cursorKeysApp: app, keypadApp: false, optionAsMeta: meta))
+                      options: KeyEncoderOptions(cursorKeysApp: app, optionAsMeta: meta))
         .map { String(decoding: $0, as: UTF8.self) }
 }
 private let ESC = "\u{1B}"

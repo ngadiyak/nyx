@@ -26,10 +26,9 @@ public struct KeyEvent: Equatable {
 
 public struct KeyEncoderOptions: Equatable {
     public var cursorKeysApp: Bool
-    public var keypadApp: Bool
     public var optionAsMeta: Bool
-    public init(cursorKeysApp: Bool, keypadApp: Bool, optionAsMeta: Bool) {
-        self.cursorKeysApp = cursorKeysApp; self.keypadApp = keypadApp; self.optionAsMeta = optionAsMeta
+    public init(cursorKeysApp: Bool, optionAsMeta: Bool) {
+        self.cursorKeysApp = cursorKeysApp; self.optionAsMeta = optionAsMeta
     }
 }
 

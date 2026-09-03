@@ -12,7 +12,10 @@ enum NyxError: Error, LocalizedError {
 final class TerminalView: NSView, NSTextInputClient {
     var onTitleChange: ((String) -> Void)?
     var onExit: ((Int32) -> Void)?
-    var optionAsMeta = false
+    /// Left `false` deliberately: nothing writes it in phase 1, because the config file that will
+    /// set it (`option-as-meta`) arrives in phase 2. Keeping it a constant makes the dead
+    /// `insertText` branch visible instead of pretending there is a setting behind it.
+    private let optionAsMeta = false
 
     private let session: TerminalSession
     private let renderer: Renderer
@@ -22,6 +25,8 @@ final class TerminalView: NSView, NSTextInputClient {
     private let padding: CGFloat = 8
     private var displayLink: CADisplayLink?
     private let dirty = AtomicFlag()
+    /// The window is hidden behind another one or minimised: stop drawing entirely.
+    private var isOccluded = false
     private var markedText = ""
     private var currentEvent: NSEvent?
     private var scrollAccumulator: CGFloat = 0
@@ -43,7 +48,7 @@ final class TerminalView: NSView, NSTextInputClient {
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.isOpaque = true
         metalLayer.framebufferOnly = true
-        session.onUpdate = { [weak self] in self?.dirty.set() }
+        session.onUpdate = { [weak self] in self?.markDirty() }
         session.onEvent = { [weak self] e in DispatchQueue.main.async { self?.handle(e) } }
         session.onExit = { [weak self] code in DispatchQueue.main.async { self?.onExit?(code) } }
         session.start()
@@ -87,6 +92,7 @@ final class TerminalView: NSView, NSTextInputClient {
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in self?.focusChanged(true) })
         observers.append(center.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in self?.focusChanged(false) })
+        observers.append(center.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { [weak self] _ in self?.occlusionChanged() })
     }
 
     override func viewDidChangeBackingProperties() {
@@ -128,19 +134,49 @@ final class TerminalView: NSView, NSTextInputClient {
             session.resize(cols: c, rows: r)
         }
         session.withTerminal { $0.pixelSize = (c * fonts.metrics.width, r * fonts.metrics.height) }
-        dirty.set()
+        markDirty()
     }
 
     private func focusChanged(_ focused: Bool) {
         let wants = session.withTerminal { $0.modes.focusEvents }
         if wants { session.send(Array((focused ? "\u{1B}[I" : "\u{1B}[O").utf8)) }
-        dirty.set()
+        markDirty()
     }
 
     // MARK: - Rendering
+    //
+    // The display link is only allowed to run while there is something to draw. A tick that finds
+    // the dirty flag clear pauses it, and every producer of new content calls `markDirty()`, which
+    // sets the flag and then unpauses on the main thread. Both halves of that handshake run on the
+    // main thread, so a wake-up can never be lost: the pause and the unpause are serialised by the
+    // main queue, and whichever runs second leaves the link running with the flag still set.
+
+    /// Marks the frame stale from any thread and wakes the display link.
+    private func markDirty() {
+        dirty.set()
+        if Thread.isMainThread {
+            resumeLink()
+        } else {
+            DispatchQueue.main.async { [weak self] in self?.resumeLink() }
+        }
+    }
+
+    private func resumeLink() {
+        guard !isOccluded else { return }
+        displayLink?.isPaused = false
+    }
+
+    private func occlusionChanged() {
+        isOccluded = !(window?.occlusionState.contains(.visible) ?? true)
+        if isOccluded {
+            displayLink?.isPaused = true
+        } else {
+            markDirty()   // the flag may have accumulated changes while we were hidden
+        }
+    }
 
     @objc private func tick() {
-        if dirty.takeAndClear() { render() }
+        if dirty.takeAndClear() { render() } else { displayLink?.isPaused = true }
     }
 
     private func render() {
@@ -153,7 +189,9 @@ final class TerminalView: NSView, NSTextInputClient {
             return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
                                cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit)
         }
-        renderer.draw(frame, in: metalLayer, padding: Int(padding * metalLayer.contentsScale))
+        // A missing drawable is transient; keep the frame stale so the next tick retries rather
+        // than pausing the link on top of stale pixels.
+        if !renderer.draw(frame, in: metalLayer, padding: Int(padding * metalLayer.contentsScale)) { dirty.set() }
     }
 
     // MARK: - Events from the terminal
@@ -165,7 +203,7 @@ final class TerminalView: NSView, NSTextInputClient {
         case .clipboardWrite(let text):
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
-        case .colorsChanged: dirty.set()
+        case .colorsChanged: markDirty()
         case .cwdChanged, .notification: break
         }
     }
@@ -223,7 +261,7 @@ final class TerminalView: NSView, NSTextInputClient {
     private func sendKey(_ e: NSEvent) {
         guard let ke = keyEvent(from: e) else { return }
         let opts = session.withTerminal {
-            KeyEncoderOptions(cursorKeysApp: $0.modes.cursorKeysApp, keypadApp: $0.modes.keypadApp, optionAsMeta: optionAsMeta)
+            KeyEncoderOptions(cursorKeysApp: $0.modes.cursorKeysApp, optionAsMeta: optionAsMeta)
         }
         if let bytes = KeyEncoder.encode(ke, options: opts) { send(bytes) }
     }
@@ -231,7 +269,7 @@ final class TerminalView: NSView, NSTextInputClient {
     private func send(_ bytes: [UInt8]) {
         session.withTerminal { $0.scrollViewportToBottom() }
         session.send(bytes)
-        dirty.set()
+        markDirty()
     }
 
     // MARK: - NSTextInputClient
@@ -241,7 +279,7 @@ final class TerminalView: NSView, NSTextInputClient {
         markedText = ""
         if let e = currentEvent, e.modifierFlags.contains(.control) || (optionAsMeta && e.modifierFlags.contains(.option)) {
             sendKey(e)
-            dirty.set()
+            markDirty()
             return
         }
         send(Array(text.utf8))
@@ -253,12 +291,12 @@ final class TerminalView: NSView, NSTextInputClient {
 
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         markedText = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
-        dirty.set()
+        markDirty()
     }
 
     func unmarkText() {
         markedText = ""
-        dirty.set()
+        markDirty()
     }
 
     func hasMarkedText() -> Bool { !markedText.isEmpty }
@@ -305,14 +343,14 @@ final class TerminalView: NSView, NSTextInputClient {
         let (alt, app) = session.withTerminal { ($0.modes.altScreen, $0.modes.cursorKeysApp) }
         if alt {
             let key: Key = lines > 0 ? .up : .down
-            let opts = KeyEncoderOptions(cursorKeysApp: app, keypadApp: false, optionAsMeta: false)
+            let opts = KeyEncoderOptions(cursorKeysApp: app, optionAsMeta: false)
             guard let bytes = KeyEncoder.encode(KeyEvent(key: key, modifiers: [], text: nil), options: opts) else { return }
             var all: [UInt8] = []
             for _ in 0..<abs(lines) { all += bytes }
             session.send(all)
         } else {
             session.withTerminal { $0.scrollViewport(by: lines) }
-            dirty.set()
+            markDirty()
         }
     }
 

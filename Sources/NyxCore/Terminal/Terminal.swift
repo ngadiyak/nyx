@@ -170,6 +170,69 @@ public final class Terminal: TerminalActions {
         put(charsets[activeCharset].map(raw))
     }
 
+    /// Bulk form of `print` for a run of printable ASCII (0x20...0x7E), which is the overwhelming
+    /// majority of bytes in real output. Writes whole spans of a row through one unsafe buffer
+    /// access, marking the row dirty and bumping `generation` once per run rather than per cell.
+    public func printASCII(_ bytes: UnsafePointer<UInt8>, count: Int) {
+        guard count > 0 else { return }
+        // The fast path assumes each byte is exactly one cell wide and lands unmodified: that holds
+        // for ASCII with the G0/G1 charset in ASCII mode, and only when characters are not shifted
+        // right by insert mode.
+        guard !modes.insertMode, charsets[activeCharset] == .ascii else {
+            for i in 0..<count { self.print(Unicode.Scalar(bytes[i])) }
+            return
+        }
+        let template = penCell
+        var i = 0
+        while i < count {
+            if screen.pendingWrap {
+                if modes.autoWrap { wrapToNextLine() } else { screen.pendingWrap = false }
+            }
+            let x = screen.cursor.x
+            let y = screen.cursor.y
+            let n = min(count - i, cols - x)
+            writeRun(bytes + i, n, x: x, y: y, template: template)
+            i += n
+            let next = x + n
+            if next >= cols {
+                screen.cursor.x = cols - 1
+                screen.pendingWrap = true
+            } else {
+                screen.cursor.x = next
+            }
+        }
+        lastPrinted = Unicode.Scalar(bytes[count - 1])
+        touch()
+    }
+
+    /// Writes `n` single-width cells into row `y` at column `x`. The caller guarantees
+    /// `x + n <= cols`.
+    private func writeRun(_ bytes: UnsafePointer<UInt8>, _ n: Int, x: Int, y: Int, template: Cell) {
+        screen.rows.withUnsafeMutableBufferPointer { rows in
+            rows[y].cells.withUnsafeMutableBufferPointer { cells in
+                // Only the two ends of the run can orphan half of a wide glyph; any wide pair
+                // strictly inside the run is overwritten in full.
+                if cells[x].attrs.contains(.wideSpacer), x > 0 {
+                    var b = Cell()
+                    b.bg = cells[x - 1].bg
+                    cells[x - 1] = b
+                }
+                let last = x + n - 1
+                if cells[last].attrs.contains(.wide), last + 1 < cols {
+                    var b = Cell()
+                    b.bg = cells[last].bg
+                    cells[last + 1] = b
+                }
+                var c = template
+                for k in 0..<n {
+                    c.content = UInt32(bytes[k])
+                    cells[x + k] = c
+                }
+            }
+            rows[y].dirty = true
+        }
+    }
+
     private func put(_ s: Unicode.Scalar) {
         let width = CharWidth.width(s)
         if width == 0 { appendZeroWidth(s); return }

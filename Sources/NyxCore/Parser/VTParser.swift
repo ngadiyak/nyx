@@ -1,6 +1,9 @@
 /// Receiver of parser actions. Implemented by `Terminal`.
 public protocol TerminalActions: AnyObject {
     func print(_ scalar: Unicode.Scalar)
+    /// Print a run of printable ASCII bytes (0x20...0x7E), in order. Equivalent to one `print`
+    /// per byte; receivers that can write a whole run at once override it for throughput.
+    func printASCII(_ bytes: UnsafePointer<UInt8>, count: Int)
     func execute(_ byte: UInt8)
     func csi(_ params: CSIParams, intermediates: [UInt8], final: UInt8)
     func esc(intermediates: [UInt8], final: UInt8)
@@ -8,6 +11,12 @@ public protocol TerminalActions: AnyObject {
     func dcsHook(_ params: CSIParams, intermediates: [UInt8], final: UInt8)
     func dcsPut(_ byte: UInt8)
     func dcsUnhook()
+}
+
+extension TerminalActions {
+    public func printASCII(_ bytes: UnsafePointer<UInt8>, count: Int) {
+        for i in 0..<count { self.print(Unicode.Scalar(bytes[i])) }
+    }
 }
 
 /// DEC ANSI-compatible escape sequence parser (Paul Williams' state machine) with an inline UTF-8 decoder.
@@ -50,7 +59,22 @@ public final class VTParser {
     }
 
     public func feed(_ bytes: UnsafeBufferPointer<UInt8>) {
-        for b in bytes { advance(b) }
+        guard let base = bytes.baseAddress else { return }
+        let n = bytes.count
+        var i = 0
+        while i < n {
+            // Ground-state fast path: hand a whole run of printable ASCII to the receiver at once,
+            // instead of one state-machine dispatch (and one cell write) per byte.
+            if state == .ground, utf8Pending == 0, base[i] >= 0x20, base[i] < 0x7F {
+                var j = i + 1
+                while j < n, base[j] >= 0x20, base[j] < 0x7F { j += 1 }
+                actions.printASCII(base + i, count: j - i)
+                i = j
+                continue
+            }
+            advance(base[i])
+            i += 1
+        }
     }
 
     // MARK: - Byte dispatch

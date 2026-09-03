@@ -238,3 +238,14 @@ private let ESC = "\u{1B}"
     t.run(ESC + "[?1003l")
     #expect(t.modes.mouse == .none)
 }
+
+@Test func sgrParameterOverflowDropsTailInsteadOfResettingPen() {
+    // 16 parameters of 4 sub-values fill the value cap exactly; the next parameter overflows it.
+    // Admitting that parameter empty would make it read as SGR 0 and reset the pen, and admitting
+    // it half-parsed would pick the wrong slots out of a colour parameter. It must be dropped.
+    let full = Array(repeating: "1:2:3:4", count: 16).joined(separator: ";")   // code 1 = bold
+    let t = makeTerminal().run(ESC + "[3m" + ESC + "[" + full + ";7m")
+    #expect(t.pen.attrs.contains(.italic))     // pen survives: no phantom SGR 0
+    #expect(t.pen.attrs.contains(.bold))       // the fully parsed prefix still applies
+    #expect(!t.pen.attrs.contains(.inverse))   // the overflowing parameter is dropped, not applied
+}

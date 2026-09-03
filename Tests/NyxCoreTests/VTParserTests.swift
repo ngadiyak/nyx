@@ -83,3 +83,22 @@ private func prints(_ s: String) -> [Action] { s.unicodeScalars.map { .print($0)
     #expect(p.get(1, 1) == 7)
     #expect(p.get(5, 3) == 3)
 }
+
+// 16 parameters of 4 sub-values each is exactly CSIParams.maxValues, well inside the 32-parameter
+// cap, so these two exercise the value cap rather than the parameter cap.
+private let cappedParams = Array(repeating: "1:2:3:4", count: 16).joined(separator: ";")
+
+@Test func csiParamsFitExactlyAtValueCap() {
+    guard case .csi(let items, _, _) = parse("\u{1B}[" + cappedParams + "m").first else { Issue.record("no csi"); return }
+    #expect(items.count == 16)
+    #expect(items.allSatisfy { $0 == [1, 2, 3, 4] })
+}
+
+@Test func csiParamsOverflowDropsTailWholeAndKeepsPrefix() {
+    // One sub-value past the cap. The parameter it belonged to must be dropped entirely rather
+    // than admitted half-parsed (an empty parameter reads as SGR 0), and everything parsed before
+    // it must survive untouched.
+    guard case .csi(let items, _, _) = parse("\u{1B}[" + cappedParams + ";9m").first else { Issue.record("no csi"); return }
+    #expect(items.count == 16)
+    #expect(items.allSatisfy { $0 == [1, 2, 3, 4] })
+}

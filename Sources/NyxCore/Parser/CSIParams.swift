@@ -3,26 +3,31 @@
 /// Stored flat and inline: all sub-parameter values end to end in `flat`, with one end index per
 /// parameter in `ends`. Fixed-size SIMD storage keeps the whole value trivial, so the parser can
 /// hand a sequence's parameters to its receiver with no allocation and no retain/release traffic.
-/// Sequences longer than the caps are truncated, which is what a terminal wants anyway.
+/// A sequence longer than the caps is truncated to the prefix that was fully parsed: the first
+/// dropped value freezes the list, so a parameter that was cut in half is never admitted. Handing
+/// a half-parsed parameter to `applySGR` would be worse than dropping it -- an empty parameter
+/// reads as SGR 0, which resets the pen, and a truncated colour parameter picks the wrong slots.
 public struct CSIParams: Equatable {
     /// Maximum total number of values across all parameters.
-    public static let maxValues = 32
+    public static let maxValues = 64
     /// Maximum number of parameters.
     public static let maxParams = 32
 
-    private var flat = SIMD32<Int32>()
+    private var flat = SIMD64<Int32>()
     /// `ends[i]` is one past the last index in `flat` belonging to parameter `i`.
     private var ends = SIMD32<UInt8>()
     /// Number of parameters; only the first `n` lanes of `ends` are meaningful.
     private var n = 0
     /// Number of values written to `flat`, including the parameter still being collected.
     private var used = 0
+    /// Set once a value or a parameter has been dropped. Everything after that point is ignored,
+    /// so what remains is a prefix that was parsed in full.
+    private var truncated = false
 
     public init() {}
 
     public init(_ items: [[Int]]) {
         for item in items {
-            guard n < CSIParams.maxParams else { break }
             for v in item { append(v) }
             closeParameter()
         }
@@ -33,20 +38,26 @@ public struct CSIParams: Equatable {
     /// Appends one value to the parameter currently being collected.
     @inline(__always)
     mutating func append(_ v: Int) {
-        guard used < CSIParams.maxValues else { return }
+        guard !truncated else { return }
+        guard used < CSIParams.maxValues else {
+            truncated = true
+            return
+        }
         flat[used] = Int32(clamping: v)
         used += 1
     }
 
-    /// Ends the parameter currently being collected.
+    /// Ends the parameter currently being collected. Once anything has been dropped no further
+    /// parameter is admitted, so the parameter that overflowed does not appear half-parsed.
     @inline(__always)
     mutating func closeParameter() {
-        if n < CSIParams.maxParams {
-            ends[n] = UInt8(used)
-            n += 1
-        } else {
-            used = pendingStart   // over the cap: drop this parameter's values
+        guard !truncated else { return }
+        guard n < CSIParams.maxParams else {
+            truncated = true
+            return
         }
+        ends[n] = UInt8(used)
+        n += 1
     }
 
     /// Start of the parameter currently being collected, as an index into `flat`.
@@ -61,6 +72,7 @@ public struct CSIParams: Equatable {
     mutating func reset() {
         n = 0
         used = 0
+        truncated = false
     }
 
     // MARK: - Reading

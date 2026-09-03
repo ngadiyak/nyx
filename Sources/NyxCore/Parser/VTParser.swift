@@ -99,8 +99,7 @@ public final class VTParserOf<A: TerminalActions> {
             // Ground-state fast path: hand a whole run of printable ASCII to the receiver at once,
             // instead of one state-machine dispatch (and one cell write) per byte.
             if state == .ground, utf8Pending == 0, base[i] >= 0x20, base[i] < 0x7F {
-                var j = i + 1
-                while j < n, base[j] >= 0x20, base[j] < 0x7F { j += 1 }
+                let j = VTParserOf.endOfPrintableRun(base, from: i + 1, to: n)
                 actions.printASCII(base + i, count: j - i)
                 i = j
                 continue
@@ -108,6 +107,29 @@ public final class VTParserOf<A: TerminalActions> {
             advance(base[i])
             i += 1
         }
+    }
+
+    /// Index of the first byte at or after `start` that is not printable ASCII (0x20...0x7E),
+    /// or `end`. Scans eight bytes at a time: for a 64-bit word, `less` flags any lane below 0x20
+    /// and `more` any lane above 0x7E (which covers everything with the high bit set, i.e. UTF-8
+    /// lead and continuation bytes). Borrows and carries only ever propagate towards higher lanes,
+    /// so the lowest flagged lane is always a real one.
+    @inline(__always)
+    private static func endOfPrintableRun(_ p: UnsafePointer<UInt8>, from start: Int, to end: Int) -> Int {
+        let lo: UInt64 = 0x2020_2020_2020_2020
+        let ones: UInt64 = 0x0101_0101_0101_0101
+        let highs: UInt64 = 0x8080_8080_8080_8080
+        var j = start
+        while j + 8 <= end {
+            let w = UnsafeRawPointer(p + j).loadUnaligned(as: UInt64.self)
+            let less = (w &- lo) & ~w & highs
+            let more = ((w &+ ones) | w) & highs
+            let bad = less | more
+            if bad != 0 { return j + (bad.trailingZeroBitCount >> 3) }
+            j += 8
+        }
+        while j < end, p[j] >= 0x20, p[j] < 0x7F { j += 1 }
+        return j
     }
 
     // MARK: - Byte dispatch

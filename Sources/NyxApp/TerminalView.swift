@@ -46,6 +46,7 @@ final class TerminalView: NSView, NSTextInputClient {
         session.onUpdate = { [weak self] in self?.dirty.set() }
         session.onEvent = { [weak self] e in DispatchQueue.main.async { self?.handle(e) } }
         session.onExit = { [weak self] code in DispatchQueue.main.async { self?.onExit?(code) } }
+        session.start()
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }

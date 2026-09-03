@@ -67,6 +67,7 @@ func liveSessionRendersCorrectly() throws {
     cfg.environment["PS1"] = "$ "
     cfg.environment["PROMPT"] = "%~ $ "
     let s = try TerminalSession(config: cfg)
+    s.start()
     let width = fonts.metrics.width * cols + pad * 2
     let height = fonts.metrics.height * rows + pad * 2
     let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)

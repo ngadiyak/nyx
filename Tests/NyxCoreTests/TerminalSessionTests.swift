@@ -7,18 +7,40 @@ private func config(_ script: String, cols: Int = 40, rows: Int = 5) -> SessionC
                   cwd: nil, cols: cols, rows: rows, scrollbackLimit: 100, palette: .xtermDefault())
 }
 
-private func waitForExit(_ s: TerminalSession, timeout: TimeInterval = 5) -> Int32? {
-    let sem = DispatchSemaphore(value: 0)
-    var code: Int32?
-    s.onExit = { code = $0; sem.signal() }
-    _ = sem.wait(timeout: .now() + timeout)
-    return code
+/// Captures `onExit` before the session is started, so the child cannot exit before anyone is listening.
+private final class ExitWatcher {
+    private let sem = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var code: Int32?
+
+    func attach(to s: TerminalSession) {
+        s.onExit = { [self] c in
+            lock.lock(); code = c; lock.unlock()
+            sem.signal()
+        }
+    }
+
+    func wait(timeout: TimeInterval = 5) -> Int32? {
+        _ = sem.wait(timeout: .now() + timeout)
+        lock.lock(); defer { lock.unlock() }
+        return code
+    }
+}
+
+/// Builds a session, wires the callbacks, and only then starts the reader thread.
+private func startSession(_ script: String, cols: Int = 40, rows: Int = 5,
+                          onEvent: ((TerminalEvent) -> Void)? = nil) throws -> (TerminalSession, ExitWatcher) {
+    let s = try TerminalSession(config: config(script, cols: cols, rows: rows))
+    let watcher = ExitWatcher()
+    s.onEvent = onEvent
+    watcher.attach(to: s)
+    s.start()
+    return (s, watcher)
 }
 
 @Test func sessionFeedsOutputIntoTerminal() throws {
-    let s = try TerminalSession(config: config("printf 'a\\nb'; printf '\\033[1mbold'"))
-    let code = waitForExit(s)
-    #expect(code == 0)
+    let (s, exit) = try startSession("printf 'a\\nb'; printf '\\033[1mbold'")
+    #expect(exit.wait() == 0)
     s.withTerminal { t in
         #expect(t.text()[0] == "a")
         #expect(t.text()[1] == "bbold")
@@ -27,23 +49,22 @@ private func waitForExit(_ s: TerminalSession, timeout: TimeInterval = 5) -> Int
 }
 
 @Test func sessionSendsInputAndAnswersReports() throws {
-    let s = try TerminalSession(config: config("printf '\\033[6n'; read -r reply; printf '%s' \"$reply\" | od -c | head -1; echo got:$reply"))
+    let (s, exit) = try startSession("printf '\\033[6n'; read -r reply; printf '%s' \"$reply\" | od -c | head -1; echo got:$reply")
     // CPR reply is written by the session automatically. The pty is in canonical mode and the
     // CPR bytes carry no trailing newline, so they sit in the child's input queue until the
     // newline-terminated "hello" we type below completes the line; `reply` ends up holding both.
     usleep(300_000)
     s.send(Array("hello\n".utf8))
-    let code = waitForExit(s)
-    #expect(code == 0)
+    #expect(exit.wait() == 0)
     let lines = s.withTerminal { $0.text() }
     #expect(lines.contains { $0.contains("033   [   1   ;   1   R") })
     #expect(lines.contains { $0.contains("got:hello") })
 }
 
 @Test func sessionResizeReachesChild() throws {
-    let s = try TerminalSession(config: config("sleep 0.3; stty size"))
+    let (s, exit) = try startSession("sleep 0.3; stty size")
     s.resize(cols: 66, rows: 22)
-    _ = waitForExit(s)
+    _ = exit.wait()
     let lines = s.withTerminal { $0.text() }
     #expect(lines.contains("22 66"))
     #expect(s.withTerminal { ($0.cols, $0.rows) } == (66, 22))
@@ -52,36 +73,48 @@ private func waitForExit(_ s: TerminalSession, timeout: TimeInterval = 5) -> Int
 @Test func sessionDeliversEvents() throws {
     var events: [TerminalEvent] = []
     let lock = NSLock()
-    let s = try TerminalSession(config: config("printf '\\033]0;hi\\007'"))
-    s.onEvent = { e in lock.lock(); events.append(e); lock.unlock() }
-    _ = waitForExit(s)
+    let (_, exit) = try startSession("printf '\\033]0;hi\\007'") { e in
+        lock.lock(); events.append(e); lock.unlock()
+    }
+    _ = exit.wait()
     lock.lock(); defer { lock.unlock() }
     #expect(events == [.titleChanged("hi")])
 }
 
 @Test func sessionReportsExitCode() throws {
-    let s = try TerminalSession(config: config("exit 3"))
-    #expect(waitForExit(s) == 3)
+    let (s, exit) = try startSession("exit 3")
+    #expect(exit.wait() == 3)
     #expect(s.exitCode == 3)
 }
 
 @Test func terminateEndsSession() throws {
-    let s = try TerminalSession(config: config("sleep 30"))
+    let (s, exit) = try startSession("sleep 30")
     usleep(100_000)
     s.terminate()
-    let code = waitForExit(s)
-    #expect(code != nil)
+    #expect(exit.wait() != nil)
 }
 
 @Test func sessionSurvivesDroppingLastReferenceUntilChildExits() throws {
-    let sem = DispatchSemaphore(value: 0)
-    var code: Int32?
+    let watcher = ExitWatcher()
     do {
         let s = try TerminalSession(config: config("exit 5"))
-        s.onExit = { code = $0; sem.signal() }
+        watcher.attach(to: s)
+        s.start()
     }
-    #expect(sem.wait(timeout: .now() + 5) == .success)
-    #expect(code == 5)
+    #expect(watcher.wait() == 5)
+}
+
+/// Regression: the reader thread used to start inside `init`, so a child that exited before the
+/// caller finished wiring its callbacks lost `onExit` entirely. `TerminalView.init` does a pile of
+/// AppKit work between the two, which is exactly the delay simulated here.
+@Test func exitCallbackWiredAfterConstructionStillFires() throws {
+    let s = try TerminalSession(config: config("exit 5"))
+    usleep(20_000)
+    let watcher = ExitWatcher()
+    watcher.attach(to: s)
+    s.start()
+    #expect(watcher.wait() == 5)
+    #expect(s.exitCode == 5)
 }
 
 @Test func loginShellConfigUsesEnvironment() {

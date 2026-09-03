@@ -33,8 +33,14 @@ public struct SessionConfig {
 
 /// Owns a PTY, its child process and a `Terminal`. A reader thread parses output; all access to the terminal goes through `withTerminal`.
 ///
+/// Construction is two-phase on purpose: `init` spawns the child but does **not** read from it, so
+/// the caller can wire `onUpdate`/`onEvent`/`onExit` and only then call `start()`. Starting the
+/// reader in `init` would both lose callbacks (a short-lived child can exit before the caller gets
+/// to assign `onExit`) and race the assignments themselves, which are plain stored properties.
+///
 /// The session stays alive until its child exits; call `terminate()` to end it. Callbacks fire on the reader thread.
 public final class TerminalSession {
+    /// Assign before calling `start()`; these are read on the reader thread and are not synchronised.
     public var onUpdate: (() -> Void)?
     public var onEvent: ((TerminalEvent) -> Void)?
     public var onExit: ((Int32) -> Void)?
@@ -46,16 +52,32 @@ public final class TerminalSession {
     private let lock = NSLock()
     private let writeQueue = DispatchQueue(label: "nyx.pty.write")
     private var thread: Thread?
+    private var started = false
     private var _exitCode: Int32?
 
+    /// Spawns the child process. No output is read until `start()` is called.
     public init(config: SessionConfig) throws {
         terminal = Terminal(cols: config.cols, rows: config.rows, scrollbackLimit: config.scrollbackLimit, palette: config.palette)
         pty = try PTY(path: config.shellPath, argv: config.argv, environment: config.environment,
                       cwd: config.cwd, cols: config.cols, rows: config.rows)
-        // The reader thread holds `self` strongly: a session lives exactly as long as its child
-        // process. `terminate()` is the documented way to end it early (SIGHUP); once the child
-        // exits, the read loop returns, `wait()` reaps it, `onExit` fires, and only then does the
-        // thread release its reference to `self`, allowing `deinit` to close the fd.
+    }
+
+    /// Starts the reader thread. Call exactly once, after the callbacks are wired; calling it again
+    /// is a no-op (and a debug-build assertion failure).
+    ///
+    /// The reader thread holds `self` strongly: a session lives exactly as long as its child
+    /// process. `terminate()` is the documented way to end it early (SIGHUP); once the child
+    /// exits, the read loop returns, `wait()` reaps it, `onExit` fires, and only then does the
+    /// thread release its reference to `self`, allowing `deinit` to close the fd.
+    public func start() {
+        lock.lock()
+        let alreadyStarted = started
+        started = true
+        lock.unlock()
+        guard !alreadyStarted else {
+            assertionFailure("TerminalSession.start() called more than once")
+            return
+        }
         let t = Thread { self.readLoop() }
         t.name = "nyx.pty.read"
         t.qualityOfService = .userInteractive
@@ -63,7 +85,17 @@ public final class TerminalSession {
         t.start()
     }
 
-    deinit { pty.close() }
+    deinit {
+        // `send` hands `pty` to the write queue, so an enqueued write can still be in flight.
+        // Closing on that same serial queue orders the close after every write already queued;
+        // `PTY.write` additionally refuses to write once the flag is set.
+        lock.lock()
+        let wasStarted = started
+        lock.unlock()
+        // A session that was never started owns a child nobody will reap: hang it up on the way out.
+        if !wasStarted { pty.terminate() }
+        writeQueue.async { [pty] in pty.close() }
+    }
 
     public func withTerminal<T>(_ body: (Terminal) throws -> T) rethrows -> T {
         lock.lock()

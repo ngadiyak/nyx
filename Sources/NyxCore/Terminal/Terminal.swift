@@ -45,8 +45,8 @@ struct SavedCursor {
 public final class Terminal: TerminalActions {
     public static let version = "0.1.0"
 
-    public private(set) var cols: Int
-    public private(set) var rows: Int
+    public internal(set) var cols: Int
+    public internal(set) var rows: Int
     public var screen: Screen
     var inactiveScreen: Screen
     public var scrollback: Scrollback

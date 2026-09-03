@@ -798,18 +798,18 @@ public final class Terminal: TerminalActions {
 
     private func applySGR(_ p: CSIParams) {
         if p.count == 0 { resetPen(); return }
-        let items = p.items
+        let n = p.count
         var i = 0
-        while i < items.count {
-            let sub = items[i]
-            let code = sub[0]
+        while i < n {
+            let subCount = p.subCount(i)
+            let code = p.value(i, 0)
             switch code {
             case 0: resetPen()
             case 1: pen.attrs.insert(.bold)
             case 2: pen.attrs.insert(.dim)
             case 3: pen.attrs.insert(.italic)
             case 4:
-                let style = sub.count > 1 ? sub[1] : 1
+                let style = subCount > 1 ? p.value(i, 1) : 1
                 pen.underline = UnderlineStyle(rawValue: UInt16(clamp(style, 0, 5))) ?? .single
             case 5, 6: pen.attrs.insert(.blink)
             case 7: pen.attrs.insert(.inverse)
@@ -826,19 +826,19 @@ public final class Terminal: TerminalActions {
             case 30...37: pen.fg = .indexed(UInt8(code - 30))
             case 38, 48, 58:
                 var color: Color?
-                if sub.count > 1 {
-                    if sub[1] == 5, sub.count > 2 {
-                        color = .indexed(UInt8(clamp(sub[2], 0, 255)))
-                    } else if sub[1] == 2, sub.count >= 5 {
-                        let o = sub.count >= 6 ? 3 : 2
-                        color = .rgb(u8(sub[o]), u8(sub[o + 1]), u8(sub[o + 2]))
+                if subCount > 1 {
+                    if p.value(i, 1) == 5, subCount > 2 {
+                        color = .indexed(UInt8(clamp(p.value(i, 2), 0, 255)))
+                    } else if p.value(i, 1) == 2, subCount >= 5 {
+                        let o = subCount >= 6 ? 3 : 2
+                        color = .rgb(u8(p.value(i, o)), u8(p.value(i, o + 1)), u8(p.value(i, o + 2)))
                     }
-                } else if i + 1 < items.count {
-                    let mode = items[i + 1][0]
-                    if mode == 5, i + 2 < items.count {
-                        color = .indexed(u8(items[i + 2][0])); i += 2
-                    } else if mode == 2, i + 4 < items.count {
-                        color = .rgb(u8(items[i + 2][0]), u8(items[i + 3][0]), u8(items[i + 4][0])); i += 4
+                } else if i + 1 < n {
+                    let mode = p.value(i + 1, 0)
+                    if mode == 5, i + 2 < n {
+                        color = .indexed(u8(p.value(i + 2, 0))); i += 2
+                    } else if mode == 2, i + 4 < n {
+                        color = .rgb(u8(p.value(i + 2, 0)), u8(p.value(i + 3, 0)), u8(p.value(i + 4, 0))); i += 4
                     }
                 }
                 if let c = color {

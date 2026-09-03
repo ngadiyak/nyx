@@ -39,8 +39,11 @@ public final class VTParser {
     private unowned(unsafe) let actions: TerminalActions
     private var state: State = .ground
     private var intermediates: [UInt8] = []
-    private var params: [[Int]] = []
-    private var currentSub: [Int] = []
+    /// Parameters of the sequence being parsed, flat: all values end to end in `flatParams`,
+    /// with one end index per parameter in `paramEnds`. Both buffers are reused between sequences,
+    /// so a CSI costs no allocation (the previous nested `[[Int]]` allocated per parameter).
+    private var flatParams: [Int] = []
+    private var paramEnds: [Int] = []
     private var currentValue = 0
     private var hasDigits = false
     private var oscBuffer: [UInt8] = []
@@ -52,6 +55,8 @@ public final class VTParser {
     public init(actions: TerminalActions) {
         self.actions = actions
         oscBuffer.reserveCapacity(256)
+        flatParams.reserveCapacity(VTParser.maxParams * 2)
+        paramEnds.reserveCapacity(VTParser.maxParams)
     }
 
     public func feed(_ bytes: [UInt8]) {
@@ -163,7 +168,7 @@ public final class VTParser {
                 intermediates.append(b); state = .csiIntermediate
             case 0x40...0x7E:
                 finishParams()
-                actions.csi(CSIParams(params), intermediates: intermediates, final: b)
+                actions.csi(currentParams(), intermediates: intermediates, final: b)
                 state = .ground
             default: break
             }
@@ -205,7 +210,7 @@ public final class VTParser {
                 intermediates.append(b); state = .dcsIntermediate
             case 0x40...0x7E:
                 finishParams()
-                actions.dcsHook(CSIParams(params), intermediates: intermediates, final: b)
+                actions.dcsHook(currentParams(), intermediates: intermediates, final: b)
                 state = .dcsPassthrough
             default: break
             }
@@ -222,8 +227,8 @@ public final class VTParser {
 
     private func enter(_ s: State) {
         intermediates.removeAll(keepingCapacity: true)
-        params.removeAll(keepingCapacity: true)
-        currentSub.removeAll(keepingCapacity: true)
+        flatParams.removeAll(keepingCapacity: true)
+        paramEnds.removeAll(keepingCapacity: true)
         currentValue = 0
         hasDigits = false
         if s == .oscString { oscBuffer.removeAll(keepingCapacity: true); oscOverflow = false }
@@ -246,22 +251,29 @@ public final class VTParser {
     }
 
     private func pushSubParam() {
-        currentSub.append(currentValue)
+        flatParams.append(currentValue)
         currentValue = 0
         hasDigits = false
     }
 
     private func pushParam() {
-        currentSub.append(currentValue)
-        if params.count < VTParser.maxParams { params.append(currentSub) }
-        currentSub.removeAll(keepingCapacity: true)
+        flatParams.append(currentValue)
+        if paramEnds.count < VTParser.maxParams {
+            paramEnds.append(flatParams.count)
+        } else {
+            // Over the cap: drop this parameter's values again.
+            flatParams.removeLast(flatParams.count - (paramEnds.last ?? 0))
+        }
         currentValue = 0
         hasDigits = false
     }
 
     private func finishParams() {
-        if hasDigits || !currentSub.isEmpty || !params.isEmpty { pushParam() }
+        if hasDigits || flatParams.count > (paramEnds.last ?? 0) || !paramEnds.isEmpty { pushParam() }
     }
+
+    @inline(__always)
+    private func currentParams() -> CSIParams { CSIParams(flat: flatParams, ends: paramEnds) }
 
     private func startUTF8(_ b: UInt8) {
         switch b {

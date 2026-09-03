@@ -360,27 +360,41 @@ public final class Terminal: TerminalActions {
         let count = min(n, bottom - top + 1)
         guard count > 0 else { return }
         let save = saveToScrollback && top == 0 && !modes.altScreen
+        let fill = blank
         for _ in 0..<count {
             var removed = screen.rows.remove(at: top)
+            // The blank row that replaces it reuses cell storage we already own: the row leaving
+            // the region, or the one the scrollback ring just evicted. Allocating (and shortly
+            // freeing) a fresh cell array per scrolled line was a measurable share of bulk output.
+            var recycled: Row
             if save {
                 removed.dirty = true
-                scrollback.push(removed)
+                recycled = scrollback.push(removed) ?? Row(cols: cols, fill: fill)
                 if viewportOffset > 0 { viewportOffset = min(viewportOffset + 1, scrollback.count) }
+            } else {
+                recycled = removed
             }
-            screen.rows.insert(Row(cols: cols, fill: blank), at: bottom)
+            recycled.reset(cols: cols, fill: fill)
+            screen.rows.insert(recycled, at: bottom)
         }
-        for y in top...bottom { screen.rows[y].dirty = true }
+        screen.rows.withUnsafeMutableBufferPointer { r in
+            for y in top...bottom { r[y].dirty = true }
+        }
         touch()
     }
 
     func scrollDown(_ n: Int, top: Int, bottom: Int) {
         let count = min(n, bottom - top + 1)
         guard count > 0 else { return }
+        let fill = blank
         for _ in 0..<count {
-            screen.rows.remove(at: bottom)
-            screen.rows.insert(Row(cols: cols, fill: blank), at: top)
+            var recycled = screen.rows.remove(at: bottom)
+            recycled.reset(cols: cols, fill: fill)
+            screen.rows.insert(recycled, at: top)
         }
-        for y in top...bottom { screen.rows[y].dirty = true }
+        screen.rows.withUnsafeMutableBufferPointer { r in
+            for y in top...bottom { r[y].dirty = true }
+        }
         touch()
     }
 

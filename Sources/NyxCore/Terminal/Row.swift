@@ -10,6 +10,21 @@ public struct Row: Equatable {
         cells = Array(repeating: fill, count: cols)
     }
 
+    /// Turns this row back into a blank one, reusing the cell storage when it is already the right
+    /// size. Scrolling recycles rows this way instead of allocating a fresh cell array per line.
+    mutating func reset(cols: Int, fill: Cell) {
+        if cells.count == cols {
+            cells.withUnsafeMutableBufferPointer { b in
+                for i in 0..<cols { b[i] = fill }
+            }
+        } else {
+            cells = Array(repeating: fill, count: cols)
+        }
+        wrapped = false
+        dirty = true
+        promptMark = 0
+    }
+
     public var isBlank: Bool { cells.allSatisfy { $0.content == 0 && $0.bg == .default } }
 }
 
@@ -23,14 +38,19 @@ public struct Scrollback {
 
     public var count: Int { buffer.count }
 
-    public mutating func push(_ row: Row) {
-        guard capacity > 0 else { return }
+    /// Appends `row`, returning the row it evicted once the ring is full so the caller can reuse
+    /// its cell storage.
+    @discardableResult
+    public mutating func push(_ row: Row) -> Row? {
+        guard capacity > 0 else { return nil }
         if buffer.count < capacity {
             buffer.append(row)
-        } else {
-            buffer[head] = row
-            head = (head + 1) % capacity
+            return nil
         }
+        let evicted = buffer[head]
+        buffer[head] = row
+        head = (head + 1) % capacity
+        return evicted
     }
 
     /// 0 is the oldest row.

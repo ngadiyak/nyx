@@ -50,7 +50,18 @@ public final class Terminal: TerminalActions {
     public var screen: Screen
     var inactiveScreen: Screen
     public var scrollback: Scrollback
-    public var pen = Pen()
+    public var pen = Pen() { didSet { penCellDirty = true } }
+    /// Cache of `pen.makeCell()`, rebuilt lazily whenever `pen` changes. Avoids rebuilding the
+    /// pen-derived `Cell` template on every printed character, which is the common case in `put`.
+    private var cachedPenCell = Cell()
+    private var penCellDirty = true
+    var penCell: Cell {
+        if penCellDirty {
+            cachedPenCell = pen.makeCell()
+            penCellDirty = false
+        }
+        return cachedPenCell
+    }
     public var modes = TerminalModes()
     public var palette: Palette
     let initialPalette: Palette
@@ -176,12 +187,12 @@ public final class Terminal: TerminalActions {
         if modes.insertMode { insertBlanks(count: width, at: x, row: y) }
         clearWideRemnants(x: x, y: y)
         if width == 2 { clearWideRemnants(x: x + 1, y: y) }
-        var cell = pen.makeCell()
+        var cell = penCell
         cell.content = s.value
         if width == 2 {
             cell.attrs.insert(.wide)
             setCell(x, y, cell)
-            var spacer = pen.makeCell()
+            var spacer = penCell
             spacer.attrs.insert(.wideSpacer)
             setCell(x + 1, y, spacer)
         } else {
@@ -209,7 +220,7 @@ public final class Terminal: TerminalActions {
         var text = clusterText(of: cell)
         if s.value == 0xFE0F, !cell.attrs.contains(.wide), x + 1 < cols {
             cell.attrs.insert(.wide)
-            var spacer = pen.makeCell()
+            var spacer = penCell
             spacer.attrs.insert(.wideSpacer)
             spacer.bg = cell.bg
             setCell(x + 1, y, spacer)

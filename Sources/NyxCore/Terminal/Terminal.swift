@@ -21,6 +21,7 @@ public struct TerminalModes: Equatable {
     public var showCursor = true         // DECTCEM ?25
     public var mouse: MouseMode = .none  // ?9 ?1000 ?1002 ?1003
     public var mouseSGR = false          // ?1006
+    public var mouseUTF8 = false         // ?1005 (UTF-8 mouse coordinates)
     public var focusEvents = false       // ?1004
     public var altScreen = false         // ?1047 ?1049
     public var bracketedPaste = false    // ?2004
@@ -66,6 +67,9 @@ public final class Terminal: TerminalActions {
     public var palette: Palette
     let initialPalette: Palette
     public private(set) var title = ""
+    /// OSC 1 (icon name). Kept apart from `title`: OSC 1 names the icon only, OSC 2 the window,
+    /// OSC 0 both.
+    public private(set) var iconName = ""
     public private(set) var cwd: String?
     public private(set) var cursorShape: CursorShape = .block
     /// Bytes the terminal wants written back to the application (DA, CPR, ...). Drained by the session.
@@ -738,6 +742,7 @@ public final class Terminal: TerminalActions {
         case 1002: modes.mouse = on ? .button : .none
         case 1003: modes.mouse = on ? .any : .none
         case 1004: modes.focusEvents = on
+        case 1005: modes.mouseUTF8 = on
         case 1006: modes.mouseSGR = on
         case 1047: switchScreen(alt: on, clear: on, saveCursor: false)
         case 1048: if on { saveCursor() } else { restoreCursor() }
@@ -760,6 +765,7 @@ public final class Terminal: TerminalActions {
         case 1002: return modes.mouse == .button
         case 1003: return modes.mouse == .any
         case 1004: return modes.focusEvents
+        case 1005: return modes.mouseUTF8
         case 1006: return modes.mouseSGR
         case 1047, 1049: return modes.altScreen
         case 2004: return modes.bracketedPaste
@@ -957,7 +963,10 @@ public final class Terminal: TerminalActions {
         switch code {
         case 0, 2:
             title = rest
+            if code == 0 { iconName = rest }
             events.append(.titleChanged(rest))
+        case 1:
+            iconName = rest
         case 4:
             handlePaletteOSC(rest)
         case 7:

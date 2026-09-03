@@ -54,6 +54,18 @@ private let ESC = "\u{1B}"
     #expect(!t.modes.cursorKeysApp && t.modes.autoWrap && t.modes.showCursor && t.modes.mouse == .none)
 }
 
+@Test func utf8MouseModeIsTrackedAndReportable() {
+    let t = makeTerminal().run(ESC + "[?1005h")
+    #expect(t.modes.mouseUTF8)
+    t.run(ESC + "[?1005$p")
+    #expect(t.responseText == ESC + "[?1005;1$y")
+    t.responses.removeAll()
+    t.run(ESC + "[?1005l")
+    #expect(!t.modes.mouseUTF8)
+    t.run(ESC + "[?1005$p")
+    #expect(t.responseText == ESC + "[?1005;2$y")
+}
+
 @Test func ansiModesToggle() {
     let t = makeTerminal().run(ESC + "[4h" + ESC + "[20h")
     #expect(t.modes.insertMode && t.modes.lineFeedNewLine)
@@ -164,6 +176,16 @@ private let ESC = "\u{1B}"
     #expect(t.events == [.titleChanged("My Title")])
     t.run(ESC + "]2;Other" + ESC + "\\")
     #expect(t.title == "Other")
+    #expect(t.iconName == "My Title")   // OSC 2 is the window title only
+}
+
+@Test func oscIconNameIsSeparateFromTheTitle() {
+    let t = makeTerminal().run(ESC + "]2;Window" + ESC + "\\" + ESC + "]1;Icon" + ESC + "\\")
+    #expect(t.iconName == "Icon")
+    #expect(t.title == "Window")        // OSC 1 must not clobber the window title
+    #expect(t.events == [.titleChanged("Window")])
+    t.run(ESC + "]0;Both" + ESC + "\\")
+    #expect(t.title == "Both" && t.iconName == "Both")
 }
 
 @Test func oscCwd() {

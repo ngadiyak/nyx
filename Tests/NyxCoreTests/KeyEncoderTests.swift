@@ -69,3 +69,9 @@ private let ESC = "\u{1B}"
 @Test func commandKeysAreNotTerminalInput() {
     #expect(enc(.char("c"), [.cmd], text: "c") == nil)
 }
+
+@Test func unknownFunctionKeysAreNil() {
+    #expect(enc(.f(13)) == nil)
+    #expect(enc(.f(0)) == nil)
+    #expect(enc(.tab, [.shift, .alt]) == ESC + "[Z")   // shift+Tab ignores alt
+}

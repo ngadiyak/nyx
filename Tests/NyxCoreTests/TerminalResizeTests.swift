@@ -123,3 +123,25 @@ private let ESC = "\u{1B}"
     t.resize(cols: 10, rows: 3)
     #expect(t.generation == g)
 }
+
+/// Regression: the split between scrollback and screen used to lower `first` to the cursor row
+/// unconditionally, so every row past `first + newRows` was thrown away. With the cursor parked
+/// near the top and a width reduction that grows the row count, that silently ate real content.
+@Test func reflowKeepsContentBelowACursorParkedAtTheTop() {
+    let t = makeTerminal(cols: 20, rows: 5)
+    for (i, ch) in ["a", "b", "c", "d", "e"].enumerated() {
+        t.run(String(repeating: ch, count: 20))
+        if i < 4 { t.run("\r\n") }
+    }
+    t.run(ESC + "[1;1H")            // cursor parked at the top-left
+    t.resize(cols: 10, rows: 5)     // 5 logical lines -> 10 physical rows, only 5 of them visible
+
+    var all: [String] = []
+    for i in 0..<t.scrollback.count { all.append(t.scrollbackLine(i)) }
+    all += t.text()
+    let joined = all.joined()
+    for ch in ["a", "b", "c", "d", "e"] {
+        #expect(joined.contains(String(repeating: ch, count: 20)), "line of '\(ch)' should survive reflow")
+    }
+    #expect(t.cur.1 >= 0 && t.cur.1 < t.rows)
+}

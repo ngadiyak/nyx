@@ -58,10 +58,7 @@ extension Terminal {
         if s.rows.count > newRows { s.rows.removeSubrange(newRows...) }
         while s.rows.count < newRows { s.rows.append(Row(cols: newCols)) }
         s.cursor = Cursor(x: min(s.cursor.x, newCols - 1), y: min(s.cursor.y, newRows - 1))
-        s.pendingWrap = false
-        s.scrollTop = 0
-        s.scrollBottom = newRows - 1
-        s.tabStops = Screen.defaultTabStops(cols: newCols)
+        resetMarginsAndTabs(&s, newCols: newCols, newRows: newRows, pendingWrap: false)
     }
 
     /// Primary screen: rejoin soft-wrapped rows into logical lines, re-wrap at the new width, redistribute between scrollback and screen.
@@ -143,16 +140,30 @@ extension Terminal {
             out.append(row)
         }
 
-        // 4. Split between scrollback and screen.
+        // 4. Split between scrollback and screen. Rows before `first` go to scrollback and are
+        // kept; rows past `first + newRows` have nowhere to go and would be *dropped*. So `first`
+        // may only be lowered towards the cursor as far as the window still ends at or past the
+        // last row holding content: content wins over cursor placement, and the only rows this can
+        // discard are the genuinely blank ones trailing it. When the two conflict (a cursor parked
+        // above the content that fits) the cursor clamps to the top of the new window.
+        var lastContent = out.count - 1
+        while lastContent > 0 && out[lastContent].isBlank { lastContent -= 1 }
+        let earliestFirst = max(0, lastContent + 1 - newRows)
         var first = max(0, out.count - newRows)
-        if newCursor.y < first { first = newCursor.y }
+        if newCursor.y < first { first = max(newCursor.y, earliestFirst) }
         scrollback.removeAll()
         for i in 0..<first { scrollback.push(out[i]) }
         var rows = Array(out[first..<min(out.count, first + newRows)])
         while rows.count < newRows { rows.append(Row(cols: newCols)) }
         for i in 0..<rows.count { rows[i].dirty = true }
         s.rows = rows
-        s.cursor = Cursor(x: newCursor.x, y: newCursor.y - first)
+        s.cursor = Cursor(x: newCursor.x, y: clamp(newCursor.y - first, 0, newRows - 1))
+        resetMarginsAndTabs(&s, newCols: newCols, newRows: newRows, pendingWrap: pendingWrap)
+    }
+
+    /// Scroll margins, pending wrap and tab stops all reset to their defaults for the new size --
+    /// shared by both resize paths.
+    private func resetMarginsAndTabs(_ s: inout Screen, newCols: Int, newRows: Int, pendingWrap: Bool) {
         s.pendingWrap = pendingWrap
         s.scrollTop = 0
         s.scrollBottom = newRows - 1

@@ -1,0 +1,43 @@
+public struct Row: Equatable {
+    public var cells: [Cell]
+    /// True when the line continues on the next row (soft wrap). Used by reflow and selection.
+    public var wrapped = false
+    public var dirty = true
+    /// OSC 133 mark: 1 = prompt start (A), 2 = input start (B), 3 = output start (C), 4 = end (D).
+    public var promptMark: UInt8 = 0
+
+    public init(cols: Int, fill: Cell = Cell()) {
+        cells = Array(repeating: fill, count: cols)
+    }
+
+    public var isBlank: Bool { cells.allSatisfy { $0.content == 0 && $0.bg == .default } }
+}
+
+/// Fixed-capacity ring buffer of rows that have scrolled off the top of the primary screen.
+public struct Scrollback {
+    public let capacity: Int
+    private var buffer: [Row] = []
+    private var head = 0
+
+    public init(capacity: Int) { self.capacity = max(0, capacity) }
+
+    public var count: Int { buffer.count }
+
+    public mutating func push(_ row: Row) {
+        guard capacity > 0 else { return }
+        if buffer.count < capacity {
+            buffer.append(row)
+        } else {
+            buffer[head] = row
+            head = (head + 1) % capacity
+        }
+    }
+
+    /// 0 is the oldest row.
+    public subscript(i: Int) -> Row { buffer[(head + i) % buffer.count] }
+
+    public mutating func removeAll() {
+        buffer.removeAll(keepingCapacity: true)
+        head = 0
+    }
+}

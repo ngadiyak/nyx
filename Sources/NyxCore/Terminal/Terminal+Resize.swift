@@ -86,7 +86,7 @@ extension Terminal {
         var cursorLine = 0
         var cursorOffset = 0
         for (i, row) in physical.enumerated() {
-            if current.isEmpty { currentMark = row.promptMark }
+            if currentMark == 0 { currentMark = row.promptMark }
             if i == cursorPhysical {
                 cursorLine = lines.count
                 cursorOffset = current.count + s.cursor.x
@@ -99,6 +99,7 @@ extension Terminal {
                 current.removeSubrange(keep...)
                 lines.append(Line(cells: current, mark: currentMark))
                 current = []
+                currentMark = 0
             }
         }
 

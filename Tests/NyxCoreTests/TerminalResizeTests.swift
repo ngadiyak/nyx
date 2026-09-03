@@ -108,6 +108,15 @@ private let ESC = "\u{1B}"
     #expect(t.scrollback.count == 0)
 }
 
+@Test func promptMarkOnWrappedRowSurvivesReflow() {
+    let t = makeTerminal(cols: 5, rows: 3).run("abcdefgh" + "\u{1B}]133;A\u{07}")   // mark lands on the wrapped continuation row
+    #expect(t.screen.rows[1].promptMark == 1)
+    t.resize(cols: 20, rows: 3)
+    #expect(t.screen.rows[0].promptMark == 1)
+    t.resize(cols: 5, rows: 3)
+    #expect(t.screen.rows[0].promptMark == 1)
+}
+
 @Test func noOpResizeKeepsState() {
     let t = makeTerminal(cols: 10, rows: 3).run("abc")
     let g = t.generation

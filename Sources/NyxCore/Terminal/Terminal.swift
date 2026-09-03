@@ -82,7 +82,7 @@ public final class Terminal: TerminalActions {
     /// Text area size in pixels, set by the view, reported by XTWINOPS 14/16.
     public var pixelSize: (width: Int, height: Int) = (0, 0)
 
-    private var parser: VTParser!
+    private var parser: VTParserOf<Terminal>!
     var charsets: [Charset] = [.ascii, .ascii]
     var activeCharset = 0
     var savedCursor: SavedCursor?
@@ -101,7 +101,7 @@ public final class Terminal: TerminalActions {
         scrollback = Scrollback(capacity: scrollbackLimit)
         self.palette = palette
         initialPalette = palette
-        parser = VTParser(actions: self)
+        parser = VTParserOf(actions: self)
     }
 
     // MARK: - Public API

@@ -19,11 +19,36 @@ extension TerminalActions {
     }
 }
 
+/// Type-erasing receiver, so `VTParser` (below) can be built over any `TerminalActions` value.
+/// Costs one extra hop per action; `Terminal` instantiates `VTParserOf<Terminal>` and pays nothing.
+public final class AnyTerminalActions: TerminalActions {
+    private unowned(unsafe) let base: TerminalActions
+
+    public init(_ base: TerminalActions) { self.base = base }
+
+    public func print(_ scalar: Unicode.Scalar) { base.print(scalar) }
+    public func printASCII(_ bytes: UnsafePointer<UInt8>, count: Int) { base.printASCII(bytes, count: count) }
+    public func execute(_ byte: UInt8) { base.execute(byte) }
+    public func csi(_ params: CSIParams, intermediates: [UInt8], final: UInt8) { base.csi(params, intermediates: intermediates, final: final) }
+    public func esc(intermediates: [UInt8], final: UInt8) { base.esc(intermediates: intermediates, final: final) }
+    public func osc(_ data: [UInt8]) { base.osc(data) }
+    public func dcsHook(_ params: CSIParams, intermediates: [UInt8], final: UInt8) { base.dcsHook(params, intermediates: intermediates, final: final) }
+    public func dcsPut(_ byte: UInt8) { base.dcsPut(byte) }
+    public func dcsUnhook() { base.dcsUnhook() }
+}
+
+/// A parser over a statically known receiver. `VTParser` is the type-erased form.
+public typealias VTParser = VTParserOf<AnyTerminalActions>
+
 /// DEC ANSI-compatible escape sequence parser (Paul Williams' state machine) with an inline UTF-8 decoder.
 /// 8-bit C1 controls are not recognised: all bytes >= 0x80 are UTF-8.
-public final class VTParser {
-    public static let maxOSCLength = 65536
-    public static let maxParams = 32
+///
+/// Generic over the receiver so that every action call specialises to a direct, inlinable call:
+/// dispatching a `TerminalActions` existential per byte cost a witness lookup plus
+/// `swift_unknownObjectRetain`/`Release` around each call.
+public final class VTParserOf<A: TerminalActions> {
+    public static var maxOSCLength: Int { 65536 }
+    public static var maxParams: Int { 32 }
 
     private enum State {
         case ground, escape, escapeIntermediate
@@ -36,7 +61,9 @@ public final class VTParser {
     /// Unowned-unsafe: the parser is owned by its actions receiver (`Terminal` holds the parser),
     /// so the receiver always outlives it. A `weak` reference here cost a side-table load and an
     /// ARC release on every single byte.
-    private unowned(unsafe) let actions: TerminalActions
+    private unowned(unsafe) let actions: A
+    /// Non-nil only for the type-erased form, which owns the box it dispatches through.
+    private let ownedActions: AnyObject?
     private var state: State = .ground
     private var intermediates: [UInt8] = []
     /// Parameters of the sequence being parsed, flat: all values end to end in `flatParams`,
@@ -52,11 +79,12 @@ public final class VTParser {
     private var utf8Value: UInt32 = 0
     private var utf8Min: UInt32 = 0
 
-    public init(actions: TerminalActions) {
+    public init(actions: A, owning: AnyObject? = nil) {
         self.actions = actions
+        ownedActions = owning
         oscBuffer.reserveCapacity(256)
-        flatParams.reserveCapacity(VTParser.maxParams * 2)
-        paramEnds.reserveCapacity(VTParser.maxParams)
+        flatParams.reserveCapacity(Self.maxParams * 2)
+        paramEnds.reserveCapacity(Self.maxParams)
     }
 
     public func feed(_ bytes: [UInt8]) {
@@ -188,7 +216,7 @@ public final class VTParser {
             case 0x00...0x06, 0x08...0x1F:
                 break
             default:
-                if oscBuffer.count < VTParser.maxOSCLength { oscBuffer.append(b) } else { oscOverflow = true }
+                if oscBuffer.count < Self.maxOSCLength { oscBuffer.append(b) } else { oscOverflow = true }
             }
 
         case .dcsEntry, .dcsParam, .dcsIntermediate:
@@ -258,7 +286,7 @@ public final class VTParser {
 
     private func pushParam() {
         flatParams.append(currentValue)
-        if paramEnds.count < VTParser.maxParams {
+        if paramEnds.count < Self.maxParams {
             paramEnds.append(flatParams.count)
         } else {
             // Over the cap: drop this parameter's values again.
@@ -282,5 +310,13 @@ public final class VTParser {
         case 0xF0...0xF4: utf8Pending = 3; utf8Value = UInt32(b & 0x07); utf8Min = 0x10000
         default: actions.print("\u{FFFD}")
         }
+    }
+}
+
+extension VTParserOf where A == AnyTerminalActions {
+    /// Builds a parser over any receiver, boxing it. Prefer `VTParserOf<Concrete>` on hot paths.
+    public convenience init<R: TerminalActions>(actions receiver: R) {
+        let box = AnyTerminalActions(receiver)
+        self.init(actions: box, owning: box)
     }
 }

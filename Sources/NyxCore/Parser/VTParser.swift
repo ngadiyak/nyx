@@ -66,13 +66,9 @@ public final class VTParserOf<A: TerminalActions> {
     private let ownedActions: AnyObject?
     private var state: State = .ground
     private var intermediates: [UInt8] = []
-    /// Parameters of the sequence being parsed, flat: all values end to end in `flatParams`,
-    /// with one end index per parameter in `paramEnds`. Both buffers are reused between sequences,
-    /// so a CSI costs no allocation (the previous nested `[[Int]]` allocated per parameter).
-    private var flatParams: [Int] = []
-    private var flatCount = 0
-    private var paramEnds: [Int] = []
-    private var endCount = 0
+    /// Parameters of the sequence being parsed. Inline, trivial storage reused between sequences:
+    /// collecting and dispatching a CSI costs no allocation and no retain/release.
+    private var params = CSIParams()
     private var currentValue = 0
     private var hasDigits = false
     private var oscBuffer: [UInt8] = []
@@ -85,9 +81,6 @@ public final class VTParserOf<A: TerminalActions> {
         self.actions = actions
         ownedActions = owning
         oscBuffer.reserveCapacity(256)
-        // Preallocated and reused: clearing is a count reset, never an `Array.removeAll`.
-        flatParams = [Int](repeating: 0, count: Self.maxParams * 4)
-        paramEnds = [Int](repeating: 0, count: Self.maxParams)
     }
 
     public func feed(_ bytes: [UInt8]) {
@@ -222,7 +215,7 @@ public final class VTParserOf<A: TerminalActions> {
                 intermediates.append(b); state = .csiIntermediate
             case 0x40...0x7E:
                 finishParams()
-                actions.csi(currentParams(), intermediates: intermediates, final: b)
+                actions.csi(params, intermediates: intermediates, final: b)
                 state = .ground
             default: break
             }
@@ -264,7 +257,7 @@ public final class VTParserOf<A: TerminalActions> {
                 intermediates.append(b); state = .dcsIntermediate
             case 0x40...0x7E:
                 finishParams()
-                actions.dcsHook(currentParams(), intermediates: intermediates, final: b)
+                actions.dcsHook(params, intermediates: intermediates, final: b)
                 state = .dcsPassthrough
             default: break
             }
@@ -284,8 +277,7 @@ public final class VTParserOf<A: TerminalActions> {
     /// common case (no intermediates, no parameters) free of an `Array.removeAll` call.
     private func resetCollectors() {
         if !intermediates.isEmpty { intermediates.removeAll(keepingCapacity: true) }
-        flatCount = 0
-        endCount = 0
+        params.reset()
         currentValue = 0
         hasDigits = false
     }
@@ -314,42 +306,21 @@ public final class VTParserOf<A: TerminalActions> {
         oscOverflow = false
     }
 
-    @inline(__always)
-    private func appendFlat(_ v: Int) {
-        if flatCount < flatParams.count { flatParams[flatCount] = v } else { flatParams.append(v) }
-        flatCount += 1
-    }
-
-    /// Start of the parameter currently being collected, as an index into `flatParams`.
-    @inline(__always)
-    private var pendingStart: Int { endCount == 0 ? 0 : paramEnds[endCount - 1] }
-
     private func pushSubParam() {
-        appendFlat(currentValue)
+        params.append(currentValue)
         currentValue = 0
         hasDigits = false
     }
 
     private func pushParam() {
-        appendFlat(currentValue)
-        if endCount < Self.maxParams {
-            paramEnds[endCount] = flatCount
-            endCount += 1
-        } else {
-            // Over the cap: drop this parameter's values again.
-            flatCount = pendingStart
-        }
+        params.append(currentValue)
+        params.closeParameter()
         currentValue = 0
         hasDigits = false
     }
 
     private func finishParams() {
-        if hasDigits || flatCount > pendingStart || endCount > 0 { pushParam() }
-    }
-
-    @inline(__always)
-    private func currentParams() -> CSIParams {
-        CSIParams(flat: flatParams, ends: paramEnds, count: endCount)
+        if hasDigits || params.hasPendingValues || params.count > 0 { pushParam() }
     }
 
     private func startUTF8(_ b: UInt8) {

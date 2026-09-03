@@ -1,3 +1,5 @@
+import Foundation
+
 public struct Row: Equatable {
     public var cells: [Cell]
     /// True when the line continues on the next row (soft wrap). Used by reflow and selection.
@@ -15,7 +17,15 @@ public struct Row: Equatable {
     mutating func reset(cols: Int, fill: Cell) {
         if cells.count == cols {
             cells.withUnsafeMutableBufferPointer { b in
-                for i in 0..<cols { b[i] = fill }
+                guard let p = b.baseAddress else { return }
+                // `Cell` is a trivial 20-byte value whose all-zero bit pattern is exactly `Cell()`,
+                // so the common case (erase with the default background) is a plain memset, which
+                // beats a 200-iteration store loop of an awkwardly sized struct.
+                if fill == Cell() {
+                    memset(UnsafeMutableRawPointer(p), 0, cols * MemoryLayout<Cell>.stride)
+                } else {
+                    for i in 0..<cols { p[i] = fill }
+                }
             }
         } else {
             cells = Array(repeating: fill, count: cols)

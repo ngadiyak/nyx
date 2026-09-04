@@ -12,6 +12,14 @@ public enum ConfigParser {
     /// omits `base` and gets `Config.defaults`.
     public static func parse(_ text: String, base: Config = .defaults) -> (config: Config, diagnostics: [ConfigDiagnostic]) {
         var config = base
+        // `base` carries the settings currently in force so that a typo on one line cannot silently
+        // revert every *other* setting to its compiled default. That reasoning holds only for scalar
+        // settings, where the file's value replaces the base's. `keybinds` and `paletteOverrides` are
+        // additive -- parsing appends to them -- so carrying them over from `base` would append the
+        // same file's entries again on every reload, and would keep an override alive after the user
+        // deleted its line. For those two the file is the only source, so they start empty each time.
+        config.keybinds = Config.defaults.keybinds
+        config.paletteOverrides = Config.defaults.paletteOverrides
         var diagnostics: [ConfigDiagnostic] = []
 
         let lines = ConfigGrammar.lines(text)

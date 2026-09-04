@@ -127,6 +127,34 @@ private func parse(_ s: String) -> (Config, [ConfigDiagnostic]) { ConfigParser.p
     #expect(reloaded.padding == 30)      // the new, valid value
 }
 
+/// `base` exists to keep *scalar* settings alive across a reload that hits a typo. The additive
+/// collections -- `keybinds` and `paletteOverrides` -- are a different case: the file is their only
+/// source, so seeding them from `base` and then parsing the same file again appends every binding a
+/// second time. Reloading an unchanged file must be idempotent, however many times the watcher fires.
+@Test func reloadingAnUnchangedFileDoesNotAccumulateKeybinds() {
+    let text = "keybind = cmd+t=new_tab\nkeybind = cmd+w=close_pane"
+    var (config, d0) = ConfigParser.parse(text)
+    #expect(d0.isEmpty)
+    #expect(config.keybinds.count == 2)
+
+    for _ in 0..<5 {
+        (config, _) = ConfigParser.parse(text, base: config)
+    }
+    #expect(config.keybinds.count == 2)
+}
+
+/// Same idempotence requirement for the palette, and one step further: a reload must also *drop* an
+/// override whose line the user deleted, rather than keeping it alive forever through `base`.
+@Test func aRemovedPaletteLineIsForgottenOnReload() {
+    let (first, _) = ConfigParser.parse("palette = 1=#ff0000\npalette = 2=#00ff00")
+    #expect(first.paletteOverrides.count == 2)
+
+    let (second, d) = ConfigParser.parse("palette = 1=#ff0000", base: first)
+    #expect(d.isEmpty)
+    #expect(second.paletteOverrides.count == 1)
+    #expect(second.paletteOverrides[2] == nil)
+}
+
 @Test func aLineWithNoEqualsIsADiagnostic() {
     let (_, d) = parse("font-size 15")
     #expect(d.count == 1)

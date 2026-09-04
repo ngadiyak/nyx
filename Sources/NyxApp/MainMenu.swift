@@ -19,12 +19,15 @@ enum MainMenu {
 
         let shell = NSMenu(title: "Shell")
         shell.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindow(_:)), keyEquivalent: "n")
+        shell.addItem(withTitle: "New Tab", action: #selector(TabController.newTab(_:)), keyEquivalent: "t")
         shell.addItem(.separator())
         shell.addItem(withTitle: "Split Right", action: #selector(PaneTreeView.splitRight(_:)), keyEquivalent: "d")
         shell.addItem(chord("Split Down", #selector(PaneTreeView.splitDown(_:)), "d", [.command, .shift]))
         shell.addItem(.separator())
-        // ⌘W closes the focused pane, and the window with the last one; the whole window is ⌘⇧W.
-        shell.addItem(withTitle: "Close Pane", action: #selector(PaneTreeView.closePane(_:)), keyEquivalent: "w")
+        // ⌘W closes the focused pane -- and with the pane's last sibling the tab, and with the
+        // last tab the window; the whole window at once is ⌘⇧W. `TabController` owns this rather
+        // than `PaneTreeView` because only it can ask about a running process first.
+        shell.addItem(withTitle: "Close Pane", action: #selector(TabController.closePane(_:)), keyEquivalent: "w")
         shell.addItem(chord("Close Window", #selector(NSWindow.performClose(_:)), "w", [.command, .shift]))
         main.addItem(item("Shell", shell))
 
@@ -54,6 +57,25 @@ enum MainMenu {
         let window = NSMenu(title: "Window")
         window.addItem(withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
         window.addItem(withTitle: "Zoom", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")
+        window.addItem(.separator())
+        window.addItem(chord("Show Next Tab", #selector(TabController.selectNextTab(_:)), "]", [.command, .shift]))
+        window.addItem(chord("Show Previous Tab", #selector(TabController.selectPreviousTab(_:)), "[", [.command, .shift]))
+        window.addItem(.separator())
+        // ⌘1...⌘9 have to be menu items to be shortcuts at all. The number travels in the tag;
+        // ⌘9 is the *last* tab rather than the ninth, which is why it is titled separately --
+        // `TabStrip.index(forCommandNumber:tabCount:)` is where that rule lives, and
+        // `TabController.validateMenuItem` greys out the numbers with no tab behind them.
+        for number in 1...8 {
+            let tab = NSMenuItem(title: "Show Tab \(number)",
+                                 action: #selector(TabController.selectTabByNumber(_:)),
+                                 keyEquivalent: String(number))
+            tab.tag = number
+            window.addItem(tab)
+        }
+        let lastTab = NSMenuItem(title: "Show Last Tab",
+                                 action: #selector(TabController.selectTabByNumber(_:)), keyEquivalent: "9")
+        lastTab.tag = 9
+        window.addItem(lastTab)
         main.addItem(item("Window", window))
         NSApp.windowsMenu = window
         return main

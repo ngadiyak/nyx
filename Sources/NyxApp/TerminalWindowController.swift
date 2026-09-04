@@ -3,7 +3,7 @@ import NyxCore
 
 final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     var onClose: ((TerminalWindowController) -> Void)?
-    private var panes: PaneTreeView?
+    private var tabs: TabController?
     private var banner: ConfigBanner?
     private var effectView: NSVisualEffectView?
     private var config: Config = .defaults
@@ -26,9 +26,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         // A plain container holding, top to bottom in z-order: an NSVisualEffectView (shown only
         // when `background-blur` is on -- it only actually shows through wherever a pane's own
         // Metal layer is drawing at less than full opacity, which `background-opacity < 1` is what
-        // makes `Pane.applyBackgroundAppearance` do), the panes, and the config-error
-        // banner pinned above both. Building the hierarchy this way keeps the panes themselves
-        // ignorant of the banner and the blur.
+        // makes `Pane.applyBackgroundAppearance` do), the tabs (a tab bar above the selected tab's
+        // panes), and the config-error banner pinned above both. Building the hierarchy this way
+        // keeps the panes themselves ignorant of the banner and the blur.
         let container = NSView(frame: window.contentView!.bounds)
         let effectView = NSVisualEffectView(frame: container.bounds)
         effectView.autoresizingMask = [.width, .height]
@@ -42,32 +42,20 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         banner.onOpenConfig = { NSApp.sendAction(#selector(AppDelegate.openConfig(_:)), to: nil, from: nil) }
         container.addSubview(banner)
 
-        // `PaneTreeView` makes its panes through this factory rather than building them itself, so
-        // it never has to know what a `Pane` costs to create or how it fails. The error from the
-        // first one is kept so a Mac without Metal still gets the alert it used to.
-        // The factory reads the inherited directory back off the view it belongs to, so the capture
-        // has to be weak: the view owns the closure.
-        var failure: Error?
-        weak var panes: PaneTreeView?
-        let makePane: () -> Pane? = {
-            do {
-                return try Pane(.zero, config: config, workingDirectory: panes?.workingDirectoryForNewPane)
-            } catch {
-                failure = error
-                return nil
-            }
-        }
-        let view = PaneTreeView(config: config, makePane: makePane)
-        panes = view
-        guard let firstPane = view.focusedPane else {
-            NSAlert(error: failure ?? NyxError.noMetal).runModal()
+        // `TabController` owns every pane in the window, one `PaneTreeView` per tab, and makes them
+        // itself; the error from the very first one is kept there so a Mac without Metal still gets
+        // the alert it used to.
+        let tabs = TabController(config: config)
+        guard let firstPane = tabs.focusedPane else {
+            NSAlert(error: tabs.paneCreationFailure ?? NyxError.noMetal).runModal()
             window.delegate = nil
             window.close()
             return nil
         }
+        let view = tabs.view
         view.translatesAutoresizingMaskIntoConstraints = false
-        view.onFocusedTitleChange = { [weak window] title in window?.title = title.isEmpty ? "Nyx" : title }
-        view.onAllPanesClosed = { [weak controller] in controller?.close() }
+        tabs.onTitleChange = { [weak window] title in window?.title = title.isEmpty ? "Nyx" : title }
+        tabs.onAllTabsClosed = { [weak controller] in controller?.close() }
         container.addSubview(view)
         NSLayoutConstraint.activate([
             banner.topAnchor.constraint(equalTo: container.topAnchor),
@@ -84,7 +72,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         window.center()
         window.setFrameAutosaveName("NyxMain")
         window.makeFirstResponder(firstPane)
-        controller.panes = view
+        controller.tabs = tabs
         controller.banner = banner
         controller.effectView = effectView
         controller.config = config
@@ -111,7 +99,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     func configChanged(_ newConfig: Config, diagnostics: [ConfigDiagnostic]) {
         let diff = ConfigDiff(from: config, to: newConfig)
         config = newConfig
-        panes?.apply(newConfig)
+        tabs?.apply(newConfig)
         applyWindowAppearance()
 
         if !diagnostics.isEmpty {
@@ -134,7 +122,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        panes?.terminate()
+        tabs?.terminateAll()
         onClose?(self)
     }
 }

@@ -19,6 +19,11 @@ final class PaneTreeView: NSView {
 
     var onAllPanesClosed: (() -> Void)?
     var onFocusedTitleChange: ((String) -> Void)?
+    /// Any pane in this tree produced output, on the main queue. Forwarded straight from the panes
+    /// so the tab holding this tree can show an activity dot while it is off screen.
+    var onAnyPaneOutput: (() -> Void)?
+    /// Any pane in this tree rang the bell, on the main queue.
+    var onAnyPaneBell: (() -> Void)?
 
     private(set) var focused: PaneID?
 
@@ -64,6 +69,10 @@ final class PaneTreeView: NSView {
 
     var focusedPane: Pane? { focused.flatMap { panes[$0] } }
 
+    /// Every live pane, in no particular order. For a caller that has to ask something of all of
+    /// them at once -- closing a whole tab asks each whether it is busy.
+    var allPanes: [Pane] { Array(panes.values) }
+
     // MARK: - Layout
 
     private var modelBounds: PaneRect {
@@ -107,6 +116,8 @@ final class PaneTreeView: NSView {
         // whether or not the pane that exited was the focused one.
         pane.onExit = { [weak self, id = pane.id] _ in self?.close(id) }
         pane.onFocusRequested = { [weak self, id = pane.id] in self?.setFocus(id) }
+        pane.onOutput = { [weak self] in self?.onAnyPaneOutput?() }
+        pane.onBell = { [weak self] in self?.onAnyPaneBell?() }
         panes[pane.id] = pane
         addSubview(pane)
     }
@@ -139,11 +150,19 @@ final class PaneTreeView: NSView {
         pane.onTitleChange = nil
         pane.onExit = nil
         pane.onFocusRequested = nil
+        pane.onOutput = nil
+        pane.onBell = nil
         pane.terminate()
         pane.removeFromSuperview()
         panes[id] = nil
         titles[id] = nil
         if zoomed == id { zoomed = nil }
+        // A drag in progress holds a `SplitPath`, and a path only means what it meant while the
+        // tree keeps its shape: removing a pane collapses its parent split, so the captured path
+        // can come to name a *different* split -- which the next drag event would then yank to the
+        // pointer. Dropping the drag is the only safe answer; the mouse is still down, but the
+        // divider it was holding may no longer exist.
+        drag = nil
         guard let remaining = tree.removing(id) else {
             self.tree = nil
             focused = nil
@@ -182,6 +201,11 @@ final class PaneTreeView: NSView {
         }
         setFocus(next)
     }
+
+    /// Puts the keyboard back where it was. A tree taken out of the window while its tab is
+    /// unselected loses the window's first responder along with it, so the tab that comes back has
+    /// to claim it again -- and it claims it for the pane that had it, not for a fresh one.
+    func restoreFocus() { setFocus(focused) }
 
     private func setFocus(_ id: PaneID?) {
         focused = id
@@ -261,7 +285,10 @@ final class PaneTreeView: NSView {
     /// What a new pane should inherit: the focused pane's OSC 7 directory, else the directory of
     /// the process running in it, else `$HOME`. Every step is best-effort -- a split must never
     /// fail because a directory could not be worked out.
-    private func inheritableWorkingDirectory() -> String {
+    ///
+    /// Not private: a new *tab* inherits by the same rule, and `TabController` asks the tree it is
+    /// leaving for the answer rather than keeping a second copy of the rule.
+    func inheritableWorkingDirectory() -> String {
         focusedPane?.workingDirectory ?? NSHomeDirectory()
     }
 
@@ -357,7 +384,6 @@ final class PaneTreeView: NSView {
 
     @objc func splitRight(_ sender: Any?) { split(axis: .horizontal) }
     @objc func splitDown(_ sender: Any?) { split(axis: .vertical) }
-    @objc func closePane(_ sender: Any?) { closeFocusedPane() }
     @objc func focusLeft(_ sender: Any?) { moveFocus(.left) }
     @objc func focusRight(_ sender: Any?) { moveFocus(.right) }
     @objc func focusUp(_ sender: Any?) { moveFocus(.up) }
@@ -381,6 +407,7 @@ final class PaneTreeView: NSView {
     }
 }
 
-private func nsColor(_ rgb: RGB, alpha: CGFloat) -> NSColor {
+/// A theme colour as AppKit wants it. Shared with `TabBarView`, which draws in the same palette.
+func nsColor(_ rgb: RGB, alpha: CGFloat) -> NSColor {
     NSColor(srgbRed: CGFloat(rgb.r) / 255, green: CGFloat(rgb.g) / 255, blue: CGFloat(rgb.b) / 255, alpha: alpha)
 }

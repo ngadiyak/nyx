@@ -21,6 +21,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// The user clicked in this pane. `PaneTreeView` turns it into a focus change; the pane itself
     /// only ever knows that it was clicked.
     var onFocusRequested: (() -> Void)?
+    /// The session produced output, delivered on the main queue. The tab bar turns this into an
+    /// activity dot for a tab that is not on screen; a pane the user is looking at just draws it.
+    var onOutput: (() -> Void)?
+    /// The program rang the bell, delivered on the main queue and independently of what
+    /// `config.bell` does about it here.
+    var onBell: (() -> Void)?
 
     /// Only ever touched on the main thread, where every pane is created.
     private static var nextID = 0
@@ -84,7 +90,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         metalLayer.framebufferOnly = true
         applyBackgroundAppearance()
         session.withTerminal { $0.setDefaultCursorShape(config.cursorStyle); $0.modes.cursorBlink = config.cursorBlink }
-        session.onUpdate = { [weak self] in self?.markDirty() }
+        session.onUpdate = { [weak self] in self?.sessionDidUpdate() }
         session.onEvent = { [weak self] e in DispatchQueue.main.async { self?.handle(e) } }
         session.onExit = { [weak self] code in DispatchQueue.main.async { self?.onExit?(code) } }
         session.start()
@@ -146,6 +152,31 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if let cwd = session.withTerminal({ $0.cwd }), !cwd.isEmpty { return cwd }
         if let pgid = session.foregroundProcessGroup, let path = Pane.processWorkingDirectory(pgid) { return path }
         return Pane.processWorkingDirectory(session.pid)
+    }
+
+    /// The shell this pane started, for `proc_listchildpids`.
+    var processID: pid_t { session.pid }
+
+    /// The name of the program the user is actually looking at -- the shell unless it is running
+    /// something -- for the tab title. nil if it cannot be read.
+    var foregroundProcessName: String? {
+        guard let pgid = session.foregroundProcessGroup else { return nil }
+        return Pane.processName(pgid)
+    }
+
+    /// The tab title to fall back on when nothing has set one with OSC 0/2.
+    var fallbackTitle: String {
+        TabTitle.fallback(processName: foregroundProcessName, directory: workingDirectory,
+                          home: NSHomeDirectory())
+    }
+
+    /// The short name of a running process, e.g. `zsh` or `vim`.
+    private static func processName(_ pid: pid_t) -> String? {
+        var buffer = [CChar](repeating: 0, count: 256)
+        let read = proc_name(pid, &buffer, UInt32(buffer.count))
+        guard read > 0 else { return nil }
+        let name = String(cString: buffer)
+        return name.isEmpty ? nil : name
     }
 
     /// The current directory of a running process, or nil if it cannot be read (it is gone, or it
@@ -323,6 +354,23 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     // main thread, so a wake-up can never be lost: the pause and the unpause are serialised by the
     // main queue, and whichever runs second leaves the link running with the flag still set.
 
+    /// The session read something from the PTY, on the reader thread. Same handshake as
+    /// `markDirty()`, plus the `onOutput` report -- which is deliberately *not* in `markDirty()`,
+    /// where a relayout or a config reload would look like the program had said something.
+    private func sessionDidUpdate() {
+        dirty.set()
+        if Thread.isMainThread {
+            outputArrived()
+        } else {
+            DispatchQueue.main.async { [weak self] in self?.outputArrived() }
+        }
+    }
+
+    private func outputArrived() {
+        onOutput?()
+        resumeLink()
+    }
+
     /// Marks the frame stale from any thread and wakes the display link.
     private func markDirty() {
         dirty.set()
@@ -387,6 +435,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         switch event {
         case .titleChanged(let t): onTitleChange?(t)
         case .bell:
+            onBell?()
             switch config.bell {
             case .visual: flashBell()
             case .sound: NSSound.beep()

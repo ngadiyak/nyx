@@ -31,11 +31,15 @@ public extension TabIndicator {
 /// split geometry.
 public enum TabStrip {
     /// `auto` is worth the vertical space only once there is a choice to make.
-    public static func isBarVisible(_ visibility: TabBarVisibility, tabCount: Int) -> Bool {
+    public static func isBarVisible(_ visibility: TabBarVisibility, tabCount: Int,
+                                    quickActionCount: Int = 0) -> Bool {
         switch visibility {
         case .always: return true
         case .never: return false
-        case .auto: return tabCount > 1
+        // The bar also carries the quick-action buttons, and `auto` used to hide it whenever there
+        // was one tab -- which is most of the time. A button you configured and cannot see until
+        // you open a second tab is not a button. If there is something on the bar, the bar is on.
+        case .auto: return tabCount > 1 || quickActionCount > 0
         }
     }
 

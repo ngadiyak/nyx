@@ -371,7 +371,8 @@ final class TabController: NSViewController, NSMenuItemValidation {
     // MARK: - The bar
 
     private func refreshBar() {
-        let visible = TabStrip.isBarVisible(config.tabBar, tabCount: tabs.count)
+        let visible = TabStrip.isBarVisible(config.tabBar, tabCount: tabs.count,
+                                            quickActionCount: config.quickActions.count)
         tabBar.isHidden = !visible
         guard visible else {
             tabBarHeight?.constant = 0

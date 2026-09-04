@@ -184,3 +184,21 @@ private let monospace: (String) -> Double = { Double($0.count) }
     // Two characters cannot be middle-truncated into anything shorter than the ellipsis itself.
     #expect(TabTitle.truncatedInMiddle("ab", maxWidth: 1, measure: monospace) == "…")
 }
+
+/// The bar carries the quick-action buttons as well as the tabs. `auto` hid it whenever there was
+/// a single tab -- which is most of the time -- so a button you had configured stayed invisible
+/// until you happened to open a second tab. A button you cannot see is not a button.
+@Test func theBarStaysVisibleForQuickActionsWithASingleTab() {
+    #expect(TabStrip.isBarVisible(.auto, tabCount: 1, quickActionCount: 1))
+    #expect(!TabStrip.isBarVisible(.auto, tabCount: 1, quickActionCount: 0))
+}
+
+@Test func quickActionsDoNotOverrideAnExplicitChoice() {
+    #expect(!TabStrip.isBarVisible(.never, tabCount: 1, quickActionCount: 3))
+    #expect(TabStrip.isBarVisible(.always, tabCount: 1, quickActionCount: 0))
+}
+
+@Test func severalTabsShowTheBarWithOrWithoutButtons() {
+    #expect(TabStrip.isBarVisible(.auto, tabCount: 2, quickActionCount: 0))
+    #expect(TabStrip.isBarVisible(.auto, tabCount: 2, quickActionCount: 2))
+}

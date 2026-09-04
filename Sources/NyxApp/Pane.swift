@@ -420,7 +420,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func render() {
         let focused = (window?.isKeyWindow ?? false) && window?.firstResponder === self
         let preedit = markedText.isEmpty ? nil : markedText
-        let (frame, wantsMotion): (RenderFrame, Bool) = session.withTerminal { t in
+        let frame: RenderFrame = session.withTerminal { t in
             // Before anything reads the selection: a cleared scrollback, a reset or an
             // alternate-screen swap leaves it pointing at rows that now hold other content.
             selectionController.invalidateIfStale(t)
@@ -434,17 +434,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                         rows: t.rows, cols: t.cols)
             let current = SearchHighlights.visibleRange(of: self.searchSession.current, viewportTop: top,
                                                        rows: t.rows, cols: t.cols)
+            let hovered = SearchHighlights.visibleRange(onAbsoluteRow: self.hoveredLink?.row ?? 0,
+                                                        columns: self.hoveredLink?.columns,
+                                                        viewportTop: top, rows: t.rows, cols: t.cols)
             // A missing drawable is transient. On failure, re-setting dirty will repaint rows
             // already marked clean; once per-row partial redraw lands, fix both here and there.
             t.clearDirty()
-            let f = RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
-                                cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit,
-                                selection: selected, searchMatches: matches, currentSearchMatch: current)
-            return (f, t.modes.mouse == .any)
+            return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
+                               cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit,
+                               selection: selected, searchMatches: matches, currentSearchMatch: current,
+                               hoveredLink: hovered)
         }
-        // The tracking area for bare motion follows the mouse mode, which only an application can
-        // change; this is the first place after such a change that runs on the main thread.
-        if wantsMotion != (motionTracking != nil) { updateTrackingAreas() }
         // A missing drawable is transient; keep the frame stale so the next tick retries rather
         // than pausing the link on top of stale pixels.
         if !renderer.draw(frame, in: metalLayer, padding: Int(padding * metalLayer.contentsScale)) { dirty.set() }
@@ -673,18 +673,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                      padding: Double(padding), cols: cols, rows: rows)
     }
 
+    /// One tracking area, always on. It used to follow the mouse mode, because bare motion is only
+    /// worth *reporting* in `any` mode; hovering a link needs the same events whatever the program
+    /// is doing, and `mouseMoved` decides which of the two a given event is for.
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        // Bare motion is only worth delivering in `any` mode; every other mode would discard it.
-        let wants = session.withTerminal { $0.modes.mouse == .any }
-        if let area = motionTracking {
-            guard !wants else { return }   // `.inVisibleRect` keeps the existing area in step
-            removeTrackingArea(area)
-            motionTracking = nil
-            return
-        }
-        guard wants else { return }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+        guard motionTracking == nil else { return }   // `.inVisibleRect` keeps the existing area in step
+        let area = NSTrackingArea(rect: .zero,
+                                  options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
                                   owner: self, userInfo: nil)
         addTrackingArea(area)
         motionTracking = area
@@ -695,6 +691,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         onFocusRequested?()
+        // ⌘-click opens whatever is under the pointer, before the click can become a selection or
+        // be handed to a program that has taken the mouse.
+        if event.modifierFlags.contains(.command), openLink(at: event) { return }
         if report(event, .left, .press) { return }
         lastMousePoint = convert(event.locationInWindow, from: nil)
         let point = topLeft(lastMousePoint!)
@@ -724,7 +723,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        report(event, .left, .move)
+        // Only `any` mode wants bare motion; every other mode would discard it, and the tracking
+        // area is on regardless now because hovering a link needs the same events.
+        if session.withTerminal({ $0.modes.mouse == .any }) { report(event, .left, .move) }
+        updateHover(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        clearHover()
     }
 
     /// A TUI that turned mouse reporting on gets the right button, as it does the left. Only when
@@ -864,6 +870,118 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if item.action == #selector(copy(_:)) { return hasSelection }
         if item.action == #selector(selectAll(_:)) { return session.withTerminal { $0.totalRows > 0 } }
         return true
+    }
+
+    // MARK: - Links
+    //
+    // Hovering rescans exactly one row -- the one under the pointer -- so moving the mouse across a
+    // 10,000-line buffer costs the same as moving it across an empty one. Whether a token is a link
+    // at all, and what opening it means, is `LinkResolver` in NyxCore.
+
+    /// The link under the pointer, in absolute coordinates so it stays on its text while the buffer
+    /// scrolls underneath. nil when the pointer is over ordinary text.
+    private var hoveredLink: (row: Int, columns: Range<Int>)?
+    /// The same thing in view coordinates, for the pointing-hand cursor rect.
+    private var hoveredRect: NSRect?
+
+    private func updateHover(at point: NSPoint) {
+        guard bounds.contains(point) else {
+            clearHover()
+            return
+        }
+        let hit = token(under: point)
+        // Resolved *outside* the session lock: a path needs the pane's working directory, and
+        // finding that takes the same lock, which is not recursive.
+        var found: (row: Int, columns: Range<Int>)?
+        if let hit, linkTarget(for: hit.token) != nil { found = (hit.row, hit.token.columns) }
+        guard found?.row != hoveredLink?.row || found?.columns != hoveredLink?.columns else { return }
+        hoveredLink = found
+        updateHoverCursor()
+        markDirty()
+    }
+
+    private func clearHover() {
+        guard hoveredLink != nil else { return }
+        hoveredLink = nil
+        updateHoverCursor()
+        markDirty()
+    }
+
+    /// The pointing hand is a cursor rect rather than a `NSCursor.set()`, so AppKit restores the
+    /// arrow on its own when the pointer leaves the link -- and when it leaves the window entirely.
+    private func updateHoverCursor() {
+        hoveredRect = hoveredLink.flatMap { link in
+            let top = session.withTerminal { $0.viewportTopRow }
+            let cell = cellSizePoints
+            let row = link.row - top
+            guard row >= 0 else { return nil }
+            let width = CGFloat(link.columns.count) * cell.width
+            return NSRect(x: padding + CGFloat(link.columns.lowerBound) * cell.width,
+                          y: bounds.height - padding - CGFloat(row + 1) * cell.height,
+                          width: width, height: cell.height)
+        }
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard let hoveredRect else { return }
+        addCursorRect(hoveredRect, cursor: .pointingHand)
+    }
+
+    /// The token under a view point, if any. One row is read, and the lock is released before the
+    /// answer is looked at.
+    private func token(under point: NSPoint) -> (row: Int, token: TextToken)? {
+        session.withTerminal { t in
+            let position = self.position(topLeft(point), in: t)
+            guard let token = t.token(atAbsoluteRow: position.row, column: position.col,
+                                      separators: config.wordSeparators) else { return nil }
+            return (position.row, token)
+        }
+    }
+
+    private func linkTarget(for token: TextToken) -> LinkTarget? {
+        LinkResolver.target(for: token, home: NSHomeDirectory(),
+                            // Read lazily: only a path needs it, and finding it costs two syscalls.
+                            workingDirectory: { self.workingDirectory },
+                            fileExists: { FileManager.default.fileExists(atPath: $0) })
+    }
+
+    /// ⌘-click. Returns false when there was nothing to open, so the click can go on to mean what
+    /// it usually means.
+    private func openLink(at event: NSEvent) -> Bool {
+        guard let hit = token(under: convert(event.locationInWindow, from: nil)) else { return false }
+        switch linkTarget(for: hit.token) {
+        case .none:
+            return false
+        case .url(let text):
+            guard let url = URL(string: text) else { return false }
+            return NSWorkspace.shared.open(url)
+        case .file(let path, let line, let column):
+            if let template = config.openFileCommand, !template.isEmpty,
+               let argv = OpenFileCommand.arguments(template: template, path: path, line: line, column: column) {
+                return runOpenFileCommand(argv)
+            }
+            return NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        }
+    }
+
+    /// Runs `open-file-command` through `env`, so the user's template can name a command on their
+    /// `PATH` rather than an absolute path to it. A failure to launch is reported by returning
+    /// false; the caller beeps rather than opening the wrong thing instead.
+    private func runOpenFileCommand(_ argv: [String]) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = argv
+        if let directory = workingDirectory {
+            process.currentDirectoryURL = URL(fileURLWithPath: directory)
+        }
+        do {
+            try process.run()
+            return true
+        } catch {
+            return false
+        }
     }
 
     // MARK: - Search

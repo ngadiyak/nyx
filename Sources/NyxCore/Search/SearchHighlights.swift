@@ -27,11 +27,21 @@ public enum SearchHighlights {
     /// optional range per visible row, for the same indexing reason as `visibleRanges`.
     public static func visibleRange(of match: SearchMatch?, viewportTop: Int, rows: Int,
                                     cols: Int) -> [Range<Int>?] {
+        guard let match else { return visibleRange(onAbsoluteRow: 0, columns: nil, viewportTop: viewportTop,
+                                                   rows: rows, cols: cols) }
+        return visibleRange(onAbsoluteRow: match.row, columns: match.columns, viewportTop: viewportTop,
+                            rows: rows, cols: cols)
+    }
+
+    /// The same conversion for any single run on one absolute row -- the link under the pointer,
+    /// which is a token rather than a match but is drawn by the same per-visible-row array.
+    public static func visibleRange(onAbsoluteRow absoluteRow: Int, columns: Range<Int>?,
+                                    viewportTop: Int, rows: Int, cols: Int) -> [Range<Int>?] {
         var result = [Range<Int>?](repeating: nil, count: max(0, rows))
-        guard rows > 0, cols > 0, let match else { return result }
-        let row = match.row - viewportTop
-        guard row >= 0, row < rows, let columns = clamp(match.columns, cols: cols) else { return result }
-        result[row] = columns
+        guard rows > 0, cols > 0, let columns else { return result }
+        let row = absoluteRow - viewportTop
+        guard row >= 0, row < rows, let clamped = clamp(columns, cols: cols) else { return result }
+        result[row] = clamped
         return result
     }
 

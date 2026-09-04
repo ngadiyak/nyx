@@ -114,6 +114,11 @@ public enum TabBarGeometry {
     // slots, and the ungrouped case is just the one where every slot is a tab.
 
     public enum Slot: Equatable {
+        /// The name of an expanded group, standing before its tabs. A slot of its own rather than a
+        /// row above them: a whole extra row of bar for a two-tab group costs every tab vertical
+        /// space to label a couple of them, and a strip floating above the tabs reads as unrelated
+        /// to the tabs it is describing.
+        case groupLabel(id: Int)
         /// A tab, and the expanded group it belongs to. A tab in a *collapsed* group gets no slot
         /// of its own -- its group's chip stands in for it -- so a slot's group is always expanded.
         case tab(index: Int, group: Int?)
@@ -127,23 +132,39 @@ public enum TabBarGeometry {
         var index = 0
         while index < tabCount {
             let group = grouping.group(ofTabAt: index)
-            guard let group, group.isCollapsed, let range = grouping.range(ofGroup: group.id) else {
-                result.append(.tab(index: index, group: group?.id))
+            guard let group else {
+                result.append(.tab(index: index, group: nil))
                 index += 1
                 continue
             }
-            result.append(.collapsedGroup(id: group.id, tabCount: range.count))
-            index = range.upperBound
+            guard let range = grouping.range(ofGroup: group.id) else {
+                result.append(.tab(index: index, group: nil))
+                index += 1
+                continue
+            }
+            if group.isCollapsed {
+                result.append(.collapsedGroup(id: group.id, tabCount: range.count))
+                index = range.upperBound
+                continue
+            }
+            // An expanded group announces itself once, in front of its own tabs.
+            if index == range.lowerBound { result.append(.groupLabel(id: group.id)) }
+            result.append(.tab(index: index, group: group.id))
+            index += 1
         }
         return result
     }
 
     /// The height the bar needs: its base, plus a row for group names when any group is expanded.
     /// A collapsed group names itself on its chip and needs no header.
+    /// The bar is one height, always.
+    ///
+    /// It used to grow a row whenever any group was expanded, which spent vertical space across the
+    /// whole window to label two tabs, and put the label somewhere it did not look attached to
+    /// them. A group now names itself in a slot in front of its own tabs.
     public static func barHeight(base: Double, grouping: TabGrouping,
                                  metrics: TabBarMetrics = .standard) -> Double {
-        let expanded = grouping.groups.contains { !$0.isCollapsed && grouping.range(ofGroup: $0.id) != nil }
-        return base + (expanded ? metrics.groupHeaderHeight : 0)
+        base
     }
 
     /// `leading` is the room taken by the bar's leading buttons; the slots share what is left.
@@ -227,11 +248,25 @@ public enum TabBarGeometry {
             .last.map { $0.x + $0.width } ?? 0
     }
 
+    /// The box covering a group's label and its tabs, for the tinted band drawn behind them.
+    public static func groupBandRect(fromSlot first: Int, toSlot last: Int, slotCount: Int,
+                                     barWidth: Double, barHeight: Double, leading: Double = 0,
+                                     trailing: Double = 0,
+                                     metrics: TabBarMetrics = .standard) -> PaneRect {
+        let width = slotWidth(barWidth: barWidth, slotCount: slotCount, leading: leading,
+                              trailing: trailing, metrics: metrics)
+        return PaneRect(x: leading + Double(first) * width, y: 0,
+                        width: Double(last - first + 1) * width, height: barHeight)
+    }
+
     /// The slot runs each expanded group covers, as `(group id, first slot, last slot)`.
     public static func groupHeaders(slots: [Slot]) -> [(id: Int, first: Int, last: Int)] {
         var headers: [(id: Int, first: Int, last: Int)] = []
         for (position, slot) in slots.enumerated() {
-            guard case .tab(_, let group) = slot, let id = group else { continue }
+            var group: Int?
+            if case .tab(_, let g) = slot { group = g }
+            if case .groupLabel(let id) = slot { group = id }
+            guard let id = group else { continue }
             if let previous = headers.last, previous.id == id, previous.last == position - 1 {
                 headers[headers.count - 1] = (id: id, first: previous.first, last: position)
             } else {
@@ -268,14 +303,13 @@ public enum TabBarGeometry {
         let position = Int((x - leading) / width)
         guard position < slots.count else { return nil }
 
-        // Above the slots is the header row, which belongs to whichever group is drawn there.
-        if headerHeight > 0, y < headerHeight {
-            guard case .tab(_, let group) = slots[position], let id = group else { return nil }
-            return .groupHeader(id)
-        }
         switch slots[position] {
         case .collapsedGroup(let id, _):
             return .expandGroup(id)
+        case .groupLabel(let id):
+            // The name is the collapse control: it is the one part of a group that is obviously
+            // about the group rather than about one of its tabs.
+            return .groupHeader(id)
         case .tab(let index, _):
             let slot = slotRect(index: position, slotCount: slots.count, barWidth: barWidth,
                                 barHeight: barHeight, headerHeight: headerHeight, leading: leading,

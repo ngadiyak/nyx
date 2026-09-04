@@ -67,7 +67,7 @@ enum UISnapshot {
         bar.setColors(palette: palette)
         bar.setQuickActions(quickActions)
 
-        var grouping = TabGrouping()
+        var grouping = TabGrouping(tabCount: tabs)
         if grouped, let group = grouping.newGroup(named: "deploy", colorIndex: 2, fromTabAt: 1) {
             grouping.add(tabAt: 2, toGroup: group.id)
         }

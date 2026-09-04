@@ -195,7 +195,8 @@ final class TabBarView: NSView {
     private func rect(forSlot index: Int) -> NSRect {
         ns(TabBarGeometry.slotRect(index: index, slotCount: slots.count, barWidth: bounds.width,
                                    barHeight: bounds.height, headerHeight: Double(headerHeight),
-                                   leading: leadingWidth, metrics: TabBarView.metrics))
+                                   leading: leadingWidth, trailing: TabBarView.builtInButtonWidth,
+                                   metrics: TabBarView.metrics))
     }
 
     /// nil when the tab is too narrow to carry a close button, in which case none is drawn.
@@ -272,6 +273,8 @@ final class TabBarView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         barBackground.setFill()
         dirtyRect.fill()
+        // The bands go down first, behind everything: a group is a place its tabs sit in.
+        drawGroupBands(dirtyRect)
         for (position, slot) in slots.enumerated() {
             let frame = rect(forSlot: position)
             guard frame.intersects(dirtyRect) else { continue }
@@ -281,10 +284,11 @@ final class TabBarView: NSView {
                 draw(items[index], in: frame, isSelected: index == selected)
             case .collapsedGroup(let id, let count):
                 drawChip(groupID: id, tabCount: count, in: frame)
+            case .groupLabel(let id):
+                drawGroupLabel(id, in: frame)
             }
         }
         drawLeadingButtons(dirtyRect)
-        drawGroupHeaders(dirtyRect)
         // The line under the whole bar, so the panes below it do not float.
         separatorColor.setFill()
         NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
@@ -302,7 +306,7 @@ final class TabBarView: NSView {
             case .addQuickAction: drawAddQuickActionButton(in: frame)
             }
         }
-        if let trailing = trailingRect { drawSymbol("plus", fallback: "+", in: trailing) }
+        if let trailing = trailingRect { drawPlus(in: trailing) }
         guard let last = fittedLeadingRects.last else { return }
         separatorColor.setFill()
         NSRect(x: last.maxX - 1, y: last.minY + 4, width: 1, height: last.height - 8).fill()
@@ -368,22 +372,59 @@ final class TabBarView: NSView {
     }
 
     /// One coloured strip per expanded group, spanning its tabs, with its name shown once.
-    private func drawGroupHeaders(_ dirtyRect: NSRect) {
-        guard headerHeight > 0 else { return }
+    /// Two strokes, not a glyph and not a symbol.
+    ///
+    /// `NSImage(systemSymbolName: "plus")` did not resolve here and came out as an asterisk, which
+    /// is a confusing thing to put beside the tabs; a text `+` depends on whatever face is in use.
+    /// Drawn, it is a plus at every size and in every theme.
+    private func drawPlus(in frame: NSRect) {
+        let arm: CGFloat = 5
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: frame.midX - arm, y: frame.midY))
+        path.line(to: NSPoint(x: frame.midX + arm, y: frame.midY))
+        path.move(to: NSPoint(x: frame.midX, y: frame.midY - arm))
+        path.line(to: NSPoint(x: frame.midX, y: frame.midY + arm))
+        path.lineWidth = 1.5
+        path.lineCapStyle = .round
+        dimTextColor.setStroke()
+        path.stroke()
+    }
+
+    /// A tinted band behind a group's label and its tabs.
+    ///
+    /// This is the whole of the group's presence in the bar: the tabs sit *in* something, which is
+    /// what makes them look like a set. It replaces a coloured strip in a row of its own, which
+    /// cost every tab vertical space and still managed to look unrelated to the tabs it named.
+    private func drawGroupBands(_ dirtyRect: NSRect) {
         for header in TabBarGeometry.groupHeaders(slots: slots) {
-            let frame = ns(TabBarGeometry.groupHeaderRect(fromSlot: header.first, toSlot: header.last,
-                                                          slotCount: slots.count, barWidth: Double(bounds.width),
-                                                          headerHeight: Double(headerHeight),
-                                                          metrics: TabBarView.metrics))
-            guard frame.intersects(dirtyRect), let group = grouping.group(withID: header.id) else { continue }
+            let frame = ns(TabBarGeometry.groupBandRect(fromSlot: header.first, toSlot: header.last,
+                                                        slotCount: slots.count,
+                                                        barWidth: Double(bounds.width),
+                                                        barHeight: Double(bounds.height),
+                                                        leading: leadingWidth,
+                                                        trailing: TabBarView.builtInButtonWidth,
+                                                        metrics: TabBarView.metrics))
+            guard frame.intersects(dirtyRect) else { continue }
             let color = self.color(ofGroup: header.id)
-            color.withAlphaComponent(0.30).setFill()
-            frame.fill()
-            color.setFill()
-            NSRect(x: frame.minX, y: frame.maxY - 2, width: frame.width, height: 2).fill()
-            drawLabel(group.name, in: frame.insetBy(dx: 6, dy: 0), color: textColor,
-                      font: .systemFont(ofSize: 9, weight: .semibold), centred: false)
+            let band = NSBezierPath(roundedRect: frame.insetBy(dx: 1, dy: 2), xRadius: 6, yRadius: 6)
+            color.withAlphaComponent(0.16).setFill()
+            band.fill()
+            color.withAlphaComponent(0.55).setStroke()
+            band.lineWidth = 1
+            band.stroke()
         }
+    }
+
+    /// The group's name, in its own colour, in front of its tabs. Clicking it collapses the group,
+    /// which is why it looks like a control rather than like a caption.
+    private func drawGroupLabel(_ id: Int, in frame: NSRect) {
+        guard let group = grouping.group(withID: id) else { return }
+        let color = self.color(ofGroup: id)
+        let pill = NSBezierPath(roundedRect: frame.insetBy(dx: 4, dy: 6), xRadius: 5, yRadius: 5)
+        color.withAlphaComponent(0.9).setFill()
+        pill.fill()
+        drawLabel(group.name, in: frame.insetBy(dx: 8, dy: 0), color: barBackground,
+                  font: .systemFont(ofSize: 10, weight: .semibold), centred: true)
     }
 
     /// A collapsed group: one chip carrying its name and how many tabs it is standing in for.

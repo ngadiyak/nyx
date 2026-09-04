@@ -37,8 +37,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configStore.startWatching()
         openInitialWindows()
         NSApp.activate(ignoringOtherApps: true)
-        // QA-TEMP
-        if QASmoke.isRequested { QASmoke.run(controllers: controllers, delegate: self) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

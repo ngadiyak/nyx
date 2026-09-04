@@ -514,14 +514,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if dirty.takeAndClear() { render() } else { displayLink?.isPaused = true }
     }
 
-    // QA-TEMP
-    var qaBytesSent = 0
-    private(set) var qaFrameCount = 0
-    var qaDisplayLinkPaused: Bool { displayLink?.isPaused ?? true }
-    var qaDirtyIsSet: Bool { dirty.qaPeek }
-
     private func render() {
-        qaFrameCount += 1   // QA-TEMP
         let focused = (window?.isKeyWindow ?? false) && window?.firstResponder === self
         let preedit = markedText.isEmpty ? nil : markedText
         var gutterMarks: [GutterMark?] = []
@@ -638,8 +631,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 let placed = block.visibleRows.compactMap { screenRow($0 + max(0, t.viewportTopRow)) }
                 guard let first = placed.min(), let last = placed.max() else { return nil }
                 return (rows: first..<(last + 1),
-                        color: block.failed ? t.palette.colors[1]
-                             : (block.isRunning ? t.palette.colors[3] : t.palette.colors[2]))
+                        color: block.failed ? t.palette.readable(1)
+                             : (block.isRunning ? t.palette.readable(3) : t.palette.readable(2)))
             }
             // A summary only where the command it describes is on screen, and only when it has
             // something to say -- `exit 0` on a command that took no time is not news.
@@ -648,7 +641,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 let text = block.summary()
                 guard !text.isEmpty else { return nil }
                 return (row: row, text: text,
-                        color: block.failed ? t.palette.colors[1] : t.palette.noteForeground)
+                        color: block.failed ? t.palette.readable(1) : t.palette.noteForeground)
             }
             // The summary already carries the duration, and both draw right-aligned on the command's
             // row: left alone they paint the same glyphs twice in two colours, on the failure case
@@ -806,7 +799,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Writes bytes to the shell as though the user had typed them. Not private because a quick
     /// action is exactly "type this for me".
     func send(_ bytes: [UInt8]) {
-        qaBytesSent += bytes.count   // QA-TEMP
         // Typing both jumps the viewport back to the live screen and drops the selection: the text
         // it pointed at is about to move, and every terminal drops it here.
         clearSelection()

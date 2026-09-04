@@ -841,6 +841,8 @@ extension TabController: ActionTarget {
         case .findNext: if focusedPane?.stepSearch(forward: true) != true { NSSound.beep() }
         case .findPrevious: if focusedPane?.stepSearch(forward: false) != true { NSSound.beep() }
         case .commandPalette: toggleCommandPalette()
+        case .foldCommand: if focusedPane?.toggleFoldOfCurrentCommand() != true { NSSound.beep() }
+        case .foldAllLongOutput: if focusedPane?.foldAllLongOutput() != true { NSSound.beep() }
 
         case .copy: focusedPane?.copy(nil)
         case .paste: focusedPane?.paste(nil)
@@ -865,7 +867,8 @@ extension TabController: ActionTarget {
         case .findNext, .findPrevious:
             // Nothing to step through until ⌘F has been pressed and something typed.
             return focusedPane?.isSearching ?? false
-        case .previousPrompt, .nextPrompt, .selectCommandOutput, .copyCommandOutput:
+        case .previousPrompt, .nextPrompt, .selectCommandOutput, .copyCommandOutput,
+             .foldCommand, .foldAllLongOutput:
             // A shell with no integration emits no marks, and these do nothing without them.
             return focusedPane?.hasPromptMarks ?? false
         case .focusLeft, .focusRight, .focusUp, .focusDown,

@@ -51,3 +51,41 @@ public enum SearchHighlights {
         return lower < upper ? lower..<upper : nil
     }
 }
+
+public extension SearchHighlights {
+    /// The same conversion for a viewport with folds in it.
+    ///
+    /// A folded viewport is not a contiguous run of absolute rows, so "match row minus viewport
+    /// top" is no longer where the match is drawn -- and using it would paint a hit onto whichever
+    /// row the fold pulled up into that slot. The display rows say where each absolute row went,
+    /// and a match on a row that is folded away is drawn nowhere at all.
+    static func visibleRanges(_ matches: [SearchMatch], displayRows: [DisplayRow],
+                              cols: Int) -> [[Range<Int>]] {
+        var result = [[Range<Int>]](repeating: [], count: displayRows.count)
+        guard !displayRows.isEmpty, cols > 0 else { return result }
+        let index = DisplayRows.indexByAbsoluteRow(displayRows)
+        for match in matches {
+            guard let row = index[match.row], let columns = clamped(match.columns, cols: cols) else { continue }
+            result[row].append(columns)
+        }
+        return result
+    }
+
+    /// One run on one absolute row -- the current hit, or the link under the pointer -- placed the
+    /// same way.
+    static func visibleRange(onAbsoluteRow absoluteRow: Int, columns: Range<Int>?,
+                             displayRows: [DisplayRow], cols: Int) -> [Range<Int>?] {
+        var result = [Range<Int>?](repeating: nil, count: displayRows.count)
+        guard !displayRows.isEmpty, cols > 0, let columns else { return result }
+        guard let row = DisplayRows.indexByAbsoluteRow(displayRows)[absoluteRow],
+              let clamped = clamped(columns, cols: cols) else { return result }
+        result[row] = clamped
+        return result
+    }
+
+    static func clamped(_ columns: Range<Int>, cols: Int) -> Range<Int>? {
+        let lower = max(0, columns.lowerBound)
+        let upper = min(cols, columns.upperBound)
+        return lower < upper ? lower..<upper : nil
+    }
+}

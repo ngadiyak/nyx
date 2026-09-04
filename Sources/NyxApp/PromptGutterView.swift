@@ -8,8 +8,8 @@ import NyxCore
 /// a glyph -- `PromptGutter.width` decides how much of the padding it may take, and a pane with too
 /// little padding gets no gutter rather than one over its text.
 final class PromptGutterView: NSView {
-    /// A click on a mark, as a visible row index.
-    var onSelectRow: ((Int) -> Void)?
+    /// A click on a mark, as a visible row index, and whether ⌥ was held.
+    var onSelectRow: ((Int, Bool) -> Void)?
 
     private var marks: [GutterMark?] = []
     private var palette = Palette.xtermDefault()
@@ -75,7 +75,7 @@ final class PromptGutterView: NSView {
                                          padding: Double(topPadding), rows: marks.count),
               mark(at: row) != nil
         else { return }
-        onSelectRow?(row)
+        onSelectRow?(row, event.modifierFlags.contains(.option))
     }
 
     override func resetCursorRects() {

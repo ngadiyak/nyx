@@ -76,6 +76,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private let stickyStrip = StickyPromptView(frame: .zero)
     /// The prompt row the strip currently names, for its click.
     private var stickyPromptRow: Int?
+    /// Which commands' output is collapsed. Empty for almost every pane that ever exists, which is
+    /// what keeps the render path unchanged: every fold-aware branch is behind `isEmpty`.
+    private var folding = OutputFolding()
+    /// The buffer the folds belong to; a `clear` makes every absolute row mean something else.
+    private var foldingGeneration: UInt64 = 0
+    /// The last frame's display rows, so a click can tell which visible row is a fold placeholder
+    /// and which command it stands for. Empty whenever nothing is folded.
+    private var foldRowsOnScreen: [DisplayRow] = []
     /// Notices that a command ended, from nothing but the prompt marks; see `CommandWatcher`.
     private var commandWatcher = CommandWatcher()
     private var commandCheckScheduled = false
@@ -107,7 +115,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.framebufferOnly = true
         applyBackgroundAppearance()
-        gutter.onSelectRow = { [weak self] row in self?.selectCommand(atVisibleRow: row) }
+        gutter.onSelectRow = { [weak self] row, alternate in
+            self?.gutterClicked(atVisibleRow: row, alternate: alternate)
+        }
         addSubview(gutter)
         stickyStrip.onClick = { [weak self] in self?.scrollToStickyPrompt() }
         addSubview(stickyStrip)
@@ -455,19 +465,67 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 hoveredLinkGeneration = t.scrollbackGeneration
                 hoveredLink = nil
             }
-            let lines = (0..<t.rows).map { t.viewportRow($0) }
+            // A fold is an absolute row, and a `clear` makes every absolute row mean something
+            // else; keeping them would collapse whatever landed on those indices.
+            if self.foldingGeneration != t.scrollbackGeneration {
+                self.foldingGeneration = t.scrollbackGeneration
+                self.folding.unfoldAll()
+            }
+            // Folds whose prompt has gone -- evicted from the ring, or overwritten -- are dropped
+            // here rather than accumulating over a session. Costs one row read per fold, and
+            // nothing at all when there are none.
+            if !self.folding.isEmpty { self.folding.prune(in: t) }
             let cursor: Cursor? = (t.modes.showCursor && t.viewportOffset == 0) ? t.screen.cursor : nil
             // Resolved here, inside the lock, so the highlighted columns belong to the same
             // viewport as the lines being drawn.
             let top = t.viewportTopRow
-            let selected = (0..<t.rows).map { self.selection?.columnRange(onRow: top + $0, cols: t.cols) }
-            let matches = SearchHighlights.visibleRanges(self.searchSession.matches, viewportTop: top,
+            let lines: [Row]
+            let selected: [Range<Int>?]
+            let matches: [[Range<Int>]]
+            let current: [Range<Int>?]
+            let hovered: [Range<Int>?]
+            if self.folding.isEmpty {
+                // Untouched: no fold means no buffer walk, no mapping and no allocation beyond the
+                // rows themselves. This is the path every frame of an ordinary session takes.
+                self.foldRowsOnScreen = []
+                lines = (0..<t.rows).map { t.viewportRow($0) }
+                selected = (0..<t.rows).map { self.selection?.columnRange(onRow: top + $0, cols: t.cols) }
+                matches = SearchHighlights.visibleRanges(self.searchSession.matches, viewportTop: top,
                                                         rows: t.rows, cols: t.cols)
-            let current = SearchHighlights.visibleRange(of: self.searchSession.current, viewportTop: top,
-                                                       rows: t.rows, cols: t.cols)
-            let hovered = SearchHighlights.visibleRange(onAbsoluteRow: self.hoveredLink?.row ?? 0,
+                current = SearchHighlights.visibleRange(of: self.searchSession.current, viewportTop: top,
+                                                        rows: t.rows, cols: t.cols)
+                hovered = SearchHighlights.visibleRange(onAbsoluteRow: self.hoveredLink?.row ?? 0,
                                                         columns: self.hoveredLink?.columns,
                                                         viewportTop: top, rows: t.rows, cols: t.cols)
+            } else {
+                // A folded viewport is not a contiguous run of absolute rows, so everything indexed
+                // by visible row has to be placed through the display rows rather than by
+                // subtracting the viewport top -- otherwise a highlight lands on whichever row the
+                // fold pulled up into that slot.
+                let display = t.displayRows(from: top, count: t.rows, folding: self.folding)
+                self.foldRowsOnScreen = display
+                lines = display.map { row in
+                    switch row {
+                    case .row(let absolute): return t.absoluteRow(absolute) ?? Row(cols: t.cols)
+                    case .fold(_, let hidden): return t.foldPlaceholderRow(hiddenRows: hidden)
+                    }
+                } + Array(repeating: Row(cols: t.cols), count: max(0, t.rows - display.count))
+                selected = display.map { row in
+                    guard case .row(let absolute) = row else { return nil }
+                    return self.selection?.columnRange(onRow: absolute, cols: t.cols)
+                } + Array(repeating: nil, count: max(0, t.rows - display.count))
+                matches = SearchHighlights.visibleRanges(self.searchSession.matches,
+                                                        displayRows: display, cols: t.cols)
+                    + Array(repeating: [], count: max(0, t.rows - display.count))
+                current = SearchHighlights.visibleRange(onAbsoluteRow: self.searchSession.current?.row ?? 0,
+                                                        columns: self.searchSession.current?.columns,
+                                                        displayRows: display, cols: t.cols)
+                    + Array(repeating: nil, count: max(0, t.rows - display.count))
+                hovered = SearchHighlights.visibleRange(onAbsoluteRow: self.hoveredLink?.row ?? 0,
+                                                        columns: self.hoveredLink?.columns,
+                                                        displayRows: display, cols: t.cols)
+                    + Array(repeating: nil, count: max(0, t.rows - display.count))
+            }
             // Read here rather than on a timer: one cheap pass over the visible rows, and it is
             // guaranteed to describe the same viewport as the frame being drawn.
             gutterMarks = t.gutterMarks(rows: t.rows)
@@ -688,9 +746,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     private func position(_ p: (x: Double, y: Double), in t: Terminal) -> AbsolutePosition {
         let cell = cellSizePoints
-        return PointerMap.position(x: p.x, y: p.y, cellWidth: Double(cell.width), cellHeight: Double(cell.height),
-                                   padding: Double(padding), viewportTop: t.viewportTopRow,
-                                   cols: t.cols, totalRows: t.totalRows)
+        let hit = PointerMap.position(x: p.x, y: p.y, cellWidth: Double(cell.width), cellHeight: Double(cell.height),
+                                      padding: Double(padding), viewportTop: t.viewportTopRow,
+                                      cols: t.cols, totalRows: t.totalRows)
+        // `PointerMap` counts rows down from the viewport top, which stops being the same thing as
+        // counting absolute rows the moment something is folded: the rows under the pointer are
+        // whatever the folds left on screen.
+        guard !folding.isEmpty,
+              let absolute = absoluteRow(forVisibleRow: hit.row - t.viewportTopRow, in: t)
+        else { return hit }
+        return AbsolutePosition(row: absolute, col: hit.col)
     }
 
     private func mouseModifiers(_ e: NSEvent) -> KeyModifiers {
@@ -748,6 +813,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // ⌘-click opens whatever is under the pointer, before the click can become a selection or
         // be handed to a program that has taken the mouse.
         if event.modifierFlags.contains(.command), openLink(at: event) { return }
+        // A fold placeholder is a button, not text: clicking it puts the output back. Checked
+        // before mouse reporting, because a fold only exists while the user is reading scrollback.
+        if unfoldPlaceholder(at: convert(event.locationInWindow, from: nil)) { return }
         if report(event, .left, .press) { return }
         lastMousePoint = convert(event.locationInWindow, from: nil)
         let point = topLeft(lastMousePoint!)
@@ -871,7 +939,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             for _ in 0..<abs(lines) { all += bytes }
             session.send(all)
         } else {
-            session.withTerminal { $0.scrollViewport(by: lines) }
+            session.withTerminal { t in
+                t.scrollViewport(by: lines)
+                // A fold hides every row it covers, so a viewport top inside one does not move on
+                // screen however far it is scrolled -- two thousand hidden rows would be two
+                // thousand wheel clicks. Step over the fold in the direction of travel instead.
+                t.snapViewportOutOfFold(movingUp: lines > 0, folding: folding)
+            }
             markDirty()
         }
     }
@@ -1214,10 +1288,104 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         markDirty()
     }
 
+    // MARK: - Folding
+    //
+    // What a fold hides, which rows the viewport shows once some are hidden, and where a highlight
+    // lands afterwards are all `OutputFolding` and `Terminal.displayRows` in NyxCore. What is here
+    // is a click, a menu action, and the arithmetic that turns a point into a visible row.
+
+    /// The visible row a point falls on, or nil for a point in the padding.
+    private func visibleRow(at point: NSPoint) -> Int? {
+        let cell = cellSizePoints
+        guard cell.height > 0 else { return nil }
+        let y = Double(bounds.height - point.y)
+        let row = Int(((y - Double(padding)) / Double(cell.height)).rounded(.down))
+        return row >= 0 && row < rows ? row : nil
+    }
+
+    /// A click on a fold placeholder puts the output back. Returns false when the click was on
+    /// ordinary text, so it can go on to mean what it usually means.
+    private func unfoldPlaceholder(at point: NSPoint) -> Bool {
+        guard !folding.isEmpty, let visible = visibleRow(at: point),
+              foldRowsOnScreen.indices.contains(visible),
+              case .fold(let promptRow, _) = foldRowsOnScreen[visible] else { return false }
+        folding.unfold(promptRow: promptRow)
+        markDirty()
+        return true
+    }
+
+    /// A click on a gutter mark folds that command's output, and folds it back open. Holding ⌥
+    /// selects the output instead, which is what a plain click used to do.
+    private func gutterClicked(atVisibleRow row: Int, alternate: Bool) {
+        guard !alternate else {
+            selectCommand(atVisibleRow: row)
+            return
+        }
+        let absolute: Int? = session.withTerminal { t in
+            guard let entry = self.absoluteRow(forVisibleRow: row, in: t),
+                  let region = t.command(containingAbsoluteRow: entry),
+                  !region.outputRows.isEmpty else { return nil }
+            return region.promptRow
+        }
+        guard let promptRow = absolute else {
+            NSSound.beep()
+            return
+        }
+        folding.toggle(promptRow: promptRow)
+        onFocusRequested?()
+        markDirty()
+    }
+
+    /// Which absolute row a visible row is showing, through whatever folds are in force. nil for a
+    /// row that is showing a fold placeholder rather than a row of the buffer.
+    private func absoluteRow(forVisibleRow row: Int, in t: Terminal) -> Int? {
+        guard !folding.isEmpty else { return t.viewportTopRow + row }
+        guard foldRowsOnScreen.indices.contains(row) else { return nil }
+        guard case .row(let absolute) = foldRowsOnScreen[row] else { return nil }
+        return absolute
+    }
+
+    /// `fold_command`: collapses the command the viewport is showing, and expands it again.
+    @discardableResult
+    func toggleFoldOfCurrentCommand() -> Bool {
+        let promptRow: Int? = session.withTerminal { t in
+            guard let region = t.command(containingAbsoluteRow: t.viewportTopRow) ?? t.lastFinishedCommand,
+                  !region.outputRows.isEmpty else { return nil }
+            return region.promptRow
+        }
+        guard let promptRow else { return false }
+        folding.toggle(promptRow: promptRow)
+        markDirty()
+        return true
+    }
+
+    /// `fold_all_long_output`: tidies the screen in one action, and puts it back on a second press
+    /// -- after a long session most of what is in the buffer is output you have already read.
+    @discardableResult
+    func foldAllLongOutput() -> Bool {
+        guard session.withTerminal({ $0.shellEmitsPromptMarks }) else { return false }
+        guard folding.isEmpty else {
+            folding.unfoldAll()
+            markDirty()
+            return true
+        }
+        session.withTerminal { t in
+            folding.foldLongOutput(in: t, longerThan: Pane.longOutputThreshold)
+        }
+        guard !folding.isEmpty else { return false }
+        markDirty()
+        return true
+    }
+
+    /// Output longer than a screenful is what "long" means here: anything shorter was readable
+    /// where it stood, and folding it would hide as many rows as the placeholder costs.
+    private static let longOutputThreshold = 20
+
     /// A click on a mark selects that command's output.
     private func selectCommand(atVisibleRow row: Int) {
         let selection: Selection? = session.withTerminal { t in
-            guard let region = t.command(containingAbsoluteRow: t.viewportTopRow + row) else { return nil }
+            guard let absolute = self.absoluteRow(forVisibleRow: row, in: t),
+                  let region = t.command(containingAbsoluteRow: absolute) else { return nil }
             return t.selectionForOutput(of: region)
         }
         guard let selection else {

@@ -18,6 +18,7 @@ enum MainMenu {
         main.addItem(item("Shell", shell))
 
         let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Copy", action: #selector(TerminalView.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "Paste", action: #selector(TerminalView.paste(_:)), keyEquivalent: "v")
         main.addItem(item("Edit", edit))
 

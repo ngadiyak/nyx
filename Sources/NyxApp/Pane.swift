@@ -107,7 +107,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         self.config = config
         bindings = KeyBindingTable(user: config.keybinds)
         let scale = NSScreen.main?.backingScaleFactor ?? 2
-        fonts = FontSet(family: config.fontFamily, pointSize: CGFloat(config.fontSize), scale: scale, lineHeight: CGFloat(config.lineHeight))
+        fonts = FontSet(family: config.fontFamily, pointSize: CGFloat(config.fontSize), scale: scale,
+                        lineHeight: CGFloat(config.lineHeight),
+                        baseFont: Pane.systemMonospacedFont(for: config.fontFamily))
         renderer = try Renderer(device: device, fonts: fonts)
         let palette = Pane.resolvedPalette(for: config)
         session = try TerminalSession(config: Pane.sessionConfig(for: config, cols: 80, rows: 24, palette: palette,
@@ -363,7 +365,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     private func rebuildFonts() {
         let scale = window?.backingScaleFactor ?? fonts.scale
-        fonts = FontSet(family: config.fontFamily, pointSize: effectiveFontSize, scale: scale, lineHeight: CGFloat(config.lineHeight))
+        fonts = FontSet(family: config.fontFamily, pointSize: effectiveFontSize, scale: scale,
+                        lineHeight: CGFloat(config.lineHeight),
+                        baseFont: Pane.systemMonospacedFont(for: config.fontFamily))
         renderer.setFonts(fonts)
         window?.contentResizeIncrements = cellSizePoints
         updateGrid()
@@ -1496,6 +1500,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Whether there is any buffer to save at all, so the menu item can grey out rather than
     /// putting up a panel that would write an empty file.
     var hasScrollback: Bool { session.withTerminal { $0.totalRows > 0 } }
+
+    /// The `font-family = system` case: macOS's own monospaced face, SF Mono.
+    ///
+    /// It cannot be asked for by name -- CoreText hands back Menlo for `userFixedPitch` and
+    /// Helvetica for every internal name it has -- so it is resolved here, where AppKit is
+    /// available, and passed down as a font rather than a family. Any other value is a family name
+    /// and takes the ordinary path.
+    static func systemMonospacedFont(for family: String) -> CTFont? {
+        guard family.lowercased() == "system" else { return nil }
+        return NSFont.monospacedSystemFont(ofSize: 13, weight: .regular) as CTFont
+    }
 
     /// Whether ⌘C has anything to copy, so the menu item can grey out.
     var hasSelection: Bool {

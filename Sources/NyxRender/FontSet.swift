@@ -21,11 +21,20 @@ public final class FontSet {
     public let scale: CGFloat
     public let metrics: CellMetrics
 
-    public init(family: String, pointSize: CGFloat, scale: CGFloat, lineHeight: CGFloat = 1.0) {
+    /// `baseFont` overrides the family lookup entirely.
+    ///
+    /// It exists for one font: macOS's own monospaced UI face, SF Mono, which Apple exposes only
+    /// through `NSFont.monospacedSystemFont` -- CoreText's `userFixedPitch` returns Menlo, and
+    /// asking for it by any of its internal names quietly returns Helvetica. `NyxRender` cannot
+    /// import AppKit, so the app layer resolves that one font and hands the `CTFont` down; every
+    /// other family still arrives as a name.
+    public init(family: String, pointSize: CGFloat, scale: CGFloat, lineHeight: CGFloat = 1.0,
+                baseFont: CTFont? = nil) {
         self.pointSize = pointSize
         self.scale = scale
         let px = pointSize * scale
-        let base = FontSet.resolveFont(named: family, size: px)
+        let base = baseFont.map { CTFontCreateCopyWithAttributes($0, px, nil, nil) }
+            ?? FontSet.resolveFont(named: family, size: px)
         regular = base
         bold = CTFontCreateCopyWithSymbolicTraits(base, px, nil, .boldTrait, .boldTrait) ?? base
         italic = CTFontCreateCopyWithSymbolicTraits(base, px, nil, .italicTrait, .italicTrait) ?? base

@@ -281,7 +281,10 @@ final class SettingsWindowController: NSWindowController {
             guard let font = NSFont(name: family, size: 12) else { return false }
             return font.isFixedPitch
         }
-        return families.isEmpty ? ["Menlo"] : families.sorted()
+        // `system` first, and not from the family list: SF Mono is not an installed family and
+        // cannot be enumerated, so without this the best-looking option on the machine would be
+        // the one setting you could not pick from the settings window.
+        return ["system"] + (families.isEmpty ? ["Menlo"] : families.sorted())
     }
 
     // MARK: - Reading the controls back

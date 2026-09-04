@@ -14,7 +14,10 @@ public struct ConfigDiagnostic: Equatable {
 
 /// Everything the phase-2 config file can set. See spec §6.5 for the key list.
 public struct Config: Equatable {
-    public var fontFamily: String = "Menlo"
+    /// `system` means macOS's own monospaced face, SF Mono -- which Apple exposes only through
+    /// `NSFont.monospacedSystemFont`, so it cannot be named here like an installed family. It is
+    /// the default because it is the best-looking monospace on the machine and needs no install.
+    public var fontFamily: String = "system"
     public var fontThicken: Bool = false
     public var fontSize: Double = 13
     public var lineHeight: Double = 1.0
@@ -69,7 +72,7 @@ public extension Config {
         # the rest of the file, and your previous working config, stay in force.
 
         # --- Font ---
-        # font-family = Menlo
+        # font-family = system
         # font-size = 13
         # line-height = 1.0
         # font-thicken = false

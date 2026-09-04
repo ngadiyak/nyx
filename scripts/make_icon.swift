@@ -44,8 +44,8 @@ func draw(size: Int) -> CGImage? {
     ctx.clip()
     let space = CGColorSpaceCreateDeviceRGB()
     let colors = [
-        CGColor(colorSpace: space, components: [0.16, 0.17, 0.35, 1])!,
-        CGColor(colorSpace: space, components: [0.05, 0.05, 0.11, 1])!,
+        CGColor(colorSpace: space, components: [0.19, 0.20, 0.42, 1])!,
+        CGColor(colorSpace: space, components: [0.04, 0.04, 0.10, 1])!,
     ] as CFArray
     if let gradient = CGGradient(colorsSpace: space, colors: colors, locations: [0, 1]) {
         ctx.drawLinearGradient(gradient, start: CGPoint(x: 0, y: rect.maxY),
@@ -65,32 +65,59 @@ func draw(size: Int) -> CGImage? {
     }
     ctx.restoreGState()
 
-    // The mark, laid out in a box inset from the body so it never crowds the corners.
-    let mark = rect.insetBy(dx: rect.width * 0.26, dy: rect.height * 0.30)
-    let stroke = max(1, rect.width * 0.075)
+    // The mark: a prompt chevron and the block cursor that follows it, laid out as ONE group and
+    // then centred. Placing the two independently inside an inset box is what left the previous
+    // version sitting low and to the left -- an icon is looked at next to other icons, and being a
+    // few percent off centre is visible even when nothing else is.
+    let markHeight = rect.height * 0.32
+    let stroke = max(1, rect.width * 0.068)
+    let chevronWidth = markHeight * 0.52
+    let blockWidth = markHeight * 0.32
+    // Wide enough that the chevron and the cursor stay two shapes: closer together they merge
+    // into one blob at small sizes, which is where the icon is actually seen.
+    let gap = markHeight * 0.42
+    let markWidth = chevronWidth + gap + blockWidth
 
-    // The prompt chevron. Drawn as a path rather than set as text so it is identical at every size
-    // and needs no font to be installed.
-    let chevronWidth = mark.width * 0.42
+    let originX = rect.midX - markWidth / 2
+    let midY = rect.midY
+    let top = midY + markHeight / 2
+    let bottom = midY - markHeight / 2
+
+    // A soft glow behind the mark, so it sits on the surface rather than being painted flat onto
+    // it. Barely visible on its own; what it does is stop the icon looking like a sticker.
+    ctx.saveGState()
+    ctx.addPath(body)
+    ctx.clip()
+    let glowColors = [
+        CGColor(colorSpace: space, components: [0.42, 0.55, 1.0, 0.22])!,
+        CGColor(colorSpace: space, components: [0.42, 0.55, 1.0, 0])!,
+    ] as CFArray
+    if let glow = CGGradient(colorsSpace: space, colors: glowColors, locations: [0, 1]) {
+        ctx.drawRadialGradient(glow, startCenter: CGPoint(x: rect.midX, y: midY), startRadius: 0,
+                               endCenter: CGPoint(x: rect.midX, y: midY), endRadius: rect.width * 0.45,
+                               options: [])
+    }
+    ctx.restoreGState()
+
+    // The chevron, as a path rather than text: identical at every size, and no font to install.
     let path = CGMutablePath()
-    path.move(to: CGPoint(x: mark.minX, y: mark.maxY))
-    path.addLine(to: CGPoint(x: mark.minX + chevronWidth, y: mark.midY))
-    path.addLine(to: CGPoint(x: mark.minX, y: mark.minY))
-    ctx.setStrokeColor(CGColor(colorSpace: space, components: [0.61, 0.80, 1.0, 1])!)
+    path.move(to: CGPoint(x: originX, y: top))
+    path.addLine(to: CGPoint(x: originX + chevronWidth, y: midY))
+    path.addLine(to: CGPoint(x: originX, y: bottom))
+    ctx.setStrokeColor(CGColor(colorSpace: space, components: [0.55, 0.76, 1.0, 1])!)
     ctx.setLineWidth(stroke)
     ctx.setLineCap(.round)
     ctx.setLineJoin(.round)
     ctx.addPath(path)
     ctx.strokePath()
 
-    // The block cursor after it, in the warm colour a terminal cursor usually takes, so the two
-    // parts of the mark do not read as one shape.
-    let blockWidth = mark.width * 0.30
-    let blockHeight = mark.height * 0.62
-    let block = CGRect(x: mark.maxX - blockWidth, y: mark.midY - blockHeight / 2,
+    // The cursor, in the warm colour a terminal cursor takes, so the two halves of the mark do not
+    // read as one shape.
+    let blockHeight = markHeight * 0.78
+    let block = CGRect(x: originX + chevronWidth + gap, y: midY - blockHeight / 2,
                        width: blockWidth, height: blockHeight)
-    ctx.setFillColor(CGColor(colorSpace: space, components: [0.98, 0.76, 0.35, 1])!)
-    let blockCorner = min(blockWidth, blockHeight) * 0.18
+    ctx.setFillColor(CGColor(colorSpace: space, components: [1.0, 0.78, 0.36, 1])!)
+    let blockCorner = min(block.width, block.height) * 0.22
     ctx.addPath(CGPath(roundedRect: block, cornerWidth: blockCorner, cornerHeight: blockCorner,
                        transform: nil))
     ctx.fillPath()

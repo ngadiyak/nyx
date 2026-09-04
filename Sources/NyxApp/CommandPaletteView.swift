@@ -86,6 +86,36 @@ private final class PaletteListView: NSView {
         guard results.indices.contains(index) else { return }
         onChoose?(index)
     }
+
+    // MARK: - Accessibility
+    //
+    // Drawn rows are not views, so without this the palette is a text field over an empty box: the
+    // list nobody can see is also the list nobody can hear.
+
+    override func isAccessibilityElement() -> Bool { false }
+
+    override func accessibilityRole() -> NSAccessibility.Role? { .list }
+
+    override func accessibilityLabel() -> String? { "Results" }
+
+    override func accessibilityChildren() -> [Any]? {
+        results.enumerated().map { index, result in
+            // The detail is the half that says what a row *is* -- a shortcut, "Theme", "Quick
+            // action" -- and reading the title alone leaves three kinds of row sounding identical.
+            let detail = result.item.detail.isEmpty ? "" : ", \(result.item.detail)"
+            return DrawnControlElement.make(
+                label: "\(result.item.title)\(detail), \(index + 1) of \(results.count)",
+                role: .row, frame: rowRect(index), in: self,
+                value: index == selection ? 1 : 0,
+                press: { [weak self] in self?.onChoose?(index) })
+        }
+    }
+
+    override func accessibilitySelectedChildren() -> [Any]? {
+        guard results.indices.contains(selection),
+              let children = accessibilityChildren() else { return nil }
+        return [children[selection]]
+    }
 }
 
 /// The `⌘⇧P` panel: a field and a list of everything this window can do.
@@ -117,6 +147,8 @@ final class CommandPaletteView: NSView, NSTextFieldDelegate {
         self.list = PaletteListView(palette: palette)
         super.init(frame: .zero)
         wantsLayer = true
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Command palette")
         layer?.backgroundColor = nsColor(palette.background, alpha: 0.98).cgColor
         layer?.borderColor = nsColor(palette.foreground, alpha: 0.25).cgColor
         layer?.borderWidth = 1
@@ -133,6 +165,9 @@ final class CommandPaletteView: NSView, NSTextFieldDelegate {
         field.drawsBackground = false
         field.focusRingType = .none
         field.textColor = nsColor(palette.foreground, alpha: 1)
+        // The placeholder is the field's only name, and it goes the moment anything is typed.
+        field.describeForAccessibility("Command palette", role: .textField,
+                                       help: "Type to filter; ↑ and ↓ to choose, ⏎ to run.")
         addSubview(field)
 
         scroller.hasVerticalScroller = true
@@ -178,6 +213,11 @@ final class CommandPaletteView: NSView, NSTextFieldDelegate {
 
     private func refresh() {
         list.update(results: model.results, selection: model.selection, palette: palette)
+        // The count changes under the field as the query narrows it, and a filter with nothing left
+        // in it is the one result a screen reader has no other way to notice.
+        field.setAccessibilityValue(model.results.isEmpty
+            ? "no matches"
+            : "\(model.results.count) \(model.results.count == 1 ? "match" : "matches")")
         onHeightChange?(preferredHeight)
     }
 

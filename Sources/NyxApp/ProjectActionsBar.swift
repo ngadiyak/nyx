@@ -37,6 +37,14 @@ final class ProjectActionsBar: NSView {
 
         let ignoreButton = NSButton(title: "Ignore", target: self, action: #selector(ignore))
         ignoreButton.bezelStyle = .inline
+        // "Review…" and "Ignore" name themselves; what they are about is the strip, and this is
+        // the one strip in the application where pressing the wrong thing runs somebody else's
+        // commands.
+        reviewButton.describeForAccessibility("Review this folder’s actions before approving them",
+                                              role: .button)
+        ignoreButton.describeForAccessibility("Ignore this folder’s actions for now", role: .button)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Project actions")
         ignoreButton.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(messageLabel)
@@ -66,6 +74,7 @@ final class ProjectActionsBar: NSView {
             return
         }
         messageLabel.stringValue = message
+        setAccessibilityValue(message)
         // A project whose actions *changed* under an existing approval is the case worth a warning
         // colour: the user already said yes once, and this is telling them that yes no longer
         // covers what is in the file.

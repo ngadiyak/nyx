@@ -55,6 +55,7 @@ final class SettingsWindowController: NSWindowController {
         tabs.addTabViewItem(tab("Keys", keysPage()))
 
         diagnosticsLabel.translatesAutoresizingMaskIntoConstraints = false
+        diagnosticsLabel.describeForAccessibility("Configuration problems", role: .staticText)
         diagnosticsLabel.textColor = .systemRed
         diagnosticsLabel.lineBreakMode = .byTruncatingTail
         diagnosticsLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -139,6 +140,8 @@ final class SettingsWindowController: NSWindowController {
         let openConfig = NSButton(title: "Edit Config File…", target: self,
                                   action: #selector(openConfigFile(_:)))
         openConfig.translatesAutoresizingMaskIntoConstraints = false
+        openConfig.setAccessibilityHelp("Opens ~/.config/nyx/config in your editor.")
+        keysTable.setAccessibilityLabel("Shortcuts")
 
         let note = NSTextField(wrappingLabelWithString:
             "Shortcuts are set in the config file with lines like `keybind = cmd+shift+t=new_tab`. "
@@ -200,8 +203,36 @@ final class SettingsWindowController: NSWindowController {
         return view
     }
 
+    /// A label beside a control -- and the same words attached to the control itself.
+    ///
+    /// The text field to its left is what a sighted user reads a popup or a slider by; nothing
+    /// connects the two for anyone else, so every control here reached VoiceOver as "pop up
+    /// button" and "slider" with no indication of what they set. A checkbox is the exception: its
+    /// title is already its name, which is why those rows are built with an empty label.
     private func row(_ label: String, _ control: NSView) -> (NSView, NSView) {
-        (NSTextField(labelWithString: label.isEmpty ? "" : label + ":"), control)
+        if !label.isEmpty { describe(control, as: label) }
+        return (NSTextField(labelWithString: label.isEmpty ? "" : label + ":"), control)
+    }
+
+    /// Names every control inside `view`. A slider comes with a readout beside it and a field with
+    /// a stepper, and both of those are separate controls that would otherwise be announced as a
+    /// nameless number next to a nameless one.
+    private func describe(_ view: NSView, as label: String) {
+        for control in SettingsWindowController.controls(in: view) {
+            switch control {
+            case let field as NSTextField where !field.isEditable:
+                control.describeForAccessibility("\(label), current value", role: .staticText)
+            case is NSStepper:
+                control.describeForAccessibility("\(label), step up or down")
+            default:
+                control.setAccessibilityLabel(label)
+            }
+        }
+    }
+
+    private static func controls(in view: NSView) -> [NSControl] {
+        if let control = view as? NSControl { return [control] }
+        return view.subviews.flatMap { controls(in: $0) }
     }
 
     // MARK: - Controls
@@ -384,6 +415,8 @@ final class SettingsWindowController: NSWindowController {
             ? ""
             : diagnostics.map { $0.line > 0 ? "line \($0.line): \($0.message)" : $0.message }
                 .joined(separator: "   ")
+        diagnosticsLabel.setAccessibilityValue(diagnostics.isEmpty
+            ? "none" : diagnosticsLabel.stringValue)
     }
 
     private func cursorName(_ shape: CursorShape) -> String {
@@ -464,6 +497,11 @@ extension SettingsWindowController: NSTableViewDataSource, NSTableViewDelegate {
         if id == "chord" {
             field.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             field.textColor = text == "—" ? .tertiaryLabelColor : .labelColor
+            // The dash means "nothing is bound", which is a character no screen reader can be
+            // relied upon to say and which reads as a stray hyphen when it does.
+            field.setAccessibilityLabel(text == "—"
+                ? "\(keyRows[row].action.title): no shortcut"
+                : "\(keyRows[row].action.title): \(text)")
         }
         return field
     }

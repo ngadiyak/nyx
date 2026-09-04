@@ -620,6 +620,9 @@ final class TabController: NSViewController, NSMenuItemValidation {
         alert.messageText = title
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         field.stringValue = initial
+        // An alert's accessory view is named by nothing at all: the message text is the alert's,
+        // not the field's.
+        field.describeForAccessibility(title, role: .textField)
         alert.accessoryView = field
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Cancel")
@@ -685,6 +688,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
         alert.informativeText = "The name stays until you reset it, whatever the shell sets."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         field.stringValue = tab.customTitle ?? tab.title
+        field.describeForAccessibility("Tab name", role: .textField)
         alert.accessoryView = field
         alert.addButton(withTitle: "Rename")
         alert.addButton(withTitle: "Cancel")
@@ -891,6 +895,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
         text.isSelectable = true
         text.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         text.textContainerInset = NSSize(width: 4, height: 4)
+        text.describeForAccessibility("The commands this folder would run", role: .textArea)
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 140))
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
@@ -939,6 +944,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
     /// visible before the file exists rather than discovered afterwards in `less`.
     private static func formatNote(for name: String) -> NSView {
         let label = NSTextField(wrappingLabelWithString: Transcript.formatDescription(forFileNamed: name))
+        label.describeForAccessibility("File format", role: .staticText)
         label.font = .systemFont(ofSize: 11)
         label.textColor = .secondaryLabelColor
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 44))

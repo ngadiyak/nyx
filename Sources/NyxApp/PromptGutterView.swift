@@ -78,6 +78,34 @@ final class PromptGutterView: NSView {
         onSelectRow?(row, event.modifierFlags.contains(.option))
     }
 
+    // MARK: - Accessibility
+    //
+    // The gutter says whether a command worked entirely in colour -- green or red -- which is the
+    // one thing a colour can never say on its own. Every mark becomes an element that says it in
+    // words and performs the same jump a click does.
+
+    override func isAccessibilityElement() -> Bool { false }
+
+    override func accessibilityRole() -> NSAccessibility.Role? { .group }
+
+    override func accessibilityLabel() -> String? { "Command results" }
+
+    override func accessibilityChildren() -> [Any]? {
+        guard cellHeight > 0 else { return [] }
+        return marks.indices.compactMap { row -> NSAccessibilityElement? in
+            guard let mark = mark(at: row) else { return nil }
+            let y = topPadding + CGFloat(row) * cellHeight
+            return DrawnControlElement.make(
+                label: mark == .failed
+                    ? "Command on line \(row + 1) failed. Select its output."
+                    : "Command on line \(row + 1) succeeded. Select its output.",
+                role: .button,
+                frame: NSRect(x: 0, y: y, width: max(1, bounds.width), height: cellHeight),
+                in: self,
+                press: { [weak self] in self?.onSelectRow?(row, false) })
+        }
+    }
+
     override func resetCursorRects() {
         super.resetCursorRects()
         guard cellHeight > 0 else { return }

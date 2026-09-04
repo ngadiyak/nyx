@@ -27,6 +27,12 @@ final class ConfigBanner: NSView {
 
         let dismissButton = NSButton(title: "\u{2715}", target: self, action: #selector(dismiss))
         dismissButton.isBordered = false
+        // A multiplication sign is the button's whole title, which a screen reader reads out as
+        // exactly that.
+        dismissButton.describeForAccessibility("Dismiss this message", role: .button)
+        openButton.setAccessibilityHelp("Opens ~/.config/nyx/config in your editor.")
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Configuration message")
         dismissButton.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(messageLabel)
@@ -73,6 +79,7 @@ final class ConfigBanner: NSView {
 
     private func show(text: String, color: NSColor) {
         messageLabel.stringValue = text
+        setAccessibilityValue(text)
         layer?.backgroundColor = color.withAlphaComponent(0.95).cgColor
         // Dark text on the fill, always. The label followed the system appearance, so in dark mode
         // it drew white on yellow at 2:1 -- the one strip on screen whose entire job is to be read.

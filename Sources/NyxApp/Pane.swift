@@ -188,6 +188,36 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     override func makeBackingLayer() -> CALayer { CAMetalLayer() }
     override var acceptsFirstResponder: Bool { true }
+
+    // MARK: - Accessibility
+    //
+    // A pane is a Metal layer: there is no text in the view hierarchy at all, so without this it
+    // reaches VoiceOver as an unlabelled rectangle -- the terminal itself, the one thing in the
+    // application anybody is actually here to read, silent.
+
+    override func isAccessibilityElement() -> Bool { true }
+
+    /// A text area rather than a group: what is in it is text, and the role is what decides whether
+    /// a screen reader will read the value at all.
+    override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
+
+    override func accessibilityRoleDescription() -> String? { "terminal" }
+
+    override func accessibilityLabel() -> String? {
+        let title = fallbackTitle
+        return title.isEmpty ? "Terminal" : "Terminal, \(title)"
+    }
+
+    /// What is on screen now, as plain text. Read on demand and never cached: it is the buffer, and
+    /// the buffer changes on every keystroke.
+    override func accessibilityValue() -> Any? {
+        session.withTerminal { terminal in
+            let top = terminal.viewportTopRow
+            return terminal.transcript(rows: top..<(top + terminal.rows), options: .plainText)
+        }
+    }
+
+    override func isAccessibilityEnabled() -> Bool { true }
     override var isOpaque: Bool { config.backgroundOpacity >= 1 && config.backgroundBlur <= 0 }
 
     var cellSizePoints: NSSize {

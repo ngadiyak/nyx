@@ -46,6 +46,13 @@ final class QuickActionEditor: NSViewController {
         kindControl.target = self
         kindControl.action = #selector(fieldChanged)
         kindControl.selectedSegment = 0
+        // The three fields are named only by the text to their left, which nothing connects them
+        // to; the explanation under them changes as the segment changes and is the only place the
+        // difference between the three is stated at all.
+        nameField.describeForAccessibility("Name", role: .textField)
+        commandField.describeForAccessibility("Command", role: .textField)
+        kindControl.setAccessibilityLabel("When pressed")
+        explanation.describeForAccessibility("What this button will do", role: .staticText)
 
         explanation.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         explanation.textColor = .secondaryLabelColor
@@ -133,6 +140,7 @@ final class QuickActionEditor: NSViewController {
     /// Says in words what the chosen kind will do, because the three are genuinely different and
     /// the difference is the thing a person gets wrong.
     private func updateExplanation() {
+        defer { explanation.setAccessibilityValue(explanation.stringValue) }
         switch selectedKind {
         case .send:
             explanation.stringValue = "Types the command into the current pane and runs it, so it "

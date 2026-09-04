@@ -256,39 +256,128 @@ final class TabBarView: NSView {
         NSCursor.arrow.set()
     }
 
-    /// What the thing under the pointer is called, or nil where there is nothing to name.
+    /// What the thing under the pointer is called, or nil where there is nothing to name. The
+    /// words themselves are `TabBarLabels` in NyxCore, shared with the accessibility labels below
+    /// -- a control that says one thing to a pointer and another to a screen reader is a control
+    /// with two different names.
     private func label(at point: NSPoint) -> String? {
         switch hit(at: point) {
         case .newTab:
-            return "New tab (⌘T)"
+            return TabBarLabels.newTab
         case .close(let index):
-            return items.indices.contains(index) ? "Close \(items[index].title) (⌘W)" : "Close tab"
+            return TabBarLabels.close(tabTitled: items.indices.contains(index) ? items[index].title : nil)
         case .select(let index):
             return items.indices.contains(index) ? items[index].title : nil
         case .expandGroup(let id), .groupHeader(let id):
             guard let group = grouping.group(withID: id) else { return nil }
-            return group.isCollapsed ? "Expand “\(group.name)”" : "Collapse “\(group.name)”"
+            return TabBarLabels.group(named: group.name, isCollapsed: group.isCollapsed)
         case .leadingButton(let index):
             guard leadingButtons.indices.contains(index) else { return nil }
             switch leadingButtons[index] {
-            case .tabList: return "All tabs (⌘⇧P)"
-            case .addQuickAction: return "Add a button for a command you run often"
+            case .tabList: return TabBarLabels.tabList
+            case .addQuickAction: return TabBarLabels.addQuickAction
             case .quick(let action):
                 guard quickActions.indices.contains(action) else { return nil }
-                let quick = quickActions[action]
-                let what: String
-                switch quick.kind {
-                case .send: what = "types"
-                case .run: what = "opens a tab and runs"
-                case .toggle:
-                    what = QuickActionRunner.shared.isRunning(quick) ? "stops" : "runs in the background"
-                }
-                return "\(quick.name) — \(what): \(quick.command)"
-            case .newTab: return "New tab (⌘T)"
+                return quickActionLabel(action, forAccessibility: false)
+            case .newTab: return TabBarLabels.newTab
             }
         case nil:
             return nil
         }
+    }
+
+    private func quickActionLabel(_ index: Int, forAccessibility: Bool) -> String {
+        let quick = quickActions[index]
+        let running = quick.kind == .toggle && QuickActionRunner.shared.isRunning(quick)
+        return forAccessibility
+            ? TabBarLabels.quickActionState(named: quick.name, kind: quick.kind,
+                                            command: quick.command, isRunning: running)
+            : TabBarLabels.quickAction(named: quick.name, kind: quick.kind,
+                                       command: quick.command, isRunning: running)
+    }
+
+    // MARK: - Accessibility
+    //
+    // The bar has no subviews, so there is nothing for AppKit to describe on its own: without this
+    // VoiceOver found one unlabelled group and could not reach a single tab, close button or quick
+    // action. Every rectangle the bar draws and hit-tests becomes an element that carries the same
+    // name the tooltip does and performs the same press a click does.
+    //
+    // Built on demand rather than cached: the elements are frames over state that changes with
+    // every tab opened, every group collapsed and every resize, and a stale frame points VoiceOver
+    // at a control that is no longer there.
+
+    override func isAccessibilityElement() -> Bool { false }
+
+    override func accessibilityRole() -> NSAccessibility.Role? { .tabGroup }
+
+    override func accessibilityLabel() -> String? { TabBarLabels.bar }
+
+    override func accessibilityChildren() -> [Any]? {
+        var children: [NSAccessibilityElement] = []
+
+        for (index, frame) in fittedLeadingRects.enumerated() {
+            guard leadingButtons.indices.contains(index) else { continue }
+            switch leadingButtons[index] {
+            case .newTab:
+                children.append(element(TabBarLabels.newTab, .button, frame) { [weak self] in
+                    self?.onNewTab?()
+                })
+            case .tabList:
+                children.append(element(TabBarLabels.tabList, .button, frame) { [weak self] in
+                    self?.onShowTabList?()
+                })
+            case .addQuickAction:
+                children.append(element(TabBarLabels.addQuickAction, .button, frame) { [weak self] in
+                    self?.onAddQuickAction?()
+                })
+            case .quick(let action):
+                guard quickActions.indices.contains(action) else { continue }
+                children.append(element(quickActionLabel(action, forAccessibility: true), .button,
+                                        frame) { [weak self] in self?.onQuickAction?(action) })
+            }
+        }
+
+        for (position, slot) in slots.enumerated() {
+            let frame = rect(forSlot: position)
+            switch slot {
+            case .tab(let index, _):
+                guard items.indices.contains(index) else { continue }
+                let item = items[index]
+                // A radio button, which is what a tab is: one of a set, exactly one of which is
+                // on. The value is what carries "this is the one you are looking at".
+                children.append(element(TabBarLabels.tab(titled: item.title, position: index + 1,
+                                                         of: items.count, indicator: item.indicator),
+                                        .radioButton, frame, value: index == selected ? 1 : 0) {
+                    [weak self] in self?.onSelect?(index)
+                })
+                if let close = closeRect(in: frame) {
+                    children.append(element(TabBarLabels.close(tabTitled: item.title), .button,
+                                            close) { [weak self] in self?.onClose?(index) })
+                }
+            case .collapsedGroup(let id, let count):
+                guard let group = grouping.group(withID: id) else { continue }
+                children.append(element(TabBarLabels.collapsedGroup(named: group.name, tabCount: count),
+                                        .button, frame) { [weak self] in self?.onToggleGroup?(id) })
+            case .groupLabel(let id):
+                guard let group = grouping.group(withID: id) else { continue }
+                children.append(element(TabBarLabels.expandedGroup(named: group.name), .button,
+                                        frame) { [weak self] in self?.onToggleGroup?(id) })
+            }
+        }
+
+        if let trailing = trailingRect {
+            children.append(element(TabBarLabels.newTab, .button, trailing) { [weak self] in
+                self?.onNewTab?()
+            })
+        }
+        return children
+    }
+
+    private func element(_ label: String, _ role: NSAccessibility.Role, _ frame: NSRect,
+                         value: Any? = nil, press: @escaping () -> Void) -> NSAccessibilityElement {
+        DrawnControlElement.make(label: label, role: role, frame: frame, in: self, value: value,
+                                 press: press)
     }
 
     override func mouseDown(with event: NSEvent) {

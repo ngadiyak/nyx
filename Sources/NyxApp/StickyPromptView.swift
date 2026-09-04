@@ -55,6 +55,13 @@ final class StickyPromptView: NSView {
         }
         shown = (text, failed)
         label.stringValue = text
+        // A strip that means "this output belongs to that command", and clicking it goes there.
+        // Whether the command failed is drawn in colour, which is exactly what a label has to say
+        // in words instead.
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(failed
+            ? "Failed command: \(text). Scroll to its prompt."
+            : "Running command: \(text). Scroll to its prompt.")
         label.font = font
         // The theme's own red for a failure, its foreground otherwise, over a background lifted
         // just far enough off the terminal's to read as a different surface rather than as text.
@@ -65,6 +72,13 @@ final class StickyPromptView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) { onClick?() }
+
+    override func isAccessibilityElement() -> Bool { !isHidden }
+
+    override func accessibilityPerformPress() -> Bool {
+        onClick?()
+        return true
+    }
 
     override func resetCursorRects() {
         super.resetCursorRects()

@@ -34,6 +34,8 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
     init(palette: Palette) {
         super.init(frame: NSRect(x: 0, y: 0, width: SearchBarView.preferredWidth, height: SearchBarView.height))
         wantsLayer = true
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Find in terminal")
         field.delegate = self
         field.placeholderString = "Find"
         field.font = .systemFont(ofSize: 13)
@@ -49,12 +51,19 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
         field.isContinuous = false
         readout.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         readout.alignment = .right
+        // The field's only name on screen is a placeholder, which disappears the moment anything
+        // is typed; the readout is bare text beside it and the four buttons are glyphs.
+        field.describeForAccessibility("Find", role: .textField)
+        readout.describeForAccessibility("Matches", role: .staticText)
         configure(scope, symbol: "square.on.square", fallback: "All", action: #selector(toggleScope))
         scope.setButtonType(.pushOnPushOff)
         scope.toolTip = "Search every tab"
         previous.toolTip = "Previous match (⇧⏎)"
         next.toolTip = "Next match (⏎)"
         close.toolTip = "Close (⎋)"
+        previous.describeForAccessibility("Previous match (⇧⏎)", role: .button)
+        next.describeForAccessibility("Next match (⏎)", role: .button)
+        close.describeForAccessibility("Close the search bar (⎋)", role: .button)
         configure(previous, symbol: "chevron.left", fallback: "<", action: #selector(stepBackward))
         configure(next, symbol: "chevron.right", fallback: ">", action: #selector(stepForward))
         configure(close, symbol: "xmark", fallback: "x", action: #selector(dismiss))
@@ -97,6 +106,9 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
     /// The "3 of 47" text, or an empty string before anything has been typed.
     func setReadout(_ text: String) {
         readout.stringValue = text
+        // "3 of 47" is the whole answer to the question the bar was opened to ask, and it is drawn
+        // as loose text that nothing else would announce.
+        readout.setAccessibilityValue(text.isEmpty ? "no search yet" : text)
     }
 
     var query: String { field.stringValue }
@@ -161,6 +173,10 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
         scope.toolTip = searchesAllTabs
             ? "Searching every tab — click for this pane only"
             : "Search every tab"
+        // The one control here whose meaning is entirely its state: the same button either widens
+        // the search or narrows it, so the label has to say which way round it currently is.
+        scope.describeForAccessibility(scope.toolTip ?? "Search scope", role: .checkBox)
+        scope.setAccessibilityValue(searchesAllTabs)
     }
 
     @objc private func stepForward() { onStep?(true) }

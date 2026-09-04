@@ -95,6 +95,101 @@ private let full = PaneRect(x: 0, y: 0, width: 100, height: 100)
     #expect(l[id(1)]!.width + l[id(2)]!.width == 100)
 }
 
+/// Three panes chained on one axis: `A | B | C`, built as an outer horizontal split whose `first`
+/// is an inner horizontal split of A and B. Resizing A rightwards must move the A/B divider and
+/// nothing else -- C is not A's neighbour and its width must not change.
+@Test func resizingAChainedSplitMovesOnlyTheAdjacentDivider() {
+    let abc = PaneTree.split(
+        axis: .horizontal, ratio: 0.5,
+        first: .split(axis: .horizontal, ratio: 0.5, first: .leaf(id(1)), second: .leaf(id(2))),
+        second: .leaf(id(3))
+    )
+    let bounds = PaneRect(x: 0, y: 0, width: 1000, height: 10)
+    let before = abc.layout(in: bounds, dividerThickness: 2)
+    let after = abc.resizing(id(1), direction: .right, by: 0.1).layout(in: bounds, dividerThickness: 2)
+
+    #expect(after[id(1)]!.width > before[id(1)]!.width)
+    #expect(after[id(2)]!.width < before[id(2)]!.width)
+    #expect(after[id(3)]!.width == before[id(3)]!.width)   // not a neighbour: must not move
+}
+
+/// The split that separates a pane from its neighbour is not always the nearest one. B's right-hand
+/// neighbour is C, and the divider between them belongs to the OUTER split -- the inner A/B split
+/// separates B leftwards, not rightwards. So resizing B rightwards must walk past the inner split.
+@Test func resizingWalksPastASplitThatDoesNotSeparateInThatDirection() {
+    let abc = PaneTree.split(
+        axis: .horizontal, ratio: 0.5,
+        first: .split(axis: .horizontal, ratio: 0.5, first: .leaf(id(1)), second: .leaf(id(2))),
+        second: .leaf(id(3))
+    )
+    let bounds = PaneRect(x: 0, y: 0, width: 1000, height: 10)
+    let before = abc.layout(in: bounds, dividerThickness: 2)
+    let after = abc.resizing(id(2), direction: .right, by: 0.1).layout(in: bounds, dividerThickness: 2)
+
+    #expect(after[id(2)]!.width > before[id(2)]!.width)
+    #expect(after[id(3)]!.width < before[id(3)]!.width)
+    // Moving the outer divider widens the whole A|B column, so A grows too -- that is what dragging
+    // a divider means. What must NOT change is the inner split's own ratio: A and B keep their
+    // proportion to each other, taking an equal share of the space C gave up.
+    #expect(after[id(1)]!.width - before[id(1)]!.width == after[id(2)]!.width - before[id(2)]!.width)
+}
+
+/// A pane at the edge of the tree has no neighbour in that direction, so there is no divider to
+/// move and the tree comes back untouched -- rather than the nearest divider moving the wrong way.
+@Test func resizingAnEdgePaneAwayFromTheTreeIsANoOp() {
+    let abc = PaneTree.split(
+        axis: .horizontal, ratio: 0.5,
+        first: .split(axis: .horizontal, ratio: 0.5, first: .leaf(id(1)), second: .leaf(id(2))),
+        second: .leaf(id(3))
+    )
+    #expect(abc.resizing(id(1), direction: .left, by: 0.1) == abc)
+    #expect(abc.resizing(id(3), direction: .right, by: 0.1) == abc)
+}
+
+/// A split on the other axis is transparent to a resize: moving a horizontal divider must not be
+/// stopped, or absorbed, by a vertical split sitting between the pane and that divider.
+@Test func resizingIgnoresSplitsOnTheOtherAxis() {
+    // (A above B) beside C, all inside one horizontal split.
+    let t = PaneTree.split(
+        axis: .horizontal, ratio: 0.5,
+        first: .split(axis: .vertical, ratio: 0.5, first: .leaf(id(1)), second: .leaf(id(2))),
+        second: .leaf(id(3))
+    )
+    let bounds = PaneRect(x: 0, y: 0, width: 1000, height: 100)
+    let before = t.layout(in: bounds, dividerThickness: 2)
+    let after = t.resizing(id(1), direction: .right, by: 0.1).layout(in: bounds, dividerThickness: 2)
+
+    #expect(after[id(1)]!.width > before[id(1)]!.width)
+    #expect(after[id(2)]!.width > before[id(2)]!.width)   // shares the column, so it grows too
+    #expect(after[id(1)]!.height == before[id(1)]!.height)  // the vertical divider stays put
+}
+
+/// `removing` splices the sibling into the parent's place; the grandparent's own axis and ratio are
+/// not the parent's to change. Leaf order alone would not catch a scrambled ratio.
+@Test func removingPreservesTheGrandparentsAxisAndRatio() {
+    let t = PaneTree.split(
+        axis: .vertical, ratio: 0.25,
+        first: .leaf(id(1)),
+        second: .split(axis: .horizontal, ratio: 0.5, first: .leaf(id(2)), second: .leaf(id(3)))
+    )
+    #expect(t.removing(id(3)) == .split(axis: .vertical, ratio: 0.25,
+                                        first: .leaf(id(1)), second: .leaf(id(2))))
+}
+
+/// Below the divider thickness there is no room for either pane, but a zero-area frame must still
+/// sit inside the bounds it was laid out in -- a view layer that trusts the origin would otherwise
+/// place a pane off the edge of its container.
+@Test func degenerateBoundsStillProduceFramesInsideTheBounds() {
+    let t = PaneTree.leaf(id(1)).splitting(id(1), axis: .horizontal, with: id(2), ratio: 0.5)
+    let bounds = PaneRect(x: 5, y: 5, width: 1, height: 10)
+    for (_, frame) in t.layout(in: bounds, dividerThickness: 2) {
+        #expect(frame.x >= bounds.x)
+        #expect(frame.x + frame.width <= bounds.x + bounds.width)
+        #expect(frame.y >= bounds.y)
+        #expect(frame.y + frame.height <= bounds.y + bounds.height)
+    }
+}
+
 @Test func resizingClampsSoAPaneNeverDisappears() {
     let t = PaneTree.leaf(id(1)).splitting(id(1), axis: .horizontal, with: id(2), ratio: 0.5)
     var shrunk = t

@@ -153,7 +153,7 @@ public extension PaneTree {
             let secondWidth = max(0, available - firstWidth)
             let first = PaneRect(x: bounds.x, y: bounds.y, width: firstWidth, height: bounds.height)
             let second = PaneRect(
-                x: bounds.x + firstWidth + dividerThickness,
+                x: min(bounds.x + firstWidth + dividerThickness, bounds.x + bounds.width),
                 y: bounds.y,
                 width: secondWidth,
                 height: bounds.height
@@ -166,7 +166,7 @@ public extension PaneTree {
             let first = PaneRect(x: bounds.x, y: bounds.y, width: bounds.width, height: firstHeight)
             let second = PaneRect(
                 x: bounds.x,
-                y: bounds.y + firstHeight + dividerThickness,
+                y: min(bounds.y + firstHeight + dividerThickness, bounds.y + bounds.height),
                 width: bounds.width,
                 height: secondHeight
             )
@@ -239,7 +239,7 @@ public extension PaneTree {
     func resizing(_ pane: PaneID, direction: FocusDirection, by delta: Double) -> PaneTree {
         guard let axis = matchingAxis(for: direction) else { return self }
         let (result, _) = applyResize(pane: pane, axis: axis, direction: direction, delta: delta)
-        return result
+        return result.tree
     }
 
     private func matchingAxis(for direction: FocusDirection) -> SplitAxis? {
@@ -249,40 +249,64 @@ public extension PaneTree {
         }
     }
 
-    /// Returns the (possibly modified) tree and whether `pane` was found within it.
-    private func applyResize(pane: PaneID, axis: SplitAxis, direction: FocusDirection, delta: Double) -> (PaneTree, Bool) {
+    /// The outcome of walking one subtree looking for `pane`.
+    ///
+    /// `handled` is what keeps a resize local. A pane's neighbour in `direction` is separated from
+    /// it by exactly one split, and only that split's ratio may move. Once some level has moved it,
+    /// every ancestor must rebuild itself unchanged -- otherwise a chain like `A | B | C` moves the
+    /// outer divider too and shrinks `C`, which is not `A`'s neighbour at all.
+    private struct ResizeOutcome {
+        var tree: PaneTree
+        var handled: Bool
+    }
+
+    /// Returns the outcome of resizing within this subtree, and whether `pane` was found in it.
+    private func applyResize(
+        pane: PaneID, axis: SplitAxis, direction: FocusDirection, delta: Double
+    ) -> (ResizeOutcome, Bool) {
         switch self {
         case .leaf(let id):
-            return (self, id == pane)
+            return (ResizeOutcome(tree: self, handled: false), id == pane)
+
         case .split(let splitAxis, let ratio, let first, let second):
-            let (newFirst, foundInFirst) = first.applyResize(pane: pane, axis: axis, direction: direction, delta: delta)
+            let (firstOutcome, foundInFirst) = first.applyResize(
+                pane: pane, axis: axis, direction: direction, delta: delta)
             if foundInFirst {
-                if splitAxis == axis {
-                    // `pane` is within (or is) `first`. Growing towards `direction`'s side:
-                    // .right/.down grow `first` (increase ratio); .left/.up shrink `first` --
-                    // but only when the growth direction actually points away from `first`
-                    // towards `second`. Since `pane` sits in `first`, growing `first` means
-                    // increasing ratio when direction points "outward" from first into second,
-                    // i.e. .right or .down (first is on the left/top).
-                    let sign: Double = (direction == .right || direction == .down) ? 1 : -1
-                    let newRatio = PaneTree.clampRatio(ratio + sign * delta)
-                    return (.split(axis: splitAxis, ratio: newRatio, first: newFirst, second: second), true)
+                // `pane` sits in `first`, so `second` lies to its right (horizontal) or below it
+                // (vertical). This split therefore separates `pane` from a neighbour only when the
+                // resize points that way; a `.left`/`.up` resize belongs to some ancestor where
+                // this whole subtree is the *second* child, so pass it up untouched.
+                let separates = splitAxis == axis && (direction == .right || direction == .down)
+                if firstOutcome.handled || !separates {
+                    let rebuilt = PaneTree.split(axis: splitAxis, ratio: ratio,
+                                                 first: firstOutcome.tree, second: second)
+                    return (ResizeOutcome(tree: rebuilt, handled: firstOutcome.handled), true)
                 }
-                return (.split(axis: splitAxis, ratio: ratio, first: newFirst, second: second), true)
+                // Growing `first` towards `second` means a larger ratio.
+                let moved = PaneTree.split(axis: splitAxis, ratio: PaneTree.clampRatio(ratio + delta),
+                                           first: firstOutcome.tree, second: second)
+                return (ResizeOutcome(tree: moved, handled: true), true)
             }
-            let (newSecond, foundInSecond) = second.applyResize(pane: pane, axis: axis, direction: direction, delta: delta)
+
+            let (secondOutcome, foundInSecond) = second.applyResize(
+                pane: pane, axis: axis, direction: direction, delta: delta)
             if foundInSecond {
-                if splitAxis == axis {
-                    // `pane` is within `second`, which is on the right/bottom. Growing towards
-                    // direction .left or .up grows `second` (decrease ratio, giving more to
-                    // second); .right/.down shrinks it.
-                    let sign: Double = (direction == .left || direction == .up) ? -1 : 1
-                    let newRatio = PaneTree.clampRatio(ratio + sign * delta)
-                    return (.split(axis: splitAxis, ratio: newRatio, first: first, second: newSecond), true)
+                // Mirror image: `first` lies to the left of / above `pane`, so this split separates
+                // `pane` from a neighbour only for a `.left`/`.up` resize.
+                let separates = splitAxis == axis && (direction == .left || direction == .up)
+                if secondOutcome.handled || !separates {
+                    let rebuilt = PaneTree.split(axis: splitAxis, ratio: ratio,
+                                                 first: first, second: secondOutcome.tree)
+                    return (ResizeOutcome(tree: rebuilt, handled: secondOutcome.handled), true)
                 }
-                return (.split(axis: splitAxis, ratio: ratio, first: first, second: newSecond), true)
+                // Growing `second` towards `first` means a smaller ratio.
+                let moved = PaneTree.split(axis: splitAxis, ratio: PaneTree.clampRatio(ratio - delta),
+                                           first: first, second: secondOutcome.tree)
+                return (ResizeOutcome(tree: moved, handled: true), true)
             }
-            return (self, false)
+
+            return (ResizeOutcome(tree: self, handled: false), false)
         }
     }
+
 }

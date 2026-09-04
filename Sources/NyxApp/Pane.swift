@@ -1640,6 +1640,28 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     @objc func paste(_ sender: Any?) {
         guard let text = NSPasteboard.general.string(forType: .string) else { return }
         let bracketed = session.withTerminal { $0.modes.bracketedPaste }
+
+        // Several lines go to the editor by default, and this is why: once a multi-line command is
+        // on the shell's line editor it is very hard to change. Clicking cannot help either -- with
+        // real newlines in the buffer the shell re-wraps it on its own terms, so the distance in
+        // cells on screen stops matching the number of arrow presses, and there is no honest
+        // arithmetic left. Editing it before it lands is the reliable answer, not a nicer dialog.
+        if PasteGuard.lineCount(text) > 1 {
+            switch config.multilinePaste {
+            case .edit:
+                presentCommandEditor(text: text, heading: "Edit before pasting", runTitle: "Paste") {
+                    [weak self] edited in
+                    self?.performPaste(edited, bracketed: bracketed)
+                }
+                return
+            case .direct:
+                performPaste(text, bracketed: bracketed)
+                return
+            case .confirm:
+                break
+            }
+        }
+
         guard let warning = PasteGuard.warning(for: text, bracketedPaste: bracketed) else {
             performPaste(text, bracketed: bracketed)
             return

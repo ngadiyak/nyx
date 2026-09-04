@@ -4,6 +4,17 @@ public enum OptionAsMeta: String, Equatable { case none, left, right, both }
 public enum BellStyle: String, Equatable { case visual, sound, none }
 public enum TabBarVisibility: String, Equatable { case auto, always, never }
 
+/// What happens when several lines are pasted at once.
+public enum MultilinePaste: String, Equatable {
+    /// Open them in the editor. The default: a pasted block is usually something to look at before
+    /// it runs, and once it is on the shell's command line it is nearly impossible to edit.
+    case edit
+    /// Ask, with a preview and an Edit button.
+    case confirm
+    /// Paste straight through, as any other terminal does.
+    case direct
+}
+
 /// One line of diagnostic output from `ConfigParser`: a config file with a typo still starts the
 /// terminal, so problems are reported here instead of thrown.
 public struct ConfigDiagnostic: Equatable {
@@ -47,6 +58,8 @@ public struct Config: Equatable {
     /// jumping between commands, the status gutter, copying a command's output -- is inert without
     /// them, and almost no shell emits them unaided.
     public var shellIntegration: ShellIntegrationMode = .auto
+    /// What a multi-line paste does. See `MultilinePaste`.
+    public var multilinePaste: MultilinePaste = .edit
     /// Task 8 populates this from `keybind` lines; see `KeyBinding.parse`.
     public var keybinds: [KeyBinding] = []
     /// User-defined buttons: `quick = <name> | <kind> | <command>`. Additive, like `keybind`.
@@ -118,6 +131,7 @@ public extension Config {
         # quick = Caffeine | toggle | caffeinate -d
         # quick = Deploy | ./deploy.sh
 
+        # multiline-paste = edit
         # shell-integration = auto
         # open-file-command =
 

@@ -352,3 +352,10 @@ private let scalarDefaultFileKeys = [
     #expect(d.count == 1)
     #expect(config.quickActions.isEmpty)
 }
+
+@Test func theMultilinePasteSettingIsRead() {
+    #expect(ConfigParser.parse("multiline-paste = direct").config.multilinePaste == .direct)
+    #expect(ConfigParser.parse("multiline-paste = confirm").config.multilinePaste == .confirm)
+    #expect(Config.defaults.multilinePaste == .edit)
+    #expect(ConfigParser.parse("multiline-paste = nonsense").diagnostics.count == 1)
+}

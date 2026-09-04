@@ -118,6 +118,7 @@ final class SettingsWindowController: NSWindowController {
             row("", checkbox("clipboard-read", title: "Allow programs to read the clipboard")),
             row("Option key", popUp("option-as-meta", options: ["none", "left", "right", "both"])),
             row("Bell", popUp("bell", options: ["visual", "sound", "none"])),
+            row("Multi-line paste", popUp("multiline-paste", options: ["edit", "confirm", "direct"])),
         ], note: "Letting programs read the clipboard is off by default: any program in the terminal could then see whatever you last copied.")
     }
 
@@ -369,6 +370,7 @@ final class SettingsWindowController: NSWindowController {
         set("clipboard-read", c.clipboardRead)
         set("option-as-meta", c.optionAsMeta.rawValue)
         set("bell", c.bell.rawValue)
+        set("multiline-paste", c.multilinePaste.rawValue)
 
         let table = KeyBindingTable(user: c.keybinds)
         keyRows = ActionCatalog.allMenuActions.map { action in

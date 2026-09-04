@@ -114,6 +114,9 @@ public enum ConfigParser {
             case "shell-integration":
                 if let mode = ShellIntegrationMode(rawValue: value) { config.shellIntegration = mode }
                 else { badValue() }
+            case "multiline-paste":
+                if let mode = MultilinePaste(rawValue: value) { config.multilinePaste = mode }
+                else { badValue() }
             case "quick":
                 if let action = QuickAction.parse(value) { config.quickActions.append(action) }
                 else { badValue() }

@@ -15,6 +15,7 @@ public struct ConfigDiagnostic: Equatable {
 /// Everything the phase-2 config file can set. See spec §6.5 for the key list.
 public struct Config: Equatable {
     public var fontFamily: String = "Menlo"
+    public var fontThicken: Bool = false
     public var fontSize: Double = 13
     public var lineHeight: Double = 1.0
     public var themeName: String = "nyx-dark"

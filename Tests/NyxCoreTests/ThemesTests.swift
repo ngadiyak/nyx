@@ -79,3 +79,8 @@ import Foundation
     #expect(pCR != nil)
     #expect(pCR == pLF)
 }
+
+@Test func outOfRangePaletteIndexIsNotRecognised() {
+    #expect(Themes.parse("palette = 300=#ffffff\n") == nil)
+    #expect(Themes.parse("palette = -1=#ffffff\n") == nil)
+}

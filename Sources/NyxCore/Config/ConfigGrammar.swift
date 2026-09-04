@@ -10,4 +10,17 @@ enum ConfigGrammar {
     static func lines(_ text: String) -> [Substring] {
         text.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" })
     }
+
+    /// Parses one `palette` value of the form `index=colour`. Returns nil if malformed, or if the
+    /// index falls outside the valid `0..<256` palette range -- matching `Palette.colors`, which
+    /// always has exactly 256 entries.
+    static func paletteEntry(_ value: some StringProtocol) -> (index: Int, rgb: RGB)? {
+        let parts = value.split(separator: "=", maxSplits: 1)
+        guard parts.count == 2,
+              let idx = Int(parts[0].trimmingCharacters(in: .whitespaces)),
+              (0..<256).contains(idx),
+              let rgb = RGB(spec: parts[1].trimmingCharacters(in: .whitespaces))
+        else { return nil }
+        return (idx, rgb)
+    }
 }

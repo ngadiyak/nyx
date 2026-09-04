@@ -120,11 +120,11 @@ public enum Themes {
             case "selection-foreground":
                 if let c = RGB(spec: value) { selectionForeground = c; recognizedAny = true }
             case "palette":
-                let parts = value.split(separator: "=", maxSplits: 1)
-                if parts.count == 2,
-                   let idx = Int(parts[0].trimmingCharacters(in: .whitespaces)),
-                   let c = RGB(spec: parts[1].trimmingCharacters(in: .whitespaces)) {
-                    if idx >= 0 && idx < 16 { ansi[idx] = c } else if idx >= 0 && idx < 256 { extended[idx] = c }
+                // Only mark the line recognised when the index actually landed somewhere -- an
+                // out-of-range index (matching ConfigGrammar.paletteEntry's 0..<256 bound) stores
+                // nothing, so it must not count towards "this file has colours".
+                if let (idx, c) = ConfigGrammar.paletteEntry(value) {
+                    if idx < 16 { ansi[idx] = c } else { extended[idx] = c }
                     recognizedAny = true
                 }
             default:

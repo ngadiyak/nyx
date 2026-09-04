@@ -29,6 +29,8 @@ public enum ConfigParser {
             switch key {
             case "font-family":
                 config.fontFamily = value
+            case "font-thicken":
+                if let b = parseBool(value) { config.fontThicken = b } else { badValue() }
             case "font-size":
                 if let d = Double(value) { config.fontSize = min(max(d, 4), 144) } else { badValue() }
             case "line-height":
@@ -86,7 +88,7 @@ public enum ConfigParser {
             case "open-file-command":
                 config.openFileCommand = value.isEmpty ? nil : value
             case "palette":
-                if let (idx, rgb) = parsePaletteEntry(value) {
+                if let (idx, rgb) = ConfigGrammar.paletteEntry(value) {
                     config.paletteOverrides[idx] = rgb
                 } else {
                     badValue()
@@ -131,14 +133,5 @@ public enum ConfigParser {
         }
         guard dark != nil || light != nil else { return nil }
         return (dark, light)
-    }
-
-    private static func parsePaletteEntry(_ value: String) -> (Int, RGB)? {
-        let parts = value.split(separator: "=", maxSplits: 1)
-        guard parts.count == 2,
-              let idx = Int(parts[0].trimmingCharacters(in: .whitespaces)),
-              let rgb = RGB(spec: parts[1].trimmingCharacters(in: .whitespaces))
-        else { return nil }
-        return (idx, rgb)
     }
 }

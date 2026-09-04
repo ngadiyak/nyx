@@ -138,3 +138,20 @@ private func parse(_ s: String) -> (Config, [ConfigDiagnostic]) { ConfigParser.p
     #expect(dCR.isEmpty)
     #expect(cCR == cLF)
 }
+
+@Test func paletteIndexOutOfRangeIsADiagnostic() {
+    let (c, d) = parse("palette = 300=#ffffff\npalette = -1=#ffffff")
+    #expect(c.paletteOverrides[300] == nil)
+    #expect(c.paletteOverrides[-1] == nil)
+    #expect(d.count == 2)
+    #expect(d[0].line == 1)
+    #expect(d[1].line == 2)
+}
+
+@Test func fontThickenDefaultsToFalseAndParses() {
+    let (c0, _) = parse("")
+    #expect(!c0.fontThicken)
+    let (c, d) = parse("font-thicken = true")
+    #expect(d.isEmpty)
+    #expect(c.fontThicken)
+}

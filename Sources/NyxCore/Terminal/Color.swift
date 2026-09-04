@@ -99,6 +99,22 @@ public struct Palette: Equatable {
         Palette(ansi: xtermAnsi16, foreground: RGB(hex: 0xE5E5E5), background: RGB(0, 0, 0), cursor: RGB(hex: 0xE5E5E5))
     }
 
+    /// Background behind a search hit that is not the one being stepped through.
+    ///
+    /// Derived from the theme's own yellow rather than stored, so every built-in theme -- and every
+    /// user theme file, which sets the same keys the built-ins do -- gets a search colour that
+    /// belongs to it without a new setting to fill in. Yellow is what editors have settled on for
+    /// find, and a theme's yellow is by construction legible against its background.
+    public var searchMatchBackground: RGB { colors[3] }
+
+    /// Background behind the current hit: the same hue, brighter, so the two are distinguishable
+    /// at a glance without either becoming a different colour from "found text".
+    public var currentMatchBackground: RGB { colors[11] }
+
+    /// Text drawn on either of those. The background colour is the one thing a theme guarantees
+    /// contrasts with its own yellow.
+    public var searchMatchForeground: RGB { background }
+
     public func resolve(_ c: Color, isForeground: Bool) -> RGB {
         switch c.kind {
         case .default: return isForeground ? foreground : background

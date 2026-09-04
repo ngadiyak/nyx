@@ -16,13 +16,25 @@ public struct RenderFrame {
     /// Selected column range per visible row, indexed the same way as `lines`. nil means nothing
     /// selected on that row. The view computes these from the absolute selection and the viewport.
     public var selection: [Range<Int>?]
+    /// Search hits per visible row, indexed like `selection`; a row can hold several. Produced by
+    /// `SearchHighlights.visibleRanges`, which is where the absolute-to-viewport arithmetic lives.
+    public var searchMatches: [[Range<Int>]]
+    /// The hit the user is standing on, painted in a second colour so it stands out from the rest.
+    public var currentSearchMatch: [Range<Int>?]
+    /// The link under the pointer, underlined on hover. One range per visible row because a token
+    /// never spans rows.
+    public var hoveredLink: [Range<Int>?]
 
     public init(cols: Int, rows: Int, lines: [Row], graphemes: [String], palette: Palette,
                 cursor: Cursor?, cursorShape: CursorShape, focused: Bool, preedit: String?,
-                selection: [Range<Int>?] = []) {
+                selection: [Range<Int>?] = [], searchMatches: [[Range<Int>]] = [],
+                currentSearchMatch: [Range<Int>?] = [], hoveredLink: [Range<Int>?] = []) {
         self.cols = cols; self.rows = rows; self.lines = lines; self.graphemes = graphemes; self.palette = palette
         self.cursor = cursor; self.cursorShape = cursorShape; self.focused = focused; self.preedit = preedit
         self.selection = selection
+        self.searchMatches = searchMatches
+        self.currentSearchMatch = currentSearchMatch
+        self.hoveredLink = hoveredLink
     }
 }
 
@@ -170,14 +182,24 @@ public final class Renderer {
                     let w = wide ? cw * 2 : cw
 
                     let selected = y < f.selection.count && (f.selection[y]?.contains(x) ?? false)
+                    let isCurrentMatch = y < f.currentSearchMatch.count
+                        && (f.currentSearchMatch[y]?.contains(x) ?? false)
+                    let isMatch = isCurrentMatch
+                        || (y < f.searchMatches.count && f.searchMatches[y].contains { $0.contains(x) })
+                    // The selection wins over a search hit: it is the thing the user just made,
+                    // and ⌘C acts on it. A hit under the selection is still highlighted everywhere
+                    // else on screen, which is what a search bar has to show.
                     if selected {
                         bg = f.palette.selectionBackground
                         if let sf = f.palette.selectionForeground { fg = sf }
+                    } else if isMatch {
+                        bg = isCurrentMatch ? f.palette.currentMatchBackground : f.palette.searchMatchBackground
+                        fg = f.palette.searchMatchForeground
                     }
 
                     let blockCursor = isCursor && f.focused && f.cursorShape == .block
                     if blockCursor { bg = f.palette.cursor; fg = f.palette.background }
-                    if bg != f.palette.background || blockCursor || selected {
+                    if bg != f.palette.background || blockCursor || selected || isMatch {
                         instances.append(rect(px, py, w, ch, bg))
                     }
 
@@ -203,6 +225,12 @@ public final class Renderer {
                     }
                     if c.attrs.contains(.strike) {
                         decorations.append(rect(px, py + Float(m.strikeY), w, thick, fg))
+                    }
+                    // A hovered link is underlined in the text's own colour, on the same baseline
+                    // the SGR underlines use, so a link that is already underlined does not gain a
+                    // second line in a different place.
+                    if y < f.hoveredLink.count, f.hoveredLink[y]?.contains(x) ?? false, c.underline == .none {
+                        decorations.append(rect(px, ulY, w, thick, fg))
                     }
 
                     if isCursor {

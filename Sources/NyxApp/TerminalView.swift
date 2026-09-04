@@ -12,17 +12,16 @@ enum NyxError: Error, LocalizedError {
 final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
     var onTitleChange: ((String) -> Void)?
     var onExit: ((Int32) -> Void)?
-    /// Left `false` deliberately: nothing writes it in phase 1, because the config file that will
-    /// set it (`option-as-meta`) arrives in phase 2. Keeping it a constant makes the dead
-    /// `insertText` branch visible instead of pretending there is a setting behind it.
-    private let optionAsMeta = false
 
     private let session: TerminalSession
     private let renderer: Renderer
     private var fonts: FontSet
-    private var fontSize: CGFloat = 13
-    private let fontFamily = "Menlo"
-    private let padding: CGFloat = 8
+    /// The full configuration currently in force. Kept apart from the actual font size in use
+    /// (`effectiveFontSize`) so ⌘+/⌘−/⌘0 can zoom independently of it: reloading the config after a
+    /// zoom must not snap the size back to whatever the file says.
+    private var config: Config
+    /// Net zoom applied on top of `config.fontSize` by `zoomIn`/`zoomOut`; reset by `zoomReset`.
+    private var zoomOffset: CGFloat = 0
     private var displayLink: CADisplayLink?
     private let dirty = AtomicFlag()
     /// The window is hidden behind another one or minimised: stop drawing entirely.
@@ -40,25 +39,29 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
     /// leaves the view so the display link can autoscroll towards it.
     private var lastMousePoint: NSPoint?
     private var motionTracking: NSTrackingArea?
-    /// Task 11 replaces these two with config values; the constants match the spec's defaults.
-    private let copyOnSelect = false
-    private let middleClickPaste = true
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
+    /// Clamped the same way the old hardcoded zoom was (6...72pt), independent of the config's own
+    /// 4...144 clamp, which bounds the *configured* value rather than the zoomed one.
+    private var effectiveFontSize: CGFloat { min(max(CGFloat(config.fontSize) + zoomOffset, 6), 72) }
+    private var padding: CGFloat { CGFloat(config.padding) }
 
-    init(_ frame: NSRect) throws {
+    init(_ frame: NSRect, config: Config) throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw NyxError.noMetal }
+        self.config = config
         let scale = NSScreen.main?.backingScaleFactor ?? 2
-        fonts = FontSet(family: fontFamily, pointSize: fontSize, scale: scale)
+        fonts = FontSet(family: config.fontFamily, pointSize: CGFloat(config.fontSize), scale: scale, lineHeight: CGFloat(config.lineHeight))
         renderer = try Renderer(device: device, fonts: fonts)
-        session = try TerminalSession(config: .loginShell(cols: 80, rows: 24, palette: Themes.palette(named: "nyx-dark")))
+        let palette = TerminalView.resolvedPalette(for: config)
+        session = try TerminalSession(config: TerminalView.sessionConfig(for: config, cols: 80, rows: 24, palette: palette))
         super.init(frame: frame)
         wantsLayer = true
         layerContentsRedrawPolicy = .never
         metalLayer.device = device
         metalLayer.pixelFormat = .bgra8Unorm
-        metalLayer.isOpaque = true
         metalLayer.framebufferOnly = true
+        applyBackgroundAppearance()
+        session.withTerminal { $0.setDefaultCursorShape(config.cursorStyle); $0.modes.cursorBlink = config.cursorBlink }
         session.onUpdate = { [weak self] in self?.markDirty() }
         session.onEvent = { [weak self] e in DispatchQueue.main.async { self?.handle(e) } }
         session.onExit = { [weak self] code in DispatchQueue.main.async { self?.onExit?(code) } }
@@ -67,9 +70,45 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
 
     required init?(coder: NSCoder) { fatalError("not supported") }
 
+    /// The user's login shell, or `config.shell`/`config.workingDirectory` when set. Only used at
+    /// session creation: like `scrollback-lines`, a later change to either only takes effect for a
+    /// new window (`ConfigDiff.deferredNotes` doesn't call this out today because the whole session
+    /// -- not just these two settings -- would need recreating).
+    private static func sessionConfig(for config: Config, cols: Int, rows: Int, palette: Palette) -> SessionConfig {
+        var cwd: String?
+        if config.workingDirectory != "inherit", !config.workingDirectory.isEmpty {
+            cwd = (config.workingDirectory as NSString).expandingTildeInPath
+        }
+        var sc = SessionConfig.loginShell(cols: cols, rows: rows, palette: palette, cwd: cwd)
+        if let shell = config.shell, !shell.isEmpty {
+            sc.shellPath = shell
+            sc.argv = ["-" + (shell as NSString).lastPathComponent]
+        }
+        sc.scrollbackLimit = config.scrollbackLines
+        return sc
+    }
+
+    /// Resolves `theme`/`dark:.../light:...` against the current system appearance, then applies
+    /// `palette` overrides on top.
+    private static func resolvedPalette(for config: Config) -> Palette {
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let name: String
+        switch (config.darkThemeName, config.lightThemeName) {
+        case let (dark?, light?): name = isDark ? dark : light
+        case let (dark?, nil): name = isDark ? dark : config.themeName
+        case let (nil, light?): name = isDark ? config.themeName : light
+        case (nil, nil): name = config.themeName
+        }
+        var palette = Themes.palette(named: name)
+        for (idx, rgb) in config.paletteOverrides where idx >= 0 && idx < palette.colors.count {
+            palette.colors[idx] = rgb
+        }
+        return palette
+    }
+
     override func makeBackingLayer() -> CALayer { CAMetalLayer() }
     override var acceptsFirstResponder: Bool { true }
-    override var isOpaque: Bool { true }
+    override var isOpaque: Bool { config.backgroundOpacity >= 1 && config.backgroundBlur <= 0 }
 
     var cellSizePoints: NSSize {
         NSSize(width: CGFloat(fonts.metrics.width) / fonts.scale, height: CGFloat(fonts.metrics.height) / fonts.scale)
@@ -77,6 +116,51 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
 
     func size(forCols c: Int, rows r: Int) -> NSSize {
         NSSize(width: cellSizePoints.width * CGFloat(c) + padding * 2, height: cellSizePoints.height * CGFloat(r) + padding * 2)
+    }
+
+    /// Rebuilds whatever changed and leaves the session running; called by `TerminalWindowController`
+    /// after every `ConfigStore` reload. The view keeps its own `config` and diffs against the new
+    /// one so an unrelated change -- e.g. `bell`, read only at the point of use -- never rebuilds the
+    /// font atlas or touches the palette.
+    func apply(_ newConfig: Config) {
+        let diff = ConfigDiff(from: config, to: newConfig)
+        config = newConfig
+
+        if diff.cursorChanged {
+            session.withTerminal { t in
+                t.setDefaultCursorShape(config.cursorStyle)
+                t.modes.cursorBlink = config.cursorBlink
+            }
+            markDirty()
+        }
+        if diff.fontChanged || diff.geometryChanged {
+            rebuildFonts()
+        }
+        if diff.paletteChanged {
+            applyPalette()
+        }
+        if diff.windowAppearanceChanged {
+            applyBackgroundAppearance()
+            markDirty()
+        }
+    }
+
+    private func applyPalette() {
+        let palette = TerminalView.resolvedPalette(for: config)
+        session.withTerminal { $0.palette = palette }
+        markDirty()
+    }
+
+    private func applyBackgroundAppearance() {
+        metalLayer.isOpaque = config.backgroundOpacity >= 1
+        metalLayer.opacity = Float(config.backgroundOpacity)
+    }
+
+    /// The theme follows the system appearance whenever `dark:`/`light:` are both set.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        guard config.darkThemeName != nil || config.lightThemeName != nil else { return }
+        applyPalette()
     }
 
     func terminate() {
@@ -128,7 +212,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
 
     private func rebuildFonts() {
         let scale = window?.backingScaleFactor ?? fonts.scale
-        fonts = FontSet(family: fontFamily, pointSize: fontSize, scale: scale)
+        fonts = FontSet(family: config.fontFamily, pointSize: effectiveFontSize, scale: scale, lineHeight: CGFloat(config.lineHeight))
         renderer.setFonts(fonts)
         window?.contentResizeIncrements = cellSizePoints
         updateGrid()
@@ -228,13 +312,36 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
     private func handle(_ event: TerminalEvent) {
         switch event {
         case .titleChanged(let t): onTitleChange?(t)
-        case .bell: NSSound.beep()
+        case .bell:
+            switch config.bell {
+            case .visual: flashBell()
+            case .sound: NSSound.beep()
+            case .none: break
+            }
         case .clipboardWrite(let text):
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
         case .colorsChanged: markDirty()
         case .cwdChanged, .notification: break
         }
+    }
+
+    /// A brief white flash over the terminal content, removed once the animation finishes.
+    private func flashBell() {
+        let flash = CALayer()
+        flash.frame = metalLayer.bounds
+        flash.backgroundColor = NSColor.white.cgColor
+        flash.opacity = 0.25
+        metalLayer.addSublayer(flash)
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { flash.removeFromSuperlayer() }
+        let anim = CABasicAnimation(keyPath: "opacity")
+        anim.fromValue = 0.25
+        anim.toValue = 0
+        anim.duration = 0.15
+        flash.opacity = 0
+        flash.add(anim, forKey: "flash")
+        CATransaction.commit()
     }
 
     // MARK: - Keyboard
@@ -287,10 +394,15 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
         return KeyEvent(key: key, modifiers: mods, text: e.characters)
     }
 
+    /// `KeyEncoderOptions.optionAsMeta` is a plain bool -- it doesn't distinguish which side of the
+    /// keyboard was held -- so `.left` and `.right` both act like `.both` here rather than silently
+    /// doing nothing; only `.none` turns it off.
+    private var optionActsAsMeta: Bool { config.optionAsMeta != .none }
+
     private func sendKey(_ e: NSEvent) {
         guard let ke = keyEvent(from: e) else { return }
         let opts = session.withTerminal {
-            KeyEncoderOptions(cursorKeysApp: $0.modes.cursorKeysApp, optionAsMeta: optionAsMeta)
+            KeyEncoderOptions(cursorKeysApp: $0.modes.cursorKeysApp, optionAsMeta: optionActsAsMeta)
         }
         if let bytes = KeyEncoder.encode(ke, options: opts) { send(bytes) }
     }
@@ -309,7 +421,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
     func insertText(_ string: Any, replacementRange: NSRange) {
         let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
         markedText = ""
-        if let e = currentEvent, e.modifierFlags.contains(.control) || (optionAsMeta && e.modifierFlags.contains(.option)) {
+        if let e = currentEvent, e.modifierFlags.contains(.control) || (optionActsAsMeta && e.modifierFlags.contains(.option)) {
             sendKey(e)
             markDirty()
             return
@@ -430,7 +542,8 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
         let point = topLeft(lastMousePoint!)
         let block = event.modifierFlags.contains(.option)
         let changed = session.withTerminal { t in
-            selectionController.begin(at: position(point, in: t), clickCount: event.clickCount, block: block, in: t)
+            selectionController.begin(at: position(point, in: t), clickCount: event.clickCount, block: block, in: t,
+                                      separators: config.wordSeparators)
         }
         if changed { markDirty() }
     }
@@ -439,7 +552,9 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
         guard selectionController.isDragging else { report(event, .left, .drag); return }
         lastMousePoint = convert(event.locationInWindow, from: nil)
         let point = topLeft(lastMousePoint!)
-        let changed = session.withTerminal { t in selectionController.drag(to: position(point, in: t), in: t) }
+        let changed = session.withTerminal { t in
+            selectionController.drag(to: position(point, in: t), in: t, separators: config.wordSeparators)
+        }
         if changed { markDirty() }
     }
 
@@ -447,7 +562,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
         guard selectionController.isDragging else { report(event, .left, .release); return }
         lastMousePoint = nil
         if selectionController.end() { markDirty() }
-        if copyOnSelect, selection != nil { copy(nil) }
+        if config.copyOnSelect, selection != nil { copy(nil) }
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -471,7 +586,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
     override func otherMouseUp(with event: NSEvent) {
         guard event.buttonNumber == 2 else { return }
         if report(event, .middle, .release) { return }
-        if middleClickPaste { paste(nil) }
+        if config.middleClickPaste { paste(nil) }
     }
 
     private func clearSelection() {
@@ -491,7 +606,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
             let before = t.viewportOffset
             t.scrollViewport(by: lines)
             guard t.viewportOffset != before else { return false }
-            return selectionController.drag(to: position(head, in: t), in: t)
+            return selectionController.drag(to: position(head, in: t), in: t, separators: config.wordSeparators)
         }
         if changed { markDirty() }
     }
@@ -524,6 +639,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
             for _ in 0..<abs(lines) { all += bytes }
             session.send(all)
         } else if alt {
+            guard config.mouseScrollAltScreen else { return }
             let key: Key = lines > 0 ? .up : .down
             let opts = KeyEncoderOptions(cursorKeysApp: app, optionAsMeta: false)
             guard let bytes = KeyEncoder.encode(KeyEvent(key: key, modifiers: [], text: nil), options: opts) else { return }
@@ -565,7 +681,15 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
         send(bytes)
     }
 
-    @objc func zoomIn(_ sender: Any?) { fontSize = min(fontSize + 1, 72); rebuildFonts() }
-    @objc func zoomOut(_ sender: Any?) { fontSize = max(fontSize - 1, 6); rebuildFonts() }
-    @objc func zoomReset(_ sender: Any?) { fontSize = 13; rebuildFonts() }
+    /// `setZoom` recomputes `zoomOffset` from the clamped target rather than just incrementing it,
+    /// so repeated presses at the 6...72pt cap don't let the offset drift past what's visible --
+    /// which would otherwise take several presses the other way to undo.
+    private func setZoom(_ desiredEffectiveSize: CGFloat) {
+        zoomOffset = min(max(desiredEffectiveSize, 6), 72) - CGFloat(config.fontSize)
+        rebuildFonts()
+    }
+
+    @objc func zoomIn(_ sender: Any?) { setZoom(effectiveFontSize + 1) }
+    @objc func zoomOut(_ sender: Any?) { setZoom(effectiveFontSize - 1) }
+    @objc func zoomReset(_ sender: Any?) { zoomOffset = 0; rebuildFonts() }
 }

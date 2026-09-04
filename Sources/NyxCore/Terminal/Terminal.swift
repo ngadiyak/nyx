@@ -837,6 +837,14 @@ public final class Terminal: TerminalActions {
         modes.cursorBlink = n == 0 || n % 2 == 1
     }
 
+    /// Sets the cursor shape from outside (the app's `cursor-style` config setting). This is a
+    /// default only: DECSCUSR (`SP q`, handled by the private `setCursorShape(_:Int)` above) still
+    /// wins whenever the running application sends it, exactly as reapplying the config would win
+    /// only until the next such escape sequence.
+    public func setDefaultCursorShape(_ shape: CursorShape) {
+        cursorShape = shape
+    }
+
     // MARK: - SGR
 
     private func applySGR(_ p: CSIParams) {

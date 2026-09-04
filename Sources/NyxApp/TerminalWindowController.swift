@@ -5,6 +5,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     var onClose: ((TerminalWindowController) -> Void)?
     private var terminalView: TerminalView?
     private var banner: ConfigBanner?
+    private var effectView: NSVisualEffectView?
     private var config: Config = .defaults
 
     /// Builds a window with a live terminal in it, or shows the error and returns nil.
@@ -15,24 +16,34 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// window is shown and no controller is retained.
     static func make(config: Config) -> TerminalWindowController? {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                              styleMask: styleMask(for: config),
                               backing: .buffered, defer: false)
         window.title = "Nyx"
         window.tabbingMode = .disallowed
-        window.backgroundColor = .black
         let controller = TerminalWindowController(window: window)
         window.delegate = controller
 
-        // A plain container so the config-error banner can sit above the terminal without the
-        // terminal itself knowing anything about it: the banner is pinned to the top and the
-        // terminal fills whatever room is left below it.
+        // A plain container holding, top to bottom in z-order: an NSVisualEffectView (shown only
+        // when `background-blur` is on -- it only actually shows through wherever the terminal's own
+        // Metal layer is drawing at less than full opacity, which `background-opacity < 1` is what
+        // makes `TerminalView.applyBackgroundAppearance` do), the terminal, and the config-error
+        // banner pinned above both. Building the hierarchy this way keeps the terminal itself
+        // ignorant of the banner and the blur.
         let container = NSView(frame: window.contentView!.bounds)
+        let effectView = NSVisualEffectView(frame: container.bounds)
+        effectView.autoresizingMask = [.width, .height]
+        effectView.blendingMode = .behindWindow
+        effectView.material = .underWindowBackground
+        effectView.state = .active
+        effectView.isHidden = true
+        container.addSubview(effectView)
+
         let banner = ConfigBanner(frame: .zero)
         banner.onOpenConfig = { NSApp.sendAction(#selector(AppDelegate.openConfig(_:)), to: nil, from: nil) }
         container.addSubview(banner)
 
         do {
-            let view = try TerminalView(container.bounds)
+            let view = try TerminalView(container.bounds, config: config)
             view.translatesAutoresizingMaskIntoConstraints = false
             view.onTitleChange = { [weak window] title in window?.title = title.isEmpty ? "Nyx" : title }
             view.onExit = { [weak controller] _ in controller?.close() }
@@ -54,7 +65,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             window.makeFirstResponder(view)
             controller.terminalView = view
             controller.banner = banner
+            controller.effectView = effectView
             controller.config = config
+            controller.applyWindowAppearance()
         } catch {
             NSAlert(error: error).runModal()
             window.delegate = nil
@@ -64,19 +77,42 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         return controller
     }
 
+    /// `window-decorations` only takes effect at creation (changing it live is noted in the banner
+    /// instead, via `ConfigDiff.deferredNotes` -- recreating the window under a running session
+    /// would mean rebuilding more than just chrome).
+    private static func styleMask(for config: Config) -> NSWindow.StyleMask {
+        config.windowDecorations ? [.titled, .closable, .miniaturizable, .resizable] : [.borderless, .resizable]
+    }
+
     private override init(window: NSWindow?) { super.init(window: window) }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
 
     /// Called by `AppDelegate` after every `ConfigStore` reload, successful or not. A parse error
     /// leaves `config` (and therefore the running terminal) untouched: only the banner changes.
-    func configChanged(_ config: Config, diagnostics: [ConfigDiagnostic]) {
-        self.config = config
+    func configChanged(_ newConfig: Config, diagnostics: [ConfigDiagnostic]) {
+        let diff = ConfigDiff(from: config, to: newConfig)
+        config = newConfig
+        terminalView?.apply(newConfig)
+        applyWindowAppearance()
+
         if !diagnostics.isEmpty {
             banner?.showProblems(diagnostics)
+        } else if let note = diff.deferredNotes.first {
+            banner?.showNote(note)
         } else {
             banner?.hide()
         }
+    }
+
+    /// `background-opacity`/`background-blur`: the window has to stop being opaque for either the
+    /// terminal's own translucency or the blur view behind it to be visible at all.
+    private func applyWindowAppearance() {
+        guard let window else { return }
+        let translucent = config.backgroundOpacity < 1 || config.backgroundBlur > 0
+        window.isOpaque = !translucent
+        window.backgroundColor = translucent ? .clear : .black
+        effectView?.isHidden = config.backgroundBlur <= 0
     }
 
     func windowWillClose(_ notification: Notification) {

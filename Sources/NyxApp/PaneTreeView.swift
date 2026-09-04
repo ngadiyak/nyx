@@ -185,11 +185,21 @@ final class PaneTreeView: NSView {
 
     private func setFocus(_ id: PaneID?) {
         focused = id
-        for (paneID, pane) in panes { pane.setFocusBorder(paneID == id ? focusBorderColor : nil) }
+        refreshFocusBorders()
         if let id, let pane = panes[id], window?.firstResponder !== pane {
             window?.makeFirstResponder(pane)
         }
         onFocusedTitleChange?(id.flatMap { titles[$0] } ?? "")
+    }
+
+    /// The focus border says *which* pane has focus, so it is worth nothing when there is only one
+    /// pane to choose from -- a permanent cursor-coloured ring around the whole terminal is noise,
+    /// not information. It appears with the first split and goes away again with the last close.
+    private func refreshFocusBorders() {
+        let wanted = panes.count > 1
+        for (id, pane) in panes {
+            pane.setFocusBorder(wanted && id == focused ? focusBorderColor : nil)
+        }
     }
 
     private func titleChanged(_ id: PaneID, _ title: String) {
@@ -226,7 +236,7 @@ final class PaneTreeView: NSView {
         let palette = Pane.resolvedPalette(for: config)
         dividerColor = nsColor(palette.foreground, alpha: 0.2)
         focusBorderColor = nsColor(palette.cursor, alpha: 1)
-        for (id, pane) in panes { pane.setFocusBorder(id == focused ? focusBorderColor : nil) }
+        refreshFocusBorders()
         needsDisplay = true
     }
 

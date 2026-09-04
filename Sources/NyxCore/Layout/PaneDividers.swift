@@ -49,7 +49,7 @@ public extension PaneTree {
     private func collectDividers(in bounds: PaneRect, dividerThickness: Double, path: SplitPath,
                                  into result: inout [PaneDivider]) {
         guard case .split(let axis, let ratio, let first, let second) = self else { return }
-        let (firstBounds, secondBounds) = PaneTree.childBounds(bounds, axis: axis, ratio: ratio, dividerThickness: dividerThickness)
+        let (firstBounds, secondBounds) = PaneTree.splitBounds(bounds, axis: axis, ratio: ratio, dividerThickness: dividerThickness)
         // The gap the layout actually left between the two children, so the drawn line and the
         // laid-out panes can never disagree about where the boundary is.
         let rect: PaneRect
@@ -151,28 +151,4 @@ public extension PaneTree {
         return step == .first ? first.node(at: rest) : second.node(at: rest)
     }
 
-    /// The bounds `layout` gives the two children of a split. Kept here rather than reaching into
-    /// `PaneTree.splitBounds`, which is private to that file; the rounding and the clamp on the
-    /// second child's origin are the same rules, and `theDividerAlwaysSitsExactlyBetweenTheTwoPanes`
-    /// is what stops the two drifting apart.
-    private static func childBounds(_ bounds: PaneRect, axis: SplitAxis, ratio: Double,
-                                    dividerThickness: Double) -> (PaneRect, PaneRect) {
-        switch axis {
-        case .horizontal:
-            let available = max(0, bounds.width - dividerThickness)
-            let firstWidth = (available * ratio).rounded()
-            let secondWidth = max(0, available - firstWidth)
-            return (PaneRect(x: bounds.x, y: bounds.y, width: firstWidth, height: bounds.height),
-                    PaneRect(x: min(bounds.x + firstWidth + dividerThickness, bounds.x + bounds.width),
-                             y: bounds.y, width: secondWidth, height: bounds.height))
-        case .vertical:
-            let available = max(0, bounds.height - dividerThickness)
-            let firstHeight = (available * ratio).rounded()
-            let secondHeight = max(0, available - firstHeight)
-            return (PaneRect(x: bounds.x, y: bounds.y, width: bounds.width, height: firstHeight),
-                    PaneRect(x: bounds.x,
-                             y: min(bounds.y + firstHeight + dividerThickness, bounds.y + bounds.height),
-                             width: bounds.width, height: secondHeight))
-        }
-    }
 }

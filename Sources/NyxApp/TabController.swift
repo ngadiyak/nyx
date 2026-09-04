@@ -1185,6 +1185,19 @@ final class TabController: NSViewController, NSMenuItemValidation {
     // `Pane.keyDown` finds the same object for a chord bound in the config file, so a menu item
     // and a key binding cannot disagree about what an action does.
 
+    // QA-TEMP
+    var qaTabTitles: [String] { tabs.map(\.title) }
+    func qaSetTitles(_ names: [String]) {
+        for (index, name) in names.enumerated() where tabs.indices.contains(index) {
+            tabs[index].customTitle = name
+        }
+        refreshBar()
+    }
+    func qaRemoveTab(at index: Int) { removeTab(at: index) }
+    func qaInvoke(_ selector: String, _ sender: Any?) {
+        perform(Selector((selector)), with: sender)
+    }
+
     @objc func performTerminalAction(_ sender: Any?) {
         guard let name = (sender as? NSMenuItem)?.representedObject as? String,
               let action = TerminalAction(rawValue: name) else { return }

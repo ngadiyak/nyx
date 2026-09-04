@@ -21,13 +21,12 @@ extension Terminal {
     // MARK: - Resize
 
     public func resize(cols newCols: Int, rows newRows: Int) {
-        // A rewrap changes where the line breaks fall without a byte being written, so anything
-        // caching a transcript by content version would serve one with the old geometry. Same text,
-        // wrong shape -- and a restored session that came back wrapped for a window it is no longer
-        // in is exactly the sort of "nearly right" nobody can explain.
-        bumpContentVersion()
         let newCols = max(2, newCols), newRows = max(1, newRows)
         guard newCols != cols || newRows != rows else { return }
+        // A rewrap changes where the line breaks fall without a byte being written, so anything
+        // caching a transcript by content version would serve one with the old geometry. Below the
+        // guard, so resizing to the size you already had invalidates nothing.
+        bumpContentVersion()
         var primary = modes.altScreen ? inactiveScreen : screen
         var alt = modes.altScreen ? screen : inactiveScreen
         reflowPrimary(&primary, newCols: newCols, newRows: newRows)

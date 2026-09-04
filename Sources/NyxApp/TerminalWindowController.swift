@@ -110,6 +110,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// The pane keystrokes would go to. Used by the paste smoke check.
     var focusedPane: Pane? { tabs?.focusedPane }
 
+    // QA-TEMP
+    var qaTabController: TabController? { tabs }
+
     func configChanged(_ newConfig: Config, diagnostics: [ConfigDiagnostic]) {
         let diff = ConfigDiff(from: config, to: newConfig)
         config = newConfig

@@ -83,11 +83,22 @@ private func session() -> Terminal {
     #expect(echo.summary().isEmpty)
 }
 
-@Test func aRunningCommandIsMarkedRunningRatherThanFailed() {
+/// The prompt you are typing at is not a running command. It has no output and no status, and
+/// treating that as "in progress" leaves an amber marker beside an idle cursor for as long as the
+/// terminal is open. This test used to assert the opposite and enshrined the bug.
+@Test func anIdlePromptIsNotRunning() {
     let blocks = session().visibleBlocks(rows: 8)
     let current = try! #require(blocks.first { $0.region.promptRow == 6 })
-    #expect(current.isRunning)
+    #expect(!current.isRunning)
     #expect(!current.failed)
+}
+
+/// A command that has begun producing output and has not finished is the real running case.
+@Test func aCommandProducingOutputIsRunning() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 50)
+    t.feed(mark("A") + "$ " + mark("B") + "build\r\n" + mark("C") + "working\r\n")
+    let block = try! #require(t.visibleBlocks(rows: 6).first)
+    #expect(block.isRunning)
 }
 
 // MARK: - When chrome must stay out of the way

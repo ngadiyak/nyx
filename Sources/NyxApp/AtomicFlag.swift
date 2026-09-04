@@ -18,6 +18,13 @@ final class AtomicFlag {
         os_unfair_lock_unlock(lock)
     }
 
+    // QA-TEMP
+    var qaPeek: Bool {
+        os_unfair_lock_lock(lock)
+        defer { os_unfair_lock_unlock(lock) }
+        return value
+    }
+
     func takeAndClear() -> Bool {
         os_unfair_lock_lock(lock)
         defer { os_unfair_lock_unlock(lock) }

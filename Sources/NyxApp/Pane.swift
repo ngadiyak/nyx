@@ -514,7 +514,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if dirty.takeAndClear() { render() } else { displayLink?.isPaused = true }
     }
 
+    // QA-TEMP
+    var qaBytesSent = 0
+    private(set) var qaFrameCount = 0
+    var qaDisplayLinkPaused: Bool { displayLink?.isPaused ?? true }
+    var qaDirtyIsSet: Bool { dirty.qaPeek }
+
     private func render() {
+        qaFrameCount += 1   // QA-TEMP
         let focused = (window?.isKeyWindow ?? false) && window?.firstResponder === self
         let preedit = markedText.isEmpty ? nil : markedText
         var gutterMarks: [GutterMark?] = []
@@ -598,8 +605,24 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             }
             // Read here rather than on a timer: one cheap pass over the visible rows, and it is
             // guaranteed to describe the same viewport as the frame being drawn.
-            gutterMarks = t.gutterMarks(rows: t.rows)
-            notes = t.durationNotes(rows: t.rows)
+            // Everything below is indexed by *screen* row. With a fold on screen the viewport is
+            // not a contiguous run of absolute rows, so each has to be placed through the display
+            // map -- the same one the text goes through. Getting this wrong puts a status mark, a
+            // duration or a spine beside whichever row the fold happened to pull into that slot,
+            // and clicking a spine *creates* a fold, so the feature would misplace its own chrome
+            // the first time anyone used it.
+            let screenRow: (Int) -> Int? = { [foldRowsOnScreen] absolute in
+                guard !foldRowsOnScreen.isEmpty else {
+                    let index = absolute - max(0, t.viewportTopRow)
+                    return (0..<t.rows).contains(index) ? index : nil
+                }
+                return foldRowsOnScreen.firstIndex { if case .row(absolute) = $0 { return true } else { return false } }
+            }
+
+            gutterMarks = Pane.place(t.gutterMarks(rows: t.rows), from: max(0, t.viewportTopRow),
+                                     rows: t.rows, screenRow: screenRow)
+            notes = Pane.place(t.durationNotes(rows: t.rows), from: max(0, t.viewportTopRow),
+                               rows: t.rows, screenRow: screenRow)
             // Blocks are chrome over an unmodified grid, so they step aside entirely when a
             // full-screen program owns the display or the mouse. This is the rule that keeps vim,
             // htop and tmux behaving exactly as they did.
@@ -607,19 +630,31 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                   mouseReporting: t.modes.mouse != .none,
                                                   hasMarks: t.shellEmitsPromptMarks)
                 ? t.visibleBlocks(rows: t.rows) : []
-            spines = blocks.map { block in
-                (rows: block.visibleRows,
-                 color: block.failed ? t.palette.colors[1]
-                      : (block.isRunning ? t.palette.colors[3] : t.palette.colors[2]))
+            spines = blocks.compactMap { block -> (rows: Range<Int>, color: RGB)? in
+                // The prompt you are typing at has not run anything; the gutter already decided a
+                // running command draws nothing, and a spine that says "in progress" beside an idle
+                // prompt would sit there amber forever.
+                guard block.region.outputStart != nil else { return nil }
+                let placed = block.visibleRows.compactMap { screenRow($0 + max(0, t.viewportTopRow)) }
+                guard let first = placed.min(), let last = placed.max() else { return nil }
+                return (rows: first..<(last + 1),
+                        color: block.failed ? t.palette.colors[1]
+                             : (block.isRunning ? t.palette.colors[3] : t.palette.colors[2]))
             }
             // A summary only where the command it describes is on screen, and only when it has
             // something to say -- `exit 0` on a command that took no time is not news.
             summaries = blocks.compactMap { block -> (row: Int, text: String, color: RGB)? in
-                guard block.showsHeader else { return nil }
+                guard block.showsHeader, let row = screenRow(block.region.promptRow) else { return nil }
                 let text = block.summary()
                 guard !text.isEmpty else { return nil }
-                return (row: block.region.promptRow - max(0, t.viewportTopRow), text: text,
+                return (row: row, text: text,
                         color: block.failed ? t.palette.colors[1] : t.palette.noteForeground)
+            }
+            // The summary already carries the duration, and both draw right-aligned on the command's
+            // row: left alone they paint the same glyphs twice in two colours, on the failure case
+            // this feature exists to make obvious.
+            for summary in summaries where notes.indices.contains(summary.row) {
+                notes[summary.row] = nil
             }
             // Same pass, same lock, same viewport: the strip names the command whose output is on
             // screen *in this frame*, and reading it anywhere else would let the two disagree.
@@ -771,6 +806,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Writes bytes to the shell as though the user had typed them. Not private because a quick
     /// action is exactly "type this for me".
     func send(_ bytes: [UInt8]) {
+        qaBytesSent += bytes.count   // QA-TEMP
         // Typing both jumps the viewport back to the live screen and drops the selection: the text
         // it pointed at is about to move, and every terminal drops it here.
         clearSelection()
@@ -1717,6 +1753,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// The last transcript built for a session snapshot, and the buffer state it described.
     private var cachedTranscript: (version: UInt64, generation: UInt64, text: String)?
+
+    /// Re-indexes anything produced per absolute row onto the screen rows actually being drawn.
+    private static func place<T>(_ values: [T?], from top: Int, rows: Int,
+                                 screenRow: (Int) -> Int?) -> [T?] {
+        var out = [T?](repeating: nil, count: max(0, rows))
+        for (offset, value) in values.enumerated() {
+            guard let value, let row = screenRow(top + offset), out.indices.contains(row) else { continue }
+            out[row] = value
+        }
+        return out
+    }
 
     /// The `font-family = system` case: macOS's own monospaced face, SF Mono.
     ///

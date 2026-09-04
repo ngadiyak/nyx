@@ -278,7 +278,12 @@ public final class Renderer {
                 guard !spine.rows.isEmpty else { continue }
                 let top = Float(padding + spine.rows.lowerBound * m.height)
                 let height = Float(spine.rows.count * m.height)
-                let x = Float(max(0, padding - 6))
+                // Next to the text, not at the very left: the gutter's status pill lives there,
+                // and two indicators sharing four points of padding is one indicator drawn twice.
+                // With no padding to draw in there is no spine -- it would sit on the first column
+                // of output, and the settings window ships a Padding stepper that goes to zero.
+                guard padding >= 4 else { continue }
+                let x = Float(padding - 3)
                 instances.append(rect(x, top, 2, height, spine.color))
             }
 

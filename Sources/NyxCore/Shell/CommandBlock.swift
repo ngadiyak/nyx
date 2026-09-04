@@ -26,7 +26,12 @@ public struct CommandBlock: Equatable {
         self.showsHeader = showsHeader
     }
 
-    public var isRunning: Bool { region.exitStatus == nil && region.duration == nil }
+    /// Something is actually running: output has begun and no status has arrived. The prompt you
+    /// are typing at has neither, and calling that "running" leaves an amber marker beside an idle
+    /// cursor forever.
+    public var isRunning: Bool {
+        region.outputStart != nil && region.exitStatus == nil && region.duration == nil
+    }
     public var failed: Bool { region.failed }
 
     /// What the header says to the right of the command: how it ended and how long it took.
@@ -34,7 +39,7 @@ public struct CommandBlock: Equatable {
     /// Empty for a command still running that has not been going long enough to be worth a word --
     /// a status that appears the instant you press return is noise, and one that never appears is
     /// a terminal that looks stuck.
-    public func summary(now: Double? = nil) -> String {
+    public func summary() -> String {
         var parts: [String] = []
         if let status = region.exitStatus, status != 0 { parts.append("exit \(status)") }
         if let duration = region.duration, DurationText.isWorthShowing(duration) {

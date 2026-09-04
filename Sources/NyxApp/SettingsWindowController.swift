@@ -114,6 +114,7 @@ final class SettingsWindowController: NSWindowController {
             row("", checkbox("copy-on-select", title: "Copy on select")),
             row("", checkbox("middle-click-paste", title: "Paste on middle click")),
             row("", checkbox("confirm-close-process", title: "Confirm before closing a running process")),
+            row("", checkbox("restore-session", title: "Reopen windows and tabs on launch")),
             row("", checkbox("mouse-scroll-alt-screen", title: "Scroll wheel sends arrows in full-screen apps")),
             row("", checkbox("clipboard-read", title: "Allow programs to read the clipboard")),
             row("Option key", popUp("option-as-meta", options: ["none", "left", "right", "both"])),
@@ -366,6 +367,7 @@ final class SettingsWindowController: NSWindowController {
         set("copy-on-select", c.copyOnSelect)
         set("middle-click-paste", c.middleClickPaste)
         set("confirm-close-process", c.confirmCloseProcess)
+        set("restore-session", c.restoreSession)
         set("mouse-scroll-alt-screen", c.mouseScrollAltScreen)
         set("clipboard-read", c.clipboardRead)
         set("option-as-meta", c.optionAsMeta.rawValue)

@@ -49,6 +49,10 @@ public struct Config: Equatable {
     public var mouseScrollAltScreen: Bool = true
     public var bell: BellStyle = .visual
     public var confirmCloseProcess: Bool = true
+    /// Whether the windows, tabs, splits and scrollback that were open at quit come back at the
+    /// next launch. On by default: re-setting up a workspace after every restart is the complaint
+    /// people make about terminals more than any other. Off means one empty window, every time.
+    public var restoreSession: Bool = true
     public var clipboardRead: Bool = false
     public var tabBar: TabBarVisibility = .auto
     public var windowDecorations: Bool = true
@@ -121,6 +125,8 @@ public extension Config {
         # mouse-scroll-alt-screen = true
         # bell = visual
         # confirm-close-process = true
+        # Bring back the windows, tabs, splits and scrollback that were open at quit.
+        # restore-session = true
         # clipboard-read = false
         # word-separators = ()[]{}'"`, ;:|<>
         # --- Quick actions ---

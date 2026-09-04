@@ -95,6 +95,8 @@ public enum ConfigParser {
                 if let s = BellStyle(rawValue: value.lowercased()) { config.bell = s } else { badValue() }
             case "confirm-close-process":
                 if let b = parseBool(value) { config.confirmCloseProcess = b } else { badValue() }
+            case "restore-session":
+                if let b = parseBool(value) { config.restoreSession = b } else { badValue() }
             case "clipboard-read":
                 if let b = parseBool(value) { config.clipboardRead = b } else { badValue() }
             case "tab-bar":

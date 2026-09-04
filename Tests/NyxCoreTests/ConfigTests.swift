@@ -219,7 +219,8 @@ private let scalarDefaultFileKeys = [
     "font-family", "font-size", "line-height", "font-thicken", "theme", "cursor-style", "cursor-blink",
     "scrollback-lines", "padding", "background-opacity", "background-blur", "window-decorations",
     "tab-bar", "shell", "working-directory", "copy-on-select", "middle-click-paste", "option-as-meta",
-    "mouse-scroll-alt-screen", "bell", "confirm-close-process", "clipboard-read", "word-separators",
+    "mouse-scroll-alt-screen", "bell", "confirm-close-process", "restore-session", "clipboard-read",
+    "word-separators",
     "open-file-command",
 ]
 
@@ -266,7 +267,8 @@ private let scalarDefaultFileKeys = [
     for key in ["font-family", "font-size", "line-height", "theme", "cursor-style", "cursor-blink",
                 "scrollback-lines", "padding", "background-opacity", "background-blur", "shell",
                 "working-directory", "copy-on-select", "middle-click-paste", "option-as-meta",
-                "bell", "confirm-close-process", "clipboard-read", "tab-bar", "window-decorations",
+                "bell", "confirm-close-process", "restore-session", "clipboard-read", "tab-bar",
+                "window-decorations",
                 "word-separators", "open-file-command", "keybind", "palette"] {
         #expect(Config.defaultFileText.contains(key), "default file does not mention \(key)")
     }

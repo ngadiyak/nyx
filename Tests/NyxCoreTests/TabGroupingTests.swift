@@ -188,3 +188,51 @@ private func reorder(_ tabs: [String], _ move: TabMove?) -> [String] {
     #expect(removed == nil)
     #expect(g.groups.isEmpty)
 }
+
+// MARK: - Coming back from a saved session
+
+@Test func aRestoredStripGetsItsGroupsBack() {
+    let grouping = TabGrouping.restoring([
+        (nil, 1), ("work", 2), ("work", 2), (nil, 1), ("logs", 4),
+    ])
+    #expect(grouping.tabCount == 5)
+    #expect(grouping.groups.count == 2)
+    #expect(grouping.range(ofGroup: grouping.group(ofTabAt: 1)!.id) == 1..<3)
+    #expect(grouping.group(ofTabAt: 1)?.name == "work")
+    #expect(grouping.group(ofTabAt: 1)?.colorIndex == 2)
+    #expect(grouping.group(ofTabAt: 4)?.name == "logs")
+    #expect(grouping.group(ofTabAt: 0) == nil)
+    #expect(grouping.isContiguous)
+}
+
+/// A tab that could not be recreated is missing from the list, which shortens its group's run --
+/// it must never split it, because a group with a hole in it is a state the bar cannot draw.
+@Test func aGroupThatLostATabComesBackSmaller() {
+    let grouping = TabGrouping.restoring([("work", 2), ("work", 2)])
+    #expect(grouping.groups.count == 1)
+    #expect(grouping.range(ofGroup: grouping.groups[0].id) == 0..<2)
+    #expect(grouping.isContiguous)
+}
+
+/// Two separated runs claiming the same name are two groups, not one group around a tab that never
+/// belonged to it. A hand-edited session file is the way this happens.
+@Test func twoSeparatedRunsOfTheSameNameStayTwoGroups() {
+    let grouping = TabGrouping.restoring([("work", 2), (nil, 1), ("work", 2)])
+    #expect(grouping.groups.count == 2)
+    #expect(grouping.group(ofTabAt: 0)?.id != grouping.group(ofTabAt: 2)?.id)
+    #expect(grouping.group(ofTabAt: 1) == nil)
+    #expect(grouping.isContiguous)
+}
+
+@Test func aStripWithNoGroupsInItRestoresNone() {
+    let grouping = TabGrouping.restoring([(nil, 1), (nil, 1)])
+    #expect(grouping.groups.isEmpty)
+    #expect(grouping.tabCount == 2)
+    #expect(TabGrouping.restoring([]).tabCount == 0)
+}
+
+/// An empty name is not a group: `TabGrouping.rename` refuses one, so restoring one would produce a
+/// group nobody could ever name back.
+@Test func anEmptyGroupNameIsNotAGroup() {
+    #expect(TabGrouping.restoring([("", 2)]).groups.isEmpty)
+}

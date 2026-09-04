@@ -14,7 +14,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// initialiser, but `AppDelegate` then called `showWindow(nil)` on the controller it had been
     /// handed, which ordered the empty window straight back to the front. Returning nil means no
     /// window is shown and no controller is retained.
-    static func make(config: Config) -> TerminalWindowController? {
+    /// `restoring` is a window a saved session described. Everything about it is best-effort: a
+    /// tab whose panes will not start is dropped, a window whose tabs all fail comes back as an
+    /// ordinary one-tab window, and a frame that does not describe a usable window is ignored.
+    static func make(config: Config, restoring snapshot: WindowSnapshot? = nil) -> TerminalWindowController? {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
                               styleMask: styleMask(for: config),
                               backing: .buffered, defer: false)
@@ -45,7 +48,8 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         // `TabController` owns every pane in the window, one `PaneTreeView` per tab, and makes them
         // itself; the error from the very first one is kept there so a Mac without Metal still gets
         // the alert it used to.
-        let tabs = TabController(config: config)
+        let tabs = snapshot.map { TabController(config: config, restoring: $0) }
+            ?? TabController(config: config)
         guard let firstPane = tabs.focusedPane else {
             NSAlert(error: tabs.paneCreationFailure ?? NyxError.noMetal).runModal()
             window.delegate = nil
@@ -71,6 +75,13 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         window.setContentSize(firstPane.size(forCols: 100, rows: 30))
         window.center()
         window.setFrameAutosaveName("NyxMain")
+        // After the autosave name, which restores a frame of its own the moment it is set: the
+        // session's own frame is the more specific answer and has to win. `SessionRestore.frame`
+        // refuses anything that would come back as a window nobody could use.
+        if let rect = SessionRestore.frame(from: snapshot?.frame) {
+            window.setFrame(NSRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height),
+                            display: false)
+        }
         window.makeFirstResponder(firstPane)
         controller.tabs = tabs
         controller.banner = banner
@@ -122,6 +133,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         window.isOpaque = !translucent
         window.backgroundColor = translucent ? .clear : .black
         effectView?.isHidden = config.backgroundBlur <= 0
+    }
+
+    /// This window as a saved session records it, or nil when there is nothing in it worth saving.
+    func sessionSnapshot() -> WindowSnapshot? {
+        guard let saved = tabs?.sessionSnapshot() else { return nil }
+        let frame = window.map { [Double($0.frame.origin.x), Double($0.frame.origin.y),
+                                  Double($0.frame.width), Double($0.frame.height)] }
+        return WindowSnapshot(tabs: saved.tabs, selectedTab: saved.selected, frame: frame)
     }
 
     func windowWillClose(_ notification: Notification) {

@@ -112,6 +112,7 @@ private func roundTrip(_ key: String, _ value: String, in text: String) -> Confi
         ("background-opacity", "0.9"), ("background-blur", "20"), ("copy-on-select", "true"),
         ("middle-click-paste", "false"), ("option-as-meta", "both"), ("bell", "none"),
         ("confirm-close-process", "false"), ("tab-bar", "always"), ("window-decorations", "false"),
+        ("restore-session", "false"),
     ]
     let out = ConfigWriter.settings(values.map { (key: $0.0, value: $0.1) }, in: Config.defaultFileText)
     let (config, diagnostics) = ConfigParser.parse(out)

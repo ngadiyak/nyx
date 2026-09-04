@@ -53,6 +53,36 @@ public struct TabGrouping: Equatable {
 
     public var tabCount: Int { membership.count }
 
+    /// The grouping a restored strip has, from what each tab says it belonged to.
+    ///
+    /// Runs, not names: a group is a *contiguous* run of tabs, so two separated runs claiming the
+    /// same name come back as two groups rather than as one group with a hole in it -- which is a
+    /// state the bar cannot draw and this type promises never to be in. A tab whose panes could not
+    /// be recreated is simply not in the list, which shortens its group's run rather than splitting
+    /// it.
+    public static func restoring(_ tabs: [(name: String?, colorIndex: Int)]) -> TabGrouping {
+        var grouping = TabGrouping(tabCount: tabs.count)
+        var index = 0
+        while index < tabs.count {
+            guard let name = tabs[index].name, !name.isEmpty else {
+                index += 1
+                continue
+            }
+            var end = index
+            while end + 1 < tabs.count, tabs[end + 1].name == name { end += 1 }
+            if let made = grouping.newGroup(named: name, colorIndex: tabs[index].colorIndex,
+                                            fromTabAt: index) {
+                // No tab has to move: the run is already contiguous, so every `add` lands the tab
+                // exactly where it already is.
+                for member in stride(from: index + 1, through: end, by: 1) {
+                    grouping.add(tabAt: member, toGroup: made.id)
+                }
+            }
+            index = end + 1
+        }
+        return grouping
+    }
+
     // MARK: - Keeping up with the strip
 
     public mutating func tabInserted(at index: Int) {

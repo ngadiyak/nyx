@@ -10,6 +10,21 @@ import NyxCore
 ///
 /// The view is flipped so its coordinates match the model's, whose y grows downwards (a `.vertical`
 /// split puts `first` on top). Nothing else here has to think about the difference.
+/// What a pane about to be created should start from.
+///
+/// A directory for the ordinary case -- a split inherits from the pane it came out of -- and, when
+/// a saved session is being rebuilt, the ANSI transcript that pane was showing. Both travel
+/// together because both are only ever known at the moment the pane is made.
+struct PaneSeed {
+    var workingDirectory: String?
+    var transcript: String?
+
+    init(workingDirectory: String? = nil, transcript: String? = nil) {
+        self.workingDirectory = workingDirectory
+        self.transcript = transcript
+    }
+}
+
 final class PaneTreeView: NSView {
     /// The dividing line between two panes, and the width of the band around it the mouse can grab.
     private static let dividerThickness: Double = 1
@@ -27,15 +42,12 @@ final class PaneTreeView: NSView {
     /// The focused pane's working directory, whenever it changes and whenever focus moves to a
     /// pane with a different one. A project's actions belong to the pane you are looking at.
     var onFocusedDirectoryChange: ((String) -> Void)?
+    /// A pane was added or removed. The session file follows the layout, so it has to be told.
+    var onLayoutChange: (() -> Void)?
 
     private(set) var focused: PaneID?
 
-    /// The working directory a pane created by the next `makePane()` call should start in. The
-    /// factory takes no arguments, so this is how the inherited directory reaches it; it is set
-    /// immediately before every call.
-    private(set) var workingDirectoryForNewPane: String?
-
-    private let makePane: () -> Pane?
+    private let makePane: (PaneSeed) -> Pane?
     private var config: Config
     /// nil once the last pane has closed, at which point this view is on its way out.
     private var tree: PaneTree?
@@ -51,19 +63,81 @@ final class PaneTreeView: NSView {
     private var dividerColor: NSColor = .clear
     private var focusBorderColor: NSColor = .clear
 
-    init(config: Config, makePane: @escaping () -> Pane?) {
+    private init(config: Config, makePane: @escaping (PaneSeed) -> Pane?) {
         self.config = config
         self.makePane = makePane
         super.init(frame: .zero)
         updateThemeColors()
-        if let pane = makePane() {
+    }
+
+    /// A tree of one pane, starting in `directory`.
+    convenience init(config: Config, makePane: @escaping (PaneSeed) -> Pane?,
+                     startingIn directory: String? = nil) {
+        self.init(config: config, makePane: makePane)
+        if let pane = makePane(PaneSeed(workingDirectory: directory)) {
             adopt(pane)
             tree = .leaf(pane.id)
             setFocus(pane.id)
         }
     }
 
+    /// The panes a saved session recorded, in the layout it recorded them in. nil when not one of
+    /// them could be created, which is the caller's cue to open an ordinary tab instead: a restore
+    /// that fails must cost the user their layout, never their terminal.
+    convenience init?(config: Config, makePane: @escaping (PaneSeed) -> Pane?,
+                      restoring tab: TabSnapshot) {
+        self.init(config: config, makePane: makePane)
+        guard restore(tab) else { return nil }
+    }
+
     required init?(coder: NSCoder) { fatalError("not supported") }
+
+    /// Recreates a tab's panes and puts them back in their split layout.
+    ///
+    /// Panes are created against the ids the layout mentions, not against the pane list, so a
+    /// snapshot whose two halves disagree cannot produce a pane sitting outside the tree with a
+    /// live shell in it and no frame. A shell that will not start costs its own pane and nothing
+    /// more -- `PaneLayoutNode.tree(idFor:)` collapses it into its sibling, exactly as closing it
+    /// would.
+    private func restore(_ tab: TabSnapshot) -> Bool {
+        let saved = Dictionary(tab.panes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var remapped: [Int: PaneID] = [:]
+        for id in tab.layout.paneIDs {
+            let snapshot = saved[id]
+            guard let pane = makePane(PaneSeed(workingDirectory: snapshot?.workingDirectory,
+                                               transcript: snapshot?.transcript)) else { continue }
+            adopt(pane)
+            remapped[id] = pane.id
+            if let title = snapshot?.title, !title.isEmpty { titles[pane.id] = title }
+        }
+        guard let restored = tab.layout.tree(idFor: { remapped[$0] }) else {
+            // Nothing came back. Whatever did start is shut down again rather than left running
+            // with no way to see it.
+            for pane in panes.values {
+                pane.onExit = nil
+                pane.terminate()
+                pane.removeFromSuperview()
+            }
+            panes.removeAll()
+            titles.removeAll()
+            return false
+        }
+        tree = restored
+        setFocus(tab.focused.flatMap { remapped[$0] } ?? restored.panes.first)
+        return true
+    }
+
+    /// This tab's panes as a saved session records them. nil once the last pane has gone: an empty
+    /// tree is not worth a tab in the file.
+    func sessionSnapshot() -> (layout: PaneLayoutNode, panes: [PaneSnapshot], focused: Int?)? {
+        guard let tree else { return nil }
+        let layout = PaneLayoutNode(tree)
+        let saved = layout.paneIDs.compactMap { id -> PaneSnapshot? in
+            panes[PaneID(id)]?.sessionSnapshot(title: titles[PaneID(id)])
+        }
+        guard !saved.isEmpty else { return nil }
+        return (layout, saved, focused?.value)
+    }
 
     override var isFlipped: Bool { true }
 
@@ -138,15 +212,14 @@ final class PaneTreeView: NSView {
     /// (`.vertical`). Does nothing if the new pane cannot be created.
     func split(axis: SplitAxis) {
         guard let tree, let focused else { return }
-        workingDirectoryForNewPane = inheritableWorkingDirectory()
-        defer { workingDirectoryForNewPane = nil }
-        guard let pane = makePane() else { return }
+        guard let pane = makePane(PaneSeed(workingDirectory: inheritableWorkingDirectory())) else { return }
         adopt(pane)
         self.tree = tree.splitting(focused, axis: axis, with: pane.id, ratio: 0.5)
         // A split has to be visible to be useful, so it ends any zoom.
         zoomed = nil
         setFocus(pane.id)
         relayout()
+        onLayoutChange?()
     }
 
     func closeFocusedPane() {
@@ -185,6 +258,7 @@ final class PaneTreeView: NSView {
         self.tree = remaining
         setFocus(successor ?? remaining.panes.first)
         relayout()
+        onLayoutChange?()
     }
 
     /// Where focus goes when `id` closes: the nearest neighbour in any direction, preferring the

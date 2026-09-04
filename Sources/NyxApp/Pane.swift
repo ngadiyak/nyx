@@ -101,7 +101,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// `workingDirectory` is what a new pane inherits from the one it was split off; it is ignored
     /// when the config names a directory of its own, which is an explicit instruction rather than
     /// a default.
-    init(_ frame: NSRect, config: Config, workingDirectory: String? = nil) throws {
+    ///
+    /// `restoringTranscript` is the ANSI a saved session left behind. It is fed **before**
+    /// `session.start()`, which is the only moment at which nothing else can be writing to the
+    /// terminal: feeding it afterwards would race the shell's first prompt and could interleave
+    /// the two.
+    init(_ frame: NSRect, config: Config, workingDirectory: String? = nil,
+         restoringTranscript: String? = nil) throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw NyxError.noMetal }
         self.id = Pane.allocateID()
         self.config = config
@@ -131,6 +137,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         session.onUpdate = { [weak self] in self?.sessionDidUpdate() }
         session.onEvent = { [weak self] e in DispatchQueue.main.async { self?.handle(e) } }
         session.onExit = { [weak self] code in DispatchQueue.main.async { self?.onExit?(code) } }
+        if let restoringTranscript, !restoringTranscript.isEmpty {
+            // The shell's own prompt then lands on a line of its own rather than on the end of
+            // whatever the buffer was showing when it was saved.
+            session.withTerminal { $0.feed(restoringTranscript); $0.feed("\r\n") }
+        }
         session.start()
     }
 
@@ -1595,6 +1606,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Whether there is any buffer to save at all, so the menu item can grey out rather than
     /// putting up a panel that would write an empty file.
     var hasScrollback: Bool { session.withTerminal { $0.totalRows > 0 } }
+
+    /// This pane as a saved session records it: where its shell is, what it was called, and the
+    /// last few thousand rows of what it was showing.
+    ///
+    /// Capped by `SessionCapture` rather than written whole. Ten tabs of a full 10,000-line
+    /// scrollback is megabytes of ANSI to build and write on the way out of the application, and
+    /// nobody scrolls back through last week's build output anyway.
+    func sessionSnapshot(title: String?) -> PaneSnapshot {
+        let transcript = session.withTerminal { terminal -> String in
+            let rows = SessionCapture.rowRange(totalRows: terminal.totalRows)
+            return rows.isEmpty ? "" : terminal.transcript(rows: rows, options: .forRestoring)
+        }
+        return PaneSnapshot(id: id.value, workingDirectory: workingDirectory, title: title,
+                            transcript: transcript.isEmpty ? nil : transcript)
+    }
 
     /// The `font-family = system` case: macOS's own monospaced face, SF Mono.
     ///

@@ -57,10 +57,6 @@ final class TabController: NSViewController, NSMenuItemValidation {
     /// read them and approved the directory.
     private let projectBar = ProjectActionsBar(frame: .zero)
 
-    /// Where the first pane of the tab being created should start. The factory a `PaneTreeView`
-    /// calls takes no arguments and the new tree has nobody to inherit from, so the directory
-    /// reaches it the same way `PaneTreeView.workingDirectoryForNewPane` reaches a split.
-    private var workingDirectoryForNewTab: String?
     /// A fallback-title refresh is already queued; see `scheduleTitleRefresh`.
     private var titleRefreshScheduled = false
 
@@ -68,6 +64,15 @@ final class TabController: NSViewController, NSMenuItemValidation {
         self.config = config
         super.init(nibName: nil, bundle: nil)
         newTab()
+    }
+
+    /// The tabs a saved session recorded. Falls back to one ordinary tab if not one of them could
+    /// be rebuilt -- a window with no tabs in it is not a state this controller may be left in.
+    init(config: Config, restoring window: WindowSnapshot) {
+        self.config = config
+        super.init(nibName: nil, bundle: nil)
+        restore(window)
+        if tabs.isEmpty { newTab() }
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
@@ -144,37 +149,31 @@ final class TabController: NSViewController, NSMenuItemValidation {
     /// tab that was right-clicked, which is the only thing a duplicate can honestly copy: a shell's
     /// history and its running processes cannot be forked.
     private func addTab(inheriting directory: String?) {
-        workingDirectoryForNewTab = directory
-        defer { workingDirectoryForNewTab = nil }
-        let tree = makeTree()
+        let tree = PaneTreeView(config: config, makePane: paneFactory(), startingIn: directory)
+        tree.autoresizingMask = [.width, .height]
         guard tree.focusedPane != nil else { return }
         let tab = Tab(panes: tree)
         tabs.append(tab)
         grouping.tabInserted(at: tabs.count - 1)
         wire(tab)
         show(tabs.count - 1)
+        sessionChanged()
     }
 
-    /// A tree whose panes are made with this window's config, inheriting a directory from whichever
-    /// pane is being split -- or, for the first pane of a new tab, from the tab it was opened from.
-    private func makeTree() -> PaneTreeView {
-        // Weak, because the tree owns the closure that reads it. It is still nil during the tree's
-        // own initialiser, which is exactly when `workingDirectoryForNewTab` is the right answer.
-        weak var tree: PaneTreeView?
-        let makePane: () -> Pane? = { [weak self] in
+    /// Makes the panes of one tree, with this window's config. A seed carries whatever the new pane
+    /// should start from -- the directory it inherits, and the transcript when a saved session is
+    /// being rebuilt.
+    private func paneFactory() -> (PaneSeed) -> Pane? {
+        { [weak self] seed in
             guard let self else { return nil }
-            let directory = tree?.workingDirectoryForNewPane ?? self.workingDirectoryForNewTab
             do {
-                return try Pane(.zero, config: self.config, workingDirectory: directory)
+                return try Pane(.zero, config: self.config, workingDirectory: seed.workingDirectory,
+                                restoringTranscript: seed.transcript)
             } catch {
                 self.paneCreationFailure = error
                 return nil
             }
         }
-        let view = PaneTreeView(config: config, makePane: makePane)
-        tree = view
-        view.autoresizingMask = [.width, .height]
-        return view
     }
 
     private func wire(_ tab: Tab) {
@@ -201,6 +200,56 @@ final class TabController: NSViewController, NSMenuItemValidation {
             guard let self, let tree, self.index(of: tree) == self.selected else { return }
             self.workingDirectoryChanged(directory)
         }
+        tree.onLayoutChange = { [weak self] in self?.sessionChanged() }
+    }
+
+    // MARK: - Saving and restoring the session
+    //
+    // The shape of what is written, and every rule about whether it may be read back, is
+    // `SessionSnapshot`/`SessionRestore` in NyxCore. What is here is turning live tabs into that
+    // shape and back.
+
+    /// Something about the tabs changed. The application owns the file and the debounce, because a
+    /// session spans every window and no one window can write it.
+    private func sessionChanged() {
+        appDelegate?.sessionChanged()
+    }
+
+    /// This window's tabs as a saved session records them, or nil when there is nothing worth
+    /// recording.
+    func sessionSnapshot() -> (tabs: [TabSnapshot], selected: Int)? {
+        let saved: [TabSnapshot] = tabs.enumerated().compactMap { index, tab in
+            guard let panes = tab.panes.sessionSnapshot() else { return nil }
+            let group = grouping.group(ofTabAt: index)
+            return TabSnapshot(layout: panes.layout, panes: panes.panes, focused: panes.focused,
+                               customTitle: tab.customTitle, groupName: group?.name,
+                               groupColorIndex: group?.colorIndex)
+        }
+        guard !saved.isEmpty else { return nil }
+        return (saved, min(max(0, selected), saved.count - 1))
+    }
+
+    /// Rebuilds the tabs a snapshot describes. A tab whose panes could not be recreated is skipped
+    /// rather than inserted empty, so this can end with fewer tabs than the file had -- including
+    /// none at all, which the initialiser answers with an ordinary new tab.
+    private func restore(_ window: WindowSnapshot) {
+        // The group each restored tab claimed, in the order they actually came back. A tab whose
+        // panes could not be recreated leaves its group's run one shorter rather than leaving a
+        // hole in it, which is what keeps `TabGrouping`'s contiguity invariant true.
+        var memberships: [(name: String?, colorIndex: Int)] = []
+        for snapshot in window.tabs {
+            guard let tree = PaneTreeView(config: config, makePane: paneFactory(),
+                                          restoring: snapshot) else { continue }
+            tree.autoresizingMask = [.width, .height]
+            let tab = Tab(panes: tree)
+            tab.customTitle = snapshot.customTitle
+            tabs.append(tab)
+            memberships.append((snapshot.groupName, snapshot.groupColorIndex ?? 1))
+            wire(tab)
+        }
+        guard !tabs.isEmpty else { return }
+        grouping = TabGrouping.restoring(memberships)
+        show(min(max(0, window.selectedTab), tabs.count - 1))
     }
 
     private func index(of tree: PaneTreeView) -> Int? {
@@ -240,6 +289,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
                 self.tabs.remove(at: index)
                 self.grouping.tabRemoved(at: index)
             }
+            self.sessionChanged()
             guard let next else {
                 self.selected = 0
                 self.refreshBar()
@@ -258,6 +308,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
         let next = TabStrip.selectionAfterClosing(index, selected: selected, tabCount: tabs.count)
         tabs.remove(at: index)
         grouping.tabRemoved(at: index)
+        sessionChanged()
         guard let next else {
             selected = 0
             refreshBar()
@@ -318,6 +369,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
             paneContainer.addSubview(tab.panes)
         }
         selected = index
+        sessionChanged()
         tab.indicator = tab.indicator.afterSelection()
         // The window forgot its first responder when the previous tree left the hierarchy.
         tab.panes.restoreFocus()
@@ -498,6 +550,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
     private func groupsChanged() {
         refreshTitles()
         refreshBar()
+        sessionChanged()
     }
 
     @objc private func menuNewGroup(_ sender: Any?) {
@@ -619,6 +672,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
         tabs[index].customTitle = nil
         refreshTitles()
         refreshBar()
+        sessionChanged()
     }
 
     /// A sheet rather than a modal alert, for the same reason `confirmClose` uses one: `runModal()`
@@ -640,6 +694,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
             tab.customTitle = name.isEmpty ? nil : name
             self.refreshTitles()
             self.refreshBar()
+            self.sessionChanged()
         }
         alert.window.initialFirstResponder = field
     }

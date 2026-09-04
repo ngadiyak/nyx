@@ -136,3 +136,43 @@ private func token(_ text: String, _ kind: TokenKind) -> TextToken {
                                          line: nil, column: nil)
     #expect(argv == ["vim", "+", "/tmp/a"])
 }
+
+// MARK: - Which schemes may be opened
+
+private func urlToken(_ text: String) -> TextToken {
+    TextToken(columns: 0..<text.count, text: text, kind: .url)
+}
+
+private func resolve(_ text: String, exists: @escaping (String) -> Bool = { _ in false }) -> LinkTarget? {
+    LinkResolver.target(for: urlToken(text), home: "/Users/nik",
+                        workingDirectory: { "/Users/nik/projects/nyx" }, fileExists: exists)
+}
+
+@Test func ordinaryWebLinksOpen() {
+    #expect(resolve("https://example.com") == .url("https://example.com"))
+    #expect(resolve("http://example.com/a?b=1") != nil)
+    #expect(resolve("ssh://box.local") != nil)
+}
+
+/// A terminal shows whatever a program chose to print. `file://` naming an application bundle
+/// would turn a line of output into a one-click launch, so it goes through the same "must exist"
+/// rule as any other path rather than straight to the system opener.
+@Test func aFileUrlIsTreatedAsThePathItIs() {
+    #expect(resolve("file:///Users/nik/notes.txt") == nil)      // does not exist: not a link
+    #expect(resolve("file:///Users/nik/notes.txt", exists: { $0 == "/Users/nik/notes.txt" })
+            == .file(path: "/Users/nik/notes.txt", line: nil, column: nil))
+}
+
+@Test func aPercentEncodedFileUrlResolvesToTheRealPath() {
+    let target = resolve("file:///Users/nik/My%20Files/a.txt",
+                         exists: { $0 == "/Users/nik/My Files/a.txt" })
+    #expect(target == .file(path: "/Users/nik/My Files/a.txt", line: nil, column: nil))
+}
+
+/// Any application on the machine can register a scheme. Output from a program should not be able
+/// to reach one of them just by printing it.
+@Test func anUnknownSchemeIsTextRatherThanALink() {
+    #expect(resolve("x-unknown-app://do-something") == nil)
+    #expect(resolve("javascript:alert(1)") == nil)
+    #expect(resolve("vnc://box.local") == nil)
+}

@@ -21,6 +21,19 @@ public enum LinkResolver {
                               fileExists: (String) -> Bool) -> LinkTarget? {
         switch token.kind {
         case .url:
+            // Not every scheme is safe to hand to the system. `file://` opens whatever it names --
+            // including an application bundle, which means output a program printed could launch
+            // something with one ⌘-click -- and an unknown scheme may be registered by any app on
+            // the machine. A `file://` URL is treated as the path it is, so it goes through the
+            // same "must exist, must not be a bundle" rule as any other path; anything outside the
+            // known-safe list is text you can select and not a link you can open.
+            guard let scheme = scheme(of: token.text) else { return nil }
+            if scheme == "file" {
+                let path = fileURLPath(token.text)
+                guard !path.isEmpty, fileExists(path) else { return nil }
+                return .file(path: path, line: nil, column: nil)
+            }
+            guard openableSchemes.contains(scheme) else { return nil }
             return .url(token.text)
         case .email:
             // `mailto:` is what makes the system hand it to a mail client rather than refusing it.
@@ -35,6 +48,23 @@ public enum LinkResolver {
             // Real things, and worth selecting on a double-click, but there is nothing to open.
             return nil
         }
+    }
+
+    /// Schemes worth opening from terminal output. Deliberately a list rather than a filter: a
+    /// terminal shows whatever a program chose to print, so the question is not "is this scheme
+    /// dangerous" but "did we mean to give this program a way to open it".
+    static let openableSchemes: Set<String> = ["http", "https", "mailto", "ssh", "sftp", "ftp", "irc", "ircs"]
+
+    static func scheme(of text: String) -> String? {
+        guard let range = text.range(of: "://") ?? text.range(of: ":") else { return nil }
+        let scheme = text[text.startIndex..<range.lowerBound].lowercased()
+        return scheme.isEmpty ? nil : scheme
+    }
+
+    /// The filesystem path inside a `file://` URL, percent-decoding it and dropping any host.
+    static func fileURLPath(_ text: String) -> String {
+        guard let url = URL(string: text), url.isFileURL else { return "" }
+        return url.path
     }
 
     /// `src/main.swift:12:3` is a path plus a position; the path is the part before the colons, and

@@ -101,3 +101,40 @@ private func mark(_ letter: String, _ status: Int32? = nil) -> String {
     let region = try #require(t.command(containingAbsoluteRow: 0))
     #expect(t.commandText(of: region) == "$ true")
 }
+
+/// Absolute rows shift every time the scrollback trims, which is every new line once the buffer is
+/// full. Using the row as identity made a long build look like a new command on each tick, so the
+/// clock restarted and the notification never fired -- exactly the case the feature exists for.
+@Test func aRunningCommandSurvivesItsRowShiftingUnderneath() {
+    var w = CommandWatcher(minimumDuration: 10)
+    // A build running for 30 seconds while the scrollback trims a row off the front each tick.
+    var row = 9_000
+    for tick in 0...60 {
+        let finished = w.observe(bottomPromptRow: row, outputStarted: true, now: Double(tick) * 0.5)
+        #expect(finished == nil)
+        row -= 1
+    }
+    // The prompt comes back: the command ended.
+    let finished = w.observe(bottomPromptRow: row, outputStarted: false, now: 31)
+    #expect(finished != nil)
+    #expect((finished?.duration ?? 0) >= 30)
+}
+
+/// Two commands in a row must each be timed from their own start, not from the first one.
+@Test func aSecondCommandIsTimedFromItsOwnStart() {
+    var w = CommandWatcher(minimumDuration: 10)
+    _ = w.observe(bottomPromptRow: 10, outputStarted: true, now: 0)
+    _ = w.observe(bottomPromptRow: 10, outputStarted: false, now: 50)   // ran 50s, reported
+
+    _ = w.observe(bottomPromptRow: 20, outputStarted: true, now: 100)
+    let second = w.observe(bottomPromptRow: 20, outputStarted: false, now: 105)
+    #expect(second == nil)                                             // only 5s, not worth saying
+}
+
+/// Sitting at a prompt doing nothing must never produce a notification, however long it lasts.
+@Test func anIdleTerminalNeverReportsAnything() {
+    var w = CommandWatcher(minimumDuration: 10)
+    for tick in 0...100 {
+        #expect(w.observe(bottomPromptRow: 5, outputStarted: false, now: Double(tick)) == nil)
+    }
+}

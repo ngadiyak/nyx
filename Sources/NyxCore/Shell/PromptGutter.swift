@@ -45,33 +45,21 @@ public extension Terminal {
     func gutterMarks(rows visibleRows: Int) -> [GutterMark?] {
         var marks = [GutterMark?](repeating: nil, count: max(0, visibleRows))
         guard visibleRows > 0 else { return marks }
-        let top = viewportTopRow
-        let end = totalRows
-        // The prompt whose status has not been seen yet: where it is, and where its mark goes.
-        var pendingRow: Int?
-        var pendingIndex: Int?
-        var row = max(0, top)
+        let top = max(0, viewportTopRow)
 
-        while row < end {
-            let flags = promptMarks(atAbsoluteRow: row)
-            // A `D` on our own prompt row closes whatever ran *before* it, which is why this is
-            // strictly after the pending prompt -- the same ownership rule `command(containing:)`
-            // follows, and the reason a fresh prompt does not inherit its predecessor's failure.
-            if flags.contains(.commandDone), let index = pendingIndex, let pending = pendingRow, pending < row {
-                marks[index] = (exitStatus(atAbsoluteRow: row) ?? 0) == 0 ? .succeeded : .failed
-                pendingRow = nil
-                pendingIndex = nil
-            }
-            if flags.contains(.promptStart) {
-                let index = row - top
-                guard index < visibleRows else { break }   // past the screen; nothing more to draw
+        // Only the rows on screen are looked at. The status of each command was written onto its
+        // own prompt row when its `D` arrived, so there is nothing to search for here -- searching
+        // forward used to walk to the end of the buffer on every frame whenever a command was
+        // still running, under the session lock, which is the one place that cost is worst.
+        for index in 0..<visibleRows {
+            let row = top + index
+            guard let line = absoluteRow(row),
+                  PromptMarks(rawValue: line.promptMark).contains(.promptStart) else { continue }
+            guard let status = line.commandStatus else {
                 marks[index] = .running
-                pendingRow = row
-                pendingIndex = index
+                continue
             }
-            row += 1
-            // Everything on screen is drawn and nothing is waiting on a status further down.
-            if row >= top + visibleRows && pendingIndex == nil { break }
+            marks[index] = status == 0 ? .succeeded : .failed
         }
         return marks
     }

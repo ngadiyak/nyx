@@ -436,6 +436,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // Before anything reads the selection: a cleared scrollback, a reset or an
             // alternate-screen swap leaves it pointing at rows that now hold other content.
             selectionController.invalidateIfStale(t)
+            // The selection is not the only thing addressed in absolute rows. Search matches
+            // survived a `clear`, so the highlights painted over unrelated text, the readout went
+            // on claiming a count, and stepping selected -- then copied -- text nobody searched
+            // for. A hovered link had the same shape. Both cost one comparison when nothing moved.
+            searchSession.invalidateIfStale(in: t, viewportTop: t.viewportTopRow)
+            if hoveredLinkGeneration != t.scrollbackGeneration {
+                hoveredLinkGeneration = t.scrollbackGeneration
+                hoveredLink = nil
+            }
             let lines = (0..<t.rows).map { t.viewportRow($0) }
             let cursor: Cursor? = (t.modes.showCursor && t.viewportOffset == 0) ? t.screen.cursor : nil
             // Resolved here, inside the lock, so the highlighted columns belong to the same
@@ -900,6 +909,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// The link under the pointer, in absolute coordinates so it stays on its text while the buffer
     /// scrolls underneath. nil when the pointer is over ordinary text.
     private var hoveredLink: (row: Int, columns: Range<Int>)?
+    /// The buffer the hovered link was found in; a `clear` moves its row out from under it.
+    private var hoveredLinkGeneration: UInt64 = 0
+    /// The cell the pointer was last over, so a mouse-move inside one cell does no work at all --
+    /// hit-testing tokenizes a row through five regular expressions and may `stat` a path.
+    private var lastHoverCell: (row: Int, col: Int)?
     /// The same thing in view coordinates, for the pointing-hand cursor rect.
     private var hoveredRect: NSRect?
 
@@ -908,6 +922,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             clearHover()
             return
         }
+        // A mouse-move that stays inside one cell cannot change what is under the pointer, and
+        // hit-testing is not cheap: it tokenizes the row through five regular expressions and may
+        // `stat` a path. Mouse-move events arrive far faster than cells change.
+        let cell: (row: Int, col: Int) = session.withTerminal { t in
+            let p = self.position(topLeft(point), in: t)
+            return (p.row, p.col)
+        }
+        guard lastHoverCell == nil || lastHoverCell! != cell else { return }
+        lastHoverCell = cell
+
         let hit = token(under: point)
         // Resolved *outside* the session lock: a path needs the pane's working directory, and
         // finding that takes the same lock, which is not recursive.
@@ -920,6 +944,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     private func clearHover() {
+        lastHoverCell = nil
         guard hoveredLink != nil else { return }
         hoveredLink = nil
         updateHoverCursor()
@@ -1113,7 +1138,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Whether the shell in this pane emits OSC 133 marks at all. Without them the prompt-jumping
     /// actions have nothing to jump between, and the menu greys them out rather than beeping.
     var hasPromptMarks: Bool {
-        session.withTerminal { !$0.promptRows.isEmpty }
+        // `promptRows` walks the entire buffer; this stops at the first prompt it finds, and menu
+        // validation asks four times per keystroke.
+        session.withTerminal { t in
+            (0..<t.totalRows).contains { t.promptMarks(atAbsoluteRow: $0).contains(.promptStart) }
+        }
     }
 
 

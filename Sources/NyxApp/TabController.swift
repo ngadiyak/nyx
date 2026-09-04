@@ -269,6 +269,17 @@ final class TabController: NSViewController, NSMenuItemValidation {
 
     func selectTab(at index: Int) {
         guard tabs.indices.contains(index) else { return }
+        // A tab inside a collapsed group has no slot in the bar, so selecting one -- by ⌘2, by
+        // cycling, or from the palette -- used to put its panes on screen while the bar highlighted
+        // nothing. Asking for a tab is asking to see it, which includes seeing where it is.
+        //
+        // Deliberately here and not in `show`: collapsing a group deliberately leaves the selection
+        // on its first tab, and `toggleGroup` reaches `show` directly, so putting this there would
+        // re-expand a group the moment it was collapsed.
+        if let group = grouping.group(ofTabAt: index), group.isCollapsed {
+            grouping.setCollapsed(false, forGroup: group.id)
+            groupsChanged()
+        }
         show(index)
     }
 

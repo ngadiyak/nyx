@@ -49,6 +49,20 @@ public struct SearchSession: Equatable {
         }
     }
 
+    /// Drops or repairs matches that no longer describe the buffer they were found in.
+    ///
+    /// Matches are absolute rows, and clearing the screen, a reset or an alternate-screen swap
+    /// moves every row out from under them. Left alone, the highlights get painted over unrelated
+    /// text, the readout goes on claiming a count, and stepping selects -- and then copies -- text
+    /// the user never searched for. The check is a single comparison, so this belongs on the render
+    /// path rather than on a timer that only runs while the bar happens to be open.
+    @discardableResult
+    public mutating func invalidateIfStale(in terminal: Terminal, viewportTop: Int) -> Bool {
+        guard search.isStale(terminal) else { return false }
+        refresh(in: terminal, viewportTop: viewportTop)
+        return true
+    }
+
     /// Moves to the next or previous hit, wrapping at either end. nil when there are none.
     @discardableResult
     public mutating func step(forward: Bool) -> SearchMatch? {

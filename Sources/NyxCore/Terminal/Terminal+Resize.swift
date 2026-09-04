@@ -76,11 +76,12 @@ extension Terminal {
         let cursorPhysical = scrollback.count + s.cursor.y
 
         // 2. Logical lines.
-        struct Line { var cells: [Cell]; var mark: UInt8; var exitStatus: Int32? }
+        struct Line { var cells: [Cell]; var mark: UInt8; var exitStatus: Int32?; var commandStatus: Int32? }
         var lines: [Line] = []
         var current: [Cell] = []
         var currentMark: UInt8 = 0
         var currentStatus: Int32?
+        var currentCommandStatus: Int32?
         var cursorLine = 0
         var cursorOffset = 0
         for (i, row) in physical.enumerated() {
@@ -89,6 +90,7 @@ extension Terminal {
             // first would lose the status every time the window was narrowed.
             currentMark |= row.promptMark
             if currentStatus == nil { currentStatus = row.exitStatus }
+            if currentCommandStatus == nil { currentCommandStatus = row.commandStatus }
             if i == cursorPhysical {
                 cursorLine = lines.count
                 cursorOffset = current.count + s.cursor.x
@@ -99,10 +101,12 @@ extension Terminal {
                 while keep > 0 && current[keep - 1].content == 0 && current[keep - 1].bg == .default { keep -= 1 }
                 if lines.count == cursorLine && i >= cursorPhysical { keep = max(keep, cursorOffset) }
                 current.removeSubrange(keep...)
-                lines.append(Line(cells: current, mark: currentMark, exitStatus: currentStatus))
+                lines.append(Line(cells: current, mark: currentMark, exitStatus: currentStatus,
+                                  commandStatus: currentCommandStatus))
                 current = []
                 currentMark = 0
                 currentStatus = nil
+                currentCommandStatus = nil
             }
         }
 
@@ -114,6 +118,7 @@ extension Terminal {
             var row = Row(cols: newCols)
             row.promptMark = line.mark
             row.exitStatus = line.exitStatus
+            row.commandStatus = line.commandStatus
             var x = 0
             var placedCursor = false
             var index = 0

@@ -40,9 +40,14 @@ final class QuickActionRunner {
             // edited or re-run, rather than being a process nobody can see the command line of.
             target?.perform(.newTab)
             let bytes = action.bytesToSend
-            // The tab's shell has to finish starting before it can be typed at.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak target] in
-                (target as? TabController)?.focusedPane?.send(bytes)
+            // The pane is captured NOW, not looked up when the timer fires. Asking for "the focused
+            // pane" a quarter of a second later types the command into whatever the user switched
+            // to in the meantime -- press the button, hit ⌘⇧] , and the command lands in someone
+            // else's shell.
+            guard let pane = (target as? TabController)?.focusedPane else { return }
+            // The shell still has to finish starting before it can be typed at.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak pane] in
+                pane?.send(bytes)
             }
         case .toggle:
             toggle(action)

@@ -13,6 +13,14 @@ public struct Row: Equatable {
     /// together, and the D of the previous command alongside the A of the next.
     /// `PromptMarks` is the typed view of it.
     public var promptMark: UInt8 = 0
+    /// The status a command's own prompt row ends up carrying, written when its `D` arrives.
+    ///
+    /// The gutter draws a mark beside each visible prompt, so it needs the status *there*. Searching
+    /// forward for the `D` at draw time meant walking to the end of the buffer on every frame
+    /// whenever the command was still running -- measured at 0.48 ms per frame over 2,000 rows,
+    /// under the session lock, contending with the PTY reader. Recording it once, when the mark
+    /// arrives, makes drawing the gutter cost only the rows on screen.
+    public var commandStatus: Int32?
     /// The exit status from `OSC 133 ; D ; <status>`, on the row carrying the D mark. nil when the
     /// shell reported the end of a command without a status, or on any other row.
     public var exitStatus: Int32?
@@ -43,6 +51,7 @@ public struct Row: Equatable {
         dirty = true
         promptMark = 0
         exitStatus = nil
+        commandStatus = nil
     }
 
     public var isBlank: Bool { cells.allSatisfy { $0.content == 0 && $0.bg == .default } }
@@ -74,7 +83,10 @@ public struct Scrollback {
     }
 
     /// 0 is the oldest row.
-    public subscript(i: Int) -> Row { buffer[(head + i) % buffer.count] }
+    public subscript(i: Int) -> Row {
+        get { buffer[(head + i) % buffer.count] }
+        set { buffer[(head + i) % buffer.count] = newValue }
+    }
 
     public mutating func removeAll() {
         buffer.removeAll(keepingCapacity: true)

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import NyxCore
 
@@ -98,4 +99,47 @@ private func session() -> Terminal {
 @Test func aPointInThePaddingOrPastTheLastRowIsOverNothing() {
     #expect(PromptGutter.row(atY: 2, cellHeight: 16, padding: 8, rows: 4) == nil)
     #expect(PromptGutter.row(atY: 400, cellHeight: 16, padding: 8, rows: 4) == nil)
+}
+
+/// The gutter runs on every frame while holding the session lock. Searching forward for a `D` that
+/// does not exist yet -- a command still running -- walked the whole buffer each time, in exactly
+/// the situation this is used in: scrolled up, reading a long build that is still going.
+@Test func theGutterCostsOnlyTheRowsOnScreen() {
+    let t = makeTerminal(cols: 20, rows: 4, scrollback: 5000)
+    // A running command at the top, then a great deal of output below it.
+    t.feed("\u{1b}]133;A\u{07}$ build\r\n\u{1b}]133;C\u{07}")
+    for i in 1...2000 { t.feed("line \(i)\r\n") }
+
+    // Scrolled to the top, so the running command's prompt is on screen with the whole buffer
+    // below it. Without that the loop leaves at once and measures nothing.
+    _ = t.scrollToAbsoluteRow(0)
+
+    let started = Date.timeIntervalSinceReferenceDate
+    for _ in 0..<200 { _ = t.gutterMarks(rows: 4) }
+    let elapsed = Date.timeIntervalSinceReferenceDate - started
+
+    // 200 frames over a 2000-row buffer. Walking it each time is ~400k row lookups and shows up
+    // plainly; stopping early is a few hundred. The bound is loose on purpose -- it is here to
+    // catch a return to O(buffer), not to police milliseconds.
+    // Measured at 95ms before the status was recorded on its prompt row, and 0.3ms after. The
+    // bound is loose on purpose: it exists to catch a return to O(buffer), not to police
+    // milliseconds on whatever machine happens to run it.
+    #expect(elapsed < 0.02, "gutter took \(String(format: "%.1f", elapsed * 1000))ms for 200 frames")
+}
+
+/// A status arriving after the output, with the prompt still on screen, has to reach the mark it
+/// belongs to -- the mark is drawn beside the prompt, not beside the `D`.
+@Test func aStatusAfterTheOutputReachesItsPrompt() {
+    let t = makeTerminal(cols: 20, rows: 8, scrollback: 100)
+    t.feed("\u{1b}]133;A\u{07}$ x\r\n\u{1b}]133;C\u{07}a\r\nb\r\nc\r\n\u{1b}]133;D;1\u{07}")
+    let marks = t.gutterMarks(rows: 8)
+    #expect(marks[0] == .failed)
+}
+
+/// The mark stays `.running` while the command is still producing, which is the honest answer --
+/// and the case where the search for a status has nothing to find.
+@Test func aRunningCommandIsMarkedRunningRatherThanGuessedAt() {
+    let t = makeTerminal(cols: 20, rows: 8, scrollback: 100)
+    t.feed("\u{1b}]133;A\u{07}$ build\r\n\u{1b}]133;C\u{07}working\r\n")
+    #expect(t.gutterMarks(rows: 8)[0] == .running)
 }

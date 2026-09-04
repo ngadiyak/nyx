@@ -1057,12 +1057,41 @@ public final class Terminal: TerminalActions {
             // indistinguishable from one that succeeded, which is most of the point of the mark.
             if mark == 8 {
                 let fields = rest.split(separator: ";", omittingEmptySubsequences: false)
-                if fields.count > 1, let status = Int32(fields[1]) {
-                    screen.rows[screen.cursor.y].exitStatus = status
-                }
+                let status = fields.count > 1 ? Int32(fields[1]) : nil
+                if let status { screen.rows[screen.cursor.y].exitStatus = status }
+                // Also written onto the prompt this command belongs to, where the gutter draws its
+                // mark. Once per command, walking back over its own output -- rather than forward
+                // over the whole buffer on every frame, which is what searching at draw time cost.
+                recordCommandStatus(status ?? 0)
             }
         default:
             break
+        }
+    }
+
+    /// Walks back from the cursor to the prompt this command started at and records how it ended.
+    ///
+    /// Bounded by the command's own output, and paid once when the command finishes.
+    private func recordCommandStatus(_ status: Int32) {
+        let cursorAbsolute = scrollback.count + screen.cursor.y
+        var row = cursorAbsolute
+        while row >= 0 {
+            let flags: UInt8
+            if row < scrollback.count {
+                flags = scrollback[row].promptMark
+            } else {
+                flags = screen.rows[row - scrollback.count].promptMark
+            }
+            // The `D` may share a row with the *next* prompt, which is not the one that ran.
+            if flags & 1 != 0 && row != cursorAbsolute {
+                if row < scrollback.count {
+                    scrollback[row].commandStatus = status
+                } else {
+                    screen.rows[row - scrollback.count].commandStatus = status
+                }
+                return
+            }
+            row -= 1
         }
     }
 

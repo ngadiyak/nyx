@@ -27,6 +27,7 @@ public struct CommandWatcher: Equatable {
 
     private var trackedPrompt: Int?
     private var startedAt: Double?
+    private var wasRunning = false
 
     public init(minimumDuration: Double = 10) {
         self.minimumDuration = minimumDuration
@@ -39,18 +40,28 @@ public struct CommandWatcher: Equatable {
     /// user is still typing at. Timing from there rather than from the prompt appearing is what
     /// stops a terminal left open overnight reporting the first command of the morning as a
     /// nine-hour job.
+    /// The prompt's row is deliberately NOT used as identity. Absolute rows shift whenever the
+    /// scrollback trims, which happens on every new line once the buffer is full -- so a long build
+    /// looked like a new command on every tick, the clock restarted each time, and the notification
+    /// never fired. Precisely the case the feature exists for. What is stable is the transition:
+    /// a command is running, and then it is not.
     public mutating func observe(bottomPromptRow: Int?, outputStarted: Bool,
                                  now: Double) -> FinishedCommand? {
-        guard bottomPromptRow != trackedPrompt else {
-            if outputStarted, startedAt == nil { startedAt = now }
+        defer { wasRunning = outputStarted }
+
+        if outputStarted {
+            if !wasRunning { startedAt = now }
+            trackedPrompt = bottomPromptRow      // kept current as rows shift underneath
             return nil
         }
-        let previous = trackedPrompt
-        let ran = startedAt.map { now - $0 }
-        trackedPrompt = bottomPromptRow
-        startedAt = outputStarted ? now : nil
-        guard let previous, let ran, ran >= minimumDuration else { return nil }
-        return FinishedCommand(promptRow: previous, duration: ran)
+
+        guard wasRunning, let started = startedAt else { return nil }
+        let ran = now - started
+        let row = trackedPrompt
+        startedAt = nil
+        trackedPrompt = nil
+        guard ran >= minimumDuration, let row else { return nil }
+        return FinishedCommand(promptRow: row, duration: ran)
     }
 }
 

@@ -51,7 +51,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         fonts = FontSet(family: fontFamily, pointSize: fontSize, scale: scale)
         renderer = try Renderer(device: device, fonts: fonts)
-        session = try TerminalSession(config: .loginShell(cols: 80, rows: 24, palette: Theme.nyxDark))
+        session = try TerminalSession(config: .loginShell(cols: 80, rows: 24, palette: Themes.palette(named: "nyx-dark")))
         super.init(frame: frame)
         wantsLayer = true
         layerContentsRedrawPolicy = .never

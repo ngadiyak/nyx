@@ -96,6 +96,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// kept that one field's old value -- applying it here is always safe, even when `diagnostics`
     /// is non-empty: every field that parsed cleanly still takes effect, and only the field with the
     /// bad line stays where it was.
+    /// The pane keystrokes would go to. Used by the paste smoke check.
+    var focusedPane: Pane? { tabs?.focusedPane }
+
     func configChanged(_ newConfig: Config, diagnostics: [ConfigDiagnostic]) {
         let diff = ConfigDiff(from: config, to: newConfig)
         config = newConfig

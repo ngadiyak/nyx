@@ -1649,10 +1649,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if PasteGuard.lineCount(text) > 1 {
             switch config.multilinePaste {
             case .edit:
-                presentCommandEditor(text: text, heading: "Edit before pasting", runTitle: "Paste") {
-                    [weak self] edited in
+                let shown = presentCommandEditor(text: text, heading: "Edit before pasting",
+                                                 runTitle: "Paste") { [weak self] edited in
                     self?.performPaste(edited, bracketed: bracketed)
                 }
+                // If the editor could not be shown, paste anyway. A feature that intercepts a core
+                // action has to degrade to that action, never to nothing at all.
+                if !shown { performPaste(text, bracketed: bracketed) }
                 return
             case .direct:
                 performPaste(text, bracketed: bracketed)
@@ -1820,26 +1823,33 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return true
     }
 
+    @discardableResult
     private func presentCommandEditor(text: String, heading: String, runTitle: String,
-                                      then run: @escaping (String) -> Void) {
-        guard let window else {
-            NSSound.beep()
-            return
-        }
+                                      then run: @escaping (String) -> Void) -> Bool {
+        guard let window else { return false }
         let editor = CommandEditor(text: text, heading: heading, runTitle: runTitle,
                                    palette: Pane.resolvedPalette(for: config))
-        // `presentAsSheet` needs a presenting controller; a pane is a view, so the window's own
-        // content controller does the presenting and the dismissing.
-        guard let controller = window.contentViewController else {
-            NSSound.beep()
-            return
-        }
-        editor.onFinish = { [weak controller] edited in
-            controller?.dismiss(editor)
+        // Presented as a sheet window rather than through `presentAsSheet`, which needs a
+        // presenting view controller -- and this window has none, because its content is a view.
+        // Relying on one meant the editor silently never appeared, and with it the paste it was
+        // supposed to be editing. Whatever else changes here, a paste must never end in nothing.
+        let size = editor.view.fittingSize == .zero ? NSSize(width: 620, height: 360) : editor.view.frame.size
+        let sheet = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                             styleMask: [.titled, .fullSizeContentView],
+                             backing: .buffered, defer: false)
+        sheet.contentView = editor.view
+        sheet.titlebarAppearsTransparent = true
+        sheet.isReleasedWhenClosed = false
+
+        editor.onFinish = { [weak window] edited in
+            window?.endSheet(sheet)
             guard let edited else { return }
             run(edited)
         }
-        controller.presentAsSheet(editor)
+        window.beginSheet(sheet) { _ in }
+        sheet.makeFirstResponder(editor.view)
+        editor.viewDidAppear()
+        return true
     }
 
     /// The first line in a fixed-width font, with the line count under it. Selectable, because the

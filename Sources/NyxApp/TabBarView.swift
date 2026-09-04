@@ -114,7 +114,7 @@ final class TabBarView: NSView {
     private static let quickActionFont = NSFont.systemFont(ofSize: 11, weight: .medium)
 
     private func rebuildLeadingButtons() {
-        leadingButtons = [.newTab, .tabList] + quickActions.indices.map { .quick($0) } + [.addQuickAction]
+        leadingButtons = [.tabList] + quickActions.indices.map { .quick($0) } + [.addQuickAction]
         leadingWidths = leadingButtons.map { button in
             switch button {
             case .newTab, .tabList, .addQuickAction:
@@ -133,6 +133,16 @@ final class TabBarView: NSView {
     private var fittedLeadingRects: [NSRect] {
         TabBarGeometry.leadingRects(buttonWidths: leadingWidths, barWidth: Double(bounds.width),
                                     barHeight: Double(bounds.height), slotCount: slots.count,
+                                    headerHeight: Double(headerHeight), metrics: TabBarView.metrics)
+            .map(ns)
+    }
+
+    /// The `+` sits after the last tab, where every browser and every other tabbed application
+    /// puts it, and where the eye already is once a tab has just been opened.
+    private var trailingRect: NSRect? {
+        TabBarGeometry.trailingRect(buttonWidth: TabBarView.builtInButtonWidth,
+                                    barWidth: Double(bounds.width), barHeight: Double(bounds.height),
+                                    slotCount: slots.count, leading: leadingWidth,
                                     headerHeight: Double(headerHeight), metrics: TabBarView.metrics)
             .map(ns)
     }
@@ -208,8 +218,9 @@ final class TabBarView: NSView {
     private func hit(at point: NSPoint) -> TabBarGeometry.Hit? {
         TabBarGeometry.hit(atX: Double(point.x), y: Double(point.y), slots: slots,
                            barWidth: Double(bounds.width), barHeight: Double(bounds.height),
-                           headerHeight: Double(headerHeight), leadingWidths: leadingWidths,
-                           metrics: TabBarView.metrics)
+                           headerHeight: Double(headerHeight),
+                           trailingWidth: TabBarView.builtInButtonWidth,
+                           leadingWidths: leadingWidths, metrics: TabBarView.metrics)
     }
 
     private func color(ofGroup id: Int) -> NSColor {
@@ -226,6 +237,7 @@ final class TabBarView: NSView {
         case .select(let index): onSelect?(index)
         case .expandGroup(let id), .groupHeader(let id): onToggleGroup?(id)
         case .leadingButton(let index): pressLeadingButton(index)
+        case .newTab: onNewTab?()
         case nil: break
         }
     }
@@ -250,6 +262,7 @@ final class TabBarView: NSView {
             if case .quick(let action)? = leadingButtons.indices.contains(index) ? leadingButtons[index] : nil {
                 onQuickActionContextMenu?(action, event)
             }
+        case .newTab: break
         case nil: break
         }
     }
@@ -289,6 +302,7 @@ final class TabBarView: NSView {
             case .addQuickAction: drawAddQuickActionButton(in: frame)
             }
         }
+        if let trailing = trailingRect { drawSymbol("plus", fallback: "+", in: trailing) }
         guard let last = fittedLeadingRects.last else { return }
         separatorColor.setFill()
         NSRect(x: last.maxX - 1, y: last.minY + 4, width: 1, height: last.height - 8).fill()

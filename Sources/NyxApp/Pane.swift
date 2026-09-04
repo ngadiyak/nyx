@@ -564,7 +564,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if let bytes = KeyEncoder.encode(ke, options: opts) { send(bytes) }
     }
 
-    private func send(_ bytes: [UInt8]) {
+    /// Writes bytes to the shell as though the user had typed them. Not private because a quick
+    /// action is exactly "type this for me".
+    func send(_ bytes: [UInt8]) {
         // Typing both jumps the viewport back to the live screen and drops the selection: the text
         // it pointed at is about to move, and every terminal drops it here.
         clearSelection()

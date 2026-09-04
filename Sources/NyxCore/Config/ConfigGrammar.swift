@@ -29,7 +29,8 @@ enum ConfigGrammar {
     /// A comment is a `#` with whitespace in front of it. That qualifier is load-bearing: colours
     /// are written `palette = 1=#ff0000`, and a rule that stripped from the first `#` would turn
     /// every palette line into an empty value.
-    static func value(after text: Substring) -> String {
+    static func value(after text: Substring, stripComments: Bool = true) -> String {
+        guard stripComments else { return text.trimmingCharacters(in: .whitespaces) }
         var previousWasSpace = true   // a `#` immediately after the `=` still starts a comment
         for index in text.indices {
             if text[index] == "#" && previousWasSpace {

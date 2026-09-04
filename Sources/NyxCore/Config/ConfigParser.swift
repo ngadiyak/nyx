@@ -20,6 +20,7 @@ public enum ConfigParser {
         // deleted its line. For those two the file is the only source, so they start empty each time.
         config.keybinds = Config.defaults.keybinds
         config.paletteOverrides = Config.defaults.paletteOverrides
+        config.quickActions = Config.defaults.quickActions
         var diagnostics: [ConfigDiagnostic] = []
 
         let lines = ConfigGrammar.lines(text)
@@ -33,7 +34,11 @@ public enum ConfigParser {
                 continue
             }
             let key = trimmedLine[trimmedLine.startIndex..<eq].trimmingCharacters(in: .whitespaces)
-            let value = ConfigGrammar.value(after: trimmedLine[trimmedLine.index(after: eq)...])
+            // A key whose value is a command line keeps its `#`: `quick = Note | send | echo '#1'`
+            // is a command, not a comment, and silently truncating it would be a puzzling failure.
+            let carriesACommand = key == "quick" || key == "open-file-command"
+            let value = ConfigGrammar.value(after: trimmedLine[trimmedLine.index(after: eq)...],
+                                            stripComments: !carriesACommand)
 
             func badValue() {
                 diagnostics.append(ConfigDiagnostic(line: lineNumber, message: "invalid value for '\(key)': '\(value)'"))
@@ -108,6 +113,9 @@ public enum ConfigParser {
                 }
             case "shell-integration":
                 if let mode = ShellIntegrationMode(rawValue: value) { config.shellIntegration = mode }
+                else { badValue() }
+            case "quick":
+                if let action = QuickAction.parse(value) { config.quickActions.append(action) }
                 else { badValue() }
             case "keybind":
                 if let binding = KeyBinding.parse(value) {

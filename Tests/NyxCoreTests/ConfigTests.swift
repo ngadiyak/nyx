@@ -316,3 +316,39 @@ private let scalarDefaultFileKeys = [
     #expect(d.count == 1)
     #expect(config.fontSize == Config.defaults.fontSize)
 }
+
+// MARK: - Quick actions
+
+@Test func quickActionsAreParsedFromTheConfig() {
+    let (config, d) = ConfigParser.parse("""
+    quick = Caffeine | toggle | caffeinate -d
+    quick = Deploy | ./deploy.sh
+    """)
+    #expect(d.isEmpty)
+    #expect(config.quickActions.count == 2)
+    #expect(config.quickActions[0].kind == .toggle)
+    #expect(config.quickActions[1].kind == .send)
+}
+
+/// `quick` appends, so reloading the same file must not grow the list -- the same bug the keybind
+/// list had, and the reason additive collections restart from the defaults on every parse.
+@Test func reloadingDoesNotDuplicateQuickActions() {
+    let text = "quick = Caffeine | toggle | caffeinate -d"
+    var (config, _) = ConfigParser.parse(text)
+    for _ in 0..<5 { (config, _) = ConfigParser.parse(text, base: config) }
+    #expect(config.quickActions.count == 1)
+}
+
+/// The value is a command line, so a `#` inside it belongs to the command. Stripping it as a
+/// trailing comment would silently truncate what the button runs.
+@Test func aHashInsideAQuickActionCommandIsNotAComment() {
+    let (config, d) = ConfigParser.parse("quick = Note | send | echo 'issue #42'")
+    #expect(d.isEmpty)
+    #expect(config.quickActions.first?.command == "echo 'issue #42'")
+}
+
+@Test func aMalformedQuickLineIsReportedAndSkipped() {
+    let (config, d) = ConfigParser.parse("quick = nonsense")
+    #expect(d.count == 1)
+    #expect(config.quickActions.isEmpty)
+}

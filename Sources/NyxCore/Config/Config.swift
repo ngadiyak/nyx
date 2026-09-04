@@ -46,6 +46,8 @@ public struct Config: Equatable {
     public var shellIntegration: ShellIntegrationMode = .auto
     /// Task 8 populates this from `keybind` lines; see `KeyBinding.parse`.
     public var keybinds: [KeyBinding] = []
+    /// User-defined buttons: `quick = <name> | <kind> | <command>`. Additive, like `keybind`.
+    public var quickActions: [QuickAction] = []
     public var paletteOverrides: [Int: RGB] = [:]
 
     public static let defaults = Config()
@@ -105,6 +107,14 @@ public extension Config {
         # confirm-close-process = true
         # clipboard-read = false
         # word-separators = ()[]{}'"`, ;:|<>
+        # --- Quick actions ---
+        # Buttons for commands you run over and over. `send` types it into the current pane, `run`
+        # opens a new tab for it, and `toggle` starts it in the background and stops it when you
+        # press again -- which is what something like `caffeinate -d` wants, rather than a whole tab
+        # spent babysitting it. The kind may be left out, and defaults to `send`.
+        # quick = Caffeine | toggle | caffeinate -d
+        # quick = Deploy | ./deploy.sh
+
         # shell-integration = auto
         # open-file-command =
 

@@ -1040,15 +1040,27 @@ public final class Terminal: TerminalActions {
         case 111: palette.background = initialPalette.background; events.append(.colorsChanged)
         case 112: palette.cursor = initialPalette.cursor; events.append(.colorsChanged)
         case 133:
+            // A row commonly carries more than one of these: a shell emits A and B on the same
+            // prompt line, and emits D for the finished command on the line the next prompt is
+            // about to occupy. Storing one value per row loses whichever arrived first, so they
+            // accumulate as flags.
             let mark: UInt8
             switch rest.first {
             case "A": mark = 1
             case "B": mark = 2
-            case "C": mark = 3
-            case "D": mark = 4
+            case "C": mark = 4
+            case "D": mark = 8
             default: return
             }
-            screen.rows[screen.cursor.y].promptMark = mark
+            screen.rows[screen.cursor.y].promptMark |= mark
+            // `D;<status>` reports how the command ended. Without it a failed command is
+            // indistinguishable from one that succeeded, which is most of the point of the mark.
+            if mark == 8 {
+                let fields = rest.split(separator: ";", omittingEmptySubsequences: false)
+                if fields.count > 1, let status = Int32(fields[1]) {
+                    screen.rows[screen.cursor.y].exitStatus = status
+                }
+            }
         default:
             break
         }

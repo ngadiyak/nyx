@@ -8,8 +8,14 @@ public struct Row: Equatable {
     /// frame, and `Terminal.clearDirty()` (called by the view after a frame) just resets the flags.
     /// This is the groundwork for the per-row partial redraw planned for phase 2.
     public var dirty = true
-    /// OSC 133 mark: 1 = prompt start (A), 2 = input start (B), 3 = output start (C), 4 = end (D).
+    /// OSC 133 marks as flags: 1 = prompt start (A), 2 = input start (B), 4 = output start (C),
+    /// 8 = end (D). Flags rather than one value because a single row routinely carries A and B
+    /// together, and the D of the previous command alongside the A of the next.
+    /// `PromptMarks` is the typed view of it.
     public var promptMark: UInt8 = 0
+    /// The exit status from `OSC 133 ; D ; <status>`, on the row carrying the D mark. nil when the
+    /// shell reported the end of a command without a status, or on any other row.
+    public var exitStatus: Int32?
 
     public init(cols: Int, fill: Cell = Cell()) {
         cells = Array(repeating: fill, count: cols)
@@ -36,6 +42,7 @@ public struct Row: Equatable {
         wrapped = false
         dirty = true
         promptMark = 0
+        exitStatus = nil
     }
 
     public var isBlank: Bool { cells.allSatisfy { $0.content == 0 && $0.bg == .default } }

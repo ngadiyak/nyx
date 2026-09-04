@@ -76,14 +76,19 @@ extension Terminal {
         let cursorPhysical = scrollback.count + s.cursor.y
 
         // 2. Logical lines.
-        struct Line { var cells: [Cell]; var mark: UInt8 }
+        struct Line { var cells: [Cell]; var mark: UInt8; var exitStatus: Int32? }
         var lines: [Line] = []
         var current: [Cell] = []
         var currentMark: UInt8 = 0
+        var currentStatus: Int32?
         var cursorLine = 0
         var cursorOffset = 0
         for (i, row) in physical.enumerated() {
-            if currentMark == 0 { currentMark = row.promptMark }
+            // A logical line's marks are the union of its physical rows': a command long enough
+            // to wrap puts its `A` on the first row and its `D` on the last, and taking only the
+            // first would lose the status every time the window was narrowed.
+            currentMark |= row.promptMark
+            if currentStatus == nil { currentStatus = row.exitStatus }
             if i == cursorPhysical {
                 cursorLine = lines.count
                 cursorOffset = current.count + s.cursor.x
@@ -94,9 +99,10 @@ extension Terminal {
                 while keep > 0 && current[keep - 1].content == 0 && current[keep - 1].bg == .default { keep -= 1 }
                 if lines.count == cursorLine && i >= cursorPhysical { keep = max(keep, cursorOffset) }
                 current.removeSubrange(keep...)
-                lines.append(Line(cells: current, mark: currentMark))
+                lines.append(Line(cells: current, mark: currentMark, exitStatus: currentStatus))
                 current = []
                 currentMark = 0
+                currentStatus = nil
             }
         }
 
@@ -107,6 +113,7 @@ extension Terminal {
         for (li, line) in lines.enumerated() {
             var row = Row(cols: newCols)
             row.promptMark = line.mark
+            row.exitStatus = line.exitStatus
             var x = 0
             var placedCursor = false
             var index = 0

@@ -9,7 +9,7 @@ enum NyxError: Error, LocalizedError {
     var errorDescription: String? { "Metal is not available on this Mac." }
 }
 
-final class TerminalView: NSView, NSTextInputClient {
+final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
     var onTitleChange: ((String) -> Void)?
     var onExit: ((Int32) -> Void)?
     /// Left `false` deliberately: nothing writes it in phase 1, because the config file that will
@@ -198,6 +198,9 @@ final class TerminalView: NSView, NSTextInputClient {
         let focused = (window?.isKeyWindow ?? false) && window?.firstResponder === self
         let preedit = markedText.isEmpty ? nil : markedText
         let (frame, wantsMotion): (RenderFrame, Bool) = session.withTerminal { t in
+            // Before anything reads the selection: a cleared scrollback, a reset or an
+            // alternate-screen swap leaves it pointing at rows that now hold other content.
+            selectionController.invalidateIfStale(t)
             let lines = (0..<t.rows).map { t.viewportRow($0) }
             let cursor: Cursor? = (t.modes.showCursor && t.viewportOffset == 0) ? t.screen.cursor : nil
             // Resolved here, inside the lock, so the highlighted columns belong to the same
@@ -535,8 +538,16 @@ final class TerminalView: NSView, NSTextInputClient {
 
     // MARK: - Menu actions
 
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(copy(_:)) { return selection != nil }
+        return true
+    }
+
     @objc func copy(_ sender: Any?) {
-        guard let s = selection, !s.isEmpty else { return }
+        guard let s = selection else { return }
+        // `text(in:)` already yields "" for an empty selection, so this covers that too — and a
+        // selection of nothing but blanks, which should leave the pasteboard alone rather than
+        // wiping it.
         let text = session.withTerminal { $0.text(in: s) }
         guard !text.isEmpty else { return }
         NSPasteboard.general.clearContents()

@@ -19,8 +19,8 @@ final class CommandEditor: NSViewController {
     private let runTitle: String
     private let palette: Palette
 
-    private let textView = NSTextView()
-    private let scroller = NSScrollView()
+    private var textView = NSTextView()
+    private var scroller = NSScrollView()
     private let hint = NSTextField(labelWithString: "")
 
     init(text: String, heading: String, runTitle: String, palette: Palette) {
@@ -40,28 +40,48 @@ final class CommandEditor: NSViewController {
         title.font = .systemFont(ofSize: 15, weight: .semibold)
         title.translatesAutoresizingMaskIntoConstraints = false
 
+        // `NSTextView` inside an `NSScrollView` has to be told its geometry: created bare and
+        // handed to `documentView`, it lays out into a zero-size container and shows nothing at
+        // all -- which is exactly what happened. `scrollableTextView()` builds the pair correctly,
+        // so this uses it rather than repeating six lines of setup that are easy to get wrong.
+        let scrollable = NSTextView.scrollableTextView()
+        guard let textView = scrollable.documentView as? NSTextView else {
+            fatalError("scrollableTextView did not produce a text view")
+        }
+        self.textView = textView
+        scroller = scrollable
+
         // Monospaced and in the terminal's own colours: this is the text as the shell will see it,
         // and reading it in the system font would be reading something else.
         textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         textView.string = initialText
         textView.isEditable = true
+        textView.isSelectable = true
         textView.isRichText = false
+        textView.allowsUndo = true
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isContinuousSpellCheckingEnabled = false
         textView.backgroundColor = nsColor(palette.background, alpha: 1)
+        textView.drawsBackground = true
         textView.textColor = nsColor(palette.foreground, alpha: 1)
         textView.insertionPointColor = nsColor(palette.cursor, alpha: 1)
         textView.textContainerInset = NSSize(width: 8, height: 8)
         // Wrapped, not scrolled sideways: a 900-character curl read through a horizontal scroll bar
         // is the problem this sheet exists to solve.
         textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
 
-        scroller.documentView = textView
         scroller.hasVerticalScroller = true
-        scroller.borderType = .lineBorder
+        scroller.hasHorizontalScroller = false
+        scroller.borderType = .bezelBorder
+        scroller.drawsBackground = true
+        scroller.backgroundColor = nsColor(palette.background, alpha: 1)
         scroller.translatesAutoresizingMaskIntoConstraints = false
 
         hint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -93,6 +113,7 @@ final class CommandEditor: NSViewController {
             scroller.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 12),
             scroller.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             scroller.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            scroller.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
 
             hint.topAnchor.constraint(equalTo: scroller.bottomAnchor, constant: 10),
             hint.leadingAnchor.constraint(equalTo: scroller.leadingAnchor),

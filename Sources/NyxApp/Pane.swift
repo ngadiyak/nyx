@@ -1891,11 +1891,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // presenting view controller -- and this window has none, because its content is a view.
         // Relying on one meant the editor silently never appeared, and with it the paste it was
         // supposed to be editing. Whatever else changes here, a paste must never end in nothing.
-        let size = editor.view.fittingSize == .zero ? NSSize(width: 620, height: 360) : editor.view.frame.size
+        let size = editor.view.frame.size == .zero ? NSSize(width: 620, height: 380) : editor.view.frame.size
         let sheet = NSWindow(contentRect: NSRect(origin: .zero, size: size),
-                             styleMask: [.titled, .fullSizeContentView],
+                             styleMask: [.titled, .fullSizeContentView, .resizable],
                              backing: .buffered, defer: false)
-        sheet.contentView = editor.view
+        // `contentViewController`, not `contentView`. A window retains its content *view* but not
+        // the controller behind it, so the editor was deallocated the moment this function
+        // returned: every button's target went nil, `⎋` did nothing, and the sheet became a
+        // picture of an editor that could not be closed. Exactly what a user reported.
+        sheet.contentViewController = editor
         sheet.titlebarAppearsTransparent = true
         sheet.isReleasedWhenClosed = false
 
@@ -1905,8 +1909,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             run(edited)
         }
         window.beginSheet(sheet) { _ in }
-        sheet.makeFirstResponder(editor.view)
-        editor.viewDidAppear()
         return true
     }
 

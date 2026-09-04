@@ -6,6 +6,7 @@
     <key>CFBundleExecutable</key><string>Nyx</string>
     <key>CFBundleIdentifier</key><string>com.nyx.terminal</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleName</key><string>Nyx</string>
     <key>CFBundleDisplayName</key><string>Nyx</string>
     <key>CFBundlePackageType</key><string>APPL</string>

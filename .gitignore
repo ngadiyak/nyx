@@ -3,3 +3,5 @@ build/
 .swiftpm/
 *.xcodeproj
 .DS_Store
+# zsh writes its history into ZDOTDIR, which for the shim is this directory.
+Resources/shell-integration/zsh/.zsh_history

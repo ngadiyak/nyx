@@ -17,7 +17,12 @@ public struct SessionConfig {
     }
 
     /// The user's login shell with terminal environment variables set.
-    public static func loginShell(cols: Int, rows: Int, palette: Palette, cwd: String? = nil) -> SessionConfig {
+    ///
+    /// `shellIntegrationResources` is the directory holding the OSC 133 hooks; passing nil, or
+    /// `mode: .off`, launches the shell exactly as the user configured it.
+    public static func loginShell(cols: Int, rows: Int, palette: Palette, cwd: String? = nil,
+                                  shellIntegration: ShellIntegrationMode = .auto,
+                                  shellIntegrationResources: URL? = ShellIntegration.bundledResources) -> SessionConfig {
         var env = ProcessInfo.processInfo.environment
         let shell = env["SHELL"].flatMap { $0.isEmpty ? nil : $0 } ?? "/bin/zsh"
         env["TERM"] = "xterm-256color"
@@ -25,6 +30,8 @@ public struct SessionConfig {
         env["TERM_PROGRAM"] = "Nyx"
         env["TERM_PROGRAM_VERSION"] = Terminal.version
         if env["LANG"] == nil { env["LANG"] = "en_US.UTF-8" }
+        env = ShellIntegration.environment(env, shellPath: shell, mode: shellIntegration,
+                                           resources: shellIntegrationResources)
         let name = "-" + (shell as NSString).lastPathComponent
         return SessionConfig(shellPath: shell, argv: [name], environment: env, cwd: cwd ?? env["HOME"],
                              cols: cols, rows: rows, palette: palette)
@@ -46,6 +53,15 @@ public final class TerminalSession {
     public var onExit: ((Int32) -> Void)?
     public var exitCode: Int32? { lock.lock(); defer { lock.unlock() }; return _exitCode }
     public var pid: pid_t { pty.pid }
+
+    /// The PTY's foreground process group -- the program the user is actually looking at, which is
+    /// the shell itself unless it is running something. nil once the PTY is gone. Used to ask the
+    /// system for that process's working directory, which is why the id rather than a path is what
+    /// crosses this boundary: `proc_pidinfo` is a Darwin call and belongs in the app layer.
+    public var foregroundProcessGroup: pid_t? {
+        let pgid = tcgetpgrp(pty.fd)
+        return pgid > 0 ? pgid : nil
+    }
 
     private let terminal: Terminal
     private let pty: PTY

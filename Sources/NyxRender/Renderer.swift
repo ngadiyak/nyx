@@ -13,11 +13,46 @@ public struct RenderFrame {
     public var cursorShape: CursorShape
     public var focused: Bool
     public var preedit: String?
+    /// Selected column range per visible row, indexed the same way as `lines`. nil means nothing
+    /// selected on that row. The view computes these from the absolute selection and the viewport.
+    public var selection: [Range<Int>?]
+    /// Search hits per visible row, indexed like `selection`; a row can hold several. Produced by
+    /// `SearchHighlights.visibleRanges`, which is where the absolute-to-viewport arithmetic lives.
+    public var searchMatches: [[Range<Int>]]
+    /// The hit the user is standing on, painted in a second colour so it stands out from the rest.
+    public var currentSearchMatch: [Range<Int>?]
+    /// The link under the pointer, underlined on hover. One range per visible row because a token
+    /// never spans rows.
+    public var hoveredLink: [Range<Int>?]
+    /// Short text pinned to the right edge of a visible row, drawn dim and behind nothing.
+    ///
+    /// How long a command took belongs *on* the command, visible without hovering, folding or
+    /// scrolling. A number that can only be reached by doing something first is a number nobody
+    /// reads. Indexed like `selection`; nil on rows with nothing to say.
+    public var rowNotes: [String?]
+    /// A command's spine: the visible row range it covers, and the colour to draw it in. Painted
+    /// down the left margin, over the padding rather than over any text.
+    public var blockSpines: [(rows: Range<Int>, color: RGB)]
+    /// A block's summary -- `exit 1 · 8.8s` -- pinned to the right of its command row. Same
+    /// treatment as `rowNotes`, in the block's own colour so the status reads without being read.
+    public var blockSummaries: [(row: Int, text: String, color: RGB)]
 
     public init(cols: Int, rows: Int, lines: [Row], graphemes: [String], palette: Palette,
-                cursor: Cursor?, cursorShape: CursorShape, focused: Bool, preedit: String?) {
+                cursor: Cursor?, cursorShape: CursorShape, focused: Bool, preedit: String?,
+                selection: [Range<Int>?] = [], searchMatches: [[Range<Int>]] = [],
+                currentSearchMatch: [Range<Int>?] = [], hoveredLink: [Range<Int>?] = [],
+                rowNotes: [String?] = [],
+                blockSpines: [(rows: Range<Int>, color: RGB)] = [],
+                blockSummaries: [(row: Int, text: String, color: RGB)] = []) {
         self.cols = cols; self.rows = rows; self.lines = lines; self.graphemes = graphemes; self.palette = palette
         self.cursor = cursor; self.cursorShape = cursorShape; self.focused = focused; self.preedit = preedit
+        self.selection = selection
+        self.searchMatches = searchMatches
+        self.currentSearchMatch = currentSearchMatch
+        self.rowNotes = rowNotes
+        self.blockSpines = blockSpines
+        self.blockSummaries = blockSummaries
+        self.hoveredLink = hoveredLink
     }
 }
 
@@ -147,6 +182,14 @@ public final class Renderer {
     private func buildInstances(_ f: RenderFrame, padding: Int) {
         let m = fonts.metrics
         let cw = Float(m.width), ch = Float(m.height), thick = Float(m.thickness)
+        // Read once per frame, not once per cell. Each of these walks the palette looking for the
+        // blend that satisfies its contrast rule, which is nothing at all sixty times a second and
+        // absurd two million times a second.
+        let matchBackground = f.palette.searchMatchBackground
+        let currentMatchBackground = f.palette.currentMatchBackground
+        let matchForeground = f.palette.searchMatchForeground
+        let noteForeground = f.palette.noteForeground
+
         for _ in 0..<2 {
             let gen = atlas.generation
             instances.removeAll(keepingCapacity: true)
@@ -164,9 +207,29 @@ public final class Renderer {
                     let px = Float(padding + x * m.width), py = Float(padding + y * m.height)
                     let w = wide ? cw * 2 : cw
 
+                    let selected = y < f.selection.count && (f.selection[y]?.contains(x) ?? false)
+                    let isCurrentMatch = y < f.currentSearchMatch.count
+                        && (f.currentSearchMatch[y]?.contains(x) ?? false)
+                    let isMatch = isCurrentMatch
+                        || (y < f.searchMatches.count && f.searchMatches[y].contains { $0.contains(x) })
+                    // The selection wins over a search hit: it is the thing the user just made,
+                    // and ⌘C acts on it. A hit under the selection is still highlighted everywhere
+                    // else on screen, which is what a search bar has to show.
+                    if selected {
+                        bg = f.palette.selectionBackground
+                        if let sf = f.palette.selectionForeground { fg = sf }
+                    } else if isMatch {
+                        // The current hit is painted at full strength with contrasting text; the
+                        // rest are a tint behind unchanged text. Painting all of them the same way
+                        // makes a page of matches into a page of yellow, and hides the one hit that
+                        // the user is actually standing on.
+                        bg = isCurrentMatch ? currentMatchBackground : matchBackground
+                        if isCurrentMatch { fg = matchForeground }
+                    }
+
                     let blockCursor = isCursor && f.focused && f.cursorShape == .block
                     if blockCursor { bg = f.palette.cursor; fg = f.palette.background }
-                    if bg != f.palette.background || blockCursor {
+                    if bg != f.palette.background || blockCursor || selected || isMatch {
                         instances.append(rect(px, py, w, ch, bg))
                     }
 
@@ -193,6 +256,12 @@ public final class Renderer {
                     if c.attrs.contains(.strike) {
                         decorations.append(rect(px, py + Float(m.strikeY), w, thick, fg))
                     }
+                    // A hovered link is underlined in the text's own colour, on the same baseline
+                    // the SGR underlines use, so a link that is already underlined does not gain a
+                    // second line in a different place.
+                    if y < f.hoveredLink.count, f.hoveredLink[y]?.contains(x) ?? false, c.underline == .none {
+                        decorations.append(rect(px, ulY, w, thick, fg))
+                    }
 
                     if isCursor {
                         let cc = f.palette.cursor
@@ -206,6 +275,77 @@ public final class Renderer {
                         } else if f.cursorShape == .underline {
                             decorations.append(rect(px, py + ch - thick * 2, w, thick * 2, cc))
                         }
+                    }
+                }
+            }
+
+            // A command's spine, drawn in the left padding: it says "these rows belong together"
+            // without taking a column of text or touching a cell. Nothing about the grid changes,
+            // which is what lets vim and htop keep behaving exactly as they did.
+            for spine in f.blockSpines {
+                guard !spine.rows.isEmpty else { continue }
+                let top = Float(padding + spine.rows.lowerBound * m.height)
+                let height = Float(spine.rows.count * m.height)
+                // Next to the text, not at the very left: the gutter's status pill lives there,
+                // and two indicators sharing four points of padding is one indicator drawn twice.
+                // With no padding to draw in there is no spine -- it would sit on the first column
+                // of output, and the settings window ships a Padding stepper that goes to zero.
+                guard padding >= 4 else { continue }
+                let x = Float(padding - 3)
+                instances.append(rect(x, top, 2, height, spine.color))
+            }
+
+            // A block's summary, right-aligned on its command row and in the block's own colour --
+            // so `exit 1` is read as a failure before it is read as words.
+            for summary in f.blockSummaries {
+                let characters = Array(summary.text)
+                let start = f.cols - characters.count
+                guard summary.row >= 0, summary.row < f.rows, start > 0 else { continue }
+                let row = summary.row < f.lines.count ? f.lines[summary.row] : nil
+                let lastUsed = row.map { line -> Int in
+                    var last = -1
+                    for (column, cell) in line.cells.enumerated() where cell.content != 0 { last = column }
+                    return last
+                } ?? -1
+                // Never over the command it describes: a summary that overwrites the end of a long
+                // command line has destroyed the more important of the two.
+                guard lastUsed < start - 1 else { continue }
+                for (offset, character) in characters.enumerated() {
+                    let px = Float(padding + (start + offset) * m.width)
+                    let py = Float(padding + summary.row * m.height)
+                    let text = String(character)
+                    let glyphText: GlyphText = text.unicodeScalars.count == 1
+                        ? .scalar(text.unicodeScalars.first!.value) : .cluster(text)
+                    if let g = atlas.glyph(for: GlyphKey(text: glyphText, bold: false, italic: false)) {
+                        glyphs.append(glyphQuad(g, cellX: px, cellY: py, color: summary.color))
+                    }
+                }
+            }
+
+            // Right-aligned notes: how long a command took, on the command's own row, dim enough
+            // to ignore and present enough to read without doing anything first.
+            for (y, note) in f.rowNotes.enumerated() {
+                guard let note, !note.isEmpty, y < f.rows else { continue }
+                let characters = Array(note)
+                let start = f.cols - characters.count
+                guard start > 0 else { continue }
+                // Never over the text: a note that overwrites the end of a long command line is
+                // worse than no note at all.
+                let row = y < f.lines.count ? f.lines[y] : nil
+                let lastUsed = row.map { line -> Int in
+                    var last = -1
+                    for (column, cell) in line.cells.enumerated() where cell.content != 0 { last = column }
+                    return last
+                } ?? -1
+                guard lastUsed < start - 1 else { continue }
+
+                for (offset, character) in characters.enumerated() {
+                    let px = Float(padding + (start + offset) * m.width), py = Float(padding + y * m.height)
+                    let text = String(character)
+                    let glyphText: GlyphText = text.unicodeScalars.count == 1
+                        ? .scalar(text.unicodeScalars.first!.value) : .cluster(text)
+                    if let g = atlas.glyph(for: GlyphKey(text: glyphText, bold: false, italic: false)) {
+                        glyphs.append(glyphQuad(g, cellX: px, cellY: py, color: noteForeground))
                     }
                 }
             }

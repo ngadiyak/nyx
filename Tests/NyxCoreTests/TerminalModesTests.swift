@@ -238,9 +238,12 @@ private let ESC = "\u{1B}"
 
 @Test func oscPromptMarks() {
     let t = makeTerminal().run(ESC + "]133;A\u{07}$ " + ESC + "]133;B\u{07}ls\r\n" + ESC + "]133;C\u{07}out\r\n" + ESC + "]133;D;0\u{07}")
-    #expect(t.screen.rows[0].promptMark == 2)   // B overwrote A on the same row
-    #expect(t.screen.rows[1].promptMark == 3)
-    #expect(t.screen.rows[2].promptMark == 4)
+    // A and B arrive on the same row, so they accumulate rather than the later overwriting the
+    // earlier -- losing the prompt start was the bug this used to document.
+    #expect(PromptMarks(rawValue: t.screen.rows[0].promptMark) == [.promptStart, .commandStart])
+    #expect(PromptMarks(rawValue: t.screen.rows[1].promptMark) == .outputStart)
+    #expect(PromptMarks(rawValue: t.screen.rows[2].promptMark) == .commandDone)
+    #expect(t.screen.rows[2].exitStatus == 0)
 }
 
 @Test func decrqssReportsSgrAndMargins() {

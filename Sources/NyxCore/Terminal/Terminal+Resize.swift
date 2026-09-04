@@ -23,6 +23,10 @@ extension Terminal {
     public func resize(cols newCols: Int, rows newRows: Int) {
         let newCols = max(2, newCols), newRows = max(1, newRows)
         guard newCols != cols || newRows != rows else { return }
+        // A rewrap changes where the line breaks fall without a byte being written, so anything
+        // caching a transcript by content version would serve one with the old geometry. Below the
+        // guard, so resizing to the size you already had invalidates nothing.
+        bumpContentVersion()
         var primary = modes.altScreen ? inactiveScreen : screen
         var alt = modes.altScreen ? screen : inactiveScreen
         reflowPrimary(&primary, newCols: newCols, newRows: newRows)
@@ -76,14 +80,23 @@ extension Terminal {
         let cursorPhysical = scrollback.count + s.cursor.y
 
         // 2. Logical lines.
-        struct Line { var cells: [Cell]; var mark: UInt8 }
+        struct Line { var cells: [Cell]; var mark: UInt8; var exitStatus: Int32?; var commandStatus: Int32?; var commandDuration: Double? }
         var lines: [Line] = []
         var current: [Cell] = []
         var currentMark: UInt8 = 0
+        var currentStatus: Int32?
+        var currentCommandStatus: Int32?
+        var currentDuration: Double?
         var cursorLine = 0
         var cursorOffset = 0
         for (i, row) in physical.enumerated() {
-            if currentMark == 0 { currentMark = row.promptMark }
+            // A logical line's marks are the union of its physical rows': a command long enough
+            // to wrap puts its `A` on the first row and its `D` on the last, and taking only the
+            // first would lose the status every time the window was narrowed.
+            currentMark |= row.promptMark
+            if currentStatus == nil { currentStatus = row.exitStatus }
+            if currentCommandStatus == nil { currentCommandStatus = row.commandStatus }
+            if currentDuration == nil { currentDuration = row.commandDuration }
             if i == cursorPhysical {
                 cursorLine = lines.count
                 cursorOffset = current.count + s.cursor.x
@@ -94,9 +107,14 @@ extension Terminal {
                 while keep > 0 && current[keep - 1].content == 0 && current[keep - 1].bg == .default { keep -= 1 }
                 if lines.count == cursorLine && i >= cursorPhysical { keep = max(keep, cursorOffset) }
                 current.removeSubrange(keep...)
-                lines.append(Line(cells: current, mark: currentMark))
+                lines.append(Line(cells: current, mark: currentMark, exitStatus: currentStatus,
+                                  commandStatus: currentCommandStatus,
+                                  commandDuration: currentDuration))
                 current = []
                 currentMark = 0
+                currentStatus = nil
+                currentCommandStatus = nil
+                currentDuration = nil
             }
         }
 
@@ -107,6 +125,9 @@ extension Terminal {
         for (li, line) in lines.enumerated() {
             var row = Row(cols: newCols)
             row.promptMark = line.mark
+            row.exitStatus = line.exitStatus
+            row.commandStatus = line.commandStatus
+            row.commandDuration = line.commandDuration
             var x = 0
             var placedCursor = false
             var index = 0
@@ -151,8 +172,23 @@ extension Terminal {
         let earliestFirst = max(0, lastContent + 1 - newRows)
         var first = max(0, out.count - newRows)
         if newCursor.y < first { first = max(newCursor.y, earliestFirst) }
+        // Absolute rows are the scrollback followed by the screen, so rebuilding the ring here
+        // renumbers them -- and two different things can happen, needing two different answers.
+        let widthChanged = newCols != cols
         scrollback.removeAll()
         for i in 0..<first { scrollback.push(out[i]) }
+        // Rows the ring could not take back are gone exactly as an eviction: everything holding an
+        // absolute row comes down by that many and goes on covering its own text.
+        recordEvictions(first - scrollback.count)
+        // A re-wrap, though, moves content between rows by no fixed offset, so nothing can be
+        // corrected -- a selection made before the drag would come back covering a stranger.
+        //
+        // Two things follow from that, both intended and both worth knowing: every fold opens
+        // (`OutputFolding.prune` drops a fold whose prompt row has moved), and an open search bar
+        // re-scans the buffer once per column the drag crosses. Both are bounded by the reflow
+        // being paid for anyway, and both beat the alternative -- chrome pointing at rows that no
+        // longer hold what it describes.
+        if widthChanged { invalidateAbsoluteRows() }
         var rows = Array(out[first..<min(out.count, first + newRows)])
         while rows.count < newRows { rows.append(Row(cols: newCols)) }
         for i in 0..<rows.count { rows[i].dirty = true }

@@ -291,10 +291,15 @@ palette            = 0=#1a1b26      # переопределение цвето�
 ```
 
 Темы: встроенные `nyx-dark` (дефолт), `nyx-light`, `solarized-dark`,
-`gruvbox-dark`, `dracula`, `catppuccin-mocha`, `one-dark`. Кастомная тема —
-файл в `~/.config/nyx/themes/<имя>` с теми же ключами `palette`,
-`foreground`, `background`, `cursor`, `selection`. Тема следует системному
-Dark/Light, если задано `theme = dark:<a>,light:<b>`.
+`gruvbox-dark`, `dracula`, `catppuccin-mocha`, `one-dark`. Тема следует
+системному Dark/Light, если задано `theme = dark:<a>,light:<b>`.
+
+**Не реализовано:** кастомная тема файлом в `~/.config/nyx/themes/<имя>`.
+Парсер (`Themes.parse`) написан и покрыт тестами, но его никто не
+вызывает — `Pane.resolvedPalette` берёт палитру прямо из `Themes.builtin`.
+Пока цвета переопределяются только строкой `palette` в самом конфиге.
+Подключение файлов тем — отдельная задача: чтение домашней директории из
+NyxCore, слежение за файлом и приоритет над встроенными.
 
 ### 6.6 Интеграция с шеллом
 

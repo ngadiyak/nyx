@@ -14,6 +14,7 @@ public enum CursorShape: Equatable { case block, underline, bar }
 
 public struct TerminalModes: Equatable {
     public var cursorKeysApp = false     // DECCKM ?1
+    /// Tracked (DECKPAM/DECKPNM) but not implemented: numeric keypad encoding (phase 2, spec §11).
     public var keypadApp = false         // DECKPAM / DECKPNM
     public var originMode = false        // DECOM ?6
     public var autoWrap = true           // DECAWM ?7
@@ -51,6 +52,52 @@ public final class Terminal: TerminalActions {
     public var screen: Screen
     var inactiveScreen: Screen
     public var scrollback: Scrollback
+    /// Increments whenever absolute row indices stop referring to the same content: discarding the
+    /// scrollback (ED 3), a full reset, or swapping the alternate screen in or out. Anything holding
+    /// absolute coordinates — a selection above all — is meaningless once this changes, and has no
+    /// other way to notice: the indices stay in range and silently address different rows.
+    ///
+    /// A resize bumps it only when the width changed. Changing the height redistributes rows
+    /// between the scrollback and the screen without renumbering them, so a selection survives
+    /// dragging the bottom edge of the window. Changing the width re-wraps: content moves between
+    /// rows by no fixed offset, and there is nothing an absolute coordinate could be corrected by,
+    /// so holders drop instead of landing on text the user never chose.
+    public private(set) var scrollbackGeneration: UInt64 = 0
+    /// How many rows the scrollback ring has thrown away since this terminal started.
+    ///
+    /// Past capacity every push drops the oldest row, and absolute row *n* comes to mean the row
+    /// below the one it used to mean -- silently, because the indices stay in range and the
+    /// generation is untouched (the content is still there, it has only moved). Anything holding
+    /// absolute coordinates across output subtracts the growth in this counter to keep pointing at
+    /// the text it was pointing at; a selection made before a long build used to end up covering
+    /// whatever had since slid under it, and copying it copied that instead.
+    ///
+    /// Never reset: the paths that throw the buffer away bump `scrollbackGeneration`, and holders
+    /// check that first, so a counter that only ever grows keeps every delta meaningful.
+    public private(set) var evictedRows: Int = 0
+
+    /// Rows lost somewhere other than the scroll path -- a reflow whose result does not fit the
+    /// ring drops its oldest rows exactly as an eviction does, and shifts absolute rows the same
+    /// way. `private(set)` is per file, and the reflow lives in `Terminal+Resize`.
+    func recordEvictions(_ count: Int) {
+        guard count > 0 else { return }
+        evictedRows += count
+    }
+
+    /// Absolute rows have stopped meaning what they meant, by no fixed offset. See
+    /// `scrollbackGeneration` -- this is the only way to say so from outside this file.
+    func invalidateAbsoluteRows() { scrollbackGeneration &+= 1 }
+    /// Bumped whenever bytes are fed. Cheap enough to read on any path, and exact for the question
+    /// a cache needs answered: has this buffer changed since the last time I looked?
+    public private(set) var contentVersion: UInt64 = 0
+
+    /// Marks the buffer as changed for anything caching a view of it.
+    func bumpContentVersion() { contentVersion &+= 1 }
+    /// When the running command began, for the duration written on its prompt row at `D`.
+    private var commandStartedAt: Double?
+    /// Injectable so a test can run a command in a controlled number of seconds rather than in
+    /// however long the test itself took.
+    public var now: () -> Double = { Date.timeIntervalSinceReferenceDate }
     public var pen = Pen() { didSet { penCellDirty = true } }
     /// Cache of `pen.makeCell()`, rebuilt lazily whenever `pen` changes. Avoids rebuilding the
     /// pen-derived `Cell` template on every printed character, which is the common case in `put`.
@@ -71,6 +118,14 @@ public final class Terminal: TerminalActions {
     /// OSC 0 both.
     public private(set) var iconName = ""
     public private(set) var cwd: String?
+    /// Whether the shell in this terminal has ever emitted an `OSC 133` prompt mark.
+    ///
+    /// A session-level fact, and the cheap answer to a question several things ask on every frame
+    /// and every menu validation: without marks there are no commands to pin, fold, jump between or
+    /// copy the output of, and searching the buffer to find that out walks every row. Once true it
+    /// stays true until a full reset -- a `clear` wipes the rows but not the shell's habits, and the
+    /// very next prompt sets it again anyway.
+    public private(set) var shellEmitsPromptMarks = false
     public private(set) var cursorShape: CursorShape = .block
     /// Bytes the terminal wants written back to the application (DA, CPR, ...). Drained by the session.
     public var responses: [UInt8] = []
@@ -115,8 +170,8 @@ public final class Terminal: TerminalActions {
 
     public var cursor: Cursor { screen.cursor }
 
-    public func feed(_ bytes: UnsafeBufferPointer<UInt8>) { parser.feed(bytes) }
-    public func feed(_ bytes: [UInt8]) { parser.feed(bytes) }
+    public func feed(_ bytes: UnsafeBufferPointer<UInt8>) { contentVersion &+= 1; parser.feed(bytes) }
+    public func feed(_ bytes: [UInt8]) { contentVersion &+= 1; parser.feed(bytes) }
     public func feed(_ s: String) { feed(Array(s.utf8)) }
 
     public func clusterText(of cell: Cell) -> String {
@@ -397,7 +452,12 @@ public final class Terminal: TerminalActions {
             var recycled: Row
             if save {
                 removed.dirty = true
+                let stored = scrollback.count
                 recycled = scrollback.push(removed) ?? Row(cols: cols, fill: fill)
+                // Either the ring grew or it dropped its oldest row to make room. A zero-capacity
+                // scrollback drops every row and never grows, and that shifts absolute rows just
+                // the same, so this asks whether it grew rather than whether a row came back.
+                if scrollback.count == stored { evictedRows += 1 }
                 if viewportOffset > 0 { viewportOffset = min(viewportOffset + 1, scrollback.count) }
             } else {
                 recycled = removed
@@ -481,6 +541,7 @@ public final class Terminal: TerminalActions {
         case 3:
             scrollback.removeAll()
             viewportOffset = 0
+            scrollbackGeneration &+= 1
             touch()
         default: break
         }
@@ -587,6 +648,8 @@ public final class Terminal: TerminalActions {
         cursorShape = .block
         palette = initialPalette
         viewportOffset = 0
+        shellEmitsPromptMarks = false
+        scrollbackGeneration &+= 1
         touch()
     }
 
@@ -810,6 +873,8 @@ public final class Terminal: TerminalActions {
             if save { restoreCursor() }
         }
         viewportOffset = 0
+        // The screen under the scrollback changed wholesale; absolute rows now mean something else.
+        scrollbackGeneration &+= 1
         for y in 0..<rows { screen.rows[y].dirty = true }
         touch()
     }
@@ -822,6 +887,14 @@ public final class Terminal: TerminalActions {
         default: return
         }
         modes.cursorBlink = n == 0 || n % 2 == 1
+    }
+
+    /// Sets the cursor shape from outside (the app's `cursor-style` config setting). This is a
+    /// default only: DECSCUSR (`SP q`, handled by the private `setCursorShape(_:Int)` above) still
+    /// wins whenever the running application sends it, exactly as reapplying the config would win
+    /// only until the next such escape sequence.
+    public func setDefaultCursorShape(_ shape: CursorShape) {
+        cursorShape = shape
     }
 
     // MARK: - SGR
@@ -1019,17 +1092,169 @@ public final class Terminal: TerminalActions {
         case 111: palette.background = initialPalette.background; events.append(.colorsChanged)
         case 112: palette.cursor = initialPalette.cursor; events.append(.colorsChanged)
         case 133:
+            // A row commonly carries more than one of these: a shell emits A and B on the same
+            // prompt line, and emits D for the finished command on the line the next prompt is
+            // about to occupy. Storing one value per row loses whichever arrived first, so they
+            // accumulate as flags.
             let mark: UInt8
             switch rest.first {
             case "A": mark = 1
             case "B": mark = 2
-            case "C": mark = 3
-            case "D": mark = 4
+            case "C": mark = 4
+            case "D": mark = 8
             default: return
             }
-            screen.rows[screen.cursor.y].promptMark = mark
+            screen.rows[screen.cursor.y].promptMark |= mark
+            // Where the prompt ends and typing begins, on the row it happens on.
+            if mark == 2 { screen.rows[screen.cursor.y].inputStartColumn = screen.cursor.x }
+            shellEmitsPromptMarks = true
+            // `D;<status>` reports how the command ended. Without it a failed command is
+            // indistinguishable from one that succeeded, which is most of the point of the mark.
+            // `C`: the command starts running. The clock starts here rather than at the prompt, so
+            // a terminal left open overnight does not report the first command of the morning as a
+            // nine-hour job.
+            if mark == 4 { commandStartedAt = now() }
+            if mark == 8 {
+                let fields = rest.split(separator: ";", omittingEmptySubsequences: false)
+                let status = fields.count > 1 ? Int32(fields[1]) : nil
+                if let status { screen.rows[screen.cursor.y].exitStatus = status }
+                // Also written onto the prompt this command belongs to, where the gutter draws its
+                // mark. Once per command, walking back over its own output -- rather than forward
+                // over the whole buffer on every frame, which is what searching at draw time cost.
+                recordCommandStatus(status ?? 0)
+                if let started = commandStartedAt {
+                    recordCommandDuration(now() - started)
+                    commandStartedAt = nil
+                }
+            }
         default:
             break
+        }
+    }
+
+    /// What the user has typed at the current prompt but not yet run, or nil when there is nothing
+    /// to read: no shell integration, or a command already running.
+    ///
+    /// This is the text of the command line itself, taken from where the shell said its prompt ends
+    /// to wherever the cursor now is. It is what makes "edit what I just pasted" possible -- a long
+    /// `curl` sitting on the command line is exactly the thing a shell's line editor is worst at,
+    /// and until now the only way to change it was to fight the line editor.
+    public var currentInput: String? {
+        let cursorRow = scrollback.count + screen.cursor.y
+        // The typing starts on the most recent row carrying a `B`, at or above the cursor.
+        var row = cursorRow
+        var startColumn: Int?
+        while row >= 0, row > cursorRow - rows {
+            if let column = absoluteRow(row)?.inputStartColumn {
+                startColumn = column
+                break
+            }
+            // A `C` means output began: a command is running, and there is no input to edit.
+            if promptMarks(atAbsoluteRow: row).contains(.outputStart) { return nil }
+            row -= 1
+        }
+        guard let startColumn, row <= cursorRow else { return nil }
+
+        var text = ""
+        for absolute in row...cursorRow {
+            let line = rowText(absoluteRow: absolute)
+            let from = absolute == row ? startColumn : 0
+            let characters = Array(line.text)
+            let to = absolute == cursorRow ? min(characters.count, screen.cursor.x) : characters.count
+            guard from < to else { continue }
+            text += String(characters[from..<to])
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Where the current command line begins, as an absolute row and a column, or nil when there is
+    /// no editable command line.
+    public var currentInputStart: (row: Int, column: Int)? {
+        let cursorRow = scrollback.count + screen.cursor.y
+        var row = cursorRow
+        while row >= 0, row > cursorRow - rows {
+            if let column = absoluteRow(row)?.inputStartColumn { return (row, column) }
+            if promptMarks(atAbsoluteRow: row).contains(.outputStart) { return nil }
+            row -= 1
+        }
+        return nil
+    }
+
+    /// How many cells lie between the start of the command line and a position on screen, or nil
+    /// when the position is not on the command line at all.
+    ///
+    /// This is what lets a click move the shell's cursor: the difference between where the caret is
+    /// and where it was clicked, counted in cells, is exactly the number of arrow keys to send.
+    /// Counted through the wrap, because a pasted `curl` is longer than the window is wide, and
+    /// that is precisely the case worth clicking into.
+    public func inputOffset(atAbsoluteRow row: Int, column: Int) -> Int? {
+        guard let start = currentInputStart else { return nil }
+        let cursorRow = scrollback.count + screen.cursor.y
+        guard row >= start.row, row <= cursorRow else { return nil }
+        guard row > start.row || column >= start.column else { return nil }
+
+        var offset = 0
+        for absolute in start.row..<row {
+            let from = absolute == start.row ? start.column : 0
+            offset += max(0, cols - from)
+        }
+        offset += column - (row == start.row ? start.column : 0)
+        return max(0, offset)
+    }
+
+    /// Where the shell's caret sits within the command line.
+    public var currentInputCursorOffset: Int? {
+        let cursorRow = scrollback.count + screen.cursor.y
+        return inputOffset(atAbsoluteRow: cursorRow, column: screen.cursor.x)
+    }
+
+    /// Walks back from the cursor to the prompt this command started at and records how it ended.
+    ///
+    /// Bounded by the command's own output, and paid once when the command finishes.
+    private func recordCommandDuration(_ seconds: Double) {
+        withOwningPromptRow { row in
+            if row < scrollback.count { scrollback[row].commandDuration = seconds }
+            else { screen.rows[row - scrollback.count].commandDuration = seconds }
+        }
+    }
+
+    /// Runs `body` with the absolute row of the prompt the finishing command belongs to.
+    private func withOwningPromptRow(_ body: (Int) -> Void) {
+        let cursorAbsolute = scrollback.count + screen.cursor.y
+        var row = cursorAbsolute
+        while row >= 0 {
+            let flags = row < scrollback.count
+                ? scrollback[row].promptMark
+                : screen.rows[row - scrollback.count].promptMark
+            if flags & 1 != 0 && row != cursorAbsolute {
+                body(row)
+                return
+            }
+            row -= 1
+        }
+    }
+
+    private func recordCommandStatus(_ status: Int32) {
+        let cursorAbsolute = scrollback.count + screen.cursor.y
+        var row = cursorAbsolute
+        while row >= 0 {
+            let flags: UInt8
+            if row < scrollback.count {
+                flags = scrollback[row].promptMark
+            } else {
+                flags = screen.rows[row - scrollback.count].promptMark
+            }
+            // The `D` may share a row with the *next* prompt, which is not the one that ran.
+            if flags & 1 != 0 && row != cursorAbsolute {
+                if row < scrollback.count {
+                    scrollback[row].commandStatus = status
+                } else {
+                    screen.rows[row - scrollback.count].commandStatus = status
+                }
+                return
+            }
+            row -= 1
         }
     }
 

@@ -105,7 +105,7 @@ private func startSession(_ script: String, cols: Int = 40, rows: Int = 5,
 }
 
 /// Regression: the reader thread used to start inside `init`, so a child that exited before the
-/// caller finished wiring its callbacks lost `onExit` entirely. `TerminalView.init` does a pile of
+/// caller finished wiring its callbacks lost `onExit` entirely. `Pane.init` does a pile of
 /// AppKit work between the two, which is exactly the delay simulated here.
 @Test func exitCallbackWiredAfterConstructionStillFires() throws {
     let s = try TerminalSession(config: config("exit 5"))

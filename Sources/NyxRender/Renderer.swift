@@ -33,13 +33,17 @@ public struct RenderFrame {
     /// A command's spine: the visible row range it covers, and the colour to draw it in. Painted
     /// down the left margin, over the padding rather than over any text.
     public var blockSpines: [(rows: Range<Int>, color: RGB)]
+    /// A block's summary -- `exit 1 · 8.8s` -- pinned to the right of its command row. Same
+    /// treatment as `rowNotes`, in the block's own colour so the status reads without being read.
+    public var blockSummaries: [(row: Int, text: String, color: RGB)]
 
     public init(cols: Int, rows: Int, lines: [Row], graphemes: [String], palette: Palette,
                 cursor: Cursor?, cursorShape: CursorShape, focused: Bool, preedit: String?,
                 selection: [Range<Int>?] = [], searchMatches: [[Range<Int>]] = [],
                 currentSearchMatch: [Range<Int>?] = [], hoveredLink: [Range<Int>?] = [],
                 rowNotes: [String?] = [],
-                blockSpines: [(rows: Range<Int>, color: RGB)] = []) {
+                blockSpines: [(rows: Range<Int>, color: RGB)] = [],
+                blockSummaries: [(row: Int, text: String, color: RGB)] = []) {
         self.cols = cols; self.rows = rows; self.lines = lines; self.graphemes = graphemes; self.palette = palette
         self.cursor = cursor; self.cursorShape = cursorShape; self.focused = focused; self.preedit = preedit
         self.selection = selection
@@ -47,6 +51,7 @@ public struct RenderFrame {
         self.currentSearchMatch = currentSearchMatch
         self.rowNotes = rowNotes
         self.blockSpines = blockSpines
+        self.blockSummaries = blockSummaries
         self.hoveredLink = hoveredLink
     }
 }
@@ -275,6 +280,33 @@ public final class Renderer {
                 let height = Float(spine.rows.count * m.height)
                 let x = Float(max(0, padding - 6))
                 instances.append(rect(x, top, 2, height, spine.color))
+            }
+
+            // A block's summary, right-aligned on its command row and in the block's own colour --
+            // so `exit 1` is read as a failure before it is read as words.
+            for summary in f.blockSummaries {
+                let characters = Array(summary.text)
+                let start = f.cols - characters.count
+                guard summary.row >= 0, summary.row < f.rows, start > 0 else { continue }
+                let row = summary.row < f.lines.count ? f.lines[summary.row] : nil
+                let lastUsed = row.map { line -> Int in
+                    var last = -1
+                    for (column, cell) in line.cells.enumerated() where cell.content != 0 { last = column }
+                    return last
+                } ?? -1
+                // Never over the command it describes: a summary that overwrites the end of a long
+                // command line has destroyed the more important of the two.
+                guard lastUsed < start - 1 else { continue }
+                for (offset, character) in characters.enumerated() {
+                    let px = Float(padding + (start + offset) * m.width)
+                    let py = Float(padding + summary.row * m.height)
+                    let text = String(character)
+                    let glyphText: GlyphText = text.unicodeScalars.count == 1
+                        ? .scalar(text.unicodeScalars.first!.value) : .cluster(text)
+                    if let g = atlas.glyph(for: GlyphKey(text: glyphText, bold: false, italic: false)) {
+                        glyphs.append(glyphQuad(g, cellX: px, cellY: py, color: summary.color))
+                    }
+                }
             }
 
             // Right-aligned notes: how long a command took, on the command's own row, dim enough

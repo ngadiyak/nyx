@@ -520,6 +520,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         var gutterMarks: [GutterMark?] = []
         var notes: [String?] = []
         var spines: [(rows: Range<Int>, color: RGB)] = []
+        var summaries: [(row: Int, text: String, color: RGB)] = []
         var sticky: (text: String, failed: Bool, row: Int)?
         let frame: RenderFrame = session.withTerminal { t in
             // Before anything reads the selection: a cleared scrollback, a reset or an
@@ -602,15 +603,24 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // Blocks are chrome over an unmodified grid, so they step aside entirely when a
             // full-screen program owns the display or the mouse. This is the rule that keeps vim,
             // htop and tmux behaving exactly as they did.
-            spines = CommandBlockChrome.isAllowed(altScreen: t.modes.altScreen,
+            let blocks = CommandBlockChrome.isAllowed(altScreen: t.modes.altScreen,
                                                   mouseReporting: t.modes.mouse != .none,
                                                   hasMarks: t.shellEmitsPromptMarks)
-                ? t.visibleBlocks(rows: t.rows).map { block in
-                    (rows: block.visibleRows,
-                     color: block.failed ? t.palette.colors[1]
-                          : (block.isRunning ? t.palette.colors[3] : t.palette.colors[2]))
-                  }
-                : []
+                ? t.visibleBlocks(rows: t.rows) : []
+            spines = blocks.map { block in
+                (rows: block.visibleRows,
+                 color: block.failed ? t.palette.colors[1]
+                      : (block.isRunning ? t.palette.colors[3] : t.palette.colors[2]))
+            }
+            // A summary only where the command it describes is on screen, and only when it has
+            // something to say -- `exit 0` on a command that took no time is not news.
+            summaries = blocks.compactMap { block -> (row: Int, text: String, color: RGB)? in
+                guard block.showsHeader else { return nil }
+                let text = block.summary()
+                guard !text.isEmpty else { return nil }
+                return (row: block.region.promptRow - max(0, t.viewportTopRow), text: text,
+                        color: block.failed ? t.palette.colors[1] : t.palette.noteForeground)
+            }
             // Same pass, same lock, same viewport: the strip names the command whose output is on
             // screen *in this frame*, and reading it anywhere else would let the two disagree.
             // Costs one flag test for a shell with no integration, which is the whole reason
@@ -626,7 +636,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
                                cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit,
                                selection: selected, searchMatches: matches, currentSearchMatch: current,
-                               hoveredLink: hovered, rowNotes: notes, blockSpines: spines)
+                               hoveredLink: hovered, rowNotes: notes, blockSpines: spines,
+                               blockSummaries: summaries)
         }
         gutter.update(marks: gutterMarks, palette: frame.palette,
                       cellHeight: cellSizePoints.height, topPadding: padding)
@@ -926,12 +937,37 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let wasEmpty = selection == nil || selection?.isEmpty == true
         if selectionController.end() { markDirty() }
         if config.copyOnSelect, selection != nil { copy(nil) }
+        // The spine is a target: clicking it folds the block, which is what a bar drawn beside a
+        // command's rows is inviting. Checked before the caret move, since the spine is in the
+        // padding and no caret can live there.
+        if wasEmpty, event.clickCount == 1, foldBlock(atPointInPadding: convert(event.locationInWindow, from: nil)) {
+            return
+        }
         // A click that selected nothing is a click, not a drag. On the command line that means
         // "put the caret here" -- which is how anyone expects to fix one value in the middle of a
         // pasted `curl`, rather than holding an arrow key.
         if wasEmpty, event.clickCount == 1 {
             moveShellCaret(to: convert(event.locationInWindow, from: nil))
         }
+    }
+
+    /// Folds or unfolds the block whose spine was clicked. Returns whether the click was on one.
+    ///
+    /// Only in the left padding: inside the text a click means the caret or a selection, and a
+    /// gesture that means two things depending on a few pixels is a gesture people stop trusting.
+    private func foldBlock(atPointInPadding point: NSPoint) -> Bool {
+        guard point.x < CGFloat(padding) else { return false }
+        let promptRow: Int? = session.withTerminal { t in
+            guard CommandBlockChrome.isAllowed(altScreen: t.modes.altScreen,
+                                               mouseReporting: t.modes.mouse != .none,
+                                               hasMarks: t.shellEmitsPromptMarks) else { return nil }
+            let position = self.position(topLeft(point), in: t)
+            return t.block(atAbsoluteRow: position.row, rows: t.rows)?.region.promptRow
+        }
+        guard let promptRow else { return false }
+        folding.toggle(promptRow: promptRow)
+        markDirty()
+        return true
     }
 
     /// Moves the shell's caret to a clicked cell by sending the arrow keys that get it there.

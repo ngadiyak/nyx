@@ -59,3 +59,90 @@ private func pos(_ r: Int, _ c: Int) -> AbsolutePosition { AbsolutePosition(row:
     let s = Selection(anchor: pos(1, 3), head: pos(1, 99), mode: .character)
     #expect(s.columnRange(onRow: 1, cols: 10) == 3..<10)
 }
+
+private let defaultSeparators: Set<Character> = Set(" ()[]{}'\"`,;:|<>")
+
+@Test func absoluteRowsCoverScrollbackThenScreen() {
+    let t = makeTerminal(cols: 10, rows: 2, scrollback: 10).run("a\r\nb\r\nc\r\nd")
+    #expect(t.scrollback.count == 2)
+    #expect(t.totalRows == 4)
+    #expect(t.absoluteRow(0)?.cells[0].scalar == "a")
+    #expect(t.absoluteRow(3)?.cells[0].scalar == "d")
+    #expect(t.absoluteRow(4) == nil)
+    #expect(t.viewportTopRow == 2)
+    t.scrollViewport(by: 1)
+    #expect(t.viewportTopRow == 1)
+}
+
+@Test func extractsASingleRowOfText() {
+    let t = makeTerminal(cols: 20, rows: 3).run("hello world")
+    let s = Selection(anchor: pos(0, 0), head: pos(0, 5), mode: .character)
+    #expect(t.text(in: s) == "hello")
+}
+
+@Test func extractionTrimsTrailingBlanksOnEachRow() {
+    let t = makeTerminal(cols: 20, rows: 3).run("ab\r\ncd")
+    let s = Selection(anchor: pos(0, 0), head: pos(1, 20), mode: .character)
+    #expect(t.text(in: s) == "ab\ncd")
+}
+
+@Test func softWrappedRowsJoinWithoutANewline() {
+    let t = makeTerminal(cols: 5, rows: 3).run("abcdefgh")
+    #expect(t.screen.rows[0].wrapped)
+    let s = Selection(anchor: pos(0, 0), head: pos(1, 5), mode: .character)
+    #expect(t.text(in: s) == "abcdefgh")
+}
+
+@Test func extractionSkipsWideSpacerCells() {
+    let t = makeTerminal(cols: 10, rows: 2).run("a漢b")
+    let s = Selection(anchor: pos(0, 0), head: pos(0, 10), mode: .character)
+    #expect(t.text(in: s) == "a漢b")
+}
+
+@Test func extractionKeepsGraphemeClusters() {
+    let t = makeTerminal(cols: 10, rows: 2).run("e\u{0301}x")
+    let s = Selection(anchor: pos(0, 0), head: pos(0, 10), mode: .character)
+    #expect(t.text(in: s) == "e\u{0301}x")
+}
+
+@Test func blockSelectionTakesColumnsLiterally() {
+    let t = makeTerminal(cols: 10, rows: 3).run("abcdef\r\nghijkl\r\nmnopqr")
+    let s = Selection(anchor: pos(0, 1), head: pos(2, 4), mode: .block)
+    #expect(t.text(in: s) == "bcd\nhij\nnop")
+}
+
+@Test func blockSelectionDoesNotJoinWrappedRows() {
+    let t = makeTerminal(cols: 5, rows: 3).run("abcdefgh")
+    let s = Selection(anchor: pos(0, 0), head: pos(1, 3), mode: .block)
+    #expect(t.text(in: s) == "abc\nfgh")
+}
+
+@Test func selectionSpansScrollbackAndScreen() {
+    let t = makeTerminal(cols: 10, rows: 2, scrollback: 10).run("one\r\ntwo\r\nthree\r\nfour")
+    #expect(t.scrollback.count == 2)
+    let s = Selection(anchor: pos(0, 0), head: pos(3, 10), mode: .character)
+    #expect(t.text(in: s) == "one\ntwo\nthree\nfour")
+}
+
+@Test func wordRangeFindsWordBoundaries() {
+    let t = makeTerminal(cols: 30, rows: 2).run("hello  world/path")
+    #expect(t.wordRange(at: pos(0, 1), separators: defaultSeparators) == 0..<5)
+    #expect(t.wordRange(at: pos(0, 4), separators: defaultSeparators) == 0..<5)
+    #expect(t.wordRange(at: pos(0, 8), separators: defaultSeparators) == 7..<17)
+}
+
+@Test func wordRangeOnASeparatorSelectsJustIt() {
+    let t = makeTerminal(cols: 30, rows: 2).run("a b")
+    #expect(t.wordRange(at: pos(0, 1), separators: defaultSeparators) == 1..<2)
+}
+
+@Test func wordRangeOnAnEmptyCellIsNil() {
+    let t = makeTerminal(cols: 30, rows: 2).run("ab")
+    #expect(t.wordRange(at: pos(0, 10), separators: defaultSeparators) == nil)
+}
+
+@Test func lineSelectionOfAWrappedLineTakesTheWholeLogicalLine() {
+    let t = makeTerminal(cols: 5, rows: 3).run("abcdefgh")
+    let s = Selection(anchor: pos(0, 0), head: pos(1, 0), mode: .line)
+    #expect(t.text(in: s) == "abcdefgh")
+}

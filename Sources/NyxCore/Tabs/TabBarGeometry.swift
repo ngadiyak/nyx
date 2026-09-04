@@ -252,8 +252,27 @@ public enum TabBarGeometry {
         let height = max(0, barHeight - headerHeight)
         guard !buttonWidths.isEmpty else { return [] }
 
-        let pinned = min(max(0, pinnedTail), buttonWidths.count)
-        let firstPinned = buttonWidths.count - pinned
+        // The tail gives way one button at a time, from its front. Reserving it all-or-nothing put
+        // a band of window widths -- 24pt wide, and reachable by dragging, since nothing sets a
+        // minimum content size -- where the whole tail was too wide and so *every* leading button
+        // disappeared at once, the `+` among them. The rungs are: everything, then the chip and the
+        // `+`, then the `+` alone, then whatever still fits with nothing reserved.
+        var reserved = min(max(0, pinnedTail), buttonWidths.count)
+        while true {
+            let attempt = place(buttonWidths: buttonWidths, tail: reserved, budget: budget,
+                                headerHeight: headerHeight, height: height)
+            if attempt.tailPlaced || reserved == 0 { return attempt.laid }
+            reserved -= 1
+        }
+    }
+
+    /// One rung: lay out the unpinned buttons in what is left after reserving the last `tail` of
+    /// them, then the tail itself. `tailPlaced` is false when the reservation did not fit, which is
+    /// the caller's signal to try a shorter one.
+    private static func place(buttonWidths: [Double], tail: Int, budget: Double,
+                              headerHeight: Double, height: Double)
+        -> (laid: [(index: Int, rect: PaneRect)], tailPlaced: Bool) {
+        let firstPinned = buttonWidths.count - tail
         let pinnedWidth = buttonWidths[firstPinned...].reduce(0) { $0 + max(0, $1) }
 
         var laid: [(index: Int, rect: PaneRect)] = []
@@ -263,15 +282,14 @@ public enum TabBarGeometry {
             laid.append((index, PaneRect(x: x, y: headerHeight, width: width, height: height)))
             x += width
         }
-        // All of the pinned ones or none: a tail laid out half-way is a `+` with no chip beside it
-        // saying why the buttons before it are missing.
-        guard pinned > 0, x + pinnedWidth <= budget else { return laid }
+        guard tail > 0 else { return (laid, true) }
+        guard x + pinnedWidth <= budget else { return (laid, false) }
         for index in firstPinned..<buttonWidths.count {
             let width = max(0, buttonWidths[index])
             laid.append((index, PaneRect(x: x, y: headerHeight, width: width, height: height)))
             x += width
         }
-        return laid
+        return (laid, true)
     }
 
     /// How much of the bar the buttons that fit have taken.

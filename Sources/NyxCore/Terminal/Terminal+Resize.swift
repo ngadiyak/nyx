@@ -182,6 +182,12 @@ extension Terminal {
         recordEvictions(first - scrollback.count)
         // A re-wrap, though, moves content between rows by no fixed offset, so nothing can be
         // corrected -- a selection made before the drag would come back covering a stranger.
+        //
+        // Two things follow from that, both intended and both worth knowing: every fold opens
+        // (`OutputFolding.prune` drops a fold whose prompt row has moved), and an open search bar
+        // re-scans the buffer once per column the drag crosses. Both are bounded by the reflow
+        // being paid for anyway, and both beat the alternative -- chrome pointing at rows that no
+        // longer hold what it describes.
         if widthChanged { invalidateAbsoluteRows() }
         var rows = Array(out[first..<min(out.count, first + newRows)])
         while rows.count < newRows { rows.append(Row(cols: newCols)) }

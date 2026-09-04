@@ -1223,14 +1223,21 @@ final class TabController: NSViewController, NSMenuItemValidation {
 
     /// Dropped when the search bar closes or its scope goes back to one pane, so a stale set of
     /// hits cannot send the next ⌘G to a tab nobody is searching any more.
-    func endGlobalSearch() {
+    /// `excluding` is the pane that is closing its own search bar and has already put its own
+    /// selection back. Cleaning it a second time cleared the selection it had just restored -- the
+    /// one the user made *before* pressing ⌘F, which closing a search is supposed to give back.
+    func endGlobalSearch(excluding owner: Pane? = nil) {
         searchingPane = nil
         globalHits = []
         globalQuery = ""
         globalIndex = 0
-        // Every pane a jump landed in still has the highlights and the selection that jump made,
-        // and no bar of its own to clear them with.
-        for id in visitedPaneIDs { pane(withID: id)?.clearSearchResidue() }
+        // Every other pane a jump landed in still has the highlights and the selection that jump
+        // made, and no bar of its own to clear them with.
+        for id in visitedPaneIDs {
+            let pane = self.pane(withID: id)
+            guard pane !== owner else { continue }
+            pane?.clearSearchResidue()
+        }
         visitedPaneIDs = []
     }
 

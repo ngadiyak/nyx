@@ -151,19 +151,36 @@ private func leading(_ widths: [Double], barWidth: Double, tabs: Int) -> Double 
     #expect(laid.map(\.index) == [0, 1])
 }
 
-/// Two pinned buttons -- the `+` and the chip that reaches what did not fit -- keep their room
-/// together or not at all. A `+` with no chip beside it is a bar that dropped a configured button
-/// and says nothing about it.
-@Test func aPinnedTailIsLaidOutWholeOrNotAtAll() {
+/// The pinned tail gives way one button at a time, and the `+` is the last thing to go. Reserving
+/// it all-or-nothing left a band of widths -- reachable by dragging, since nothing sets a minimum
+/// content size -- where the whole tail was a little too wide and every leading button vanished at
+/// once, including the one control that adds a button.
+@Test func thePinnedTailGivesWayOneButtonAtATime() {
     let bar: [Double] = [26, 60, 60, 26, 26]   // tab list, two actions, the chip, the `+`
-    // Six tabs claim 240pt of a 330pt bar: 90 left, enough for the tab list and both pinned.
-    let laid = TabBarGeometry.leadingLayout(buttonWidths: bar, barWidth: 330, barHeight: 28,
-                                            slotCount: 6, headerHeight: 0, pinnedTail: 2)
-    #expect(laid.map(\.index) == [0, 3, 4])
-    #expect(laid.map(\.rect.x) == [0, 26, 52])
+    func indices(at width: Double) -> [Int] {
+        TabBarGeometry.leadingLayout(buttonWidths: bar, barWidth: width, barHeight: 28,
+                                     slotCount: 6, headerHeight: 0, pinnedTail: 2).map(\.index)
+    }
+    // Six tabs claim 240pt. 90pt left: the tab list and both pinned buttons.
+    #expect(indices(at: 330) == [0, 3, 4])
+    // 66pt: the pinned pair keeps its room and the tab-list button is what gives way. It is the
+    // one whose job something else already does -- ⌘K opens the same palette -- while the chip is
+    // the only thing on the bar that says buttons are missing.
+    #expect(indices(at: 306) == [3, 4])
+    // 40pt: the `+` alone. The chip is only worth its width while something else is beside it.
+    #expect(indices(at: 280) == [4])
+    // And nothing at all only when nothing at all fits.
+    #expect(indices(at: 250) == [])
+}
 
-    // A bar with no room even for the tail shows none of it, rather than half of it.
-    let tiny = TabBarGeometry.leadingLayout(buttonWidths: bar, barWidth: 280, barHeight: 28,
-                                            slotCount: 6, headerHeight: 0, pinnedTail: 2)
-    #expect(tiny.isEmpty)
+/// The step that used to be missing entirely: at every width between "everything fits" and
+/// "nothing fits", the `+` is on screen.
+@Test func theAddButtonIsNeverTheThingThatDisappearsFirst() {
+    let bar: [Double] = [26, 60, 60, 26, 26]
+    for width in stride(from: 260.0, through: 420.0, by: 2) {
+        let laid = TabBarGeometry.leadingLayout(buttonWidths: bar, barWidth: width, barHeight: 28,
+                                                slotCount: 6, headerHeight: 0, pinnedTail: 2)
+        guard !laid.isEmpty else { continue }
+        #expect(laid.map(\.index).contains(4), "the `+` is missing at \(width)pt")
+    }
 }

@@ -1416,10 +1416,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         bar.removeFromSuperview()
         searchBar = nil
         clearSearchState()
-        // Closing the bar ends the cross-tab search too, and clears whatever it left on the panes
-        // it visited. Without this the hit list outlived the bar, and the next ⌘G sent the user to
-        // a tab nobody was searching.
-        globalSearchOwner?.endGlobalSearch()
+        // Closing the bar ends the cross-tab search too, and clears whatever it left on the *other*
+        // panes it visited. Without this the hit list outlived the bar, and the next ⌘G sent the
+        // user to a tab nobody was searching; without the exclusion, the cleanup ran over this
+        // pane as well and threw away the selection `clearSearchState` had just put back.
+        globalSearchOwner?.endGlobalSearch(excluding: self)
         window?.makeFirstResponder(self)
         markDirty()
     }

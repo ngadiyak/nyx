@@ -243,8 +243,15 @@ enum UISnapshot {
         for index in 0..<tabs.numberOfTabViewItems {
             tabs.selectTabViewItem(at: index)
             content.layoutSubtreeIfNeeded()
-            let label = tabs.tabViewItem(at: index).label.lowercased()
-            write(content, named: "settings-\(label)\(suffix)", into: directory,
+            let item = tabs.tabViewItem(at: index)
+            let label = item.label.lowercased()
+            // The page, not the whole window. `NSTabView`'s strip is a stock segmented control that
+            // draws nothing at all outside a real on-screen window, so including it produced an
+            // empty white pill above every settings page and made the tool look broken. It is also
+            // the one part of this window nobody needs to review: it is Apple's, not ours.
+            guard let page = item.view else { continue }
+            page.layoutSubtreeIfNeeded()
+            write(page, named: "settings-\(label)\(suffix)", into: directory,
                   background: windowGround(appearance))
         }
     }
@@ -344,11 +351,25 @@ enum UISnapshot {
         context.fill(CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
         context.scaleBy(x: scale, y: scale)
 
-        let graphics = NSGraphicsContext(cgContext: context, flipped: false)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = graphics
-        view.displayIgnoringOpacity(view.bounds, in: graphics)
-        NSGraphicsContext.restoreGraphicsState()
+        // `cacheDisplay`, not `displayIgnoringOpacity`.
+        //
+        // The custom-drawn panels here render identically either way, which is exactly why the one
+        // that did not was easy to misdiagnose: `NSTabView`'s strip is a segmented control that
+        // paints through the layer/CoreUI path, which `displayIgnoringOpacity` skips entirely, so
+        // the settings tabs came out as four blank white pills — in *both* appearances, which is
+        // the detail that rules out the appearance explanation I reached for first.
+        if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: rep)
+            if let image = rep.cgImage {
+                context.draw(image, in: CGRect(origin: .zero, size: size))
+            }
+        } else {
+            let graphics = NSGraphicsContext(cgContext: context, flipped: false)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = graphics
+            view.displayIgnoringOpacity(view.bounds, in: graphics)
+            NSGraphicsContext.restoreGraphicsState()
+        }
 
         guard let image = context.makeImage() else { return }
         let url = directory.appendingPathComponent("\(name).png")

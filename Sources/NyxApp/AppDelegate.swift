@@ -9,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let sessionStore = SessionStore.standard()
     /// A save is already queued; see `sessionChanged`.
     private var sessionSaveItem: DispatchWorkItem?
+    /// Every write of the session file, in order. Two saves racing would let an older snapshot win.
+    private static let sessionQueue = DispatchQueue(label: "nyx.session-write", qos: .utility)
     /// Long enough that opening four tabs in a row is one write rather than four, short enough that
     /// a crash a moment later still loses nothing anybody would miss.
     private static let sessionSaveDelay: TimeInterval = 1.5
@@ -38,18 +40,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Synchronous on purpose: the process is going away, and a background write would not
-        // finish. This is the save that matters -- it is the one the next launch reads.
-        if configStore.config.restoreSession {
-            let windows = controllers.compactMap { $0.sessionSnapshot() }
-            if windows.isEmpty { sessionStore.clear() } else { sessionStore.save(SessionSnapshot(windows: windows)) }
-        }
         configStore.stopWatching()
-        // Now, not on the debounce: the windows are still standing at this point and their panes
-        // still have buffers to read. A queued work item would never run.
+        // Cancelling the debounce only stops a save that has not been handed over yet; one already
+        // on the queue would land *after* this one and restore the pre-quit state. Everything goes
+        // through one serial queue, and this waits for it, so the last write is the last state.
         sessionSaveItem?.cancel()
         sessionSaveItem = nil
-        saveSession()
+        saveSession(waitForWrite: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -118,7 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Writes what is open now. Nothing open means the session is forgotten rather than written
     /// empty: coming back to one fresh window is what closing everything asked for.
-    private func saveSession() {
+    private func saveSession(waitForWrite: Bool = false) {
         guard configStore.config.restoreSession else {
             sessionStore.clear()
             return
@@ -131,9 +128,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Gathering has to happen here -- it reads views and terminals, which belong to the main
         // thread -- but encoding and writing are just bytes, and a few hundred kilobytes of JSON
         // hitting the disk is not something the interface should wait for.
+        // Gathering reads views and terminals, so it happens here on the main thread; encoding and
+        // writing are just bytes and go to one serial queue, which is what keeps two saves from
+        // landing out of order.
         let snapshot = SessionSnapshot(windows: windows)
         let store = sessionStore
-        DispatchQueue.global(qos: .utility).async { store.save(snapshot) }
+        let write: () -> Void = { _ = store.save(snapshot) }
+        if waitForWrite { AppDelegate.sessionQueue.sync(execute: write) }
+        else { AppDelegate.sessionQueue.async(execute: write) }
     }
 
     /// `⌘,`: the settings window. It edits the config file rather than holding its own copy, so

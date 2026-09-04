@@ -63,6 +63,9 @@ public final class Terminal: TerminalActions {
     /// Bumped whenever bytes are fed. Cheap enough to read on any path, and exact for the question
     /// a cache needs answered: has this buffer changed since the last time I looked?
     public private(set) var contentVersion: UInt64 = 0
+
+    /// Marks the buffer as changed for anything caching a view of it.
+    func bumpContentVersion() { contentVersion &+= 1 }
     /// When the running command began, for the duration written on its prompt row at `D`.
     private var commandStartedAt: Double?
     /// Injectable so a test can run a command in a controlled number of seconds rather than in

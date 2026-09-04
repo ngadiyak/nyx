@@ -647,8 +647,10 @@ final class TabController: NSViewController, NSMenuItemValidation {
     private func tabIndex(from sender: Any?) -> Int? {
         // A menu item from the tab's own context menu carries its index. Anything else -- a menu
         // bar item, a key binding, the palette -- means the tab you are looking at.
-        if let index = (sender as? NSMenuItem)?.representedObject as? Int, tabs.indices.contains(index) {
-            return index
+        if let item = sender as? NSMenuItem, let index = item.representedObject as? Int {
+            // An item that names a tab means *that* tab. If the index has gone stale -- the tab
+            // closed while the menu was open -- the answer is nothing, not "some other tab".
+            return tabs.indices.contains(index) ? index : nil
         }
         return tabs.indices.contains(selected) ? selected : nil
     }
@@ -1280,6 +1282,12 @@ extension TabController: ActionTarget {
         case .tab1, .tab2, .tab3, .tab4, .tab5, .tab6, .tab7, .tab8, .tab9:
             guard let number = TabStrip.commandNumber(for: action) else { return false }
             return TabStrip.index(forCommandNumber: number, tabCount: tabs.count) != nil
+        case .renameTab, .groupTab:
+            return tabs.indices.contains(selected)
+        case .ungroupTab, .toggleTabGroup:
+            // Meaningless unless the tab you are on is in a group. Greyed out says that; beeping
+            // when pressed does not, and silently doing nothing is worse than either.
+            return tabs.indices.contains(selected) && grouping.group(ofTabAt: selected) != nil
         case .copy:
             return focusedPane?.hasSelection ?? false
         case .saveScrollback:

@@ -26,6 +26,9 @@ final class TabBarView: NSView {
 
     var onSelect: ((Int) -> Void)?
     var onClose: ((Int) -> Void)?
+    /// A right-click landed on a tab. The controller builds the menu, because every item on it is
+    /// something only the controller can do.
+    var onContextMenu: ((Int, NSEvent) -> Void)?
     /// The system switched between light and dark; the controller decides whether the theme cares.
     var onAppearanceChange: (() -> Void)?
 
@@ -102,6 +105,18 @@ final class TabBarView: NSView {
                                   metrics: TabBarView.metrics) {
         case .close(let index): onClose?(index)
         case .select(let index): onSelect?(index)
+        case nil: break
+        }
+    }
+
+    /// A right-click anywhere on a tab -- its close button included, where a context menu is more
+    /// useful than a second way to close it.
+    override func rightMouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        switch TabBarGeometry.hit(atX: point.x, y: point.y, barWidth: bounds.width,
+                                  barHeight: bounds.height, tabCount: items.count,
+                                  metrics: TabBarView.metrics) {
+        case .close(let index), .select(let index): onContextMenu?(index, event)
         case nil: break
         }
     }

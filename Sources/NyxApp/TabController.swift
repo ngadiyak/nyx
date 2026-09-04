@@ -27,6 +27,9 @@ final class TabController: NSViewController, NSMenuItemValidation {
     /// One tab: its panes, the title they last reported, and what it has to tell the user about.
     private final class Tab {
         let panes: PaneTreeView
+        /// A name the user typed, which outranks whatever the shell goes on setting -- that being
+        /// the entire point of renaming a tab. "Reset Title" puts it back to nil.
+        var customTitle: String?
         /// What the program set with OSC 0/2; empty if it never has.
         var oscTitle = ""
         /// The program-and-directory title used when there is no OSC title. Recomputed rather than
@@ -36,7 +39,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
 
         init(panes: PaneTreeView) { self.panes = panes }
 
-        var title: String { oscTitle.isEmpty ? fallbackTitle : oscTitle }
+        var title: String { TabTitle.resolve(custom: customTitle, osc: oscTitle, fallback: fallbackTitle) }
     }
 
     private var config: Config
@@ -81,7 +84,8 @@ final class TabController: NSViewController, NSMenuItemValidation {
             paneContainer.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
         tabBar.onSelect = { [weak self] index in self?.selectTab(at: index) }
-        tabBar.onClose = { [weak self] index in self?.closeTab(at: index) }
+        tabBar.onClose = { [weak self] index in self?.closeTabs(at: [index]) }
+        tabBar.onContextMenu = { [weak self] index, event in self?.showTabMenu(for: index, event: event) }
         tabBar.onAppearanceChange = { [weak self] in self?.appearanceChanged() }
         tabBar.setColors(palette: Pane.resolvedPalette(for: config))
         view = root
@@ -108,9 +112,16 @@ final class TabController: NSViewController, NSMenuItemValidation {
     /// Adds a tab at the end and selects it. Does nothing if its first pane cannot be created --
     /// the same answer `PaneTreeView.split` gives, and for the same reason.
     func newTab() {
-        workingDirectoryForNewTab = tabs.indices.contains(selected)
+        addTab(inheriting: tabs.indices.contains(selected)
             ? tabs[selected].panes.inheritableWorkingDirectory()
-            : nil
+            : nil)
+    }
+
+    /// A new tab starting in a named directory. "Duplicate Tab" is this with the directory of the
+    /// tab that was right-clicked, which is the only thing a duplicate can honestly copy: a shell's
+    /// history and its running processes cannot be forked.
+    private func addTab(inheriting directory: String?) {
+        workingDirectoryForNewTab = directory
         defer { workingDirectoryForNewTab = nil }
         let tree = makeTree()
         guard tree.focusedPane != nil else { return }
@@ -178,27 +189,43 @@ final class TabController: NSViewController, NSMenuItemValidation {
         }
     }
 
-    /// The close button on a tab: the whole tab goes, panes and all.
-    private func closeTab(at index: Int) {
-        guard tabs.indices.contains(index) else { return }
-        let tab = tabs[index]
-        confirmClose(of: tab.panes.allPanes, message: "Close this tab?") { [weak self, weak tab] in
-            guard let self, let tab, let index = self.tabs.firstIndex(where: { $0 === tab }) else { return }
-            tab.panes.terminate()
-            self.removeTab(at: index)
+    /// The close button on a tab, and every "close" item on its context menu: whole tabs go, panes
+    /// and all, after **one** confirmation covering the batch. Asking once per tab for a
+    /// "Close Other Tabs" over eight tabs would be eight sheets.
+    private func closeTabs(at indices: [Int]) {
+        let doomed = indices.filter { tabs.indices.contains($0) }.map { tabs[$0] }
+        guard !doomed.isEmpty else { return }
+        let panes = doomed.flatMap(\.panes.allPanes)
+        let message = doomed.count == 1 ? "Close this tab?" : "Close \(doomed.count) tabs?"
+        confirmClose(of: panes, message: message) { [weak self] in
+            guard let self else { return }
+            // Resolved again on this side of the sheet: a pane may have exited while it was up,
+            // which takes its tab out of the strip and shifts every index after it.
+            let live = doomed.compactMap { tab in self.tabs.firstIndex(where: { $0 === tab }) }
+            guard !live.isEmpty else { return }
+            let next = TabClosing.selectionAfterClosing(live, selected: self.selected,
+                                                        tabCount: self.tabs.count)
+            for tab in doomed {
+                guard let index = self.tabs.firstIndex(where: { $0 === tab }) else { continue }
+                tab.panes.terminate()
+                self.detach(tab)
+                self.tabs.remove(at: index)
+            }
+            guard let next else {
+                self.selected = 0
+                self.refreshBar()
+                self.onAllTabsClosed?()
+                return
+            }
+            self.show(next)
         }
     }
 
     /// Takes a tab out of the strip. Its sessions are already over: either its last pane closed
-    /// (which is what reported it) or `closeTab` terminated them.
+    /// (which is what reported it) or `closeTabs` terminated them.
     private func removeTab(at index: Int) {
         guard tabs.indices.contains(index) else { return }
-        let tab = tabs[index]
-        tab.panes.onAllPanesClosed = nil
-        tab.panes.onFocusedTitleChange = nil
-        tab.panes.onAnyPaneOutput = nil
-        tab.panes.onAnyPaneBell = nil
-        tab.panes.removeFromSuperview()
+        detach(tabs[index])
         let next = TabStrip.selectionAfterClosing(index, selected: selected, tabCount: tabs.count)
         tabs.remove(at: index)
         guard let next else {
@@ -208,6 +235,16 @@ final class TabController: NSViewController, NSMenuItemValidation {
             return
         }
         show(next)
+    }
+
+    /// Unhooks a tab from this controller and takes its view out of the hierarchy. Separate from
+    /// removing it from the array because a batch close does the two at different moments.
+    private func detach(_ tab: Tab) {
+        tab.panes.onAllPanesClosed = nil
+        tab.panes.onFocusedTitleChange = nil
+        tab.panes.onAnyPaneOutput = nil
+        tab.panes.onAnyPaneBell = nil
+        tab.panes.removeFromSuperview()
     }
 
     /// Ends every session in every tab. The window controller calls this as its window closes.
@@ -301,6 +338,96 @@ final class TabController: NSViewController, NSMenuItemValidation {
         tabBarHeight?.constant = visible ? TabBarView.height : 0
         guard visible else { return }
         tabBar.setTabs(tabs.map { TabBarItem(title: $0.title, indicator: $0.indicator) }, selected: selected)
+    }
+
+    // MARK: - The tab context menu
+    //
+    // Which tabs each item resolves to, and what is selected once they are gone, is `TabClosing` in
+    // NyxCore. What is here is the menu and the sheets.
+
+    private func showTabMenu(for index: Int, event: NSEvent) {
+        guard tabs.indices.contains(index) else { return }
+        let menu = NSMenu()
+        // Items are enabled by hand: this controller's `validateMenuItem` answers for the
+        // `TerminalAction` items, and would say yes to all of these.
+        menu.autoenablesItems = false
+        menu.addItem(tabMenuItem("Close Tab", #selector(menuCloseTab(_:)), index))
+        menu.addItem(tabMenuItem("Close Other Tabs", #selector(menuCloseOtherTabs(_:)), index,
+                                 enabled: tabs.count > 1))
+        menu.addItem(tabMenuItem("Close Tabs to the Right", #selector(menuCloseTabsToTheRight(_:)), index,
+                                 enabled: index < tabs.count - 1))
+        menu.addItem(.separator())
+        menu.addItem(tabMenuItem("Duplicate Tab", #selector(menuDuplicateTab(_:)), index))
+        menu.addItem(.separator())
+        menu.addItem(tabMenuItem("Rename Tab…", #selector(menuRenameTab(_:)), index))
+        menu.addItem(tabMenuItem("Reset Title", #selector(menuResetTabTitle(_:)), index,
+                                 enabled: tabs[index].customTitle != nil))
+        NSMenu.popUpContextMenu(menu, with: event, for: tabBar)
+    }
+
+    private func tabMenuItem(_ title: String, _ action: Selector, _ index: Int,
+                             enabled: Bool = true) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.representedObject = index
+        item.isEnabled = enabled
+        return item
+    }
+
+    private func tabIndex(from sender: Any?) -> Int? {
+        guard let index = (sender as? NSMenuItem)?.representedObject as? Int,
+              tabs.indices.contains(index) else { return nil }
+        return index
+    }
+
+    @objc private func menuCloseTab(_ sender: Any?) {
+        guard let index = tabIndex(from: sender) else { return }
+        closeTabs(at: [index])
+    }
+
+    @objc private func menuCloseOtherTabs(_ sender: Any?) {
+        guard let index = tabIndex(from: sender) else { return }
+        closeTabs(at: TabClosing.others(than: index, tabCount: tabs.count))
+    }
+
+    @objc private func menuCloseTabsToTheRight(_ sender: Any?) {
+        guard let index = tabIndex(from: sender) else { return }
+        closeTabs(at: TabClosing.toTheRight(of: index, tabCount: tabs.count))
+    }
+
+    @objc private func menuDuplicateTab(_ sender: Any?) {
+        guard let index = tabIndex(from: sender) else { return }
+        addTab(inheriting: tabs[index].panes.inheritableWorkingDirectory())
+    }
+
+    @objc private func menuResetTabTitle(_ sender: Any?) {
+        guard let index = tabIndex(from: sender) else { return }
+        tabs[index].customTitle = nil
+        refreshTitles()
+        refreshBar()
+    }
+
+    /// A sheet rather than a modal alert, for the same reason `confirmClose` uses one: `runModal()`
+    /// stops the run loop, and with it every session in every other tab.
+    @objc private func menuRenameTab(_ sender: Any?) {
+        guard let index = tabIndex(from: sender), let window = view.window else { return }
+        let tab = tabs[index]
+        let alert = NSAlert()
+        alert.messageText = "Rename Tab"
+        alert.informativeText = "The name stays until you reset it, whatever the shell sets."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = tab.customTitle ?? tab.title
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self, weak tab] response in
+            guard response == .alertFirstButtonReturn, let self, let tab else { return }
+            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            tab.customTitle = name.isEmpty ? nil : name
+            self.refreshTitles()
+            self.refreshBar()
+        }
+        alert.window.initialFirstResponder = field
     }
 
     // MARK: - The command palette

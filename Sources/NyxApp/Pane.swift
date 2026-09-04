@@ -117,7 +117,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if config.workingDirectory != "inherit", !config.workingDirectory.isEmpty {
             cwd = (config.workingDirectory as NSString).expandingTildeInPath
         }
-        var sc = SessionConfig.loginShell(cols: cols, rows: rows, palette: palette, cwd: cwd)
+        var sc = SessionConfig.loginShell(cols: cols, rows: rows, palette: palette, cwd: cwd,
+                                          shellIntegration: config.shellIntegration)
         if let shell = config.shell, !shell.isEmpty {
             sc.shellPath = shell
             sc.argv = ["-" + (shell as NSString).lastPathComponent]

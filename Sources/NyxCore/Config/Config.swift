@@ -40,6 +40,10 @@ public struct Config: Equatable {
     public var windowDecorations: Bool = true
     public var wordSeparators: Set<Character> = Set(" ()[]{}'\"`,;:|<>")
     public var openFileCommand: String?
+    /// Whether Nyx injects its OSC 133 hooks into the shell. Everything built on prompt marks --
+    /// jumping between commands, the status gutter, copying a command's output -- is inert without
+    /// them, and almost no shell emits them unaided.
+    public var shellIntegration: ShellIntegrationMode = .auto
     /// Task 8 populates this from `keybind` lines; see `KeyBinding.parse`.
     public var keybinds: [KeyBinding] = []
     public var paletteOverrides: [Int: RGB] = [:]
@@ -101,6 +105,7 @@ public extension Config {
         # confirm-close-process = true
         # clipboard-read = false
         # word-separators = ()[]{}'"`, ;:|<>
+        # shell-integration = auto
         # open-file-command =
 
         # --- Key bindings ---

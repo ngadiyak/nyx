@@ -106,6 +106,9 @@ public enum ConfigParser {
                 } else {
                     badValue()
                 }
+            case "shell-integration":
+                if let mode = ShellIntegrationMode(rawValue: value) { config.shellIntegration = mode }
+                else { badValue() }
             case "keybind":
                 if let binding = KeyBinding.parse(value) {
                     config.keybinds.append(binding)

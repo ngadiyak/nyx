@@ -20,13 +20,9 @@ final class TabBarView: NSView {
     /// The bar's height, fixed by the brief.
     static let height: CGFloat = 28
 
-    /// A tab is given an equal share of the width, within these bounds. Past the point where the
-    /// minimum no longer fits, tabs run off the end rather than shrinking into illegibility.
-    private static let maxTabWidth: CGFloat = 220
-    private static let minTabWidth: CGFloat = 64
-    private static let closeButtonSize: CGFloat = 14
-    private static let indicatorSize: CGFloat = 9
-    private static let horizontalInset: CGFloat = 7
+    /// Sizes and the arithmetic over them live in `TabBarGeometry`, where they are tested; this
+    /// view converts what it returns into `NSRect` and draws it.
+    private static let metrics = TabBarMetrics.standard
 
     var onSelect: ((Int) -> Void)?
     var onClose: ((Int) -> Void)?
@@ -71,46 +67,42 @@ final class TabBarView: NSView {
 
     // MARK: - Geometry
 
-    private var tabWidth: CGFloat {
-        guard !items.isEmpty else { return 0 }
-        let share = bounds.width / CGFloat(items.count)
-        return min(TabBarView.maxTabWidth, max(TabBarView.minTabWidth, share))
+    private func ns(_ r: PaneRect) -> NSRect {
+        NSRect(x: r.x, y: r.y, width: r.width, height: r.height)
     }
 
     private func rect(forTab index: Int) -> NSRect {
-        let width = tabWidth
-        return NSRect(x: CGFloat(index) * width, y: 0, width: width, height: bounds.height)
+        ns(TabBarGeometry.tabRect(index: index, barWidth: bounds.width, barHeight: bounds.height,
+                                  tabCount: items.count, metrics: TabBarView.metrics))
     }
 
-    private func closeRect(in tab: NSRect) -> NSRect {
-        let size = TabBarView.closeButtonSize
-        return NSRect(x: tab.maxX - size - TabBarView.horizontalInset + 2,
-                      y: tab.midY - size / 2, width: size, height: size)
+    /// nil when the tab is too narrow to carry a close button, in which case none is drawn.
+    private func closeRect(in tab: NSRect) -> NSRect? {
+        TabBarGeometry.closeRect(in: pane(tab), metrics: TabBarView.metrics).map(ns)
     }
 
     private func indicatorRect(in tab: NSRect) -> NSRect {
-        let size = TabBarView.indicatorSize
-        return NSRect(x: tab.minX + TabBarView.horizontalInset, y: tab.midY - size / 2,
-                      width: size, height: size)
+        ns(TabBarGeometry.indicatorRect(in: pane(tab), metrics: TabBarView.metrics))
     }
 
-    /// What is left for the title once the indicator and the close button have taken their corners.
     private func titleRect(in tab: NSRect, hasIndicator: Bool) -> NSRect {
-        let left = tab.minX + TabBarView.horizontalInset
-            + (hasIndicator ? TabBarView.indicatorSize + 5 : 0)
-        let right = closeRect(in: tab).minX - 4
-        return NSRect(x: left, y: tab.minY, width: max(0, right - left), height: tab.height)
+        ns(TabBarGeometry.titleRect(in: pane(tab), hasIndicator: hasIndicator, metrics: TabBarView.metrics))
+    }
+
+    private func pane(_ r: NSRect) -> PaneRect {
+        PaneRect(x: r.minX, y: r.minY, width: r.width, height: r.height)
     }
 
     // MARK: - Clicks
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        guard let index = items.indices.first(where: { rect(forTab: $0).contains(point) }) else { return }
-        if closeRect(in: rect(forTab: index)).contains(point) {
-            onClose?(index)
-        } else {
-            onSelect?(index)
+        switch TabBarGeometry.hit(atX: point.x, y: point.y, barWidth: bounds.width,
+                                  barHeight: bounds.height, tabCount: items.count,
+                                  metrics: TabBarView.metrics) {
+        case .close(let index): onClose?(index)
+        case .select(let index): onSelect?(index)
+        case nil: break
         }
     }
 
@@ -140,7 +132,7 @@ final class TabBarView: NSView {
         let hasIndicator = item.indicator != .none
         if hasIndicator { drawIndicator(item.indicator, in: indicatorRect(in: frame)) }
         drawTitle(item.title, in: titleRect(in: frame, hasIndicator: hasIndicator), isSelected: isSelected)
-        drawCloseButton(in: closeRect(in: frame), isSelected: isSelected)
+        if let close = closeRect(in: frame) { drawCloseButton(in: close, isSelected: isSelected) }
     }
 
     private func drawIndicator(_ indicator: TabIndicator, in rect: NSRect) {

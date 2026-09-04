@@ -297,16 +297,32 @@ final class TabBarView: NSView {
 
     /// A quick action's button. A `toggle` that is running says so with a filled dot, because a
     /// button that goes on claiming `caffeinate` is alive after it died is worse than no button.
+    /// Text drawn on top of the accent fill. Using the foreground colour there gives light-on-light
+    /// or dark-on-dark depending on the theme; the background always contrasts with the accent,
+    /// because that is what the accent was chosen against.
+    private var backgroundColorForAccentText: NSColor { barBackground }
+
     private func drawQuickActionButton(_ index: Int, in frame: NSRect) {
         guard quickActions.indices.contains(index) else { return }
         let action = quickActions[index]
         let running = action.kind == .toggle && QuickActionRunner.shared.isRunning(action)
+        let pill = NSBezierPath(roundedRect: frame.insetBy(dx: 3, dy: 5), xRadius: 5, yRadius: 5)
+
+        // A button drawn as bare text is indistinguishable from a tab title, and these sit right
+        // next to tab titles. Every one gets a chip; a running toggle fills its chip with the
+        // accent colour so "on" is a colour and not a shade of grey.
         if running {
-            accentColor.withAlphaComponent(0.30).setFill()
-            NSBezierPath(roundedRect: frame.insetBy(dx: 3, dy: 5), xRadius: 4, yRadius: 4).fill()
+            accentColor.withAlphaComponent(0.85).setFill()
+            pill.fill()
+        } else {
+            dimTextColor.withAlphaComponent(0.12).setFill()
+            pill.fill()
+            dimTextColor.withAlphaComponent(0.25).setStroke()
+            pill.lineWidth = 1
+            pill.stroke()
         }
         drawLabel(action.name, in: frame.insetBy(dx: 8, dy: 0),
-                  color: running ? textColor : dimTextColor,
+                  color: running ? backgroundColorForAccentText : textColor,
                   font: TabBarView.quickActionFont, centred: true)
     }
 
@@ -379,8 +395,11 @@ final class TabBarView: NSView {
     }
 
     private func drawTitle(_ title: String, in rect: NSRect, isSelected: Bool) {
+        // Left-aligned, not centred. A centred title drifts away from its own activity dot, which
+        // sits at the tab's left edge -- so on a wide tab the dot ends up nearer the *previous*
+        // tab's title than its own, and reads as belonging to it.
         drawLabel(title, in: rect, color: isSelected ? textColor : dimTextColor,
-                  font: .systemFont(ofSize: 11, weight: isSelected ? .medium : .regular), centred: true)
+                  font: .systemFont(ofSize: 11, weight: isSelected ? .medium : .regular), centred: false)
     }
 
     /// Draws text shortened to fit. The width of a string is a property of the font, which is why

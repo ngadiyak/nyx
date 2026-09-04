@@ -54,8 +54,10 @@ private final class PaletteListView: NSView {
             guard rect.intersects(dirtyRect) else { continue }
             let isSelected = index == selection
             if isSelected {
+                // Inset and rounded: a full-bleed fill runs under the panel's own rounded corners
+                // and border, which looks like the highlight escaped rather than like a selection.
                 nsColor(palette.selectionBackground, alpha: 1).setFill()
-                rect.fill()
+                NSBezierPath(roundedRect: rect.insetBy(dx: 5, dy: 1), xRadius: 5, yRadius: 5).fill()
             }
             let title = NSMutableAttributedString(
                 string: result.item.title,
@@ -98,13 +100,15 @@ final class CommandPaletteView: NSView, NSTextFieldDelegate {
     var onClose: (() -> Void)?
 
     static let width: CGFloat = 560
-    private static let fieldHeight: CGFloat = 34
+    private static let fieldHeight: CGFloat = 42
     private static let maximumVisibleRows = 10
 
     private var model: CommandPalette
     private var palette: Palette
     private let field = NSTextField(frame: .zero)
     private let scroller = NSScrollView(frame: .zero)
+    /// A hairline between the field and the results, so the two read as separate things.
+    private let separator = NSView(frame: .zero)
     private let list: PaletteListView
 
     init(palette: Palette, items: [PaletteItem]) {
@@ -117,6 +121,10 @@ final class CommandPaletteView: NSView, NSTextFieldDelegate {
         layer?.borderColor = nsColor(palette.foreground, alpha: 0.25).cgColor
         layer?.borderWidth = 1
         layer?.cornerRadius = 8
+
+        separator.wantsLayer = true
+        separator.layer?.backgroundColor = nsColor(palette.foreground, alpha: 0.15).cgColor
+        addSubview(separator)
 
         field.delegate = self
         field.placeholderString = "Run a command, pick a theme, switch to a tab"
@@ -154,8 +162,15 @@ final class CommandPaletteView: NSView, NSTextFieldDelegate {
     override func layout() {
         super.layout()
         let inset: CGFloat = 4
-        field.frame = NSRect(x: 12, y: bounds.height - CommandPaletteView.fieldHeight,
-                             width: bounds.width - 24, height: CommandPaletteView.fieldHeight)
+        // The field sat flush against the top edge, so a 14pt line's ascenders were cut off by the
+        // panel's own border and rounded corner. It gets its own padding, and the list starts below
+        // a hairline rather than running straight into it.
+        let fieldPadding: CGFloat = 9
+        field.frame = NSRect(x: 14, y: bounds.height - CommandPaletteView.fieldHeight + fieldPadding,
+                             width: bounds.width - 28,
+                             height: CommandPaletteView.fieldHeight - fieldPadding * 2)
+        separator.frame = NSRect(x: 0, y: bounds.height - CommandPaletteView.fieldHeight,
+                                 width: bounds.width, height: 1)
         scroller.frame = NSRect(x: inset, y: inset, width: bounds.width - inset * 2,
                                 height: max(0, bounds.height - CommandPaletteView.fieldHeight - inset))
         list.setFrameSize(NSSize(width: scroller.contentSize.width, height: list.frame.height))

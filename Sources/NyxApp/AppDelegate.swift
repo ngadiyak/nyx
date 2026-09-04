@@ -15,6 +15,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.settings?.configChanged(config, diagnostics: diagnostics)
             self?.controllers.forEach { $0.configChanged(config, diagnostics: diagnostics) }
         }
+        // Renders the chrome to PNGs and exits. The build machine denies screen recording, so this
+        // is the only way to look at the design at all; see `UISnapshot`.
+        if let directory = UISnapshot.requestedDirectory {
+            UISnapshot.run(into: directory, config: configStore.config)
+            NSApp.terminate(nil)
+            return
+        }
         configStore.startWatching()
         newWindow(nil)
         NSApp.activate(ignoringOtherApps: true)

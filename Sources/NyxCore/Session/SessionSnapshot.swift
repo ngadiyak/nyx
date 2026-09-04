@@ -76,7 +76,11 @@ public struct SessionSnapshot: Codable, Equatable {
     public init(windows: [WindowSnapshot], savedAt: Date = Date()) {
         self.version = SessionSnapshot.currentVersion
         self.windows = windows
-        self.savedAt = savedAt
+        // Truncated to whole seconds. A `Date` carries a fraction, and JSON carries numbers as
+        // decimal text, so `1788000000.1234567` does not always survive the trip -- which made a
+        // snapshot intermittently unequal to itself after being written and read. The only question
+        // asked of this value is how many days old the snapshot is.
+        self.savedAt = Date(timeIntervalSince1970: savedAt.timeIntervalSince1970.rounded(.down))
     }
 
     public var isEmpty: Bool { windows.allSatisfy { $0.tabs.isEmpty } }

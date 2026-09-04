@@ -123,3 +123,17 @@ private func snapshot(savedAt: Date = Date()) -> SessionSnapshot {
     }
     #expect(ratio <= 0.95 && ratio >= 0.05)
 }
+
+/// A `Date` carries a fraction and JSON carries numbers as decimal text, so a snapshot was
+/// intermittently unequal to itself after a round trip -- passing or failing according to what the
+/// clock happened to read. Truncating to whole seconds makes it exact, and the only question ever
+/// asked of this value is how many days old the snapshot is.
+@Test func theSavedTimeSurvivesExactlyWhateverTheClockReads() throws {
+    for fraction in [0.0, 0.1, 0.5, 0.123456789, 0.999999] {
+        let when = Date(timeIntervalSince1970: 1_788_000_000 + fraction)
+        let original = SessionSnapshot(windows: snapshot().windows, savedAt: when)
+        let restored = try #require(SessionSnapshot.decoded(from: original.encoded()))
+        #expect(restored.savedAt == original.savedAt, "fraction \(fraction)")
+        #expect(restored == original, "fraction \(fraction)")
+    }
+}

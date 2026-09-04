@@ -59,8 +59,8 @@ private func verticalPair() -> PaneTree {
 }
 
 @Test func nestedDividersSitBetweenTheirOwnPanesToo() {
-    // The nested split's bounds come from this file's copy of the layout's splitting rule; if that
-    // ever drifts from `PaneTree`'s, the nested divider lands in the wrong place.
+    // Dividers and panes are placed by the same `PaneTree.splitBounds`, so a nested divider has to
+    // land in the gap the nested layout leaves -- at a ratio that does not divide evenly, too.
     let tree = PaneTree.leaf(id(1))
         .splitting(id(1), axis: .horizontal, with: id(2), ratio: 0.37)
         .splitting(id(2), axis: .vertical, with: id(3), ratio: 0.62)

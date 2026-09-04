@@ -190,13 +190,23 @@ private let full = PaneRect(x: 0, y: 0, width: 100, height: 100)
     }
 }
 
+/// Fifty presses in one direction must stop at the clamp rather than pushing the neighbour out of
+/// existence. The direction matters: resizing a `first` child *leftwards* is a no-op -- nothing lies
+/// to its left -- so it would never reach the clamp and this test would pass without exercising it.
 @Test func resizingClampsSoAPaneNeverDisappears() {
     let t = PaneTree.leaf(id(1)).splitting(id(1), axis: .horizontal, with: id(2), ratio: 0.5)
+    var grown = t
+    for _ in 0..<50 { grown = grown.resizing(id(1), direction: .right, by: 0.1) }
+    #expect(grown == .split(axis: .horizontal, ratio: 0.95, first: .leaf(id(1)), second: .leaf(id(2))))
+
+    let l = grown.layout(in: PaneRect(x: 0, y: 0, width: 1000, height: 10), dividerThickness: 2)
+    #expect(l[id(2)]!.width > 0)   // the pane being squeezed still exists
+
+    // And symmetrically from the other side, which drives the ratio down to the lower clamp.
     var shrunk = t
-    for _ in 0..<50 { shrunk = shrunk.resizing(id(1), direction: .left, by: 0.1) }
-    let l = shrunk.layout(in: PaneRect(x: 0, y: 0, width: 1000, height: 10), dividerThickness: 2)
-    #expect(l[id(1)]!.width > 0)
-    #expect(l[id(2)]!.width > 0)
+    for _ in 0..<50 { shrunk = shrunk.resizing(id(2), direction: .left, by: 0.1) }
+    #expect(shrunk == .split(axis: .horizontal, ratio: 0.05, first: .leaf(id(1)), second: .leaf(id(2))))
+    #expect(shrunk.layout(in: PaneRect(x: 0, y: 0, width: 1000, height: 10), dividerThickness: 2)[id(1)]!.width > 0)
 }
 
 @Test func layoutNeverProducesNegativeSizes() {

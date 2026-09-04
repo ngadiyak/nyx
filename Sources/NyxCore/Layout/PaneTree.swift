@@ -148,8 +148,8 @@ public extension PaneTree {
     /// The bounds `layout` gives the two children of a split. Internal rather than private because
     /// `PaneDividers` places each divider in the gap this leaves between the two children: the
     /// rounding here and the divider's position have to be the same arithmetic, or they drift apart
-    /// by a pixel at some ratios. `theDividerAlwaysSitsExactlyBetweenTheTwoPanes` pins that.
-    static func splitBounds(_ bounds: PaneRect, axis: SplitAxis, ratio: Double, dividerThickness: Double) -> (PaneRect, PaneRect) {
+    /// by a pixel at some ratios. `theDividerAlwaysSitsExactlyBetweenTheTwoPanesItSeparates` pins that.
+    internal static func splitBounds(_ bounds: PaneRect, axis: SplitAxis, ratio: Double, dividerThickness: Double) -> (PaneRect, PaneRect) {
         switch axis {
         case .horizontal:
             let available = max(0, bounds.width - dividerThickness)

@@ -360,31 +360,88 @@ final class TabController: NSViewController, NSMenuItemValidation {
         tabBar.setColors(palette: Pane.resolvedPalette(for: config))
     }
 
-    // MARK: - Menu actions
+    // MARK: - Actions
     //
     // Reached through the responder chain: the focused `Pane` is the first responder, this
     // controller sits behind its own view, and a menu item with a nil target walks up to it.
+    // `Pane.keyDown` finds the same object for a chord bound in the config file, so a menu item
+    // and a key binding cannot disagree about what an action does.
 
-    @objc func newTab(_ sender: Any?) { newTab() }
-    @objc func closePane(_ sender: Any?) { closeCurrentPane() }
-    @objc func selectNextTab(_ sender: Any?) { nextTab() }
-    @objc func selectPreviousTab(_ sender: Any?) { previousTab() }
-
-    /// ⌘1…⌘9, the number carried in the item's tag.
-    @objc func selectTabByNumber(_ sender: Any?) {
-        guard let item = sender as? NSMenuItem,
-              let index = TabStrip.index(forCommandNumber: item.tag, tabCount: tabs.count) else { return }
-        selectTab(at: index)
+    @objc func performTerminalAction(_ sender: Any?) {
+        guard let name = (sender as? NSMenuItem)?.representedObject as? String,
+              let action = TerminalAction(rawValue: name) else { return }
+        perform(action)
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        switch item.action {
-        case #selector(selectTabByNumber(_:)):
-            return TabStrip.index(forCommandNumber: item.tag, tabCount: tabs.count) != nil
-        case #selector(selectNextTab(_:)), #selector(selectPreviousTab(_:)):
-            return tabs.count > 1
-        default:
+        guard item.action == #selector(performTerminalAction(_:)) else { return true }
+        guard let name = item.representedObject as? String,
+              let action = TerminalAction(rawValue: name) else { return false }
+        return canPerform(action)
+    }
+}
+
+extension TabController: ActionTarget {
+    private var panes: PaneTreeView? {
+        tabs.indices.contains(selected) ? tabs[selected].panes : nil
+    }
+
+    /// Actions this controller cannot carry out itself belong to the application: they outlive any
+    /// one window, so they go to the delegate rather than being duplicated per window.
+    private var appDelegate: AppDelegate? { NSApp.delegate as? AppDelegate }
+
+    func perform(_ action: TerminalAction) {
+        switch action {
+        case .newWindow: appDelegate?.newWindow(nil)
+        case .openConfig: appDelegate?.openConfig(nil)
+        case .reloadConfig: appDelegate?.reloadConfig(nil)
+
+        case .newTab: newTab()
+        case .closePane: closeCurrentPane()
+        case .nextTab: nextTab()
+        case .previousTab: previousTab()
+        case .tab1, .tab2, .tab3, .tab4, .tab5, .tab6, .tab7, .tab8, .tab9:
+            guard let number = TabStrip.commandNumber(for: action),
+                  let index = TabStrip.index(forCommandNumber: number, tabCount: tabs.count) else { return }
+            selectTab(at: index)
+
+        case .splitRight: panes?.split(axis: .horizontal)
+        case .splitDown: panes?.split(axis: .vertical)
+        case .focusLeft: panes?.moveFocus(.left)
+        case .focusRight: panes?.moveFocus(.right)
+        case .focusUp: panes?.moveFocus(.up)
+        case .focusDown: panes?.moveFocus(.down)
+        case .growLeft: panes?.resizeFocused(.left)
+        case .growRight: panes?.resizeFocused(.right)
+        case .growUp: panes?.resizeFocused(.up)
+        case .growDown: panes?.resizeFocused(.down)
+        case .toggleZoom: panes?.toggleZoom()
+
+        case .copy: focusedPane?.copy(nil)
+        case .paste: focusedPane?.paste(nil)
+        case .clearScreen: focusedPane?.clearScreen()
+        case .fontBigger: focusedPane?.zoomIn(nil)
+        case .fontSmaller: focusedPane?.zoomOut(nil)
+        case .fontReset: focusedPane?.zoomReset(nil)
+        }
+    }
+
+    func canPerform(_ action: TerminalAction) -> Bool {
+        switch action {
+        case .newWindow, .openConfig, .reloadConfig, .newTab:
             return true
+        case .nextTab, .previousTab:
+            return tabs.count > 1
+        case .tab1, .tab2, .tab3, .tab4, .tab5, .tab6, .tab7, .tab8, .tab9:
+            guard let number = TabStrip.commandNumber(for: action) else { return false }
+            return TabStrip.index(forCommandNumber: number, tabCount: tabs.count) != nil
+        case .copy:
+            return focusedPane?.hasSelection ?? false
+        case .focusLeft, .focusRight, .focusUp, .focusDown,
+             .growLeft, .growRight, .growUp, .growDown, .toggleZoom:
+            return (panes?.paneCount ?? 0) > 1
+        default:
+            return focusedPane != nil
         }
     }
 }

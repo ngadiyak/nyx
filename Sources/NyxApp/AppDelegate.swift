@@ -6,9 +6,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let configStore = ConfigStore()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.mainMenu = MainMenu.build()
+        rebuildMenu(for: configStore.config)
         configStore.createIfMissing()
         configStore.onChange = { [weak self] config, diagnostics in
+            // The menu carries the key equivalents, so a changed `keybind` line has to rebuild it.
+            self?.rebuildMenu(for: config)
             self?.controllers.forEach { $0.configChanged(config, diagnostics: diagnostics) }
         }
         configStore.startWatching()
@@ -21,6 +23,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    private func rebuildMenu(for config: Config) {
+        NSApp.mainMenu = MainMenu.build(bindings: KeyBindingTable(user: config.keybinds))
+    }
 
     @objc func newWindow(_ sender: Any?) {
         guard let controller = TerminalWindowController.make(config: configStore.config) else { return }

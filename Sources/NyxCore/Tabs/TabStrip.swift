@@ -39,6 +39,24 @@ public enum TabStrip {
         }
     }
 
+    /// The number behind each of the nine tab-selection actions. Keeping the mapping next to
+    /// `index(forCommandNumber:tabCount:)` gives the "⌘9 is the last tab" rule exactly one home,
+    /// rather than the action list and the index rule each knowing half of it.
+    public static func commandNumber(for action: TerminalAction) -> Int? {
+        switch action {
+        case .tab1: return 1
+        case .tab2: return 2
+        case .tab3: return 3
+        case .tab4: return 4
+        case .tab5: return 5
+        case .tab6: return 6
+        case .tab7: return 7
+        case .tab8: return 8
+        case .tab9: return 9
+        default: return nil
+        }
+    }
+
     /// The tab ⌘1…⌘9 selects. ⌘9 is the *last* tab however many there are -- which is the same
     /// thing as the ninth only when there are exactly nine -- and a number past the end selects
     /// nothing rather than the nearest tab.

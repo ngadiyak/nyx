@@ -76,6 +76,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         guard let device = MTLCreateSystemDefaultDevice() else { throw NyxError.noMetal }
         self.id = Pane.allocateID()
         self.config = config
+        bindings = KeyBindingTable(user: config.keybinds)
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         fonts = FontSet(family: config.fontFamily, pointSize: CGFloat(config.fontSize), scale: scale, lineHeight: CGFloat(config.lineHeight))
         renderer = try Renderer(device: device, fonts: fonts)
@@ -205,6 +206,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func apply(_ newConfig: Config) {
         let diff = ConfigDiff(from: config, to: newConfig)
         config = newConfig
+        // Rebuilt unconditionally: `ConfigDiff` tracks what has to be *redrawn*, and a changed
+        // binding changes nothing on screen, so there is no diff flag to hang this on.
+        bindings = KeyBindingTable(user: newConfig.keybinds)
 
         if diff.cursorChanged {
             session.withTerminal { t in
@@ -470,10 +474,23 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
+        // A chord bound to an action never reaches the shell. Most bindings are also menu key
+        // equivalents, which AppKit consumes before `keyDown` is ever called; this path is what
+        // makes a binding work when the config names a chord the menu cannot express.
+        if let ke = keyEvent(from: event),
+           let action = bindings.action(for: ke.key, modifiers: ke.modifiers),
+           let target = actionTarget, target.canPerform(action) {
+            target.perform(action)
+            return
+        }
         currentEvent = event
         defer { currentEvent = nil }
         if !(inputContext?.handleEvent(event) ?? false) { sendKey(event) }
     }
+
+    /// Rebuilt from the config on every reload, so a new `keybind` line takes effect without a
+    /// restart. Defaults are included, with the user's lines layered on top.
+    private var bindings: KeyBindingTable
 
     private func keyEvent(from e: NSEvent) -> KeyEvent? {
         var mods: KeyModifiers = []
@@ -781,6 +798,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(copy(_:)) { return selection != nil }
         return true
+    }
+
+    /// Whether ⌘C has anything to copy, so the menu item can grey out.
+    var hasSelection: Bool {
+        guard let selection else { return false }
+        return !session.withTerminal { $0.text(in: selection) }.isEmpty
+    }
+
+    /// `clear_screen`: what ⌘K does in most terminals -- wipe the screen and the scrollback, as if
+    /// the user had run `clear -x`, without sending anything to the shell (which may be busy).
+    func clearScreen() {
+        // Cursor home, erase the screen, erase the scrollback -- fed to our own parser rather than
+        // written to the PTY, so it works while the shell is busy running something.
+        session.withTerminal { $0.feed("\u{1b}[H\u{1b}[2J\u{1b}[3J") }
+        dirty.set()
     }
 
     @objc func copy(_ sender: Any?) {

@@ -69,6 +69,9 @@ final class PaneTreeView: NSView {
 
     var focusedPane: Pane? { focused.flatMap { panes[$0] } }
 
+    /// Used by menu validation: the pane-relative actions mean nothing with a single pane.
+    var paneCount: Int { panes.count }
+
     /// Every live pane, in no particular order. For a caller that has to ask something of all of
     /// them at once -- closing a whole tab asks each whether it is busy.
     var allPanes: [Pane] { Array(panes.values) }

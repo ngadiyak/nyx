@@ -6,6 +6,7 @@ import NyxCore
 private struct Pixel: Equatable { var r: UInt8, g: UInt8, b: UInt8 }
 
 private func renderSelection(_ selection: [Range<Int>?], cols: Int = 4, rows: Int = 2,
+                             cursor: Cursor? = nil,
                              edit: (inout [Row]) -> Void = { _ in }) throws -> (FontSet, (Int, Int) -> Pixel) {
     let device = try #require(MTLCreateSystemDefaultDevice())
     let fonts = FontSet(family: "Menlo", pointSize: 12, scale: 1)
@@ -14,8 +15,9 @@ private func renderSelection(_ selection: [Range<Int>?], cols: Int = 4, rows: In
     edit(&lines)
     var palette = Palette.xtermDefault()
     palette.selectionBackground = RGB(0, 0, 255)
+    palette.cursor = RGB(255, 0, 0)
     let frame = RenderFrame(cols: cols, rows: rows, lines: lines, graphemes: [], palette: palette,
-                            cursor: nil, cursorShape: .block, focused: true, preedit: nil,
+                            cursor: cursor, cursorShape: .block, focused: true, preedit: nil,
                             selection: selection)
     let w = fonts.metrics.width * cols, h = fonts.metrics.height * rows
     let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: w, height: h, mipmapped: false)
@@ -97,4 +99,13 @@ private func renderSelection(_ selection: [Range<Int>?], cols: Int = 4, rows: In
         }
     }
     #expect(greenest > 100)   // the glyph took the selection foreground, not the default grey
+}
+
+@Test func theBlockCursorStaysVisibleOverASelection() throws {
+    // The cell under the cursor is also selected. The cursor has to win, or the caret vanishes the
+    // moment a drag passes over it.
+    let (fonts, px) = try renderSelection([0..<2, nil], cursor: Cursor(x: 0, y: 0))
+    let w = fonts.metrics.width
+    #expect(px(w / 2, 2) == Pixel(r: 255, g: 0, b: 0))      // cursor cell: the cursor colour
+    #expect(px(w + w / 2, 2) == Pixel(r: 0, g: 0, b: 255))  // selected only: the selection colour
 }

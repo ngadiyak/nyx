@@ -60,6 +60,9 @@ public final class Terminal: TerminalActions {
     /// A resize deliberately does not bump it. Reflow moves content between rows but keeps it, so a
     /// selection made before a resize still points at the text the user chose.
     public private(set) var scrollbackGeneration: UInt64 = 0
+    /// Bumped whenever bytes are fed. Cheap enough to read on any path, and exact for the question
+    /// a cache needs answered: has this buffer changed since the last time I looked?
+    public private(set) var contentVersion: UInt64 = 0
     /// When the running command began, for the duration written on its prompt row at `D`.
     private var commandStartedAt: Double?
     /// Injectable so a test can run a command in a controlled number of seconds rather than in
@@ -137,8 +140,8 @@ public final class Terminal: TerminalActions {
 
     public var cursor: Cursor { screen.cursor }
 
-    public func feed(_ bytes: UnsafeBufferPointer<UInt8>) { parser.feed(bytes) }
-    public func feed(_ bytes: [UInt8]) { parser.feed(bytes) }
+    public func feed(_ bytes: UnsafeBufferPointer<UInt8>) { contentVersion &+= 1; parser.feed(bytes) }
+    public func feed(_ bytes: [UInt8]) { contentVersion &+= 1; parser.feed(bytes) }
     public func feed(_ s: String) { feed(Array(s.utf8)) }
 
     public func clusterText(of cell: Cell) -> String {

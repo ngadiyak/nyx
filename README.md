@@ -49,6 +49,10 @@ mouse reporting for TUIs; true colour, every underline style, ligature-free mono
 font fallback and colour emoji; seven themes with separate light and dark choices; a settings
 window that edits the config file rather than shadowing it.
 
+**Sessions.** Quitting remembers every window, tab and split, each pane's working directory and its
+scrollback; the next launch puts them back. `restore-session = no` turns it off. A snapshot that
+cannot be read — corrupt, or from a newer Nyx — opens one ordinary window rather than nothing.
+
 ## Configuration
 
 `~/.config/nyx/config`, flat `key = value`, watched and reloaded on save. A bad line is reported in

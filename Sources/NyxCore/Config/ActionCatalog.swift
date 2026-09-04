@@ -50,6 +50,10 @@ public extension TerminalAction {
         case .commandPalette: return "Command Palette"
         case .editAndRunCommand: return "Edit Command Line…"
         case .pasteWithEditor: return "Paste and Edit…"
+        case .renameTab: return "Rename Tab…"
+        case .groupTab: return "Group Tab…"
+        case .ungroupTab: return "Remove Tab from Group"
+        case .toggleTabGroup: return "Collapse or Expand Group"
         case .foldCommand: return "Fold Command Output"
         case .foldAllLongOutput: return "Fold All Long Output"
         case .saveScrollback: return "Save Scrollback\u{2026}"
@@ -110,6 +114,7 @@ public enum ActionCatalog {
         Section(title: "Window", groups: [
             Group([.nextTab, .previousTab]),
             Group([.tab1, .tab2, .tab3, .tab4, .tab5, .tab6, .tab7, .tab8, .tab9]),
+            Group([.renameTab, .groupTab, .ungroupTab, .toggleTabGroup]),
         ]),
     ]
 

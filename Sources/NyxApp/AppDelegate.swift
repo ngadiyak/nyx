@@ -38,6 +38,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Synchronous on purpose: the process is going away, and a background write would not
+        // finish. This is the save that matters -- it is the one the next launch reads.
+        if configStore.config.restoreSession {
+            let windows = controllers.compactMap { $0.sessionSnapshot() }
+            if windows.isEmpty { sessionStore.clear() } else { sessionStore.save(SessionSnapshot(windows: windows)) }
+        }
         configStore.stopWatching()
         // Now, not on the debounce: the windows are still standing at this point and their panes
         // still have buffers to read. A queued work item would never run.
@@ -122,7 +128,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sessionStore.clear()
             return
         }
-        sessionStore.save(SessionSnapshot(windows: windows))
+        // Gathering has to happen here -- it reads views and terminals, which belong to the main
+        // thread -- but encoding and writing are just bytes, and a few hundred kilobytes of JSON
+        // hitting the disk is not something the interface should wait for.
+        let snapshot = SessionSnapshot(windows: windows)
+        let store = sessionStore
+        DispatchQueue.global(qos: .utility).async { store.save(snapshot) }
     }
 
     /// `⌘,`: the settings window. It edits the config file rather than holding its own copy, so

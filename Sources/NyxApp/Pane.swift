@@ -1644,13 +1644,30 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// scrollback is megabytes of ANSI to build and write on the way out of the application, and
     /// nobody scrolls back through last week's build output anyway.
     func sessionSnapshot(title: String?) -> PaneSnapshot {
-        let transcript = session.withTerminal { terminal -> String in
+        // Reuses the last transcript when nothing has been written to this buffer since.
+        //
+        // Selecting a tab, renaming one, or moving it between groups all ask for a fresh snapshot
+        // and change nothing a transcript can see -- and rebuilding one is thousands of rows of
+        // string assembly under the session lock, on the most frequent action in a terminal. The
+        // version counter makes that case free without making the answer stale: any byte the shell
+        // writes bumps it.
+        let transcript: String = session.withTerminal { terminal -> String in
+            let version = terminal.contentVersion
+            let generation = terminal.scrollbackGeneration
+            if let cached = cachedTranscript, cached.version == version, cached.generation == generation {
+                return cached.text
+            }
             let rows = SessionCapture.rowRange(totalRows: terminal.totalRows)
-            return rows.isEmpty ? "" : terminal.transcript(rows: rows, options: .forRestoring)
+            let text = rows.isEmpty ? "" : terminal.transcript(rows: rows, options: .forRestoring)
+            cachedTranscript = (version: version, generation: generation, text: text)
+            return text
         }
         return PaneSnapshot(id: id.value, workingDirectory: workingDirectory, title: title,
                             transcript: transcript.isEmpty ? nil : transcript)
     }
+
+    /// The last transcript built for a session snapshot, and the buffer state it described.
+    private var cachedTranscript: (version: UInt64, generation: UInt64, text: String)?
 
     /// The `font-family = system` case: macOS's own monospaced face, SF Mono.
     ///

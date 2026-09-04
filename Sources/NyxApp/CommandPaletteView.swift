@@ -159,7 +159,13 @@ final class CommandPaletteView: NSView, NSTextFieldDelegate {
         addSubview(separator)
 
         field.delegate = self
-        field.placeholderString = "Run a command, pick a theme, switch to a tab"
+        // Attributed, not `placeholderString`: the plain form takes AppKit's placeholder colour
+        // from the *system* appearance, so the one line explaining what the palette is went dark
+        // grey on a dark themed panel whenever the theme and the system disagreed.
+        field.placeholderAttributedString = NSAttributedString(
+            string: "Run a command, pick a theme, switch to a tab",
+            attributes: [.foregroundColor: nsColor(palette.foreground, alpha: 0.45),
+                         .font: NSFont.systemFont(ofSize: 14)])
         field.font = .systemFont(ofSize: 14)
         field.isBordered = false
         field.drawsBackground = false

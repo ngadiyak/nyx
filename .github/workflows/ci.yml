@@ -87,7 +87,17 @@ jobs:
           fi
 
       - name: Render the interface
-        run: NYX_UI_SNAPSHOT=ui-snapshots ./build/Nyx.app/Contents/MacOS/Nyx || true
+        run: |
+          # No `|| true`: if the renderer starts crashing, that is exactly the kind of silent
+          # breakage this workflow exists to catch, and it is the reasoning its own comments argue
+          # against everywhere else.
+          NYX_UI_SNAPSHOT=ui-snapshots ./build/Nyx.app/Contents/MacOS/Nyx
+          COUNT=$(ls ui-snapshots/*.png 2>/dev/null | wc -l)
+          echo "rendered $COUNT images"
+          if [ "$COUNT" -lt 10 ]; then
+            echo "::error::the interface renderer produced $COUNT images"
+            exit 1
+          fi
 
       # So a reviewer can look at what a change did to the interface without building it. The
       # environment denies screen recording, which is why this renderer exists at all.

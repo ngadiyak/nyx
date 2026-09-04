@@ -645,9 +645,12 @@ final class TabController: NSViewController, NSMenuItemValidation {
     }
 
     private func tabIndex(from sender: Any?) -> Int? {
-        guard let index = (sender as? NSMenuItem)?.representedObject as? Int,
-              tabs.indices.contains(index) else { return nil }
-        return index
+        // A menu item from the tab's own context menu carries its index. Anything else -- a menu
+        // bar item, a key binding, the palette -- means the tab you are looking at.
+        if let index = (sender as? NSMenuItem)?.representedObject as? Int, tabs.indices.contains(index) {
+            return index
+        }
+        return tabs.indices.contains(selected) ? selected : nil
     }
 
     @objc private func menuCloseTab(_ sender: Any?) {
@@ -1236,6 +1239,19 @@ extension TabController: ActionTarget {
         case .copyCommandOutput: if focusedPane?.copyLastCommandOutput() != true { NSSound.beep() }
         case .editAndRunCommand: if focusedPane?.editAndRunLastCommand() != true { NSSound.beep() }
         case .pasteWithEditor: if focusedPane?.pasteWithEditor() != true { NSSound.beep() }
+
+        // The group and rename commands existed only on a tab's context menu, which is a mouse and
+        // nothing else. They are actions like everything else now, so they reach the menu bar, the
+        // palette and `keybind =`.
+        case .renameTab: menuRenameTab(nil)
+        case .groupTab: menuNewGroup(nil)
+        case .ungroupTab: menuRemoveFromGroup(nil)
+        case .toggleTabGroup:
+            guard let index = tabIndex(from: nil), let group = grouping.group(ofTabAt: index) else {
+                NSSound.beep()
+                return
+            }
+            toggleGroup(group.id)
         case .find: focusedPane?.openSearch()
         case .findNext: if focusedPane?.stepSearch(forward: true) != true { NSSound.beep() }
         case .findPrevious: if focusedPane?.stepSearch(forward: false) != true { NSSound.beep() }

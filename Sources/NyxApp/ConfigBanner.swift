@@ -84,8 +84,17 @@ final class ConfigBanner: NSView {
         // Dark text on the fill, always. The label followed the system appearance, so in dark mode
         // it drew white on yellow at 2:1 -- the one strip on screen whose entire job is to be read.
         messageLabel.textColor = ConfigBanner.textColor(on: color)
-        for view in subviews.compactMap({ $0 as? NSButton }) {
-            view.contentTintColor = ConfigBanner.textColor(on: color)
+        // `contentTintColor` colours a borderless button's image and leaves a bezelled button's
+        // *title* to the system appearance -- so "Edit Config", the only control here that does
+        // anything, stayed white on yellow in dark mode. An attributed title is the one that wins.
+        let ink = ConfigBanner.textColor(on: color)
+        for button in subviews.compactMap({ $0 as? NSButton }) {
+            button.contentTintColor = ink
+            guard !button.title.isEmpty else { continue }
+            button.attributedTitle = NSAttributedString(
+                string: button.title,
+                attributes: [.foregroundColor: ink,
+                             .font: button.font ?? NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)])
         }
         isHidden = false
         NSAnimationContext.runAnimationGroup { ctx in

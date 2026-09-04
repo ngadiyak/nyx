@@ -18,6 +18,9 @@ public enum TerminalAction: String, Equatable, CaseIterable {
     case commandPalette = "command_palette"
     case editAndRunCommand = "edit_and_run_command"
     case pasteWithEditor = "paste_with_editor"
+    case renameTab = "rename_tab"
+    case groupTab = "group_tab", ungroupTab = "ungroup_tab"
+    case toggleTabGroup = "toggle_tab_group"
     case foldCommand = "fold_command", foldAllLongOutput = "fold_all_long_output"
     case saveScrollback = "save_scrollback"
 }
@@ -157,5 +160,7 @@ public struct KeyBinding: Equatable {
         KeyBinding(key: .char("p"), modifiers: [.cmd, .shift], action: .commandPalette),
         KeyBinding(key: .char("e"), modifiers: [.cmd], action: .editAndRunCommand),
         KeyBinding(key: .char("v"), modifiers: [.cmd, .shift], action: .pasteWithEditor),
+        KeyBinding(key: .char("r"), modifiers: [.cmd, .shift], action: .renameTab),
+        KeyBinding(key: .char("g"), modifiers: [.cmd, .ctrl], action: .groupTab),
     ]
 }

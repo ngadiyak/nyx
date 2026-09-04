@@ -234,6 +234,10 @@ enum UISnapshot {
         let controller = SettingsWindowController(store: ConfigStore())
         guard let content = controller.window?.contentView,
               let tabs = content.subviews.compactMap({ $0 as? NSTabView }).first else { return }
+        // On the *window*, not the content view. An `NSTabView`'s strip resolves its appearance
+        // against the window, so setting it here left the four tab labels rendering as blank white
+        // pills -- a review tool that lies about the interface is worse than no review tool.
+        controller.window?.appearance = NSAppearance(named: appearance)
         content.appearance = NSAppearance(named: appearance)
         content.frame = NSRect(x: 0, y: 0, width: 540, height: 460)
         for index in 0..<tabs.numberOfTabViewItems {

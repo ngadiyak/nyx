@@ -135,6 +135,9 @@ private func p(_ s: String) -> KeyBinding? { KeyBinding.parse(s) }
     let expectedUnbound: Set<TerminalAction> = [
         .selectCommandOutput, .copyCommandOutput, .saveScrollback,
         .foldCommand, .foldAllLongOutput,
+        // Reachable from the menu, the palette and a `keybind =` line, but not worth a default
+        // chord: they act on a tab's grouping, which is not something anybody does hourly.
+        .ungroupTab, .toggleTabGroup,
     ]
     for action in ActionCatalog.allMenuActions where !expectedUnbound.contains(action) {
         #expect(table.binding(for: action) != nil, "\(action.configName) lost its shortcut")

@@ -37,6 +37,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = MainMenu.build(bindings: KeyBindingTable(user: config.keybinds))
     }
 
+    /// Writes the whole button list back to the config file. The watcher picks the change up and
+    /// every window rebuilds its bar, so a button added in one window appears in all of them.
+    func setQuickActions(_ actions: [QuickAction]) {
+        configStore.writeList("quick", values: actions.map(\.configValue))
+    }
+
+    var quickActions: [QuickAction] { configStore.config.quickActions }
+
     @objc func newWindow(_ sender: Any?) {
         guard let controller = TerminalWindowController.make(config: configStore.config) else { return }
         controller.onClose = { [weak self] c in self?.controllers.removeAll { $0 === c } }

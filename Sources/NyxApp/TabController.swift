@@ -102,6 +102,10 @@ final class TabController: NSViewController, NSMenuItemValidation {
         tabBar.onNewTab = { [weak self] in self?.newTab() }
         tabBar.onShowTabList = { [weak self] in self?.showTabList() }
         tabBar.onQuickAction = { [weak self] index in self?.performQuickAction(index) }
+        tabBar.onAddQuickAction = { [weak self] in self?.editQuickAction(at: nil) }
+        tabBar.onQuickActionContextMenu = { [weak self] index, event in
+            self?.showQuickActionMenu(index, event)
+        }
         tabBar.onAppearanceChange = { [weak self] in self?.appearanceChanged() }
         projectBar.onReview = { [weak self] in self?.reviewProjectActions() }
         projectBar.onIgnore = { [weak self] in self?.ignoreProjectActions() }
@@ -955,6 +959,88 @@ final class TabController: NSViewController, NSMenuItemValidation {
     private func appearanceChanged() {
         guard config.darkThemeName != nil || config.lightThemeName != nil else { return }
         tabBar.setColors(palette: Pane.resolvedPalette(for: config))
+    }
+
+    // MARK: - Editing the buttons
+
+    /// The sheet for adding a button, or editing the one at `index`.
+    private func editQuickAction(at index: Int?) {
+        let existing = index.flatMap { config.quickActions.indices.contains($0) ? config.quickActions[$0] : nil }
+        let editor = QuickActionEditor(editing: existing)
+        editor.onFinish = { [weak self] action in
+            self?.dismiss(editor)
+            guard let self, let action else { return }
+            var actions = self.config.quickActions
+            if let index, actions.indices.contains(index) {
+                actions[index] = action
+            } else {
+                actions.append(action)
+            }
+            (NSApp.delegate as? AppDelegate)?.setQuickActions(actions)
+        }
+        presentAsSheet(editor)
+    }
+
+    private func showQuickActionMenu(_ index: Int, _ event: NSEvent) {
+        guard config.quickActions.indices.contains(index) else { return }
+        let action = config.quickActions[index]
+        let menu = NSMenu()
+        // The command itself, greyed, so pressing a button is never a guess about what it runs.
+        let header = NSMenuItem(title: action.command, action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+        menu.addItem(.separator())
+        menu.addItem(item("Edit…", #selector(menuEditQuickAction(_:)), index))
+        menu.addItem(item("Duplicate", #selector(menuDuplicateQuickAction(_:)), index))
+        if index > 0 { menu.addItem(item("Move Left", #selector(menuMoveQuickActionLeft(_:)), index)) }
+        if index < config.quickActions.count - 1 {
+            menu.addItem(item("Move Right", #selector(menuMoveQuickActionRight(_:)), index))
+        }
+        menu.addItem(.separator())
+        menu.addItem(item("Remove", #selector(menuRemoveQuickAction(_:)), index))
+        NSMenu.popUpContextMenu(menu, with: event, for: tabBar)
+    }
+
+    private func item(_ title: String, _ action: Selector, _ index: Int) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.tag = index
+        return item
+    }
+
+    private func mutateQuickActions(_ change: (inout [QuickAction]) -> Void) {
+        var actions = config.quickActions
+        change(&actions)
+        (NSApp.delegate as? AppDelegate)?.setQuickActions(actions)
+    }
+
+    @objc private func menuEditQuickAction(_ sender: NSMenuItem) { editQuickAction(at: sender.tag) }
+
+    @objc private func menuDuplicateQuickAction(_ sender: NSMenuItem) {
+        mutateQuickActions { actions in
+            guard actions.indices.contains(sender.tag) else { return }
+            let original = actions[sender.tag]
+            actions.insert(QuickAction(name: original.name + " copy", kind: original.kind,
+                                       command: original.command), at: sender.tag + 1)
+        }
+    }
+
+    @objc private func menuRemoveQuickAction(_ sender: NSMenuItem) {
+        mutateQuickActions { actions in
+            guard actions.indices.contains(sender.tag) else { return }
+            actions.remove(at: sender.tag)
+        }
+    }
+
+    @objc private func menuMoveQuickActionLeft(_ sender: NSMenuItem) { moveQuickAction(sender.tag, by: -1) }
+    @objc private func menuMoveQuickActionRight(_ sender: NSMenuItem) { moveQuickAction(sender.tag, by: 1) }
+
+    private func moveQuickAction(_ index: Int, by offset: Int) {
+        mutateQuickActions { actions in
+            let target = index + offset
+            guard actions.indices.contains(index), actions.indices.contains(target) else { return }
+            actions.swapAt(index, target)
+        }
     }
 
     // MARK: - Searching every tab

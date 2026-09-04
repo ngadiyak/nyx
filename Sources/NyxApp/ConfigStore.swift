@@ -70,6 +70,22 @@ final class ConfigStore {
         }
     }
 
+    /// Rewrites every line of an additive key -- `quick`, `keybind` -- so the file holds exactly
+    /// `values`. Adding, editing, reordering and deleting a button are all this one operation.
+    @discardableResult
+    func writeList(_ key: String, values: [String]) -> Bool {
+        let url = createIfMissing()
+        let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let updated = ConfigWriter.settingList(key, values: values, in: existing)
+        guard updated != existing else { return true }
+        do {
+            try updated.write(to: url, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     func reload() {
         (config, diagnostics) = ConfigStore.load(base: config)
         onChange?(config, diagnostics)

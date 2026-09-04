@@ -246,7 +246,10 @@ final class TabBarView: NSView {
         switch hit(at: convert(event.locationInWindow, from: nil)) {
         case .close(let index), .select(let index): onContextMenu?(index, event)
         case .expandGroup(let id), .groupHeader(let id): onGroupContextMenu?(id, event)
-        case .leadingButton: break
+        case .leadingButton(let index):
+            if case .quick(let action)? = leadingButtons.indices.contains(index) ? leadingButtons[index] : nil {
+                onQuickActionContextMenu?(action, event)
+            }
         case nil: break
         }
     }
@@ -283,7 +286,7 @@ final class TabBarView: NSView {
             case .newTab: drawSymbol("plus", fallback: "+", in: frame)
             case .tabList: drawSymbol("list.bullet", fallback: "\u{2261}", in: frame)
             case .quick(let action): drawQuickActionButton(action, in: frame)
-            case .addQuickAction: drawSymbol("plus.circle", fallback: "+", in: frame)
+            case .addQuickAction: drawAddQuickActionButton(in: frame)
             }
         }
         guard let last = fittedLeadingRects.last else { return }
@@ -311,6 +314,20 @@ final class TabBarView: NSView {
     /// or dark-on-dark depending on the theme; the background always contrasts with the accent,
     /// because that is what the accent was chosen against.
     private var backgroundColorForAccentText: NSColor { barBackground }
+
+    /// Drawn as an empty chip with a `+` in it, not as another plain plus.
+    ///
+    /// There is already a `+` at the far left for a new tab; a second identical one a few pixels
+    /// away is a coin toss. Shaped like the buttons it makes, it reads as "add one of these".
+    private func drawAddQuickActionButton(in frame: NSRect) {
+        let pill = NSBezierPath(roundedRect: frame.insetBy(dx: 3, dy: 5), xRadius: 5, yRadius: 5)
+        dimTextColor.withAlphaComponent(0.35).setStroke()
+        pill.lineWidth = 1
+        pill.setLineDash([3, 2.5], count: 2, phase: 0)
+        pill.stroke()
+        drawLabel("+", in: frame, color: dimTextColor,
+                  font: .systemFont(ofSize: 12, weight: .medium), centred: true)
+    }
 
     private func drawQuickActionButton(_ index: Int, in frame: NSRect) {
         guard quickActions.indices.contains(index) else { return }

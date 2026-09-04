@@ -7,7 +7,7 @@ public struct KeyModifiers: OptionSet, Equatable {
     public static let cmd   = KeyModifiers(rawValue: 8)
 }
 
-public enum Key: Equatable {
+public enum Key: Hashable {
     case char(Unicode.Scalar)
     case up, down, left, right, home, end, pageUp, pageDown, insert, delete
     case backspace, tab, enter, escape

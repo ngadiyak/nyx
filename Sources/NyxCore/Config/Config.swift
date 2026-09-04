@@ -1,10 +1,5 @@
 import Foundation
 
-/// Placeholder for Task 8, which defines the real type in `KeyBinding.swift` (key, modifiers,
-/// action, parsing). It only needs to exist and be `Equatable` so `Config.keybinds` can compile
-/// and `Config` stays `Equatable` in the meantime.
-public struct KeyBinding: Equatable {}
-
 public enum OptionAsMeta: String, Equatable { case none, left, right, both }
 public enum BellStyle: String, Equatable { case visual, sound, none }
 public enum TabBarVisibility: String, Equatable { case auto, always, never }

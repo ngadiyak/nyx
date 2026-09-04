@@ -92,8 +92,11 @@ public enum ConfigParser {
                     badValue()
                 }
             case "keybind":
-                // Task 8 wires this to KeyBinding.parse and diagnoses failures.
-                break
+                if let binding = KeyBinding.parse(value) {
+                    config.keybinds.append(binding)
+                } else {
+                    badValue()
+                }
             default:
                 diagnostics.append(ConfigDiagnostic(line: lineNumber, message: "unknown setting '\(key)'"))
             }

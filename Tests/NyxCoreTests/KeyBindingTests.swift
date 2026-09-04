@@ -98,3 +98,45 @@ private func p(_ s: String) -> KeyBinding? { KeyBinding.parse(s) }
     #expect(c.keybinds.isEmpty)
     #expect(d.count == 1 && d[0].line == 1)
 }
+
+/// The chords every Mac application has. These were left out of the defaults on the grounds that
+/// the menu hard-coded them; when the menu was rebuilt from this table it stopped supplying them
+/// and ⌘C, ⌘V, ⌘N and the font-size chords silently stopped working. Nothing else would have
+/// noticed, because nothing else knows what a user expects to be able to press.
+@Test func theChordsEveryMacApplicationHasAreBound() {
+    let table = KeyBindingTable(user: [])
+    let expected: [(Key, KeyModifiers, TerminalAction)] = [
+        (.char("c"), [.cmd], .copy),
+        (.char("v"), [.cmd], .paste),
+        (.char("n"), [.cmd], .newWindow),
+        (.char("t"), [.cmd], .newTab),
+        (.char("w"), [.cmd], .closePane),
+        (.char("f"), [.cmd], .find),
+        (.char("0"), [.cmd], .fontReset),
+        (.char("-"), [.cmd], .fontSmaller),
+    ]
+    for (key, modifiers, action) in expected {
+        #expect(table.action(for: key, modifiers: modifiers) == action, "\(action.configName)")
+    }
+}
+
+/// `⌘+` and `⌘=` are the same physical key; binding one of them makes the shortcut work for half
+/// the people who try it.
+@Test func bothSpellingsOfTheZoomInChordWork() {
+    let table = KeyBindingTable(user: [])
+    #expect(table.action(for: .char("+"), modifiers: [.cmd]) == .fontBigger)
+    #expect(table.action(for: .char("="), modifiers: [.cmd]) == .fontBigger)
+}
+
+/// Every action the menu offers should either carry a chord or be one nobody expects one for.
+/// A menu item with no shortcut is fine; an action that *used* to have one and lost it is not.
+@Test func everyMenuActionIsEitherBoundOrDeliberatelyNot() {
+    let table = KeyBindingTable(user: [])
+    let expectedUnbound: Set<TerminalAction> = [
+        .selectCommandOutput, .copyCommandOutput, .saveScrollback,
+        .foldCommand, .foldAllLongOutput,
+    ]
+    for action in ActionCatalog.allMenuActions where !expectedUnbound.contains(action) {
+        #expect(table.binding(for: action) != nil, "\(action.configName) lost its shortcut")
+    }
+}

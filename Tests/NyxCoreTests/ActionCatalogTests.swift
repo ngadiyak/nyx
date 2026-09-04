@@ -82,10 +82,12 @@ private func table(_ lines: String...) -> KeyBindingTable {
     #expect(b?.modifiers == [.cmd])
 }
 
-/// Some actions ship with no chord and are menu-only; the menu still lists them, without a shortcut.
+/// Some actions ship with no chord and are menu-only; the menu still lists them, without a
+/// shortcut. This used to name `fontBigger`, which was documenting a bug rather than a decision:
+/// ⌘+ had quietly stopped working when the menu began reading its key equivalents from this table.
 @Test func anActionWithNoBindingReportsNoShortcut() {
-    #expect(table().binding(for: .fontBigger) == nil)
-    #expect(ActionCatalog.allMenuActions.contains(.fontBigger))
+    #expect(table().binding(for: .copyCommandOutput) == nil)
+    #expect(ActionCatalog.allMenuActions.contains(.copyCommandOutput))
 }
 
 /// The subtle one. Rebinding `⌘D` to `new_tab` leaves `split_right` with no chord at all. The menu

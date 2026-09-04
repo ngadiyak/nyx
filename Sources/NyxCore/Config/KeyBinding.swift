@@ -102,12 +102,24 @@ public struct KeyBinding: Equatable {
         }
     }
 
-    /// The default bindings from spec §6.2. `⌘+`/`⌘-`/`⌘0` for font size stay menu-only (they are
-    /// `NSMenuItem` key equivalents, and the `+`/`-` chord is exactly the ambiguous case `parse`
-    /// rejects), so this list omits `fontBigger`/`fontSmaller`/`fontReset`; the menu supplies them.
-    /// The spec table has no entry for a new-window shortcut either, so `newWindow` is likewise
-    /// left for the menu (conventionally ⌘N) rather than guessed here.
+    /// The default bindings.
+    ///
+    /// This list used to omit copy, paste, new window and the font-size chords on the grounds that
+    /// "the menu supplies them" -- true while the menu hard-coded its own key equivalents. Once the
+    /// menu was rebuilt from this table, it stopped supplying anything that was not in here, and
+    /// ⌘C, ⌘V, ⌘N, ⌘+, ⌘- and ⌘0 silently stopped working. They are bindings like everything else.
+    ///
+    /// `⌘+` is bound as both `+` and `=`: the key is the same one, and which character it produces
+    /// depends on whether shift is held. Binding only one of them makes the shortcut work for
+    /// half the people who try it.
     public static let defaults: [KeyBinding] = [
+        KeyBinding(key: .char("c"), modifiers: [.cmd], action: .copy),
+        KeyBinding(key: .char("v"), modifiers: [.cmd], action: .paste),
+        KeyBinding(key: .char("n"), modifiers: [.cmd], action: .newWindow),
+        KeyBinding(key: .char("+"), modifiers: [.cmd], action: .fontBigger),
+        KeyBinding(key: .char("="), modifiers: [.cmd], action: .fontBigger),
+        KeyBinding(key: .char("-"), modifiers: [.cmd], action: .fontSmaller),
+        KeyBinding(key: .char("0"), modifiers: [.cmd], action: .fontReset),
         KeyBinding(key: .char("t"), modifiers: [.cmd], action: .newTab),
         KeyBinding(key: .char("w"), modifiers: [.cmd], action: .closePane),
         KeyBinding(key: .char("1"), modifiers: [.cmd], action: .tab1),

@@ -158,6 +158,18 @@ public extension Terminal {
     /// A little below rather than flush at the top: jumping to a prompt is a request to read what
     /// that command *did*, and a prompt pinned to the very first line puts its output entirely
     /// below the fold.
+    /// Scrolls only if `row` is not already on screen, and reports whether the viewport moved.
+    ///
+    /// This is what stepping through search hits wants: three hits on the visible screen should
+    /// highlight one after another without the text sliding under the reader each time, and a hit
+    /// two screens up should bring the screen to it.
+    @discardableResult
+    func revealAbsoluteRow(_ row: Int, margin: Int = 1) -> Bool {
+        let top = viewportTopRow
+        guard row < top || row >= top + rows else { return false }
+        return scrollToAbsoluteRow(row, margin: margin)
+    }
+
     func scrollToAbsoluteRow(_ row: Int, margin: Int = 1) -> Bool {
         let target = max(0, row - margin)
         let offset = max(0, min(scrollback.count, scrollback.count - target))

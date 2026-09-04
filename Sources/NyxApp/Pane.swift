@@ -62,6 +62,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// leaves the view so the display link can autoscroll towards it.
     private var lastMousePoint: NSPoint?
     private var motionTracking: NSTrackingArea?
+    /// All the search state; every decision in it belongs to `NyxCore`. nil bar means ⌘F has not
+    /// been pressed, and then the session is empty and nothing is highlighted.
+    private var searchSession = SearchSession()
+    private var searchBar: SearchBarView?
+    /// What was selected when the bar opened, restored when `⎋` closes it.
+    private var selectionBeforeSearch: Selection?
+    /// A re-run of the open search against new output is already queued; see `scheduleSearchRefresh`.
+    private var searchRefreshScheduled = false
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     /// Clamped the same way the old hardcoded zoom was (6...72pt), independent of the config's own
@@ -228,6 +236,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         if diff.paletteChanged {
             applyPalette()
+            let palette = Pane.resolvedPalette(for: config)
+            searchBar?.apply(palette: palette)
         }
         if diff.windowAppearanceChanged {
             applyBackgroundAppearance()
@@ -310,6 +320,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     override func layout() {
         super.layout()
         updateGrid()
+        layoutSearchBar()
     }
 
     private func updateScale() {
@@ -372,6 +383,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     private func outputArrived() {
         onOutput?()
+        scheduleSearchRefresh()
         resumeLink()
     }
 
@@ -417,12 +429,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // viewport as the lines being drawn.
             let top = t.viewportTopRow
             let selected = (0..<t.rows).map { self.selection?.columnRange(onRow: top + $0, cols: t.cols) }
+            let matches = SearchHighlights.visibleRanges(self.searchSession.matches, viewportTop: top,
+                                                        rows: t.rows, cols: t.cols)
+            let current = SearchHighlights.visibleRange(of: self.searchSession.current, viewportTop: top,
+                                                       rows: t.rows, cols: t.cols)
             // A missing drawable is transient. On failure, re-setting dirty will repaint rows
             // already marked clean; once per-row partial redraw lands, fix both here and there.
             t.clearDirty()
             let f = RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
                                 cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit,
-                                selection: selected)
+                                selection: selected, searchMatches: matches, currentSearchMatch: current)
             return (f, t.modes.mouse == .any)
         }
         // The tracking area for bare motion follows the mouse mode, which only an application can
@@ -847,6 +863,111 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if item.action == #selector(copy(_:)) { return hasSelection }
         if item.action == #selector(selectAll(_:)) { return session.withTerminal { $0.totalRows > 0 } }
         return true
+    }
+
+    // MARK: - Search
+    //
+    // The bar is a subview over the Metal layer; every decision it needs -- which hit becomes
+    // current, where stepping goes, what the readout says, which columns are highlighted -- is
+    // `SearchSession` and `SearchHighlights` in NyxCore. What is here is placement, focus and the
+    // one thing a view must own: the selection to put back when the bar closes.
+
+    var isSearching: Bool { searchBar != nil }
+
+    /// `⌘F`. Opening while already open just re-focuses the field and selects what is in it, which
+    /// is what every editor does with a second ⌘F.
+    func openSearch() {
+        if let bar = searchBar {
+            bar.focusField()
+            return
+        }
+        selectionBeforeSearch = selection
+        let bar = SearchBarView(palette: Pane.resolvedPalette(for: config))
+        bar.onQueryChange = { [weak self] text in self?.searchQueryChanged(text) }
+        bar.onStep = { [weak self] forward in _ = self?.stepSearch(forward: forward) }
+        bar.onClose = { [weak self] in self?.closeSearch() }
+        addSubview(bar)
+        searchBar = bar
+        layoutSearchBar()
+        bar.focusField()
+        markDirty()
+    }
+
+    /// `⎋` or the close button: the highlights go, and so does the selection the search made --
+    /// whatever was selected before it opened comes back.
+    func closeSearch() {
+        guard let bar = searchBar else { return }
+        bar.removeFromSuperview()
+        searchBar = nil
+        searchSession.clear()
+        let restored = selectionBeforeSearch
+        selectionBeforeSearch = nil
+        session.withTerminal { t in
+            if let restored {
+                _ = selectionController.replace(with: restored, in: t)
+            } else {
+                _ = selectionController.clear()
+            }
+        }
+        window?.makeFirstResponder(self)
+        markDirty()
+    }
+
+    private func searchQueryChanged(_ text: String) {
+        session.withTerminal { t in
+            searchSession.update(query: text, in: t, viewportTop: t.viewportTopRow)
+        }
+        revealCurrentMatch()
+        searchBar?.setReadout(searchSession.readout)
+        markDirty()
+    }
+
+    /// `⏎`/`⇧⏎` and ⌘G/⌘⇧G. Returns false when there is nothing to step through, so the caller can
+    /// beep rather than doing nothing silently.
+    @discardableResult
+    func stepSearch(forward: Bool) -> Bool {
+        guard searchBar != nil, !searchSession.isEmpty else { return false }
+        searchSession.step(forward: forward)
+        revealCurrentMatch()
+        searchBar?.setReadout(searchSession.readout)
+        markDirty()
+        return true
+    }
+
+    /// Brings the current hit on screen and selects it, so `⎋` can be followed by ⌘C.
+    private func revealCurrentMatch() {
+        guard let match = searchSession.current else { return }
+        session.withTerminal { t in
+            // A third of the screen down, so the hit lands where the eye already is rather than
+            // flush against the top edge.
+            _ = t.revealAbsoluteRow(match.row, margin: max(1, t.rows / 3))
+            _ = selectionController.replace(with: match.selection, in: t)
+        }
+    }
+
+    /// Output while the bar is open moves the text the highlights point at, so the search is re-run
+    /// -- coalesced, because a build scrolling past would otherwise rescan the buffer per read.
+    private func scheduleSearchRefresh() {
+        guard searchBar != nil, !searchSession.query.isEmpty, !searchRefreshScheduled else { return }
+        searchRefreshScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self else { return }
+            self.searchRefreshScheduled = false
+            guard self.searchBar != nil else { return }
+            self.session.withTerminal { t in
+                self.searchSession.refresh(in: t, viewportTop: t.viewportTopRow)
+            }
+            self.searchBar?.setReadout(self.searchSession.readout)
+            self.markDirty()
+        }
+    }
+
+    private func layoutSearchBar() {
+        guard let bar = searchBar else { return }
+        let width = min(SearchBarView.preferredWidth, max(200, bounds.width - 16))
+        bar.frame = NSRect(x: bounds.width - width - 8, y: bounds.height - SearchBarView.height - 8,
+                           width: width, height: SearchBarView.height)
+        bar.needsLayout = true
     }
 
     // MARK: - Shell integration

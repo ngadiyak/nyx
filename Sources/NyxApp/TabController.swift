@@ -421,8 +421,11 @@ extension TabController: ActionTarget {
         case .nextPrompt: if focusedPane?.jumpToPrompt(forward: true) != true { NSSound.beep() }
         case .selectCommandOutput: if focusedPane?.selectCommandOutput() != true { NSSound.beep() }
         case .copyCommandOutput: if focusedPane?.copyLastCommandOutput() != true { NSSound.beep() }
-        case .find, .findNext, .findPrevious, .commandPalette:
-            // Wired up with the search bar and the palette overlay.
+        case .find: focusedPane?.openSearch()
+        case .findNext: if focusedPane?.stepSearch(forward: true) != true { NSSound.beep() }
+        case .findPrevious: if focusedPane?.stepSearch(forward: false) != true { NSSound.beep() }
+        case .commandPalette:
+            // Wired up with the palette overlay.
             NSSound.beep()
 
         case .copy: focusedPane?.copy(nil)
@@ -445,6 +448,9 @@ extension TabController: ActionTarget {
             return TabStrip.index(forCommandNumber: number, tabCount: tabs.count) != nil
         case .copy:
             return focusedPane?.hasSelection ?? false
+        case .findNext, .findPrevious:
+            // Nothing to step through until ⌘F has been pressed and something typed.
+            return focusedPane?.isSearching ?? false
         case .previousPrompt, .nextPrompt, .selectCommandOutput, .copyCommandOutput:
             // A shell with no integration emits no marks, and these do nothing without them.
             return focusedPane?.hasPromptMarks ?? false

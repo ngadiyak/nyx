@@ -1,0 +1,132 @@
+import AppKit
+import NyxCore
+
+/// The `⌘F` bar: a field, a "3 of 47" readout, previous/next and a close button.
+///
+/// It owns no search state at all. Every keystroke and click is reported to the `Pane` that put it
+/// on screen, which drives the `SearchSession` in `NyxCore` and hands back the readout to display.
+/// That split is what keeps the searching itself testable while this file stays event conversion
+/// and layout, which the environment cannot exercise.
+final class SearchBarView: NSView, NSTextFieldDelegate {
+    /// Typed text, on every keystroke -- the search is incremental.
+    var onQueryChange: ((String) -> Void)?
+    /// `⏎`/`⇧⏎` and the two buttons, `true` for forwards.
+    var onStep: ((Bool) -> Void)?
+    /// `⎋` or the close button.
+    var onClose: (() -> Void)?
+
+    static let height: CGFloat = 30
+    static let preferredWidth: CGFloat = 380
+
+    private let field = NSTextField(frame: .zero)
+    private let readout = NSTextField(labelWithString: "")
+    private let previous = NSButton(frame: .zero)
+    private let next = NSButton(frame: .zero)
+    private let close = NSButton(frame: .zero)
+
+    init(palette: Palette) {
+        super.init(frame: NSRect(x: 0, y: 0, width: SearchBarView.preferredWidth, height: SearchBarView.height))
+        wantsLayer = true
+        field.delegate = self
+        field.placeholderString = "Find"
+        field.font = .systemFont(ofSize: 12)
+        field.isBordered = true
+        field.bezelStyle = .roundedBezel
+        field.focusRingType = .none
+        // The field must not fire on every keystroke through the target/action path as well as
+        // `controlTextDidChange`; ⏎ is handled in `doCommandBy` instead.
+        field.isContinuous = false
+        readout.font = .systemFont(ofSize: 11)
+        readout.alignment = .right
+        configure(previous, symbol: "chevron.left", fallback: "<", action: #selector(stepBackward))
+        configure(next, symbol: "chevron.right", fallback: ">", action: #selector(stepForward))
+        configure(close, symbol: "xmark", fallback: "x", action: #selector(dismiss))
+        for view in [field, readout, previous, next, close] { addSubview(view) }
+        apply(palette: palette)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    private func configure(_ button: NSButton, symbol: String, fallback: String, action: Selector) {
+        button.target = self
+        button.action = action
+        button.bezelStyle = .roundRect
+        button.isBordered = false
+        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) {
+            button.image = image
+            button.imagePosition = .imageOnly
+        } else {
+            button.title = fallback
+        }
+    }
+
+    /// The bar is drawn in the terminal's own colours so it reads as part of the pane rather than a
+    /// piece of another application floating over it.
+    func apply(palette: Palette) {
+        layer?.backgroundColor = nsColor(palette.background, alpha: 0.96).cgColor
+        layer?.borderColor = nsColor(palette.foreground, alpha: 0.25).cgColor
+        layer?.borderWidth = 1
+        layer?.cornerRadius = 6
+        readout.textColor = nsColor(palette.foreground, alpha: 0.7)
+        for button in [previous, next, close] { button.contentTintColor = nsColor(palette.foreground, alpha: 0.8) }
+    }
+
+    /// The "3 of 47" text, or an empty string before anything has been typed.
+    func setReadout(_ text: String) {
+        readout.stringValue = text
+    }
+
+    var query: String { field.stringValue }
+
+    /// Puts the caret in the field. Called after the bar is added to a pane, and again when `⌘F` is
+    /// pressed while it is already open -- which is how every editor re-focuses a search bar.
+    func focusField() {
+        window?.makeFirstResponder(field)
+        field.currentEditor()?.selectAll(nil)
+    }
+
+    override func layout() {
+        super.layout()
+        let inset: CGFloat = 6, gap: CGFloat = 4, button: CGFloat = 22
+        let buttonsWidth = button * 3 + gap * 2
+        let readoutWidth: CGFloat = 62
+        let fieldWidth = max(60, bounds.width - inset * 2 - buttonsWidth - readoutWidth - gap * 3)
+        var x = inset
+        field.frame = NSRect(x: x, y: (bounds.height - 22) / 2, width: fieldWidth, height: 22)
+        x += fieldWidth + gap
+        readout.frame = NSRect(x: x, y: (bounds.height - 16) / 2, width: readoutWidth, height: 16)
+        x += readoutWidth + gap
+        for control in [previous, next, close] {
+            control.frame = NSRect(x: x, y: (bounds.height - button) / 2, width: button, height: button)
+            x += button + gap
+        }
+    }
+
+    // MARK: - Events
+
+    @objc private func stepForward() { onStep?(true) }
+    @objc private func stepBackward() { onStep?(false) }
+    @objc private func dismiss() { onClose?() }
+
+    func controlTextDidChange(_ notification: Notification) {
+        onQueryChange?(field.stringValue)
+    }
+
+    /// The field editor turns keys into these selectors: `⏎` steps forwards, `⇧⏎` backwards (the
+    /// standard binding for it is `insertNewlineIgnoringFieldEditor:`), `⎋` closes.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            onStep?(true)
+            return true
+        case #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)), #selector(NSResponder.insertBacktab(_:)):
+            onStep?(false)
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            onClose?()
+            return true
+        default:
+            return false
+        }
+    }
+}

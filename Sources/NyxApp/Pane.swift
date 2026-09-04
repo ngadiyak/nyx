@@ -70,6 +70,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private var selectionBeforeSearch: Selection?
     /// A re-run of the open search against new output is already queued; see `scheduleSearchRefresh`.
     private var searchRefreshScheduled = false
+    /// The status gutter down the left of the pane, inside its padding.
+    private let gutter = PromptGutterView(frame: .zero)
+    /// Notices that a command ended, from nothing but the prompt marks; see `CommandWatcher`.
+    private var commandWatcher = CommandWatcher()
+    private var commandCheckScheduled = false
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     /// Clamped the same way the old hardcoded zoom was (6...72pt), independent of the config's own
@@ -98,6 +103,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.framebufferOnly = true
         applyBackgroundAppearance()
+        gutter.onSelectRow = { [weak self] row in self?.selectCommand(atVisibleRow: row) }
+        addSubview(gutter)
         session.withTerminal { $0.setDefaultCursorShape(config.cursorStyle); $0.modes.cursorBlink = config.cursorBlink }
         session.onUpdate = { [weak self] in self?.sessionDidUpdate() }
         session.onEvent = { [weak self] e in DispatchQueue.main.async { self?.handle(e) } }
@@ -244,6 +251,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             applyBackgroundAppearance()
             markDirty()
         }
+        // `padding` decides how much room the gutter has, so it is re-measured after any change.
+        layoutGutter()
     }
 
     private func applyPalette() {
@@ -322,6 +331,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         super.layout()
         updateGrid()
         layoutSearchBar()
+        layoutGutter()
     }
 
     private func updateScale() {
@@ -385,6 +395,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func outputArrived() {
         onOutput?()
         scheduleSearchRefresh()
+        scheduleCommandCheck()
         resumeLink()
     }
 
@@ -420,6 +431,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func render() {
         let focused = (window?.isKeyWindow ?? false) && window?.firstResponder === self
         let preedit = markedText.isEmpty ? nil : markedText
+        var gutterMarks: [GutterMark?] = []
         let frame: RenderFrame = session.withTerminal { t in
             // Before anything reads the selection: a cleared scrollback, a reset or an
             // alternate-screen swap leaves it pointing at rows that now hold other content.
@@ -437,6 +449,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let hovered = SearchHighlights.visibleRange(onAbsoluteRow: self.hoveredLink?.row ?? 0,
                                                         columns: self.hoveredLink?.columns,
                                                         viewportTop: top, rows: t.rows, cols: t.cols)
+            // Read here rather than on a timer: one cheap pass over the visible rows, and it is
+            // guaranteed to describe the same viewport as the frame being drawn.
+            gutterMarks = t.gutterMarks(rows: t.rows)
             // A missing drawable is transient. On failure, re-setting dirty will repaint rows
             // already marked clean; once per-row partial redraw lands, fix both here and there.
             t.clearDirty()
@@ -445,6 +460,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                selection: selected, searchMatches: matches, currentSearchMatch: current,
                                hoveredLink: hovered)
         }
+        gutter.update(marks: gutterMarks, palette: frame.palette,
+                      cellHeight: cellSizePoints.height, topPadding: padding)
         // A missing drawable is transient; keep the frame stale so the next tick retries rather
         // than pausing the link on top of stale pixels.
         if !renderer.draw(frame, in: metalLayer, padding: Int(padding * metalLayer.contentsScale)) { dirty.set() }
@@ -1113,6 +1130,68 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         if moved { markDirty() }
         return moved
+    }
+
+    /// The gutter takes as much of the pane's left padding as a mark needs, and nothing when there
+    /// is not enough padding for one -- a gutter over the first column of text would be worse than
+    /// no gutter at all.
+    private func layoutGutter() {
+        let width = CGFloat(PromptGutter.width(padding: Double(padding)))
+        gutter.isHidden = width <= 0
+        gutter.frame = NSRect(x: 0, y: 0, width: width, height: bounds.height)
+        gutter.needsDisplay = true
+    }
+
+    /// A click on a mark selects that command's output.
+    private func selectCommand(atVisibleRow row: Int) {
+        let selection: Selection? = session.withTerminal { t in
+            guard let region = t.command(containingAbsoluteRow: t.viewportTopRow + row) else { return nil }
+            return t.selectionForOutput(of: region)
+        }
+        guard let selection else {
+            NSSound.beep()
+            return
+        }
+        session.withTerminal { t in _ = selectionController.replace(with: selection, in: t) }
+        onFocusRequested?()
+        markDirty()
+    }
+
+    // MARK: - Telling the user a long command finished
+    //
+    // Coalesced rather than run per read: finding the bottom-most prompt walks back through the
+    // buffer, and a build scrolling past would otherwise pay for that thousands of times a second.
+    // Half a second late is not late for a notification about something that took ten seconds.
+
+    private func scheduleCommandCheck() {
+        guard !commandCheckScheduled else { return }
+        commandCheckScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            self.commandCheckScheduled = false
+            self.checkForFinishedCommand()
+        }
+    }
+
+    private func checkForFinishedCommand() {
+        let now = Date.timeIntervalSinceReferenceDate
+        let bottom: (row: Int?, started: Bool) = session.withTerminal { t in
+            guard t.totalRows > 0, let region = t.command(containingAbsoluteRow: t.totalRows - 1)
+            else { return (nil, false) }
+            return (region.promptRow, region.outputStart != nil)
+        }
+        guard let finished = commandWatcher.observe(bottomPromptRow: bottom.row,
+                                                    outputStarted: bottom.started, now: now)
+        else { return }
+        // A command that finished while the user was watching it needs no notification.
+        guard window?.isKeyWindow != true else { return }
+        let described: (text: String, status: Int32?) = session.withTerminal { t in
+            guard let region = t.command(containingAbsoluteRow: finished.promptRow) else { return ("", nil) }
+            return (t.commandText(of: region), region.exitStatus)
+        }
+        CommandNotifier.shared.post(title: CommandNotification.title(failed: (described.status ?? 0) != 0),
+                                    body: CommandNotification.body(command: described.text,
+                                                                   exitStatus: described.status))
     }
 
     /// Selects the output of the command the viewport is showing.

@@ -14,6 +14,7 @@ public enum CursorShape: Equatable { case block, underline, bar }
 
 public struct TerminalModes: Equatable {
     public var cursorKeysApp = false     // DECCKM ?1
+    /// Tracked (DECKPAM/DECKPNM) but not implemented: numeric keypad encoding (phase 2, spec §11).
     public var keypadApp = false         // DECKPAM / DECKPNM
     public var originMode = false        // DECOM ?6
     public var autoWrap = true           // DECAWM ?7

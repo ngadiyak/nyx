@@ -85,6 +85,9 @@ final class TerminalView: NSView, NSTextInputClient {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
         guard let window else { return }
+        // Sync the occlusion state from the new window; stale occlusion from a previous window
+        // breaks resumeLink() when a pane moves between windows until AppKit posts a notification.
+        isOccluded = !(window.occlusionState.contains(.visible))
         updateScale()
         let link = displayLink(target: self, selector: #selector(tick))
         link.add(to: .main, forMode: .common)
@@ -185,6 +188,8 @@ final class TerminalView: NSView, NSTextInputClient {
         let frame: RenderFrame = session.withTerminal { t in
             let lines = (0..<t.rows).map { t.viewportRow($0) }
             let cursor: Cursor? = (t.modes.showCursor && t.viewportOffset == 0) ? t.screen.cursor : nil
+            // A missing drawable is transient. On failure, re-setting dirty will repaint rows
+            // already marked clean; once per-row partial redraw lands, fix both here and there.
             t.clearDirty()
             return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
                                cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit)

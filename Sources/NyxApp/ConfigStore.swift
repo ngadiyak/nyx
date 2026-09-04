@@ -48,6 +48,28 @@ final class ConfigStore {
         return url
     }
 
+    /// Writes settings into the config file, preserving everything else in it.
+    ///
+    /// It deliberately does not update `config` itself: the file watcher will see the write and
+    /// reload through exactly the same path as an edit made in an editor. One path means the
+    /// settings window cannot end up showing a value the file does not contain.
+    ///
+    /// Returns whether the write succeeded; a failure leaves the file untouched.
+    @discardableResult
+    func write(_ settings: [(key: String, value: String)]) -> Bool {
+        guard !settings.isEmpty else { return true }
+        let url = createIfMissing()
+        let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let updated = ConfigWriter.settings(settings, in: existing)
+        guard updated != existing else { return true }
+        do {
+            try updated.write(to: url, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     func reload() {
         (config, diagnostics) = ConfigStore.load(base: config)
         onChange?(config, diagnostics)

@@ -4,6 +4,7 @@ import NyxCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controllers: [TerminalWindowController] = []
     private let configStore = ConfigStore()
+    private var settings: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         rebuildMenu(for: configStore.config)
@@ -11,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configStore.onChange = { [weak self] config, diagnostics in
             // The menu carries the key equivalents, so a changed `keybind` line has to rebuild it.
             self?.rebuildMenu(for: config)
+            self?.settings?.configChanged(config, diagnostics: diagnostics)
             self?.controllers.forEach { $0.configChanged(config, diagnostics: diagnostics) }
         }
         configStore.startWatching()
@@ -35,10 +37,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
     }
 
-    /// `⌘,`: create the config file if this is the first launch, then open it in the user's editor.
+    /// `⌘,`: the settings window. It edits the config file rather than holding its own copy, so
+    /// the "Edit Config File…" button on its Keys tab opens the same file this used to open
+    /// directly -- nothing is hidden behind the window.
     @objc func openConfig(_ sender: Any?) {
-        let url = configStore.createIfMissing()
-        NSWorkspace.shared.open(url)
+        if settings == nil {
+            let controller = SettingsWindowController(store: configStore)
+            settings = controller
+        }
+        settings?.showWindow(nil)
+        settings?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// `⌘⇧,`: reload now rather than waiting for the debounced file watch.

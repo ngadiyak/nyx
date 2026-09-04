@@ -30,18 +30,23 @@ public struct RenderFrame {
     /// scrolling. A number that can only be reached by doing something first is a number nobody
     /// reads. Indexed like `selection`; nil on rows with nothing to say.
     public var rowNotes: [String?]
+    /// A command's spine: the visible row range it covers, and the colour to draw it in. Painted
+    /// down the left margin, over the padding rather than over any text.
+    public var blockSpines: [(rows: Range<Int>, color: RGB)]
 
     public init(cols: Int, rows: Int, lines: [Row], graphemes: [String], palette: Palette,
                 cursor: Cursor?, cursorShape: CursorShape, focused: Bool, preedit: String?,
                 selection: [Range<Int>?] = [], searchMatches: [[Range<Int>]] = [],
                 currentSearchMatch: [Range<Int>?] = [], hoveredLink: [Range<Int>?] = [],
-                rowNotes: [String?] = []) {
+                rowNotes: [String?] = [],
+                blockSpines: [(rows: Range<Int>, color: RGB)] = []) {
         self.cols = cols; self.rows = rows; self.lines = lines; self.graphemes = graphemes; self.palette = palette
         self.cursor = cursor; self.cursorShape = cursorShape; self.focused = focused; self.preedit = preedit
         self.selection = selection
         self.searchMatches = searchMatches
         self.currentSearchMatch = currentSearchMatch
         self.rowNotes = rowNotes
+        self.blockSpines = blockSpines
         self.hoveredLink = hoveredLink
     }
 }
@@ -259,6 +264,17 @@ public final class Renderer {
                         }
                     }
                 }
+            }
+
+            // A command's spine, drawn in the left padding: it says "these rows belong together"
+            // without taking a column of text or touching a cell. Nothing about the grid changes,
+            // which is what lets vim and htop keep behaving exactly as they did.
+            for spine in f.blockSpines {
+                guard !spine.rows.isEmpty else { continue }
+                let top = Float(padding + spine.rows.lowerBound * m.height)
+                let height = Float(spine.rows.count * m.height)
+                let x = Float(max(0, padding - 6))
+                instances.append(rect(x, top, 2, height, spine.color))
             }
 
             // Right-aligned notes: how long a command took, on the command's own row, dim enough

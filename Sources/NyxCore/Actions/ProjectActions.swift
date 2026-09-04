@@ -132,3 +132,127 @@ public struct ProjectApprovals: Equatable {
         return path
     }
 }
+
+/// What a directory's `.nyx` file may do right now.
+///
+/// The whole security boundary lives in this type. Only `.approved` carries actions that may run,
+/// appear as a button or reach the palette; `.changed` and `.unseen` carry theirs as something to
+/// *show* a user who has not agreed to them yet, and there is no accessor that hands those to a
+/// runner. Cloning a repository puts a file on disk and nothing else.
+public enum ProjectActionsState: Equatable {
+    /// No `.nyx` here, or one that defines nothing worth offering.
+    case none
+    /// Approved for exactly this content.
+    case approved(actions: [QuickAction], digest: String)
+    /// This directory was approved before, for content that has since changed -- an edit, or a
+    /// `git pull` that brought one in. The user is told that, not asked afresh: "these changed" is
+    /// a different question from "this project wants to add actions".
+    case changed(pending: ProjectActions)
+    /// Never approved here.
+    case unseen(pending: ProjectActions)
+
+    /// The actions that may actually run. Empty for every state but `.approved`.
+    ///
+    /// One accessor, so "is this allowed to run" has exactly one answer and a caller cannot reach
+    /// past it to the pending list by accident.
+    public var runnableActions: [QuickAction] {
+        guard case .approved(let actions, _) = self else { return [] }
+        return actions
+    }
+
+    /// The actions to show the user for review, approved or not. Showing is not running.
+    public var actionsToShow: [QuickAction] {
+        switch self {
+        case .none: return []
+        case .approved(let actions, _): return actions
+        case .changed(let pending), .unseen(let pending): return pending.actions
+        }
+    }
+
+    /// The digest the user would be approving.
+    public var digest: String? {
+        switch self {
+        case .none: return nil
+        case .approved(_, let digest): return digest
+        case .changed(let pending), .unseen(let pending): return pending.digest
+        }
+    }
+
+    /// Whether the user has to be asked something before any of this can be used.
+    public var needsApproval: Bool {
+        switch self {
+        case .changed, .unseen: return true
+        case .none, .approved: return false
+        }
+    }
+}
+
+/// Deciding what a directory's project file is allowed to do, and what to say about it.
+public enum ProjectActionsGate {
+    /// The state of `directory`, given the `.nyx` file found there (nil when there is none) and
+    /// what the user has approved.
+    ///
+    /// A file that parses to no actions is `.none`: a bar offering to approve a list of nothing is
+    /// noise, and approving it would grant nothing. Note that this is decided *before* the
+    /// approval check, so an empty file cannot be used to get a bar in front of somebody.
+    public static func state(directory: String, fileContents: String?,
+                             approvals: ProjectApprovals) -> ProjectActionsState {
+        guard let fileContents else { return .none }
+        let project = ProjectActionsFile.parse(fileContents)
+        guard !project.actions.isEmpty else { return .none }
+
+        if approvals.isApproved(directory: directory, digest: project.digest) {
+            return .approved(actions: project.actions, digest: project.digest)
+        }
+        if approvals.wasApprovedForDifferentContent(directory: directory, digest: project.digest) {
+            return .changed(pending: project)
+        }
+        return .unseen(pending: project)
+    }
+
+    /// What the bar says. Names the directory, because a pane's working directory is not always
+    /// what the user thinks it is -- and because "some project wants to run things" is not a
+    /// question anybody can answer.
+    public static func barMessage(for state: ProjectActionsState, directory: String) -> String? {
+        let name = displayName(of: directory)
+        switch state {
+        case .none, .approved:
+            return nil
+        case .changed(let pending):
+            return "\(name) changed its actions (\(pending.actions.count)). "
+                + "They will not run until you look at them again."
+        case .unseen(let pending):
+            return "\(name) defines \(pending.actions.count) "
+                + "\(pending.actions.count == 1 ? "action" : "actions") for this terminal."
+        }
+    }
+
+    /// The commands themselves, one per line, for the review sheet.
+    ///
+    /// The user is shown what will actually run before they approve it. A name alone would be worse
+    /// than useless: a button called "Test" that runs `curl … | sh` is exactly the thing approval
+    /// exists to stop, and the name is chosen by the same file as the command.
+    public static func reviewText(_ actions: [QuickAction]) -> String {
+        actions.map { "\($0.name)  [\($0.kind.rawValue)]\n    \($0.command)" }
+            .joined(separator: "\n\n")
+    }
+
+    /// The last path component, or the path itself when that says nothing useful.
+    public static func displayName(of directory: String) -> String {
+        var path = directory
+        while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
+        let last = path.split(separator: "/").last.map(String.init) ?? path
+        return last.isEmpty ? path : last
+    }
+}
+
+public extension ProjectApprovals {
+    /// The record of what has been approved, kept beside the config file so `$NYX_CONFIG` moves
+    /// both together -- a user who points Nyx at another config directory is setting up another
+    /// Nyx, and would not expect it to inherit these.
+    static let fileName = "approved-projects"
+
+    static func path(besideConfigAt config: URL) -> URL {
+        config.deletingLastPathComponent().appendingPathComponent(fileName)
+    }
+}

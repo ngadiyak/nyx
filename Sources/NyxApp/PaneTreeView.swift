@@ -24,6 +24,9 @@ final class PaneTreeView: NSView {
     var onAnyPaneOutput: (() -> Void)?
     /// Any pane in this tree rang the bell, on the main queue.
     var onAnyPaneBell: (() -> Void)?
+    /// The focused pane's working directory, whenever it changes and whenever focus moves to a
+    /// pane with a different one. A project's actions belong to the pane you are looking at.
+    var onFocusedDirectoryChange: ((String) -> Void)?
 
     private(set) var focused: PaneID?
 
@@ -121,6 +124,10 @@ final class PaneTreeView: NSView {
         pane.onFocusRequested = { [weak self, id = pane.id] in self?.setFocus(id) }
         pane.onOutput = { [weak self] in self?.onAnyPaneOutput?() }
         pane.onBell = { [weak self] in self?.onAnyPaneBell?() }
+        pane.onWorkingDirectoryChange = { [weak self, id = pane.id] directory in
+            guard let self, self.focused == id else { return }
+            self.onFocusedDirectoryChange?(directory)
+        }
         panes[pane.id] = pane
         addSubview(pane)
     }
@@ -217,6 +224,11 @@ final class PaneTreeView: NSView {
             window?.makeFirstResponder(pane)
         }
         onFocusedTitleChange?(id.flatMap { titles[$0] } ?? "")
+        // Focus moving between panes moves between directories too, and the project bar belongs to
+        // the pane the user is looking at.
+        if let directory = id.flatMap({ panes[$0]?.workingDirectory }) {
+            onFocusedDirectoryChange?(directory)
+        }
     }
 
     /// The focus border says *which* pane has focus, so it is worth nothing when there is only one

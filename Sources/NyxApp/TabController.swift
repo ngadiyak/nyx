@@ -53,6 +53,9 @@ final class TabController: NSViewController, NSMenuItemValidation {
     private let tabBar = TabBarView(frame: .zero)
     private let paneContainer = NSView(frame: .zero)
     private var tabBarHeight: NSLayoutConstraint?
+    /// The strip that offers to show a project's actions. Never more than that until the user has
+    /// read them and approved the directory.
+    private let projectBar = ProjectActionsBar(frame: .zero)
 
     /// Where the first pane of the tab being created should start. The factory a `PaneTreeView`
     /// calls takes no arguments and the new tree has nobody to inherit from, so the directory
@@ -74,6 +77,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         paneContainer.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(tabBar)
+        root.addSubview(projectBar)
         root.addSubview(paneContainer)
         let height = tabBar.heightAnchor.constraint(equalToConstant: TabBarView.height)
         tabBarHeight = height
@@ -82,7 +86,10 @@ final class TabController: NSViewController, NSMenuItemValidation {
             tabBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             tabBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             height,
-            paneContainer.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            projectBar.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            projectBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            projectBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            paneContainer.topAnchor.constraint(equalTo: projectBar.bottomAnchor),
             paneContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             paneContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             paneContainer.bottomAnchor.constraint(equalTo: root.bottomAnchor),
@@ -96,8 +103,10 @@ final class TabController: NSViewController, NSMenuItemValidation {
         tabBar.onShowTabList = { [weak self] in self?.showTabList() }
         tabBar.onQuickAction = { [weak self] index in self?.performQuickAction(index) }
         tabBar.onAppearanceChange = { [weak self] in self?.appearanceChanged() }
+        projectBar.onReview = { [weak self] in self?.reviewProjectActions() }
+        projectBar.onIgnore = { [weak self] in self?.ignoreProjectActions() }
         tabBar.setColors(palette: Pane.resolvedPalette(for: config))
-        tabBar.setQuickActions(config.quickActions)
+        tabBar.setQuickActions(quickActions)
         view = root
         // The first tab exists before this view does, so the bar's state has to be caught up here
         // rather than only on the next change.
@@ -184,6 +193,10 @@ final class TabController: NSViewController, NSMenuItemValidation {
             self.indicator(self.tabs[index].indicator.afterBell(isSelected: index == self.selected),
                            forTabAt: index)
         }
+        tree.onFocusedDirectoryChange = { [weak self, weak tree] directory in
+            guard let self, let tree, self.index(of: tree) == self.selected else { return }
+            self.workingDirectoryChanged(directory)
+        }
     }
 
     private func index(of tree: PaneTreeView) -> Int? {
@@ -257,6 +270,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
         tab.panes.onFocusedTitleChange = nil
         tab.panes.onAnyPaneOutput = nil
         tab.panes.onAnyPaneBell = nil
+        tab.panes.onFocusedDirectoryChange = nil
         tab.panes.removeFromSuperview()
     }
 
@@ -649,7 +663,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
         let bindings = KeyBindingTable(user: config.keybinds)
         let items = PaletteSource.items(actions: ActionCatalog.allMenuActions,
                                         chord: { bindings.binding(for: $0)?.displayName },
-                                        quickActions: config.quickActions.map {
+                                        quickActions: quickActions.map {
                                             ($0, QuickActionRunner.shared.isRunning($0))
                                         },
                                         themes: Themes.builtin.keys.sorted(),
@@ -699,8 +713,12 @@ final class TabController: NSViewController, NSMenuItemValidation {
     /// The quick actions are the user's own buttons; the runner owns what they do, including which
     /// background ones are alive.
     private func performQuickAction(_ index: Int) {
-        guard config.quickActions.indices.contains(index) else { return }
-        QuickActionRunner.shared.perform(config.quickActions[index], in: self, pane: focusedPane)
+        // Resolved against the combined list *now* rather than against a copy taken when the bar
+        // was drawn: a project's actions leave the list the moment its directory stops being the
+        // current one, and an index into a stale list would run the wrong command.
+        let actions = quickActions
+        guard actions.indices.contains(index) else { return }
+        QuickActionRunner.shared.perform(actions[index], in: self, pane: focusedPane)
     }
 
     /// Centred horizontally over the panes and pinned near the top, which is where every command
@@ -714,6 +732,118 @@ final class TabController: NSViewController, NSMenuItemValidation {
                                y: area.maxY - height - min(60, area.height / 8),
                                width: width, height: height)
         overlay.needsLayout = true
+    }
+
+    // MARK: - A project's own actions
+    //
+    // **The approval is the security boundary.** Nothing from a `.nyx` file may run, appear as a
+    // button, or reach the palette before the user has been shown the commands and approved that
+    // directory -- cloning a repository must not be enough. `ProjectActionsState.runnableActions`
+    // in NyxCore is the one place that decides, and `projectActions` below is the only thing that
+    // reaches the bar or the palette.
+
+    /// The directory the selected tab's focused pane is in, as last reported.
+    private var projectDirectory: String?
+    /// What that directory's `.nyx` file is allowed to do. `.none` until one is found.
+    private var projectState: ProjectActionsState = .none
+    /// Directories the user pressed Ignore for. Session-scoped on purpose: Ignore is "not now", and
+    /// recording it in the approvals file would make it indistinguishable from a decision.
+    private var ignoredProjectDirectories: Set<String> = []
+
+    /// Every button the bar shows: the user's own, then the current project's -- and the project's
+    /// only while its directory is current and approved.
+    private var quickActions: [QuickAction] { config.quickActions + projectState.runnableActions }
+
+    /// A pane announced a new working directory. Reads that directory's `.nyx` file, if any, and
+    /// asks NyxCore what it is allowed to do.
+    private func workingDirectoryChanged(_ directory: String) {
+        guard directory != projectDirectory else { return }
+        projectDirectory = directory
+        refreshProjectActions()
+    }
+
+    private func refreshProjectActions() {
+        guard let directory = projectDirectory else {
+            projectState = .none
+            projectActionsChanged()
+            return
+        }
+        let contents = ProjectApprovalsStore.shared.projectFile(in: directory)
+        projectState = ProjectActionsGate.state(directory: directory, fileContents: contents,
+                                                approvals: ProjectApprovalsStore.shared.load())
+        projectActionsChanged()
+    }
+
+    private func projectActionsChanged() {
+        tabBar.setQuickActions(quickActions)
+        refreshBar()
+        let directory = projectDirectory ?? ""
+        guard projectState.needsApproval, !ignoredProjectDirectories.contains(directory),
+              let message = ProjectActionsGate.barMessage(for: projectState, directory: directory)
+        else {
+            projectBar.hide()
+            return
+        }
+        if case .changed = projectState {
+            projectBar.show(message: message, changed: true)
+        } else {
+            projectBar.show(message: message, changed: false)
+        }
+    }
+
+    /// Shows the commands themselves and offers to approve them.
+    ///
+    /// The commands, not the names: a button called "Test" that runs `curl … | sh` is exactly what
+    /// approval exists to stop, and the name is chosen by the same file as the command.
+    private func reviewProjectActions() {
+        guard let window = view.window, let directory = projectDirectory,
+              let digest = projectState.digest, projectState.needsApproval else { return }
+        let actions = projectState.actionsToShow
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Run these actions from \(ProjectActionsGate.displayName(of: directory))?"
+        alert.informativeText = "Approving adds them as buttons in this terminal. They come from a "
+            + "file in that directory, so anyone who can write there chooses what they do. "
+            + "Approval covers exactly this content: an edit, or a pull that brings one in, asks "
+            + "you again.\n\n\(directory)"
+        alert.accessoryView = TabController.reviewView(for: actions)
+        alert.addButton(withTitle: "Approve")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            guard ProjectApprovalsStore.shared.approve(directory: directory, digest: digest) else {
+                self.projectBar.show(message: "Could not record the approval; check "
+                    + ProjectApprovalsStore.path.path, changed: true)
+                return
+            }
+            // Re-read rather than trusting what was on screen: the file may have changed while the
+            // sheet was up, and approving what the user saw is only honest if it is still there.
+            self.refreshProjectActions()
+        }
+    }
+
+    /// A scrollable list of what would run. Selectable, because the first thing anyone does with a
+    /// command they distrust is copy it somewhere to look at properly.
+    private static func reviewView(for actions: [QuickAction]) -> NSView {
+        let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 140))
+        text.string = ProjectActionsGate.reviewText(actions)
+        text.isEditable = false
+        text.isSelectable = true
+        text.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        text.textContainerInset = NSSize(width: 4, height: 4)
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 140))
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.documentView = text
+        return scroll
+    }
+
+    /// "Not now": the bar goes for this directory until the app is restarted. Deliberately not
+    /// written to the approvals file -- a refusal recorded there would be indistinguishable from a
+    /// decision, and there would be no way to change your mind.
+    private func ignoreProjectActions() {
+        if let directory = projectDirectory { ignoredProjectDirectories.insert(directory) }
+        projectBar.hide()
     }
 
     // MARK: - Saving the scrollback
@@ -814,7 +944,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
         for tab in tabs { tab.panes.apply(newConfig) }
         tabBar.setColors(palette: Pane.resolvedPalette(for: newConfig))
         // A new `quick` line gets its button here, without a restart.
-        tabBar.setQuickActions(newConfig.quickActions)
+        tabBar.setQuickActions(quickActions)
         refreshBar()
     }
 

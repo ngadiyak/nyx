@@ -27,6 +27,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// The program rang the bell, delivered on the main queue and independently of what
     /// `config.bell` does about it here.
     var onBell: (() -> Void)?
+    /// The pane's working directory changed, on the main queue. Reported from the shell's own
+    /// `OSC 7` where there is one, and from the process otherwise -- a `cd` in a shell with no
+    /// integration is still a `cd`.
+    var onWorkingDirectoryChange: ((String) -> Void)?
 
     /// Only ever touched on the main thread, where every pane is created.
     private static var nextID = 0
@@ -418,6 +422,24 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         resumeLink()
     }
 
+    /// The directory last reported, so an unchanged one costs nothing and a project file is not
+    /// re-read on every prompt.
+    private var lastReportedDirectory: String?
+
+    private func reportWorkingDirectory(_ path: String) {
+        guard !path.isEmpty, path != lastReportedDirectory else { return }
+        lastReportedDirectory = path
+        onWorkingDirectoryChange?(path)
+    }
+
+    /// Re-reads the directory from the process when the shell does not announce one. Called from
+    /// the same coalesced check that notices a command finished -- which is exactly when a `cd`
+    /// has just happened -- rather than on a timer of its own.
+    private func checkWorkingDirectory() {
+        guard let directory = workingDirectory else { return }
+        reportWorkingDirectory(directory)
+    }
+
     /// Marks the frame stale from any thread and wakes the display link.
     private func markDirty() {
         dirty.set()
@@ -576,7 +598,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
         case .colorsChanged: markDirty()
-        case .cwdChanged, .notification: break
+        case .cwdChanged(let path): reportWorkingDirectory(path)
+        case .notification: break
         }
     }
 
@@ -1409,6 +1432,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self else { return }
             self.commandCheckScheduled = false
+            self.checkWorkingDirectory()
             self.checkForFinishedCommand()
         }
     }

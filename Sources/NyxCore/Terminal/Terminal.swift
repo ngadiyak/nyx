@@ -60,6 +60,11 @@ public final class Terminal: TerminalActions {
     /// A resize deliberately does not bump it. Reflow moves content between rows but keeps it, so a
     /// selection made before a resize still points at the text the user chose.
     public private(set) var scrollbackGeneration: UInt64 = 0
+    /// When the running command began, for the duration written on its prompt row at `D`.
+    private var commandStartedAt: Double?
+    /// Injectable so a test can run a command in a controlled number of seconds rather than in
+    /// however long the test itself took.
+    public var now: () -> Double = { Date.timeIntervalSinceReferenceDate }
     public var pen = Pen() { didSet { penCellDirty = true } }
     /// Cache of `pen.makeCell()`, rebuilt lazily whenever `pen` changes. Avoids rebuilding the
     /// pen-derived `Cell` template on every printed character, which is the common case in `put`.
@@ -1067,6 +1072,10 @@ public final class Terminal: TerminalActions {
             shellEmitsPromptMarks = true
             // `D;<status>` reports how the command ended. Without it a failed command is
             // indistinguishable from one that succeeded, which is most of the point of the mark.
+            // `C`: the command starts running. The clock starts here rather than at the prompt, so
+            // a terminal left open overnight does not report the first command of the morning as a
+            // nine-hour job.
+            if mark == 4 { commandStartedAt = now() }
             if mark == 8 {
                 let fields = rest.split(separator: ";", omittingEmptySubsequences: false)
                 let status = fields.count > 1 ? Int32(fields[1]) : nil
@@ -1075,6 +1084,10 @@ public final class Terminal: TerminalActions {
                 // mark. Once per command, walking back over its own output -- rather than forward
                 // over the whole buffer on every frame, which is what searching at draw time cost.
                 recordCommandStatus(status ?? 0)
+                if let started = commandStartedAt {
+                    recordCommandDuration(now() - started)
+                    commandStartedAt = nil
+                }
             }
         default:
             break
@@ -1161,6 +1174,29 @@ public final class Terminal: TerminalActions {
     /// Walks back from the cursor to the prompt this command started at and records how it ended.
     ///
     /// Bounded by the command's own output, and paid once when the command finishes.
+    private func recordCommandDuration(_ seconds: Double) {
+        withOwningPromptRow { row in
+            if row < scrollback.count { scrollback[row].commandDuration = seconds }
+            else { screen.rows[row - scrollback.count].commandDuration = seconds }
+        }
+    }
+
+    /// Runs `body` with the absolute row of the prompt the finishing command belongs to.
+    private func withOwningPromptRow(_ body: (Int) -> Void) {
+        let cursorAbsolute = scrollback.count + screen.cursor.y
+        var row = cursorAbsolute
+        while row >= 0 {
+            let flags = row < scrollback.count
+                ? scrollback[row].promptMark
+                : screen.rows[row - scrollback.count].promptMark
+            if flags & 1 != 0 && row != cursorAbsolute {
+                body(row)
+                return
+            }
+            row -= 1
+        }
+    }
+
     private func recordCommandStatus(_ status: Int32) {
         let cursorAbsolute = scrollback.count + screen.cursor.y
         var row = cursorAbsolute

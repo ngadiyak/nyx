@@ -25,6 +25,11 @@ public struct Row: Equatable {
     /// command share a row and there is no way to say where one ends -- which is what "edit what I
     /// have typed" needs to know.
     public var inputStartColumn: Int?
+    /// How long the command whose prompt is on this row took, in seconds, written when its `D`
+    /// arrives. `CommandWatcher` times only the command that is running and throws the number away
+    /// after the notification, so without this the terminal knows how long everything took and can
+    /// tell you about none of it.
+    public var commandDuration: Double?
     /// The exit status from `OSC 133 ; D ; <status>`, on the row carrying the D mark. nil when the
     /// shell reported the end of a command without a status, or on any other row.
     public var exitStatus: Int32?
@@ -57,6 +62,7 @@ public struct Row: Equatable {
         exitStatus = nil
         commandStatus = nil
         inputStartColumn = nil
+        commandDuration = nil
     }
 
     public var isBlank: Bool { cells.allSatisfy { $0.content == 0 && $0.bg == .default } }

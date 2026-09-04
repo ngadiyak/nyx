@@ -64,3 +64,23 @@ public extension Terminal {
         return marks
     }
 }
+
+public extension Terminal {
+    /// How long each visible command took, ready to draw at the right edge of its own row.
+    ///
+    /// Only the rows on screen are looked at, and only commands slow enough to be worth a number:
+    /// `3ms` beside every `cd` is noise that hides the one figure anybody cares about.
+    func durationNotes(rows visibleRows: Int, threshold: Double = 0.5) -> [String?] {
+        var notes = [String?](repeating: nil, count: max(0, visibleRows))
+        guard visibleRows > 0 else { return notes }
+        let top = max(0, viewportTopRow)
+        for index in 0..<visibleRows {
+            guard let line = absoluteRow(top + index),
+                  PromptMarks(rawValue: line.promptMark).contains(.promptStart),
+                  let seconds = line.commandDuration,
+                  DurationText.isWorthShowing(seconds, threshold: threshold) else { continue }
+            notes[index] = DurationText.short(seconds)
+        }
+        return notes
+    }
+}

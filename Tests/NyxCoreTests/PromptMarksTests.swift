@@ -234,3 +234,85 @@ private func session() -> Terminal {
     #expect(t.inputOffset(atAbsoluteRow: 0, column: 5) == nil)
     #expect(t.currentInputCursorOffset == nil)
 }
+
+// MARK: - Duration
+
+/// The terminal knew how long everything took and could tell you about none of it: the timer lived
+/// only for the running command and was thrown away after the notification.
+@Test func aCommandsDurationIsRecordedOnItsPromptRow() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 50)
+    var clock = 100.0
+    t.now = { clock }
+    t.feed(mark("A") + "$ " + mark("B") + "build\r\n" + mark("C"))
+    clock = 102.5
+    t.feed("done\r\n" + mark("D", 0))
+
+    let region = try! #require(t.command(containingAbsoluteRow: 0))
+    #expect(region.duration != nil)
+    #expect(abs((region.duration ?? 0) - 2.5) < 0.001)
+}
+
+/// Timed from when the command started running, not from when the prompt appeared -- otherwise a
+/// terminal left open overnight reports the first command of the morning as a nine-hour job.
+@Test func theClockStartsWhenTheCommandDoesNotWhenThePromptAppears() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 50)
+    var clock = 0.0
+    t.now = { clock }
+    t.feed(mark("A") + "$ ")
+    clock = 30_000            // the user went home
+    t.feed(mark("B") + "ls\r\n" + mark("C"))
+    clock = 30_001
+    t.feed(mark("D", 0))
+
+    let region = try! #require(t.command(containingAbsoluteRow: 0))
+    #expect(abs((region.duration ?? 0) - 1) < 0.001)
+}
+
+@Test func aRunningCommandHasNoDurationYet() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 50)
+    t.feed(mark("A") + "$ " + mark("B") + "build\r\n" + mark("C") + "working\r\n")
+    #expect(try! #require(t.command(containingAbsoluteRow: 0)).duration == nil)
+}
+
+// MARK: - Writing a duration down
+
+/// The difference between 4ms and 400ms is the whole reason to show a number; "0.0s" throws it away.
+@Test func subSecondTimesAreGivenInMilliseconds() {
+    #expect(DurationText.short(0.004) == "4ms")
+    #expect(DurationText.short(0.4) == "400ms")
+}
+
+@Test func longerTimesGetCoarserAsTheyGrow() {
+    #expect(DurationText.short(2.46) == "2.5s")
+    #expect(DurationText.short(42) == "42s")
+    #expect(DurationText.short(125) == "2m 5s")
+    #expect(DurationText.short(7300) == "2h 1m")
+}
+
+@Test func nonsenseDurationsProduceNothing() {
+    #expect(DurationText.short(-1).isEmpty)
+    #expect(DurationText.short(.nan).isEmpty)
+}
+
+/// `3ms` beside every `cd` is noise that hides the number anyone actually cares about.
+@Test func onlyCommandsThatTookLongEnoughAreWorthShowing() {
+    #expect(!DurationText.isWorthShowing(0.003))
+    #expect(DurationText.isWorthShowing(2.5))
+}
+
+/// The status already survived a resize; the duration has to travel with it, or every command
+/// forgets how long it took the moment the window is made narrower.
+@Test func theDurationSurvivesAResize() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 100)
+    var clock = 0.0
+    t.now = { clock }
+    t.feed(mark("A") + "$ a command long enough to wrap when the window narrows" + mark("B"))
+    t.feed("\r\n" + mark("C"))
+    clock = 7
+    t.feed(mark("D", 0))
+    t.resize(cols: 20, rows: 6)
+
+    let row = try! #require((0..<t.totalRows).first { t.promptMarks(atAbsoluteRow: $0).contains(.promptStart) })
+    let region = try! #require(t.command(containingAbsoluteRow: row))
+    #expect(abs((region.duration ?? 0) - 7) < 0.001)
+}

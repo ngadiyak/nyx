@@ -76,12 +76,13 @@ extension Terminal {
         let cursorPhysical = scrollback.count + s.cursor.y
 
         // 2. Logical lines.
-        struct Line { var cells: [Cell]; var mark: UInt8; var exitStatus: Int32?; var commandStatus: Int32? }
+        struct Line { var cells: [Cell]; var mark: UInt8; var exitStatus: Int32?; var commandStatus: Int32?; var commandDuration: Double? }
         var lines: [Line] = []
         var current: [Cell] = []
         var currentMark: UInt8 = 0
         var currentStatus: Int32?
         var currentCommandStatus: Int32?
+        var currentDuration: Double?
         var cursorLine = 0
         var cursorOffset = 0
         for (i, row) in physical.enumerated() {
@@ -91,6 +92,7 @@ extension Terminal {
             currentMark |= row.promptMark
             if currentStatus == nil { currentStatus = row.exitStatus }
             if currentCommandStatus == nil { currentCommandStatus = row.commandStatus }
+            if currentDuration == nil { currentDuration = row.commandDuration }
             if i == cursorPhysical {
                 cursorLine = lines.count
                 cursorOffset = current.count + s.cursor.x
@@ -102,11 +104,13 @@ extension Terminal {
                 if lines.count == cursorLine && i >= cursorPhysical { keep = max(keep, cursorOffset) }
                 current.removeSubrange(keep...)
                 lines.append(Line(cells: current, mark: currentMark, exitStatus: currentStatus,
-                                  commandStatus: currentCommandStatus))
+                                  commandStatus: currentCommandStatus,
+                                  commandDuration: currentDuration))
                 current = []
                 currentMark = 0
                 currentStatus = nil
                 currentCommandStatus = nil
+                currentDuration = nil
             }
         }
 
@@ -119,6 +123,7 @@ extension Terminal {
             row.promptMark = line.mark
             row.exitStatus = line.exitStatus
             row.commandStatus = line.commandStatus
+            row.commandDuration = line.commandDuration
             var x = 0
             var placedCursor = false
             var index = 0

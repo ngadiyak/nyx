@@ -38,12 +38,16 @@ public struct CommandRegion: Equatable {
     public let endRow: Int
     /// nil when the command is still running, or the shell reported no status.
     public let exitStatus: Int32?
+    /// How long it ran, in seconds. nil while it is still running, or without shell integration.
+    public let duration: Double?
 
-    public init(promptRow: Int, outputStart: Int?, endRow: Int, exitStatus: Int32?) {
+    public init(promptRow: Int, outputStart: Int?, endRow: Int, exitStatus: Int32?,
+                duration: Double? = nil) {
         self.promptRow = promptRow
         self.outputStart = outputStart
         self.endRow = endRow
         self.exitStatus = exitStatus
+        self.duration = duration
     }
 
     /// The rows holding just the output, empty when the command produced none.
@@ -55,6 +59,34 @@ public struct CommandRegion: Equatable {
     /// A command the shell reported a non-zero status for. `nil` status is not failure -- it is a
     /// command still running, or a shell that reports `D` without one.
     public var failed: Bool { (exitStatus ?? 0) != 0 }
+}
+
+/// How a duration is written where a person will read it.
+///
+/// Kept out of the views because every place that shows one -- the gutter, the sticky strip, a fold
+/// placeholder, a block header -- has to write it the same way, and because "0.0s" and "2m 3s" are
+/// decisions worth a test rather than a guess in three files.
+public enum DurationText {
+    /// Short enough to sit in a gutter tooltip or a one-row strip.
+    ///
+    /// Sub-second times are given in milliseconds: the difference between 4 ms and 400 ms is the
+    /// whole point of showing it, and "0.0s" versus "0.4s" throws that away.
+    public static func short(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "" }
+        if seconds < 1 { return "\(Int((seconds * 1000).rounded()))ms" }
+        if seconds < 10 { return String(format: "%.1fs", seconds) }
+        if seconds < 60 { return "\(Int(seconds.rounded()))s" }
+        let minutes = Int(seconds) / 60
+        let rest = Int(seconds) % 60
+        if minutes < 60 { return "\(minutes)m \(rest)s" }
+        return "\(minutes / 60)h \(minutes % 60)m"
+    }
+
+    /// Whether a command took long enough to be worth mentioning at all. Writing `3ms` beside every
+    /// `cd` is noise that makes the number people do care about harder to see.
+    public static func isWorthShowing(_ seconds: Double, threshold: Double = 0.5) -> Bool {
+        seconds.isFinite && seconds >= threshold
+    }
 }
 
 public extension Terminal {
@@ -126,7 +158,7 @@ public extension Terminal {
             }
         }
         return CommandRegion(promptRow: start, outputStart: outputStart, endRow: max(start, end),
-                             exitStatus: status)
+                             exitStatus: status, duration: absoluteRow(start)?.commandDuration)
     }
 
     /// The most recently finished command -- what "copy the last command's output" means.

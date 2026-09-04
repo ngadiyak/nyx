@@ -477,6 +477,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let focused = (window?.isKeyWindow ?? false) && window?.firstResponder === self
         let preedit = markedText.isEmpty ? nil : markedText
         var gutterMarks: [GutterMark?] = []
+        var notes: [String?] = []
         var sticky: (text: String, failed: Bool, row: Int)?
         let frame: RenderFrame = session.withTerminal { t in
             // Before anything reads the selection: a cleared scrollback, a reset or an
@@ -555,6 +556,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // Read here rather than on a timer: one cheap pass over the visible rows, and it is
             // guaranteed to describe the same viewport as the frame being drawn.
             gutterMarks = t.gutterMarks(rows: t.rows)
+            notes = t.durationNotes(rows: t.rows)
             // Same pass, same lock, same viewport: the strip names the command whose output is on
             // screen *in this frame*, and reading it anywhere else would let the two disagree.
             // Costs one flag test for a shell with no integration, which is the whole reason
@@ -570,7 +572,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
                                cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit,
                                selection: selected, searchMatches: matches, currentSearchMatch: current,
-                               hoveredLink: hovered)
+                               hoveredLink: hovered, rowNotes: notes)
         }
         gutter.update(marks: gutterMarks, palette: frame.palette,
                       cellHeight: cellSizePoints.height, topPadding: padding)

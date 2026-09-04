@@ -24,16 +24,24 @@ public struct RenderFrame {
     /// The link under the pointer, underlined on hover. One range per visible row because a token
     /// never spans rows.
     public var hoveredLink: [Range<Int>?]
+    /// Short text pinned to the right edge of a visible row, drawn dim and behind nothing.
+    ///
+    /// How long a command took belongs *on* the command, visible without hovering, folding or
+    /// scrolling. A number that can only be reached by doing something first is a number nobody
+    /// reads. Indexed like `selection`; nil on rows with nothing to say.
+    public var rowNotes: [String?]
 
     public init(cols: Int, rows: Int, lines: [Row], graphemes: [String], palette: Palette,
                 cursor: Cursor?, cursorShape: CursorShape, focused: Bool, preedit: String?,
                 selection: [Range<Int>?] = [], searchMatches: [[Range<Int>]] = [],
-                currentSearchMatch: [Range<Int>?] = [], hoveredLink: [Range<Int>?] = []) {
+                currentSearchMatch: [Range<Int>?] = [], hoveredLink: [Range<Int>?] = [],
+                rowNotes: [String?] = []) {
         self.cols = cols; self.rows = rows; self.lines = lines; self.graphemes = graphemes; self.palette = palette
         self.cursor = cursor; self.cursorShape = cursorShape; self.focused = focused; self.preedit = preedit
         self.selection = selection
         self.searchMatches = searchMatches
         self.currentSearchMatch = currentSearchMatch
+        self.rowNotes = rowNotes
         self.hoveredLink = hoveredLink
     }
 }
@@ -249,6 +257,34 @@ public final class Renderer {
                         } else if f.cursorShape == .underline {
                             decorations.append(rect(px, py + ch - thick * 2, w, thick * 2, cc))
                         }
+                    }
+                }
+            }
+
+            // Right-aligned notes: how long a command took, on the command's own row, dim enough
+            // to ignore and present enough to read without doing anything first.
+            for (y, note) in f.rowNotes.enumerated() {
+                guard let note, !note.isEmpty, y < f.rows else { continue }
+                let characters = Array(note)
+                let start = f.cols - characters.count
+                guard start > 0 else { continue }
+                // Never over the text: a note that overwrites the end of a long command line is
+                // worse than no note at all.
+                let row = y < f.lines.count ? f.lines[y] : nil
+                let lastUsed = row.map { line -> Int in
+                    var last = -1
+                    for (column, cell) in line.cells.enumerated() where cell.content != 0 { last = column }
+                    return last
+                } ?? -1
+                guard lastUsed < start - 1 else { continue }
+
+                for (offset, character) in characters.enumerated() {
+                    let px = Float(padding + (start + offset) * m.width), py = Float(padding + y * m.height)
+                    let text = String(character)
+                    let glyphText: GlyphText = text.unicodeScalars.count == 1
+                        ? .scalar(text.unicodeScalars.first!.value) : .cluster(text)
+                    if let g = atlas.glyph(for: GlyphKey(text: glyphText, bold: false, italic: false)) {
+                        glyphs.append(glyphQuad(g, cellX: px, cellY: py, color: f.palette.noteForeground))
                     }
                 }
             }

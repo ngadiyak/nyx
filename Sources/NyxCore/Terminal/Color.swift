@@ -132,6 +132,11 @@ public struct Palette: Equatable {
     /// text, which is what makes them read as marked rather than as selected.
     public var searchMatchForeground: RGB { background }
 
+    /// Text for a note the terminal itself writes beside a row -- how long a command took. Blended
+    /// halfway to the background: it has to be readable at a glance and must never compete with
+    /// the output, which is the thing the user is actually reading.
+    public var noteForeground: RGB { RGB.blend(foreground, into: background, amount: 0.45) }
+
     /// Mixes `colour` into `background`. `amount` is how much of the background wins, so 0 is the
     /// colour untouched and 1 is the background.
     static func blendedTowardBackground(_ colour: RGB, _ background: RGB, _ amount: Double) -> RGB {

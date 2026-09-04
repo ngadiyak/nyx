@@ -143,3 +143,42 @@ private func session() -> Terminal {
     t.feed("\u{1b}]133;A\u{07}$ build\r\n\u{1b}]133;C\u{07}working\r\n")
     #expect(t.gutterMarks(rows: 8)[0] == .running)
 }
+
+// MARK: - Durations on the row
+
+/// The number has to be on screen without hovering, folding or scrolling. A figure you can only
+/// reach by doing something first is a figure nobody reads.
+@Test func aSlowCommandGetsItsDurationOnItsOwnRow() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 50)
+    var clock = 0.0
+    t.now = { clock }
+    t.feed("\u{1b}]133;A\u{07}$ build\r\n\u{1b}]133;C\u{07}")
+    clock = 2.4
+    t.feed("done\r\n\u{1b}]133;D;0\u{07}")
+
+    let notes = t.durationNotes(rows: 6)
+    #expect(notes[0] == "2.4s")
+    #expect(notes[1] == nil)      // output rows say nothing
+}
+
+/// `3ms` beside every `cd` is noise that hides the one figure anybody cares about.
+@Test func aFastCommandGetsNoNumber() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 50)
+    var clock = 0.0
+    t.now = { clock }
+    t.feed("\u{1b}]133;A\u{07}$ cd\r\n\u{1b}]133;C\u{07}")
+    clock = 0.003
+    t.feed("\u{1b}]133;D;0\u{07}")
+    #expect(t.durationNotes(rows: 6).allSatisfy { $0 == nil })
+}
+
+@Test func aRunningCommandHasNoNumberYet() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 50)
+    t.feed("\u{1b}]133;A\u{07}$ build\r\n\u{1b}]133;C\u{07}working\r\n")
+    #expect(t.durationNotes(rows: 6).allSatisfy { $0 == nil })
+}
+
+@Test func withoutShellIntegrationNoRowSaysAnything() {
+    let t = makeTerminal(cols: 40, rows: 6).run("$ build\r\ndone")
+    #expect(t.durationNotes(rows: 6).allSatisfy { $0 == nil })
+}

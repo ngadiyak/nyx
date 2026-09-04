@@ -1,5 +1,28 @@
 import Foundation
 
+/// What the confirmation sheet says. Assembled in `NyxCore` so the wording is testable and the
+/// view only has to place three strings and two buttons.
+public struct PasteConfirmation: Equatable {
+    public let title: String
+    public let detail: String
+    /// The first line, made safe to display.
+    public let preview: String
+    /// How many lines the paste would run.
+    public let lineCount: Int
+
+    public init(title: String, detail: String, preview: String, lineCount: Int) {
+        self.title = title
+        self.detail = detail
+        self.preview = preview
+        self.lineCount = lineCount
+    }
+
+    /// The line under the preview: how much is coming, when there is more than the one line shown.
+    public var summary: String {
+        lineCount > 1 ? "\(lineCount) lines, first shown above." : ""
+    }
+}
+
 /// Why a paste is worth stopping to look at, or `nil` when it is not.
 public enum PasteWarning: Equatable {
     /// More than one line, so pressing nothing else will run every one of them.
@@ -61,6 +84,68 @@ public enum PasteGuard {
     /// The first line, for showing the user what is about to run.
     public static func firstLine(of text: String) -> String {
         String(text.prefix { $0 != "\n" && $0 != "\r" && $0 != "\r\n" })
+    }
+
+    /// How much of the first line the sheet shows. Past this the line is quoting itself rather
+    /// than informing anyone, and a dialog wide enough for 512 characters cannot be read at all.
+    public static let previewLimit = 160
+
+    /// Everything the confirmation needs to say, decided here rather than in the view: what the
+    /// paste is, why it is worth stopping for, and the text itself.
+    ///
+    /// The preview is the point. A dialog that says "this paste has 3 lines" and shows none of
+    /// them teaches the user to press the confirming button without reading, which is worse than
+    /// having no dialog -- so the first line is always shown, control characters and all, with the
+    /// unprintable ones made visible rather than silently dropped.
+    public static func confirmation(for warning: PasteWarning, text: String) -> PasteConfirmation {
+        let lines = lineCount(text)
+        let preview = printablePreview(of: firstLine(of: text))
+        switch warning {
+        case .multipleLines(let count):
+            return PasteConfirmation(
+                title: "Paste and run \(count) commands?",
+                detail: "The shell is not in bracketed-paste mode, so every line runs the moment "
+                    + "it arrives. You will not get a chance to read them first.",
+                preview: preview,
+                lineCount: count)
+        case .veryLong(let characters):
+            return PasteConfirmation(
+                title: "Paste \(characters) characters?",
+                detail: "It is one line, and longer than the window -- what runs may not be what "
+                    + "you can see.",
+                preview: preview,
+                lineCount: lines)
+        case .containsControlCharacters:
+            return PasteConfirmation(
+                title: "Paste text containing control characters?",
+                detail: "It carries characters the shell acts on rather than prints. A paste like "
+                    + "this can rewrite what is on screen, so what you read need not be what runs.",
+                preview: preview,
+                lineCount: lines)
+        }
+    }
+
+    /// The first line with its control characters shown as `^X` and `\u{2400}`-style escapes, cut
+    /// to `previewLimit` with an ellipsis. Never returns something a terminal would act on.
+    static func printablePreview(of line: String) -> String {
+        var out = ""
+        var truncated = false
+        for scalar in line.unicodeScalars {
+            if out.count >= previewLimit {
+                truncated = true
+                break
+            }
+            switch scalar.value {
+            // A caret escape, the way `cat -v` writes one: the control character's printable
+            // partner sixty-four positions up.
+            case 0x00...0x1F:
+                out += "^"
+                out.unicodeScalars.append(Unicode.Scalar(0x40 + scalar.value)!)
+            case 0x7F, 0x80...0x9F: out += "^?"
+            default: out.unicodeScalars.append(scalar)
+            }
+        }
+        return truncated ? out + "\u{2026}" : out
     }
 
     /// Control characters a shell acts on rather than prints. Escape is the one that matters: a

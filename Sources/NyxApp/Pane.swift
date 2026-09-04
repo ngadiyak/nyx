@@ -1278,15 +1278,72 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
+    /// ⌘V, the middle button, and the `paste` action.
+    ///
+    /// `PasteGuard` decides whether what is on the pasteboard is worth stopping for, given the
+    /// terminal's *own* bracketed-paste mode -- which is the whole protection, and is read from the
+    /// terminal rather than assumed. Nothing worth stopping for means the paste happens exactly as
+    /// it did before: one mode read and one write, no view work at all.
     @objc func paste(_ sender: Any?) {
-        guard var text = NSPasteboard.general.string(forType: .string) else { return }
-        text = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
+        guard let text = NSPasteboard.general.string(forType: .string) else { return }
         let bracketed = session.withTerminal { $0.modes.bracketedPaste }
+        guard let warning = PasteGuard.warning(for: text, bracketedPaste: bracketed) else {
+            performPaste(text, bracketed: bracketed)
+            return
+        }
+        confirmPaste(text, bracketed: bracketed, warning: warning)
+    }
+
+    private func performPaste(_ text: String, bracketed: Bool) {
+        let normalised = text.replacingOccurrences(of: "\r\n", with: "\r")
+            .replacingOccurrences(of: "\n", with: "\r")
         var bytes: [UInt8] = []
         if bracketed { bytes += Array("\u{1B}[200~".utf8) }
-        bytes += Array(text.utf8)
+        bytes += Array(normalised.utf8)
         if bracketed { bytes += Array("\u{1B}[201~".utf8) }
         send(bytes)
+    }
+
+    /// A sheet, never a modal alert: `runModal()` stops the run loop and with it every session in
+    /// every other tab and window -- the same rule `TabController.confirmClose` follows. A pane
+    /// with no window has nobody to ask, and an unanswerable question is answered "no".
+    private func confirmPaste(_ text: String, bracketed: Bool, warning: PasteWarning) {
+        guard let window else {
+            NSSound.beep()
+            return
+        }
+        let confirmation = PasteGuard.confirmation(for: warning, text: text)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = confirmation.title
+        alert.informativeText = confirmation.detail
+        alert.accessoryView = Pane.pastePreview(confirmation)
+        // "Paste" is first, so it is the default -- but the sheet itself is the interruption, and a
+        // user who reads the preview and presses ⏎ has still read it.
+        alert.addButton(withTitle: "Paste")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.performPaste(text, bracketed: bracketed)
+        }
+    }
+
+    /// The first line in a fixed-width font, with the line count under it. Selectable, because the
+    /// first thing anyone does with a paste they distrust is copy it somewhere to look at properly.
+    private static func pastePreview(_ confirmation: PasteConfirmation) -> NSView {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: confirmation.summary.isEmpty ? 40 : 58))
+        let field = NSTextField(wrappingLabelWithString: confirmation.preview)
+        field.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        field.isSelectable = true
+        field.frame = NSRect(x: 0, y: container.bounds.height - 40, width: 320, height: 40)
+        container.addSubview(field)
+        guard !confirmation.summary.isEmpty else { return container }
+        let summary = NSTextField(labelWithString: confirmation.summary)
+        summary.font = .systemFont(ofSize: 11)
+        summary.textColor = .secondaryLabelColor
+        summary.frame = NSRect(x: 0, y: 0, width: 320, height: 16)
+        container.addSubview(summary)
+        return container
     }
 
     /// `setZoom` recomputes `zoomOffset` from the clamped target rather than just incrementing it,

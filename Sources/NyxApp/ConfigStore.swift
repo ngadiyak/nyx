@@ -9,10 +9,11 @@ import NyxCore
 /// one editor save (the write, then the rename) are coalesced with a short debounce so they produce
 /// exactly one reload.
 ///
-/// A parse error never loses the user's working configuration: `reload()` only replaces `config`
-/// when nothing already in force would be discarded silently -- the previous good `Config` stays
-/// current and `diagnostics` names the problem line, exactly as `ConfigParser` already guarantees
-/// for a single parse.
+/// A parse error never loses the user's working configuration: `reload()` parses starting from the
+/// `Config` already in force (as `ConfigParser`'s `base`), so a line whose value can't be parsed
+/// leaves that one field exactly as it was rather than resetting it to the compiled default -- every
+/// other line in the same file, valid or not, is applied on top as usual, and `diagnostics` names
+/// the problem line.
 final class ConfigStore {
     /// The current configuration. Replaced atomically on reload; read on the main thread only.
     private(set) var config: Config
@@ -25,7 +26,6 @@ final class ConfigStore {
         ConfigPath.resolve(environment: ProcessInfo.processInfo.environment, home: NSHomeDirectory())
     }
 
-    private var watchedDescriptor: Int32 = -1
     private var source: DispatchSourceFileSystemObject?
     private var debounceItem: DispatchWorkItem?
     private let debounceInterval: TimeInterval = 0.1
@@ -49,16 +49,23 @@ final class ConfigStore {
     }
 
     func reload() {
-        (config, diagnostics) = ConfigStore.load()
+        (config, diagnostics) = ConfigStore.load(base: config)
         onChange?(config, diagnostics)
     }
 
     /// Missing file means defaults, not an error: a fresh install with no config yet is not a typo.
-    private static func load() -> (Config, [ConfigDiagnostic]) {
-        guard let text = try? String(contentsOf: path, encoding: .utf8) else {
+    /// A file that *exists* but can't be read (permissions, a transient I/O error, bad encoding) is
+    /// different -- silently falling back would look identical to an intentional reset to defaults,
+    /// so it keeps `base` and reports a diagnostic instead, the same as a bad value on one line.
+    private static func load(base: Config = .defaults) -> (Config, [ConfigDiagnostic]) {
+        let url = path
+        guard FileManager.default.fileExists(atPath: url.path) else {
             return (.defaults, [])
         }
-        return ConfigParser.parse(text)
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return (base, [ConfigDiagnostic(line: 0, message: "could not read \(url.path)")])
+        }
+        return ConfigParser.parse(text, base: base)
     }
 
     func startWatching() {
@@ -67,7 +74,6 @@ final class ConfigStore {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let fd = open(dir.path, O_EVTONLY)
         guard fd >= 0 else { return }
-        watchedDescriptor = fd
         let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete, .extend], queue: .main)
         src.setEventHandler { [weak self] in self?.handle(src.data) }
         src.setCancelHandler { close(fd) }
@@ -80,7 +86,6 @@ final class ConfigStore {
         debounceItem = nil
         source?.cancel()
         source = nil
-        watchedDescriptor = -1
     }
 
     private func handle(_ event: DispatchSource.FileSystemEvent) {

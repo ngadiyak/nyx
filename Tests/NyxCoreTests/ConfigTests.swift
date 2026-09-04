@@ -102,6 +102,31 @@ private func parse(_ s: String) -> (Config, [ConfigDiagnostic]) { ConfigParser.p
     #expect(d[0].line == 2)
 }
 
+/// The scenario ConfigStore.reload() exists to protect against: a working `font-size = 18` gets
+/// mistyped to `font-size = eighteen`. Reparsing with the previous config as `base` must leave
+/// `fontSize` at 18 (what was in force), not reset it to `Config.defaults.fontSize` (13) -- losing a
+/// working setting because of an unrelated typo on the same line is exactly the bug this guards.
+@Test func aBadValueOnReloadKeepsThePreviousValueRatherThanTheCompiledDefault() {
+    let (good, d0) = ConfigParser.parse("font-size = 18")
+    #expect(d0.isEmpty)
+    #expect(good.fontSize == 18)
+    #expect(good.fontSize != Config.defaults.fontSize)
+
+    let (reloaded, d1) = ConfigParser.parse("font-size = eighteen", base: good)
+    #expect(d1.count == 1)
+    #expect(reloaded.fontSize == 18)
+}
+
+/// A field the bad line doesn't touch keeps parsing normally: only the broken field falls back to
+/// `base`, everything else in the same file still applies on top of it as usual.
+@Test func otherSettingsInTheSameReloadStillApplyAlongsideABadLine() {
+    let (good, _) = ConfigParser.parse("font-size = 18\npadding = 12")
+    let (reloaded, d) = ConfigParser.parse("font-size = eighteen\npadding = 30", base: good)
+    #expect(d.count == 1)
+    #expect(reloaded.fontSize == 18)     // kept from base
+    #expect(reloaded.padding == 30)      // the new, valid value
+}
+
 @Test func aLineWithNoEqualsIsADiagnostic() {
     let (_, d) = parse("font-size 15")
     #expect(d.count == 1)
@@ -156,10 +181,47 @@ private func parse(_ s: String) -> (Config, [ConfigDiagnostic]) { ConfigParser.p
     #expect(c.fontThicken)
 }
 
+/// Config keys whose default-file line is a plain scalar `# key = value`: uncommenting exactly that
+/// one line reproduces `Config.defaults`, because the shown value *is* the compiled default.
+/// `palette` and `keybind` are deliberately excluded -- both are additive (a file can list any
+/// number of either), so their line is necessarily an *example*, not "the default": uncommenting it
+/// always adds an entry, which can never equal `Config.defaults`'s empty collections. Those two are
+/// covered separately, below, for "still parses" rather than "still equals the defaults".
+private let scalarDefaultFileKeys = [
+    "font-family", "font-size", "line-height", "font-thicken", "theme", "cursor-style", "cursor-blink",
+    "scrollback-lines", "padding", "background-opacity", "background-blur", "window-decorations",
+    "tab-bar", "shell", "working-directory", "copy-on-select", "middle-click-paste", "option-as-meta",
+    "mouse-scroll-alt-screen", "bell", "confirm-close-process", "clipboard-read", "word-separators",
+    "open-file-command",
+]
+
 @Test func theDefaultFileTextParsesBackToTheDefaults() {
-    let (c, d) = ConfigParser.parse(Config.defaultFileText)
-    #expect(d.isEmpty, "default file has diagnostics: \(d)")
+    // Parsing the file exactly as shipped -- every line commented -- only proves the comments are
+    // well-formed text: the parser skips every one of them without ever looking at the value that
+    // follows, so it would return `Config.defaults` no matter what the comments said. Uncommenting
+    // each scalar setting line first and parsing *that* is what actually catches a value that has
+    // drifted from the real default.
+    let lines = Config.defaultFileText.split(separator: "\n", omittingEmptySubsequences: false)
+    let uncommented = lines.map { line -> Substring in
+        for key in scalarDefaultFileKeys where line.hasPrefix("# \(key) =") {
+            return line.dropFirst(2)
+        }
+        return line
+    }.joined(separator: "\n")
+    let (c, d) = ConfigParser.parse(uncommented)
+    #expect(d.isEmpty, "default file has diagnostics once its scalar settings are uncommented: \(d)")
     #expect(c == Config.defaults)
+}
+
+@Test func thePaletteAndKeybindExampleLinesStillParseIfUncommented() {
+    for prefix in ["# palette = ", "# keybind = "] {
+        guard let line = Config.defaultFileText.split(separator: "\n").first(where: { $0.hasPrefix(prefix) }) else {
+            Issue.record("no example line found for \(prefix)")
+            continue
+        }
+        let (_, d) = ConfigParser.parse(String(line.dropFirst(2)))
+        #expect(d.isEmpty, "\(line) does not parse once uncommented: \(d)")
+    }
 }
 
 @Test func theDefaultFileTextIsFullyCommented() {

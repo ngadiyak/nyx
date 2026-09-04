@@ -88,8 +88,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
     required init?(coder: NSCoder) { fatalError("not supported") }
 
-    /// Called by `AppDelegate` after every `ConfigStore` reload, successful or not. A parse error
-    /// leaves `config` (and therefore the running terminal) untouched: only the banner changes.
+    /// Called by `AppDelegate` after every `ConfigStore` reload, successful or not. `newConfig` was
+    /// parsed with the previous config as its base (`ConfigStore.reload`), so a bad line already
+    /// kept that one field's old value -- applying it here is always safe, even when `diagnostics`
+    /// is non-empty: every field that parsed cleanly still takes effect, and only the field with the
+    /// bad line stays where it was.
     func configChanged(_ newConfig: Config, diagnostics: [ConfigDiagnostic]) {
         let diff = ConfigDiff(from: config, to: newConfig)
         config = newConfig

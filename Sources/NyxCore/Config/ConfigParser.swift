@@ -2,11 +2,16 @@ import Foundation
 
 /// Parses the `~/.config/nyx/config` grammar: `key = value`, `#` comments, blank lines ignored.
 /// Unknown keys and bad values are reported as diagnostics and the affected setting keeps its
-/// default; parsing never fails outright, because a terminal that refuses to start over a typo is
-/// useless.
+/// `base` value (`Config.defaults` unless the caller passes one); parsing never fails outright,
+/// because a terminal that refuses to start over a typo is useless.
 public enum ConfigParser {
-    public static func parse(_ text: String) -> (config: Config, diagnostics: [ConfigDiagnostic]) {
-        var config = Config.defaults
+    /// `base` is what a setting keeps when its line can't be parsed. Passing the config already in
+    /// force (as `ConfigStore.reload` does) means a typo on reload leaves that one field exactly as
+    /// it was rather than resetting it to the compiled default -- the user keeps everything that
+    /// still parses plus everything that used to work. A first load, with nothing in force yet,
+    /// omits `base` and gets `Config.defaults`.
+    public static func parse(_ text: String, base: Config = .defaults) -> (config: Config, diagnostics: [ConfigDiagnostic]) {
+        var config = base
         var diagnostics: [ConfigDiagnostic] = []
 
         let lines = ConfigGrammar.lines(text)

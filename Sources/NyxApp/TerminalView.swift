@@ -133,8 +133,14 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
             }
             markDirty()
         }
-        if diff.fontChanged || diff.geometryChanged {
+        // `fontChanged` needs a new `FontSet` (glyph atlas and all); `geometryChanged` alone --
+        // `padding` -- only moves where the existing grid sits, so it's cheaper to recompute just
+        // the grid than to rebuild the atlas for a setting that never touched a glyph. `rebuildFonts`
+        // already ends by recomputing the grid, so a change to both still does the atlas work once.
+        if diff.fontChanged {
             rebuildFonts()
+        } else if diff.geometryChanged {
+            updateGrid()
         }
         if diff.paletteChanged {
             applyPalette()
@@ -151,9 +157,19 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
         markDirty()
     }
 
+    /// The blur behind the window (`TerminalWindowController`'s `NSVisualEffectView`) only shows
+    /// through wherever this layer itself draws at less than full opacity -- a `background-blur`
+    /// setting with `background-opacity` left at its default of 1 would otherwise be invisible, an
+    /// opaque layer fully covering it. So `background-blur > 0` implies at least a default amount of
+    /// translucency; an explicit `background-opacity` below that still wins.
+    private static let defaultTranslucencyWithBlur = 0.9
+
     private func applyBackgroundAppearance() {
-        metalLayer.isOpaque = config.backgroundOpacity >= 1
-        metalLayer.opacity = Float(config.backgroundOpacity)
+        let opacity = config.backgroundBlur > 0
+            ? min(config.backgroundOpacity, TerminalView.defaultTranslucencyWithBlur)
+            : config.backgroundOpacity
+        metalLayer.isOpaque = opacity >= 1
+        metalLayer.opacity = Float(opacity)
     }
 
     /// The theme follows the system appearance whenever `dark:`/`light:` are both set.

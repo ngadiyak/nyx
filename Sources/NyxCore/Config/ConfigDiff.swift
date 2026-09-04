@@ -2,7 +2,7 @@ import Foundation
 
 /// What changed between two `Config`s, computed as a pure value so the decision of what to rebuild
 /// -- the font atlas, the grid, the palette, nothing -- can be unit-tested without AppKit. The app
-/// (`TerminalView.apply`, `TerminalWindowController`) reads these flags to do the minimum amount of
+/// (`Pane.apply`, `TerminalWindowController`) reads these flags to do the minimum amount of
 /// work on a reload.
 public struct ConfigDiff: Equatable {
     /// `font-family`, `font-size`, `line-height`, `font-thicken`: rebuild the `FontSet`.

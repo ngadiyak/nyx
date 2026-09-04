@@ -3,7 +3,7 @@ import NyxCore
 
 final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     var onClose: ((TerminalWindowController) -> Void)?
-    private var terminalView: TerminalView?
+    private var terminalView: Pane?
     private var banner: ConfigBanner?
     private var effectView: NSVisualEffectView?
     private var config: Config = .defaults
@@ -26,7 +26,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         // A plain container holding, top to bottom in z-order: an NSVisualEffectView (shown only
         // when `background-blur` is on -- it only actually shows through wherever the terminal's own
         // Metal layer is drawing at less than full opacity, which `background-opacity < 1` is what
-        // makes `TerminalView.applyBackgroundAppearance` do), the terminal, and the config-error
+        // makes `Pane.applyBackgroundAppearance` do), the terminal, and the config-error
         // banner pinned above both. Building the hierarchy this way keeps the terminal itself
         // ignorant of the banner and the blur.
         let container = NSView(frame: window.contentView!.bounds)
@@ -43,7 +43,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         container.addSubview(banner)
 
         do {
-            let view = try TerminalView(container.bounds, config: config)
+            let view = try Pane(container.bounds, config: config)
             view.translatesAutoresizingMaskIntoConstraints = false
             view.onTitleChange = { [weak window] title in window?.title = title.isEmpty ? "Nyx" : title }
             view.onExit = { [weak controller] _ in controller?.close() }

@@ -23,14 +23,14 @@ enum MainMenu {
         main.addItem(item("Shell", shell))
 
         let edit = NSMenu(title: "Edit")
-        edit.addItem(withTitle: "Copy", action: #selector(TerminalView.copy(_:)), keyEquivalent: "c")
-        edit.addItem(withTitle: "Paste", action: #selector(TerminalView.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Copy", action: #selector(Pane.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(Pane.paste(_:)), keyEquivalent: "v")
         main.addItem(item("Edit", edit))
 
         let view = NSMenu(title: "View")
-        view.addItem(withTitle: "Bigger", action: #selector(TerminalView.zoomIn(_:)), keyEquivalent: "+")
-        view.addItem(withTitle: "Smaller", action: #selector(TerminalView.zoomOut(_:)), keyEquivalent: "-")
-        view.addItem(withTitle: "Actual Size", action: #selector(TerminalView.zoomReset(_:)), keyEquivalent: "0")
+        view.addItem(withTitle: "Bigger", action: #selector(Pane.zoomIn(_:)), keyEquivalent: "+")
+        view.addItem(withTitle: "Smaller", action: #selector(Pane.zoomOut(_:)), keyEquivalent: "-")
+        view.addItem(withTitle: "Actual Size", action: #selector(Pane.zoomReset(_:)), keyEquivalent: "0")
         main.addItem(item("View", view))
 
         let window = NSMenu(title: "Window")

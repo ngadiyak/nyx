@@ -9,9 +9,21 @@ enum NyxError: Error, LocalizedError {
     var errorDescription: String? { "Metal is not available on this Mac." }
 }
 
-final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
+final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
+    /// Identifies this pane in the `PaneTree` its `PaneTreeView` lays out. Allocated here rather
+    /// than passed in so a `() -> Pane?` factory needs no knowledge of the tree's numbering.
+    let id: PaneID
+
     var onTitleChange: ((String) -> Void)?
     var onExit: ((Int32) -> Void)?
+
+    /// Only ever touched on the main thread, where every pane is created.
+    private static var nextID = 0
+
+    private static func allocateID() -> PaneID {
+        nextID += 1
+        return PaneID(nextID)
+    }
 
     private let session: TerminalSession
     private let renderer: Renderer
@@ -48,12 +60,13 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
 
     init(_ frame: NSRect, config: Config) throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw NyxError.noMetal }
+        self.id = Pane.allocateID()
         self.config = config
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         fonts = FontSet(family: config.fontFamily, pointSize: CGFloat(config.fontSize), scale: scale, lineHeight: CGFloat(config.lineHeight))
         renderer = try Renderer(device: device, fonts: fonts)
-        let palette = TerminalView.resolvedPalette(for: config)
-        session = try TerminalSession(config: TerminalView.sessionConfig(for: config, cols: 80, rows: 24, palette: palette))
+        let palette = Pane.resolvedPalette(for: config)
+        session = try TerminalSession(config: Pane.sessionConfig(for: config, cols: 80, rows: 24, palette: palette))
         super.init(frame: frame)
         wantsLayer = true
         layerContentsRedrawPolicy = .never
@@ -152,7 +165,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     private func applyPalette() {
-        let palette = TerminalView.resolvedPalette(for: config)
+        let palette = Pane.resolvedPalette(for: config)
         session.withTerminal { $0.palette = palette }
         markDirty()
     }
@@ -166,7 +179,7 @@ final class TerminalView: NSView, NSTextInputClient, NSMenuItemValidation {
 
     private func applyBackgroundAppearance() {
         let opacity = config.backgroundBlur > 0
-            ? min(config.backgroundOpacity, TerminalView.defaultTranslucencyWithBlur)
+            ? min(config.backgroundOpacity, Pane.defaultTranslucencyWithBlur)
             : config.backgroundOpacity
         metalLayer.isOpaque = opacity >= 1
         metalLayer.opacity = Float(opacity)

@@ -227,3 +227,53 @@ private func wordTerminal() -> Terminal {
     #expect(dropped == false)
     #expect(c.selection != nil)
 }
+
+// MARK: - Select all
+
+/// "Select All" has to reach into the scrollback, not just the visible screen -- the whole point is
+/// grabbing output that has already scrolled off.
+@Test func selectAllCoversTheScrollbackAsWellAsTheScreen() {
+    let t = makeTerminal(cols: 10, rows: 2, scrollback: 10).run("one\r\ntwo\r\nthree\r\nfour")
+    var c = SelectionController()
+    let selectedSomething = c.selectAll(in: t)
+    #expect(selectedSomething)
+    let s = try! #require(c.selection)
+    #expect(s.start == pos(0, 0))
+    #expect(s.end.row == t.totalRows - 1)
+    #expect(t.text(in: s).contains("one"))
+    #expect(t.text(in: s).contains("four"))
+}
+
+/// A second Select All over an unchanged buffer changes nothing, so it must not report a redraw.
+@Test func selectAllTwiceReportsNoSecondChange() {
+    let t = makeTerminal(cols: 20, rows: 3).run("hello")
+    var c = SelectionController()
+    let first = c.selectAll(in: t)
+    let second = c.selectAll(in: t)
+    #expect(first)
+    #expect(!second)
+}
+
+/// Selecting all captures the buffer's generation like any other selection, so a `clear -x`
+/// underneath it drops the selection rather than remapping it onto new content.
+@Test func selectAllIsInvalidatedByClearingTheBuffer() {
+    let t = makeTerminal(cols: 20, rows: 3).run("hello")
+    var c = SelectionController()
+    let selectedSomething = c.selectAll(in: t)
+    #expect(selectedSomething)
+    t.feed("\u{1b}[3J")
+    let dropped = c.invalidateIfStale(t)
+    #expect(dropped)
+    #expect(c.selection == nil)
+}
+
+/// Select All while a drag is in flight ends the drag rather than leaving it live, so the next
+/// mouse move does not silently rewrite the selection the user just asked for.
+@Test func selectAllEndsAnyDragInFlight() {
+    let t = wordTerminal()
+    var c = SelectionController()
+    _ = c.begin(at: pos(0, 0), clickCount: 1, block: false, in: t, separators: [])
+    #expect(c.isDragging)
+    _ = c.selectAll(in: t)
+    #expect(!c.isDragging)
+}

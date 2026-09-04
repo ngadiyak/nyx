@@ -85,6 +85,21 @@ public struct SelectionController {
         return true
     }
 
+    /// Selects the whole buffer, scrollback included. Returns whether anything changed.
+    ///
+    /// An empty terminal selects nothing rather than a zero-length selection at the origin, so
+    /// "Select All" on a fresh pane leaves Copy correctly greyed out.
+    public mutating func selectAll(in terminal: Terminal) -> Bool {
+        let rows = terminal.totalRows
+        guard rows > 0, terminal.cols > 0 else { return clear() }
+        generation = terminal.scrollbackGeneration
+        anchor = AbsolutePosition(row: 0, col: 0)
+        isDragging = false
+        return set(Selection(anchor: AbsolutePosition(row: 0, col: 0),
+                             head: AbsolutePosition(row: rows - 1, col: terminal.cols),
+                             mode: .character))
+    }
+
     private mutating func set(_ new: Selection) -> Bool {
         guard selection != new else { return false }
         selection = new

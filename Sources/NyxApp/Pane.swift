@@ -710,7 +710,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         report(event, .left, .move)
     }
 
-    override func rightMouseDown(with event: NSEvent) { report(event, .right, .press) }
+    /// A TUI that turned mouse reporting on gets the right button, as it does the left. Only when
+    /// nothing is listening does the click become a context menu -- otherwise right-click would
+    /// stop working inside vim and htop the moment we added one.
+    override func rightMouseDown(with event: NSEvent) {
+        if report(event, .right, .press) { return }
+        NSMenu.popUpContextMenu(contextMenu(), with: event, for: self)
+    }
     override func rightMouseDragged(with event: NSEvent) { report(event, .right, .drag) }
     override func rightMouseUp(with event: NSEvent) { report(event, .right, .release) }
 
@@ -795,8 +801,51 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     // MARK: - Menu actions
 
+    override func selectAll(_ sender: Any?) {
+        session.withTerminal { if selectionController.selectAll(in: $0) { markDirty() } }
+    }
+
+    /// The right-click menu. Built from `TerminalAction` like the main menu, so an item here cannot
+    /// do something different from the same item there, and both grey out by the same rule.
+    private func contextMenu() -> NSMenu {
+        let menu = NSMenu()
+        let groups: [[TerminalAction]] = [
+            [.copy, .paste],
+            [.splitRight, .splitDown, .toggleZoom],
+            [.newTab, .closePane],
+            [.clearScreen, .openConfig],
+        ]
+        for (index, group) in groups.enumerated() {
+            if index > 0 { menu.addItem(.separator()) }
+            if index == 0 {
+                menu.addItem(actionItem(.copy))
+                menu.addItem(actionItem(.paste))
+                let all = NSMenuItem(title: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
+                all.target = self
+                menu.addItem(all)
+                continue
+            }
+            for action in group { menu.addItem(actionItem(action)) }
+        }
+        return menu
+    }
+
+    private func actionItem(_ action: TerminalAction) -> NSMenuItem {
+        let item = NSMenuItem(title: action.title,
+                              action: #selector(TabController.performTerminalAction(_:)),
+                              keyEquivalent: "")
+        item.representedObject = action.rawValue
+        if let binding = bindings.binding(for: action),
+           let (key, mask) = MenuShortcut.keyEquivalent(for: binding) {
+            item.keyEquivalent = key
+            item.keyEquivalentModifierMask = mask
+        }
+        return item
+    }
+
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(copy(_:)) { return selection != nil }
+        if item.action == #selector(copy(_:)) { return hasSelection }
+        if item.action == #selector(selectAll(_:)) { return session.withTerminal { $0.totalRows > 0 } }
         return true
     }
 

@@ -19,7 +19,13 @@ enum MainMenu {
 
         let shell = NSMenu(title: "Shell")
         shell.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindow(_:)), keyEquivalent: "n")
-        shell.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        shell.addItem(.separator())
+        shell.addItem(withTitle: "Split Right", action: #selector(PaneTreeView.splitRight(_:)), keyEquivalent: "d")
+        shell.addItem(chord("Split Down", #selector(PaneTreeView.splitDown(_:)), "d", [.command, .shift]))
+        shell.addItem(.separator())
+        // ⌘W closes the focused pane, and the window with the last one; the whole window is ⌘⇧W.
+        shell.addItem(withTitle: "Close Pane", action: #selector(PaneTreeView.closePane(_:)), keyEquivalent: "w")
+        shell.addItem(chord("Close Window", #selector(NSWindow.performClose(_:)), "w", [.command, .shift]))
         main.addItem(item("Shell", shell))
 
         let edit = NSMenu(title: "Edit")
@@ -31,6 +37,18 @@ enum MainMenu {
         view.addItem(withTitle: "Bigger", action: #selector(Pane.zoomIn(_:)), keyEquivalent: "+")
         view.addItem(withTitle: "Smaller", action: #selector(Pane.zoomOut(_:)), keyEquivalent: "-")
         view.addItem(withTitle: "Actual Size", action: #selector(Pane.zoomReset(_:)), keyEquivalent: "0")
+        view.addItem(.separator())
+        view.addItem(chord("Zoom Pane", #selector(PaneTreeView.togglePaneZoom(_:)), "\r", [.command, .shift]))
+        view.addItem(.separator())
+        view.addItem(chord("Focus Left", #selector(PaneTreeView.focusLeft(_:)), arrow(NSLeftArrowFunctionKey), [.command, .option]))
+        view.addItem(chord("Focus Right", #selector(PaneTreeView.focusRight(_:)), arrow(NSRightArrowFunctionKey), [.command, .option]))
+        view.addItem(chord("Focus Up", #selector(PaneTreeView.focusUp(_:)), arrow(NSUpArrowFunctionKey), [.command, .option]))
+        view.addItem(chord("Focus Down", #selector(PaneTreeView.focusDown(_:)), arrow(NSDownArrowFunctionKey), [.command, .option]))
+        view.addItem(.separator())
+        view.addItem(chord("Grow Left", #selector(PaneTreeView.growLeft(_:)), arrow(NSLeftArrowFunctionKey), [.command, .control]))
+        view.addItem(chord("Grow Right", #selector(PaneTreeView.growRight(_:)), arrow(NSRightArrowFunctionKey), [.command, .control]))
+        view.addItem(chord("Grow Up", #selector(PaneTreeView.growUp(_:)), arrow(NSUpArrowFunctionKey), [.command, .control]))
+        view.addItem(chord("Grow Down", #selector(PaneTreeView.growDown(_:)), arrow(NSDownArrowFunctionKey), [.command, .control]))
         main.addItem(item("View", view))
 
         let window = NSMenu(title: "Window")
@@ -39,6 +57,21 @@ enum MainMenu {
         main.addItem(item("Window", window))
         NSApp.windowsMenu = window
         return main
+    }
+
+    /// A menu item whose shortcut needs modifiers beyond ⌘. The key equivalent for a chord
+    /// including shift is still given in lowercase; AppKit adds the ⇧ from the mask.
+    private static func chord(_ title: String, _ action: Selector, _ key: String,
+                              _ mask: NSEvent.ModifierFlags) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        i.keyEquivalentModifierMask = mask
+        return i
+    }
+
+    /// The arrow keys as menu key equivalents: they are function-key code points, not characters.
+    private static func arrow(_ code: Int) -> String {
+        guard let scalar = UnicodeScalar(code) else { return "" }
+        return String(Character(scalar))
     }
 
     private static func item(_ title: String, _ submenu: NSMenu) -> NSMenuItem {

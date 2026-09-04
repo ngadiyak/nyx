@@ -47,6 +47,15 @@ public final class TerminalSession {
     public var exitCode: Int32? { lock.lock(); defer { lock.unlock() }; return _exitCode }
     public var pid: pid_t { pty.pid }
 
+    /// The PTY's foreground process group -- the program the user is actually looking at, which is
+    /// the shell itself unless it is running something. nil once the PTY is gone. Used to ask the
+    /// system for that process's working directory, which is why the id rather than a path is what
+    /// crosses this boundary: `proc_pidinfo` is a Darwin call and belongs in the app layer.
+    public var foregroundProcessGroup: pid_t? {
+        let pgid = tcgetpgrp(pty.fd)
+        return pgid > 0 ? pgid : nil
+    }
+
     private let terminal: Terminal
     private let pty: PTY
     private let lock = NSLock()

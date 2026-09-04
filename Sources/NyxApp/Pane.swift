@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Metal
 import QuartzCore
 import NyxCore
@@ -15,7 +16,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     let id: PaneID
 
     var onTitleChange: ((String) -> Void)?
+    /// Already delivered on the main queue: see the `session.onExit` wiring in `init`.
     var onExit: ((Int32) -> Void)?
+    /// The user clicked in this pane. `PaneTreeView` turns it into a focus change; the pane itself
+    /// only ever knows that it was clicked.
+    var onFocusRequested: (() -> Void)?
 
     /// Only ever touched on the main thread, where every pane is created.
     private static var nextID = 0
@@ -58,7 +63,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private var effectiveFontSize: CGFloat { min(max(CGFloat(config.fontSize) + zoomOffset, 6), 72) }
     private var padding: CGFloat { CGFloat(config.padding) }
 
-    init(_ frame: NSRect, config: Config) throws {
+    /// `workingDirectory` is what a new pane inherits from the one it was split off; it is ignored
+    /// when the config names a directory of its own, which is an explicit instruction rather than
+    /// a default.
+    init(_ frame: NSRect, config: Config, workingDirectory: String? = nil) throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw NyxError.noMetal }
         self.id = Pane.allocateID()
         self.config = config
@@ -66,7 +74,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         fonts = FontSet(family: config.fontFamily, pointSize: CGFloat(config.fontSize), scale: scale, lineHeight: CGFloat(config.lineHeight))
         renderer = try Renderer(device: device, fonts: fonts)
         let palette = Pane.resolvedPalette(for: config)
-        session = try TerminalSession(config: Pane.sessionConfig(for: config, cols: 80, rows: 24, palette: palette))
+        session = try TerminalSession(config: Pane.sessionConfig(for: config, cols: 80, rows: 24, palette: palette,
+                                                                 inheriting: workingDirectory))
         super.init(frame: frame)
         wantsLayer = true
         layerContentsRedrawPolicy = .never
@@ -87,8 +96,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// session creation: like `scrollback-lines`, a later change to either only takes effect for a
     /// new window (`ConfigDiff.deferredNotes` doesn't call this out today because the whole session
     /// -- not just these two settings -- would need recreating).
-    private static func sessionConfig(for config: Config, cols: Int, rows: Int, palette: Palette) -> SessionConfig {
-        var cwd: String?
+    private static func sessionConfig(for config: Config, cols: Int, rows: Int, palette: Palette,
+                                      inheriting inherited: String?) -> SessionConfig {
+        var cwd: String? = inherited
         if config.workingDirectory != "inherit", !config.workingDirectory.isEmpty {
             cwd = (config.workingDirectory as NSString).expandingTildeInPath
         }
@@ -102,8 +112,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     /// Resolves `theme`/`dark:.../light:...` against the current system appearance, then applies
-    /// `palette` overrides on top.
-    private static func resolvedPalette(for config: Config) -> Palette {
+    /// `palette` overrides on top. Not private: `PaneTreeView` draws its dividers and focus border
+    /// in theme colours and resolves them the same way.
+    static func resolvedPalette(for config: Config) -> Palette {
         let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let name: String
         switch (config.darkThemeName, config.lightThemeName) {
@@ -125,6 +136,31 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     var cellSizePoints: NSSize {
         NSSize(width: CGFloat(fonts.metrics.width) / fonts.scale, height: CGFloat(fonts.metrics.height) / fonts.scale)
+    }
+
+    /// Where a pane split off this one should start: the directory the shell last announced with
+    /// OSC 7, else the working directory of whatever process is in the foreground, else the shell's
+    /// own. Every step is best-effort and nil is a perfectly good answer -- the caller falls back
+    /// to `$HOME` rather than refusing to split.
+    var workingDirectory: String? {
+        if let cwd = session.withTerminal({ $0.cwd }), !cwd.isEmpty { return cwd }
+        if let pgid = session.foregroundProcessGroup, let path = Pane.processWorkingDirectory(pgid) { return path }
+        return Pane.processWorkingDirectory(session.pid)
+    }
+
+    /// The current directory of a running process, or nil if it cannot be read (it is gone, or it
+    /// belongs to another user -- neither is worth reporting).
+    private static func processWorkingDirectory(_ pid: pid_t) -> String? {
+        var info = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        let read = withUnsafeMutablePointer(to: &info) {
+            proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, UnsafeMutableRawPointer($0), size)
+        }
+        guard read == size else { return nil }
+        let path = withUnsafePointer(to: &info.pvi_cdir.vip_path) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
+        }
+        return path.isEmpty ? nil : path
     }
 
     func size(forCols c: Int, rows r: Int) -> NSSize {
@@ -183,6 +219,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             : config.backgroundOpacity
         metalLayer.isOpaque = opacity >= 1
         metalLayer.opacity = Float(opacity)
+    }
+
+    /// Draws (or clears) the focus ring `PaneTreeView` puts around the focused pane. It is a layer
+    /// border rather than something drawn by the parent view, because the pane's own Metal layer
+    /// covers every point of its frame -- anything the parent drew there would be hidden. The
+    /// border lands inside the terminal's padding, so it never covers a cell.
+    func setFocusBorder(_ color: NSColor?) {
+        metalLayer.borderWidth = color == nil ? 0 : 1
+        metalLayer.borderColor = color?.cgColor
     }
 
     /// The theme follows the system appearance whenever `dark:`/`light:` are both set.
@@ -566,6 +611,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        onFocusRequested?()
         if report(event, .left, .press) { return }
         lastMousePoint = convert(event.locationInWindow, from: nil)
         let point = topLeft(lastMousePoint!)

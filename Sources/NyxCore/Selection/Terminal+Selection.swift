@@ -36,16 +36,21 @@ extension Terminal {
 
         var out = ""
         for absolute in first...last {
-            guard let row = absoluteRow(absolute),
-                  let range = selection.columnRange(onRow: absolute, cols: cols) else { continue }
-            var piece = rowText(row, range)
-            if selection.mode != .block {
-                while piece.hasSuffix(" ") { piece.removeLast() }
+            let row = absoluteRow(absolute)
+            let range = selection.columnRange(onRow: absolute, cols: cols)
+            if let row, let range {
+                var piece = rowText(row, range)
+                if selection.mode != .block {
+                    while piece.hasSuffix(" ") { piece.removeLast() }
+                }
+                out += piece
             }
-            out += piece
             guard absolute < last else { continue }
-            // A soft wrap continues the same logical line; anything else ends it.
-            let joins = selection.mode != .block && row.wrapped && range.upperBound >= cols
+            // A soft wrap continues the same logical line; anything else ends it. A row that
+            // contributes no text still ends its line: the grid can narrow under a live selection
+            // until a row's columns fall outside it, and dropping the break as well as the text
+            // would run the rows on either side together.
+            let joins = selection.mode != .block && (row?.wrapped ?? false) && (range?.upperBound ?? 0) >= cols
             if !joins { out += "\n" }
         }
         return out

@@ -146,3 +146,13 @@ private let defaultSeparators: Set<Character> = Set(" ()[]{}'\"`,;:|<>")
     let s = Selection(anchor: pos(0, 0), head: pos(1, 0), mode: .line)
     #expect(t.text(in: s) == "abcdefgh")
 }
+
+@Test func narrowingUnderALiveSelectionKeepsTheRowsSeparated() {
+    let t = makeTerminal(cols: 10, rows: 3).run("aaaa\r\nbbbb\r\ncccc")
+    // Anchored past what becomes the right edge, so after the narrow row 0 selects no columns and
+    // contributes no text. It must still contribute its line break.
+    let s = Selection(anchor: pos(0, 9), head: pos(2, 4), mode: .character)
+    t.resize(cols: 6, rows: 3)
+    #expect(s.columnRange(onRow: 0, cols: t.cols) == nil)
+    #expect(t.text(in: s) == "\nbbbb\ncccc")
+}

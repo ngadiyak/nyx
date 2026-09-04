@@ -61,3 +61,21 @@ import Foundation
 @Test func aThemeFileWithNoColoursIsRejected() {
     #expect(Themes.parse("# nothing here\n") == nil)
 }
+
+@Test func crlfThemeFileParsesToTheSamePalette() {
+    let lf = "background = #101010\nforeground = #e0e0e0\ncursor = #ff0000\n"
+    let crlf = "background = #101010\r\nforeground = #e0e0e0\r\ncursor = #ff0000\r\n"
+    let pLF = Themes.parse(lf)
+    let pCRLF = Themes.parse(crlf)
+    #expect(pCRLF != nil)
+    #expect(pCRLF == pLF)
+}
+
+@Test func loneCRThemeFileParsesToTheSamePalette() {
+    let lf = "background = #101010\nforeground = #e0e0e0\ncursor = #ff0000\n"
+    let cr = "background = #101010\rforeground = #e0e0e0\rcursor = #ff0000\r"
+    let pLF = Themes.parse(lf)
+    let pCR = Themes.parse(cr)
+    #expect(pCR != nil)
+    #expect(pCR == pLF)
+}

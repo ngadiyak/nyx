@@ -119,3 +119,22 @@ private func parse(_ s: String) -> (Config, [ConfigDiagnostic]) { ConfigParser.p
     let (c, _) = parse("font-size = 10\nfont-size = 20")
     #expect(c.fontSize == 20)
 }
+
+@Test func crlfLineEndingsParseTheSameAsLF() {
+    let lf = "font-size = 15\nfont-family = Menlo\npadding = 20\n"
+    let crlf = "font-size = 15\r\nfont-family = Menlo\r\npadding = 20\r\n"
+    let (cLF, dLF) = parse(lf)
+    let (cCRLF, dCRLF) = parse(crlf)
+    #expect(dCRLF.isEmpty)
+    #expect(dCRLF == dLF)
+    #expect(cCRLF == cLF)
+}
+
+@Test func loneCRLineEndingsParseTheSameAsLF() {
+    let lf = "font-size = 15\nfont-family = Menlo\npadding = 20\n"
+    let cr = "font-size = 15\rfont-family = Menlo\rpadding = 20\r"
+    let (cLF, _) = parse(lf)
+    let (cCR, dCR) = parse(cr)
+    #expect(dCR.isEmpty)
+    #expect(cCR == cLF)
+}

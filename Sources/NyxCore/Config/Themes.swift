@@ -101,7 +101,7 @@ public enum Themes {
         var selectionForeground: RGB?
         var recognizedAny = false
 
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        for rawLine in ConfigGrammar.lines(text) {
             let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
             guard let eq = trimmed.firstIndex(of: "=") else { continue }

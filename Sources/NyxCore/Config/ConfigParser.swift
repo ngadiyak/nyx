@@ -9,7 +9,7 @@ public enum ConfigParser {
         var config = Config.defaults
         var diagnostics: [ConfigDiagnostic] = []
 
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let lines = ConfigGrammar.lines(text)
         for (offset, rawLine) in lines.enumerated() {
             let lineNumber = offset + 1
             let trimmedLine = rawLine.trimmingCharacters(in: .whitespaces)

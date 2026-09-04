@@ -33,7 +33,7 @@ public enum ConfigParser {
                 continue
             }
             let key = trimmedLine[trimmedLine.startIndex..<eq].trimmingCharacters(in: .whitespaces)
-            let value = trimmedLine[trimmedLine.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            let value = ConfigGrammar.value(after: trimmedLine[trimmedLine.index(after: eq)...])
 
             func badValue() {
                 diagnostics.append(ConfigDiagnostic(line: lineNumber, message: "invalid value for '\(key)': '\(value)'"))

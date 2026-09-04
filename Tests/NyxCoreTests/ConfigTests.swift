@@ -286,3 +286,33 @@ private let scalarDefaultFileKeys = [
     let url = ConfigPath.resolve(environment: ["NYX_CONFIG": ""], home: "/Users/nik")
     #expect(url.path == "/Users/nik/.config/nyx/config")
 }
+
+// MARK: - Trailing comments
+
+@Test func aCommentAfterAValueIsNotPartOfIt() {
+    let (config, d) = ConfigParser.parse("font-size = 18  # bumped for the big monitor")
+    #expect(d.isEmpty)
+    #expect(config.fontSize == 18)
+}
+
+/// The qualifier that makes the rule safe. Colours are written `#rrggbb`, so a rule that stripped
+/// from the first `#` on the line would turn every palette entry into an empty value.
+@Test func aColourIsNotMistakenForAComment() {
+    let (config, d) = ConfigParser.parse("palette = 1=#ff0000")
+    #expect(d.isEmpty)
+    #expect(config.paletteOverrides[1] == RGB(255, 0, 0))
+}
+
+@Test func aColourFollowedByACommentKeepsTheColour() {
+    let (config, d) = ConfigParser.parse("palette = 2=#00ff00 # green")
+    #expect(d.isEmpty)
+    #expect(config.paletteOverrides[2] == RGB(0, 255, 0))
+}
+
+/// A value that is nothing but a comment is a value the user forgot to write, and has to be
+/// reported rather than silently taken as an empty string.
+@Test func aValueThatIsOnlyACommentIsADiagnostic() {
+    let (config, d) = ConfigParser.parse("font-size = # what should this be?")
+    #expect(d.count == 1)
+    #expect(config.fontSize == Config.defaults.fontSize)
+}

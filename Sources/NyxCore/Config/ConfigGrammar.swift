@@ -23,4 +23,20 @@ enum ConfigGrammar {
         else { return nil }
         return (idx, rgb)
     }
+
+    /// The value on a `key = value` line, with any trailing comment removed.
+    ///
+    /// A comment is a `#` with whitespace in front of it. That qualifier is load-bearing: colours
+    /// are written `palette = 1=#ff0000`, and a rule that stripped from the first `#` would turn
+    /// every palette line into an empty value.
+    static func value(after text: Substring) -> String {
+        var previousWasSpace = true   // a `#` immediately after the `=` still starts a comment
+        for index in text.indices {
+            if text[index] == "#" && previousWasSpace {
+                return text[text.startIndex..<index].trimmingCharacters(in: .whitespaces)
+            }
+            previousWasSpace = text[index] == " " || text[index] == "\t"
+        }
+        return text.trimmingCharacters(in: .whitespaces)
+    }
 }

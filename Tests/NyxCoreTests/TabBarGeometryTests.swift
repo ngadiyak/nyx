@@ -53,13 +53,18 @@ private let barHeight = 28.0
     #expect(close.y + close.height <= tab.y + tab.height)
 }
 
-/// Once tabs shrink far enough there is no room for a close button, and showing one would put it
-/// on top of the neighbouring tab. It disappears instead.
+/// Once tabs shrink far enough the close button goes, and the title keeps the room.
+///
+/// The threshold is deliberately generous rather than "the button physically fits": at twenty tabs
+/// a bar of twenty identical `×` glyphs is one you cannot navigate, and the tab is there to be
+/// identified before it is closed. ⌘W still closes.
 @Test func aTabTooNarrowForACloseButtonHasNone() {
-    let wide = PaneRect(x: 0, y: 0, width: 60, height: barHeight)
-    let narrow = PaneRect(x: 0, y: 0, width: 20, height: barHeight)
-    #expect(TabBarGeometry.closeRect(in: wide) != nil)
-    #expect(TabBarGeometry.closeRect(in: narrow) == nil)
+    let roomy = PaneRect(x: 0, y: 0, width: 140, height: barHeight)
+    let cramped = PaneRect(x: 0, y: 0, width: 60, height: barHeight)
+    let tiny = PaneRect(x: 0, y: 0, width: 20, height: barHeight)
+    #expect(TabBarGeometry.closeRect(in: roomy) != nil)
+    #expect(TabBarGeometry.closeRect(in: cramped) == nil)
+    #expect(TabBarGeometry.closeRect(in: tiny) == nil)
 }
 
 @Test func theIndicatorSitsInsideTheTabsLeftEdge() {
@@ -133,4 +138,38 @@ private let barHeight = 28.0
         #expect(hit != nil)
         if case .close = hit { Issue.record("a tab with no close button reported a close at x=\(x)") }
     }
+}
+
+// MARK: - When the bar runs out of room
+
+/// Twenty tabs used to render as twenty identical close buttons and nothing else: the title got
+/// whatever was left after the close button took its share, which was nothing. A tab exists to be
+/// identified first and closed second.
+@Test func aCrowdedTabKeepsItsTitleAndDropsItsCloseButton() {
+    let tab = TabBarGeometry.tabRect(index: 0, barWidth: 900, barHeight: 28, tabCount: 20)
+    #expect(TabBarGeometry.closeRect(in: tab) == nil)
+    #expect(TabBarGeometry.titleRect(in: tab, hasIndicator: false).width > 20)
+}
+
+@Test func aRoomyTabKeepsBoth() {
+    let tab = TabBarGeometry.tabRect(index: 0, barWidth: 900, barHeight: 28, tabCount: 4)
+    #expect(TabBarGeometry.closeRect(in: tab) != nil)
+    #expect(TabBarGeometry.titleRect(in: tab, hasIndicator: false).width > 100)
+}
+
+/// The `+` is how a tab gets opened with the mouse. Dropping it when the bar is busy takes it away
+/// exactly when reaching for it any other way is hardest.
+@Test func theNewTabButtonSurvivesACrowdedBar() {
+    for count in [1, 8, 20, 60] {
+        let rect = TabBarGeometry.trailingRect(buttonWidth: 26, barWidth: 900, barHeight: 28,
+                                               slotCount: count, leading: 120, headerHeight: 0)
+        #expect(rect != nil, "\(count) tabs")
+        #expect(rect?.x == 900 - 26)
+    }
+}
+
+/// Even so, the tabs must not run under it.
+@Test func tabsStopBeforeTheNewTabButton() {
+    let last = TabBarGeometry.tabRect(index: 19, barWidth: 900, barHeight: 28, tabCount: 20)
+    #expect(last.x + last.width <= 900)
 }

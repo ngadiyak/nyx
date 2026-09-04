@@ -68,20 +68,27 @@ enum UISnapshot {
         write(palettePanel(palette: palette, config: config, query: "zzqq"),
               named: "command-palette-no-matches", into: directory, background: palette.background)
 
-        write(banner(), named: "config-banner", into: directory, background: palette.background)
-        write(banner(note: true), named: "config-banner-note", into: directory,
-              background: palette.background)
-        write(projectBar(), named: "project-bar", into: directory, background: palette.background)
+        // Both banners paint themselves in a system colour and label themselves in `labelColor`,
+        // neither of which is the terminal's theme -- so how they read depends on the *system*
+        // appearance, and both have to be looked at.
+        for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            write(banner(appearance), named: "config-banner-\(name)", into: directory,
+                  background: palette.background)
+            write(banner(appearance, note: true), named: "config-banner-note-\(name)",
+                  into: directory, background: palette.background)
+            write(projectBar(appearance), named: "project-bar-\(name)", into: directory,
+                  background: palette.background)
+            write(quickActionSheet(appearance), named: "sheet-quick-action-\(name)",
+                  into: directory, background: windowGround(appearance))
+            write(commandEditorSheet(palette: palette, appearance),
+                  named: "sheet-command-editor-\(name)", into: directory,
+                  background: windowGround(appearance))
+            writeSettings(into: directory, appearance: appearance, suffix: "-\(name)")
+        }
         write(stickyPrompt(palette: palette, failed: false), named: "sticky-prompt", into: directory,
               background: palette.background)
         write(stickyPrompt(palette: palette, failed: true), named: "sticky-prompt-failed",
               into: directory, background: palette.background)
-
-        write(quickActionSheet(), named: "sheet-quick-action", into: directory,
-              background: palette.background)
-        write(commandEditorSheet(palette: palette), named: "sheet-command-editor", into: directory,
-              background: palette.background)
-        writeSettings(into: directory, background: palette.background)
 
         for name in Themes.builtin.keys.sorted() {
             var themed = config
@@ -189,16 +196,17 @@ enum UISnapshot {
         return view
     }
 
-    private static func quickActionSheet() -> NSView {
+    private static func quickActionSheet(_ appearance: NSAppearance.Name) -> NSView {
         let controller = QuickActionEditor(editing: QuickAction(name: "Caffeine", kind: .toggle,
                                                                 command: "caffeinate -d"))
         let view = controller.view
+        view.appearance = NSAppearance(named: appearance)
         view.frame = NSRect(x: 0, y: 0, width: 460, height: 232)
         view.layoutSubtreeIfNeeded()
         return view
     }
 
-    private static func commandEditorSheet(palette: Palette) -> NSView {
+    private static func commandEditorSheet(palette: Palette, _ appearance: NSAppearance.Name) -> NSView {
         let text = """
         curl -sS -X POST https://api.example.com/v2/deployments \\
           -H 'Authorization: Bearer $TOKEN' \\
@@ -208,24 +216,51 @@ enum UISnapshot {
         let controller = CommandEditor(text: text, heading: "Edit and run",
                                        runTitle: "Run", palette: palette)
         let view = controller.view
+        view.appearance = NSAppearance(named: appearance)
         view.frame = NSRect(x: 0, y: 0, width: 620, height: 360)
         view.layoutSubtreeIfNeeded()
+        // A text view generates its glyphs lazily, on the first real display pass, so without this
+        // the sheet renders as an empty box and the one thing it is for cannot be looked at.
+        for textView in descendants(of: view).compactMap({ $0 as? NSTextView }) {
+            textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+        }
         return view
     }
 
     /// One PNG per settings page: an `NSTabView` shows one at a time, so a single render of the
     /// window would leave three of the four pages unlooked-at, which is the whole problem.
-    private static func writeSettings(into directory: URL, background: RGB) {
+    private static func writeSettings(into directory: URL, appearance: NSAppearance.Name,
+                                      suffix: String) {
         let controller = SettingsWindowController(store: ConfigStore())
         guard let content = controller.window?.contentView,
               let tabs = content.subviews.compactMap({ $0 as? NSTabView }).first else { return }
+        content.appearance = NSAppearance(named: appearance)
         content.frame = NSRect(x: 0, y: 0, width: 540, height: 460)
         for index in 0..<tabs.numberOfTabViewItems {
             tabs.selectTabViewItem(at: index)
             content.layoutSubtreeIfNeeded()
             let label = tabs.tabViewItem(at: index).label.lowercased()
-            write(content, named: "settings-\(label)", into: directory, background: background)
+            write(content, named: "settings-\(label)\(suffix)", into: directory,
+                  background: windowGround(appearance))
         }
+    }
+
+    private static func descendants(of view: NSView) -> [NSView] {
+        view.subviews + view.subviews.flatMap(descendants(of:))
+    }
+
+    /// The colour a real sheet or settings window puts behind these controls. Rendering them on the
+    /// terminal's own background instead would judge a contrast that never happens on screen.
+    private static func windowGround(_ appearance: NSAppearance.Name) -> RGB {
+        var result = RGB(236, 236, 236)
+        NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
+            if let color = NSColor.windowBackgroundColor.usingColorSpace(.deviceRGB) {
+                result = RGB(UInt8(color.redComponent * 255),
+                             UInt8(color.greenComponent * 255),
+                             UInt8(color.blueComponent * 255))
+            }
+        }
+        return result
     }
 
     private static func stickyPrompt(palette: Palette, failed: Bool) -> NSView {
@@ -237,8 +272,9 @@ enum UISnapshot {
         return view
     }
 
-    private static func projectBar() -> NSView {
+    private static func projectBar(_ appearance: NSAppearance.Name) -> NSView {
         let bar = ProjectActionsBar(frame: .zero)
+        bar.appearance = NSAppearance(named: appearance)
         bar.show(message: "This folder has a .nyx/project.conf that has changed since you approved it.",
                  changed: true)
         return opened(bar, width: 900, height: 32)
@@ -254,8 +290,9 @@ enum UISnapshot {
         return out
     }
 
-    private static func banner(note: Bool = false) -> NSView {
+    private static func banner(_ appearance: NSAppearance.Name, note: Bool = false) -> NSView {
         let banner = ConfigBanner()
+        banner.appearance = NSAppearance(named: appearance)
         if note {
             banner.showNote("The new font size applies to windows opened from now on.")
         } else {

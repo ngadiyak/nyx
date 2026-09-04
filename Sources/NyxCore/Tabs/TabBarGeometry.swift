@@ -27,7 +27,12 @@ public struct TabBarMetrics: Equatable {
     public static let standard = TabBarMetrics()
 
     /// Below this a tab has no room for its close button, and shows none.
-    var minimumWidthForCloseButton: Double { closeButtonSize + horizontalInset * 2 }
+    ///
+    /// It is deliberately generous. A close button costs the title the width it needs to say
+    /// anything, and twenty tabs reading `×` twenty times is a bar you cannot navigate: the tab is
+    /// there to be identified first and closed second. ⌘W still closes; nothing is lost but a
+    /// target that had crowded out the only thing distinguishing one tab from another.
+    var minimumWidthForCloseButton: Double { closeButtonSize + horizontalInset * 2 + 46 }
 
     /// The narrowest a tab may be squeezed to make room for the bar's leading buttons. The tabs are
     /// what the bar is *for*, so a button that would push them below this is not shown at all.
@@ -208,9 +213,10 @@ public enum TabBarGeometry {
     public static func trailingRect(buttonWidth: Double, barWidth: Double, barHeight: Double,
                                     slotCount: Int, leading: Double, headerHeight: Double,
                                     metrics: TabBarMetrics = .standard) -> PaneRect? {
-        guard buttonWidth > 0 else { return nil }
-        let needed = Double(max(0, slotCount)) * metrics.minimumSlotWidth
-        guard barWidth - leading - buttonWidth >= needed else { return nil }
+        guard buttonWidth > 0, barWidth > buttonWidth else { return nil }
+        // Deliberately not dropped when the tabs are tight. At twenty tabs the bar lost its `+`
+        // exactly when it was hardest to reach one any other way, and a row of tabs you cannot add
+        // to is not a saving -- the tabs give up a point each instead.
         return PaneRect(x: barWidth - buttonWidth, y: headerHeight,
                         width: buttonWidth, height: max(0, barHeight - headerHeight))
     }

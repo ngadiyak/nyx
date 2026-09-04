@@ -157,7 +157,14 @@ private let monospace: (String) -> Double = { Double($0.count) }
 
 @Test func aLongTitleLosesItsMiddle() {
     #expect(TabTitle.truncatedInMiddle("abcdefgh", maxWidth: 5, measure: monospace) == "ab…gh")
-    #expect(TabTitle.truncatedInMiddle("abcdefgh", maxWidth: 4, measure: monospace) == "ab…h")
+}
+
+/// Below a handful of characters the ellipsis costs more than it earns: `ab…h` in four columns
+/// spends one of them saying "there is more", which the user can already see. The start of the
+/// name is what identifies a tab on a crowded bar.
+@Test func aVeryNarrowTitleKeepsItsStartAndDropsTheEllipsis() {
+    #expect(TabTitle.truncatedInMiddle("abcdefgh", maxWidth: 4, measure: monospace) == "abcd")
+    #expect(TabTitle.truncatedInMiddle("abcdefgh", maxWidth: 2, measure: monospace) == "ab")
 }
 
 @Test func truncationKeepsBothEndsOfTheTitle() {
@@ -167,8 +174,8 @@ private let monospace: (String) -> Double = { Double($0.count) }
     #expect(monospace(truncated) <= 6)
 }
 
-@Test func anImpossiblyNarrowTabGetsAnEllipsisOrNothing() {
-    #expect(TabTitle.truncatedInMiddle("abcdefgh", maxWidth: 1, measure: monospace) == "…")
+@Test func anImpossiblyNarrowTabGetsOneCharacterOrNothing() {
+    #expect(TabTitle.truncatedInMiddle("abcdefgh", maxWidth: 1, measure: monospace) == "a")
     #expect(TabTitle.truncatedInMiddle("abcdefgh", maxWidth: 0.5, measure: monospace) == "")
     #expect(TabTitle.truncatedInMiddle("abcdefgh", maxWidth: 0, measure: monospace) == "")
 }
@@ -180,9 +187,11 @@ private let monospace: (String) -> Double = { Double($0.count) }
     }
 }
 
+/// One column is better spent on a letter than on an ellipsis: the letter narrows down which tab
+/// this is, and the ellipsis only repeats what the width already says.
 @Test func aSingleCharacterTitleIsNotWorthAnEllipsis() {
     // Two characters cannot be middle-truncated into anything shorter than the ellipsis itself.
-    #expect(TabTitle.truncatedInMiddle("ab", maxWidth: 1, measure: monospace) == "…")
+    #expect(TabTitle.truncatedInMiddle("ab", maxWidth: 1, measure: monospace) == "a")
 }
 
 /// The bar carries the quick-action buttons as well as the tabs. `auto` hid it whenever there was
@@ -201,4 +210,20 @@ private let monospace: (String) -> Double = { Double($0.count) }
 @Test func severalTabsShowTheBarWithOrWithoutButtons() {
     #expect(TabStrip.isBarVisible(.auto, tabCount: 2, quickActionCount: 0))
     #expect(TabStrip.isBarVisible(.auto, tabCount: 2, quickActionCount: 2))
+}
+
+/// On a crowded bar, middle truncation spends two of the few characters available on an ellipsis
+/// and produces `n…h`, which identifies nothing. The beginning of the name does.
+@Test func aVeryNarrowTabKeepsTheStartOfTheNameRatherThanAnEllipsis() {
+    let width: (String) -> Double = { Double($0.count) }
+    #expect(TabTitle.truncatedInMiddle("nyx — zsh", maxWidth: 4, measure: width) == "nyx ")
+    #expect(!TabTitle.truncatedInMiddle("vim Pane.swift", maxWidth: 4, measure: width).contains("…"))
+}
+
+/// A wide tab still truncates in the middle, where the tail is what tells two names apart.
+@Test func aRoomyTabStillKeepsBothEndsOfTheName() {
+    let width: (String) -> Double = { Double($0.count) }
+    let result = TabTitle.truncatedInMiddle("Sources/App/Main.swift", maxWidth: 14, measure: width)
+    #expect(result.contains("…"))
+    #expect(result.hasSuffix("swift"))
 }

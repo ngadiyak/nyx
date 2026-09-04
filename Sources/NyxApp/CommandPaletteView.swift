@@ -56,7 +56,7 @@ private final class PaletteListView: NSView {
             if isSelected {
                 // Inset and rounded: a full-bleed fill runs under the panel's own rounded corners
                 // and border, which looks like the highlight escaped rather than like a selection.
-                nsColor(palette.selectionBackground, alpha: 1).setFill()
+                nsColor(palette.panelSelectionBackground, alpha: 1).setFill()
                 NSBezierPath(roundedRect: rect.insetBy(dx: 5, dy: 1), xRadius: 5, yRadius: 5).fill()
             }
             let title = NSMutableAttributedString(

@@ -232,6 +232,65 @@ final class TabBarView: NSView {
 
     // MARK: - Clicks
 
+    /// Names for the bar's controls, which were bare glyphs with nothing to say for themselves.
+    ///
+    /// With no quick actions configured the bar was two unlabelled symbols, one of which is the
+    /// only way into the quick-action feature at all. A glyph nobody can name is a glyph nobody
+    /// presses.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: bounds,
+                                       options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow],
+                                       owner: self, userInfo: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        toolTip = label(at: point)
+        if label(at: point) != nil { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        toolTip = nil
+        NSCursor.arrow.set()
+    }
+
+    /// What the thing under the pointer is called, or nil where there is nothing to name.
+    private func label(at point: NSPoint) -> String? {
+        switch hit(at: point) {
+        case .newTab:
+            return "New tab (⌘T)"
+        case .close(let index):
+            return items.indices.contains(index) ? "Close \(items[index].title) (⌘W)" : "Close tab"
+        case .select(let index):
+            return items.indices.contains(index) ? items[index].title : nil
+        case .expandGroup(let id), .groupHeader(let id):
+            guard let group = grouping.group(withID: id) else { return nil }
+            return group.isCollapsed ? "Expand “\(group.name)”" : "Collapse “\(group.name)”"
+        case .leadingButton(let index):
+            guard leadingButtons.indices.contains(index) else { return nil }
+            switch leadingButtons[index] {
+            case .tabList: return "All tabs (⌘⇧P)"
+            case .addQuickAction: return "Add a button for a command you run often"
+            case .quick(let action):
+                guard quickActions.indices.contains(action) else { return nil }
+                let quick = quickActions[action]
+                let what: String
+                switch quick.kind {
+                case .send: what = "types"
+                case .run: what = "opens a tab and runs"
+                case .toggle:
+                    what = QuickActionRunner.shared.isRunning(quick) ? "stops" : "runs in the background"
+                }
+                return "\(quick.name) — \(what): \(quick.command)"
+            case .newTab: return "New tab (⌘T)"
+            }
+        case nil:
+            return nil
+        }
+    }
+
     override func mouseDown(with event: NSEvent) {
         switch hit(at: convert(event.locationInWindow, from: nil)) {
         case .close(let index): onClose?(index)

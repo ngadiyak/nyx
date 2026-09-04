@@ -52,6 +52,9 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
         configure(scope, symbol: "square.on.square", fallback: "All", action: #selector(toggleScope))
         scope.setButtonType(.pushOnPushOff)
         scope.toolTip = "Search every tab"
+        previous.toolTip = "Previous match (⇧⏎)"
+        next.toolTip = "Next match (⏎)"
+        close.toolTip = "Close (⎋)"
         configure(previous, symbol: "chevron.left", fallback: "<", action: #selector(stepBackward))
         configure(next, symbol: "chevron.right", fallback: ">", action: #selector(stepForward))
         configure(close, symbol: "xmark", fallback: "x", action: #selector(dismiss))
@@ -145,10 +148,19 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
     /// the pressed look, which is nearly invisible on a borderless button.
     private func updateScopeTint(palette: Palette) {
         lastPalette = palette
+        // Colour alone does not carry this: in several themes the cursor colour *is* the
+        // foreground, so on and off rendered pixel-identical. The state is a filled chip.
         scope.contentTintColor = searchesAllTabs
-            ? nsColor(palette.cursor, alpha: 1)
+            ? nsColor(palette.background, alpha: 1)
             : nsColor(palette.foreground, alpha: 0.8)
-        scope.toolTip = searchesAllTabs ? "Searching every tab" : "Search every tab"
+        scope.wantsLayer = true
+        scope.layer?.cornerRadius = 5
+        scope.layer?.backgroundColor = searchesAllTabs
+            ? nsColor(palette.cursor, alpha: 0.9).cgColor
+            : NSColor.clear.cgColor
+        scope.toolTip = searchesAllTabs
+            ? "Searching every tab — click for this pane only"
+            : "Search every tab"
     }
 
     @objc private func stepForward() { onStep?(true) }

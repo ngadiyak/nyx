@@ -135,6 +135,14 @@ public struct Palette: Equatable {
     /// Text for a note the terminal itself writes beside a row -- how long a command took. Blended
     /// halfway to the background: it has to be readable at a glance and must never compete with
     /// the output, which is the thing the user is actually reading.
+    /// The selected row in a panel Nyx draws itself -- the palette, a list.
+    ///
+    /// Deliberately not the terminal's `selectionBackground`, which is chosen to sit under the
+    /// user's own text and, in several themes, is nearly the panel's background (invisible) or
+    /// nearly its foreground (a dark slab under dark text). This is the accent, dropped toward the
+    /// background far enough that ordinary foreground text stays readable on it.
+    public var panelSelectionBackground: RGB { RGB.blend(cursor, into: background, amount: 0.68) }
+
     public var noteForeground: RGB { RGB.blend(foreground, into: background, amount: 0.45) }
 
     /// Mixes `colour` into `background`. `amount` is how much of the background wins, so 0 is the

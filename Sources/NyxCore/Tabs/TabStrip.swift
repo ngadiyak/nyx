@@ -141,6 +141,18 @@ public enum TabTitle {
         if measure(title) <= maxWidth { return title }
         let characters = Array(title)
         guard characters.count > 1 else { return measure(ellipsis) <= maxWidth ? ellipsis : "" }
+
+        // Below a handful of characters, keep the beginning and drop the ellipsis entirely.
+        //
+        // Middle truncation earns its keep on a wide tab, where the tail distinguishes
+        // `Main.swift` from `Model.swift`. On a crowded bar it spends two of the four characters
+        // available on the ellipsis and yields `n…h`, which identifies nothing. `nyx` does.
+        if measure(keeping(4, of: characters)) > maxWidth {
+            var count = characters.count
+            while count > 1, measure(String(characters.prefix(count))) > maxWidth { count -= 1 }
+            let prefix = String(characters.prefix(count))
+            return measure(prefix) <= maxWidth ? prefix : ""
+        }
         // The largest number of characters that can be kept and still fit. Binary search rather
         // than a scan because `measure` is the expensive part.
         var low = 0, high = characters.count - 1, best = -1

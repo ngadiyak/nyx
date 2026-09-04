@@ -73,12 +73,31 @@ final class ConfigBanner: NSView {
 
     private func show(text: String, color: NSColor) {
         messageLabel.stringValue = text
-        layer?.backgroundColor = color.withAlphaComponent(0.85).cgColor
+        layer?.backgroundColor = color.withAlphaComponent(0.95).cgColor
+        // Dark text on the fill, always. The label followed the system appearance, so in dark mode
+        // it drew white on yellow at 2:1 -- the one strip on screen whose entire job is to be read.
+        messageLabel.textColor = ConfigBanner.textColor(on: color)
+        for view in subviews.compactMap({ $0 as? NSButton }) {
+            view.contentTintColor = ConfigBanner.textColor(on: color)
+        }
         isHidden = false
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             heightConstraint.animator().constant = Self.height
         }
+    }
+
+    /// Black or white, whichever the fill can carry. Relative luminance, not a guess: `systemYellow`
+    /// and `systemBlue` need opposite answers.
+    static func textColor(on fill: NSColor) -> NSColor {
+        guard let rgb = fill.usingColorSpace(.sRGB) else { return .black }
+        func channel(_ v: CGFloat) -> CGFloat {
+            v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * channel(rgb.redComponent)
+            + 0.7152 * channel(rgb.greenComponent)
+            + 0.0722 * channel(rgb.blueComponent)
+        return luminance > 0.45 ? .black : .white
     }
 
     @objc private func openConfig() { onOpenConfig?() }

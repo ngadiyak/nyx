@@ -887,7 +887,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// stop working inside vim and htop the moment we added one.
     override func rightMouseDown(with event: NSEvent) {
         if report(event, .right, .press) { return }
-        NSMenu.popUpContextMenu(contextMenu(), with: event, for: self)
+        NSMenu.popUpContextMenu(contextMenu(at: convert(event.locationInWindow, from: nil)),
+                                with: event, for: self)
     }
     override func rightMouseDragged(with event: NSEvent) { report(event, .right, .drag) }
     override func rightMouseUp(with event: NSEvent) { report(event, .right, .release) }
@@ -985,8 +986,24 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// The right-click menu. Built from `TerminalAction` like the main menu, so an item here cannot
     /// do something different from the same item there, and both grey out by the same rule.
-    private func contextMenu() -> NSMenu {
+    private func contextMenu(at point: NSPoint? = nil) -> NSMenu {
         let menu = NSMenu()
+        // The command under the pointer, when there is one. This is the entry that turns the
+        // scrollback into something you can act on rather than only read: the prompt marks say
+        // where each command began, so "that one, with a change" is answerable.
+        if let point, let row = commandRow(under: point) {
+            let rerun = NSMenuItem(title: "Edit and Run This Command…",
+                                   action: #selector(editAndRunFromMenu(_:)), keyEquivalent: "")
+            rerun.target = self
+            rerun.tag = row
+            menu.addItem(rerun)
+            let again = NSMenuItem(title: "Run This Command Again",
+                                   action: #selector(rerunFromMenu(_:)), keyEquivalent: "")
+            again.target = self
+            again.tag = row
+            menu.addItem(again)
+            menu.addItem(.separator())
+        }
         let groups: [[TerminalAction]] = [
             [.copy, .paste],
             [.splitRight, .splitDown, .toggleZoom],
@@ -1625,11 +1642,112 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // "Paste" is first, so it is the default -- but the sheet itself is the interruption, and a
         // user who reads the preview and presses ⏎ has still read it.
         alert.addButton(withTitle: "Paste")
+        // The third choice is the useful one for the case this dialog is most often shown for: a
+        // long command pasted from somewhere that needs one value changed before it runs. Refusing
+        // or accepting a wall of text are both worse answers than being able to look at it.
+        alert.addButton(withTitle: "Edit…")
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn else { return }
-            self?.performPaste(text, bracketed: bracketed)
+            guard let self else { return }
+            switch response {
+            case .alertFirstButtonReturn:
+                self.performPaste(text, bracketed: bracketed)
+            case .alertSecondButtonReturn:
+                // Presented after this sheet has finished dismissing; two sheets on one window at
+                // the same time is undefined and in practice loses the second.
+                DispatchQueue.main.async { self.editThenPaste(text, bracketed: bracketed) }
+            default:
+                break
+            }
         }
+    }
+
+    /// The absolute row of the command whose region covers a point, or nil where there is none --
+    /// above the first prompt, or with a shell that emits no marks.
+    private func commandRow(under point: NSPoint) -> Int? {
+        session.withTerminal { terminal in
+            guard terminal.shellEmitsPromptMarks else { return nil }
+            let position = self.position(topLeft(point), in: terminal)
+            return terminal.command(containingAbsoluteRow: position.row)?.promptRow
+        }
+    }
+
+    @objc private func editAndRunFromMenu(_ sender: NSMenuItem) {
+        if !editAndRunCommand(atAbsoluteRow: sender.tag) { NSSound.beep() }
+    }
+
+    /// No editor, no confirmation: the command exactly as it ran.
+    @objc private func rerunFromMenu(_ sender: NSMenuItem) {
+        let command: String = session.withTerminal { terminal in
+            guard let region = terminal.command(containingAbsoluteRow: sender.tag) else { return "" }
+            return terminal.commandText(of: region)
+        }
+        guard !command.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        send(Array((command + "\r").utf8))
+    }
+
+    /// `⌘E`: the last command that ran, in the editor. From the keyboard there is no pointer to
+    /// say which command was meant, and the last one is what "run that again, but…" means.
+    @discardableResult
+    func editAndRunLastCommand() -> Bool {
+        let row: Int? = session.withTerminal { $0.lastFinishedCommand?.promptRow }
+        guard let row else { return false }
+        return editAndRunCommand(atAbsoluteRow: row)
+    }
+
+    /// Opens the paste in the command editor, and pastes whatever comes back.
+    private func editThenPaste(_ text: String, bracketed: Bool) {
+        presentCommandEditor(text: text, heading: "Edit before pasting", runTitle: "Paste") {
+            [weak self] edited in
+            self?.performPaste(edited, bracketed: bracketed)
+        }
+    }
+
+    /// `Edit and Run` on a command in the scrollback: the command comes back in the editor, and
+    /// what the user leaves there is typed at the shell as though they had entered it.
+    ///
+    /// Possible only because the prompt marks say where each command began and ended -- without
+    /// them the terminal has a screen of text and no idea which part of it was a command.
+    func editAndRunCommand(atAbsoluteRow row: Int) -> Bool {
+        let command: String = session.withTerminal { terminal in
+            guard let region = terminal.command(containingAbsoluteRow: row) else { return "" }
+            return terminal.commandText(of: region)
+        }
+        guard !command.isEmpty else { return false }
+        presentCommandEditor(text: command, heading: "Edit and run", runTitle: "Run") {
+            [weak self] edited in
+            guard let self else { return }
+            // Sent as a paste so a multi-line edit arrives as one command rather than as several
+            // lines the shell starts running one at a time.
+            let bracketed = self.session.withTerminal { $0.modes.bracketedPaste }
+            self.performPaste(edited, bracketed: bracketed)
+        }
+        return true
+    }
+
+    private func presentCommandEditor(text: String, heading: String, runTitle: String,
+                                      then run: @escaping (String) -> Void) {
+        guard let window else {
+            NSSound.beep()
+            return
+        }
+        let editor = CommandEditor(text: text, heading: heading, runTitle: runTitle,
+                                   palette: Pane.resolvedPalette(for: config))
+        // `presentAsSheet` needs a presenting controller; a pane is a view, so the window's own
+        // content controller does the presenting and the dismissing.
+        guard let controller = window.contentViewController else {
+            NSSound.beep()
+            return
+        }
+        editor.onFinish = { [weak controller] edited in
+            controller?.dismiss(editor)
+            guard let edited else { return }
+            run(edited)
+        }
+        controller.presentAsSheet(editor)
     }
 
     /// The first line in a fixed-width font, with the line count under it. Selectable, because the

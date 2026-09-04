@@ -1173,6 +1173,7 @@ extension TabController: ActionTarget {
         case .nextPrompt: if focusedPane?.jumpToPrompt(forward: true) != true { NSSound.beep() }
         case .selectCommandOutput: if focusedPane?.selectCommandOutput() != true { NSSound.beep() }
         case .copyCommandOutput: if focusedPane?.copyLastCommandOutput() != true { NSSound.beep() }
+        case .editAndRunCommand: if focusedPane?.editAndRunLastCommand() != true { NSSound.beep() }
         case .find: focusedPane?.openSearch()
         case .findNext: if focusedPane?.stepSearch(forward: true) != true { NSSound.beep() }
         case .findPrevious: if focusedPane?.stepSearch(forward: false) != true { NSSound.beep() }

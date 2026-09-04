@@ -48,6 +48,7 @@ public extension TerminalAction {
         case .findNext: return "Find Next"
         case .findPrevious: return "Find Previous"
         case .commandPalette: return "Command Palette"
+        case .editAndRunCommand: return "Edit and Run Command…"
         case .foldCommand: return "Fold Command Output"
         case .foldAllLongOutput: return "Fold All Long Output"
         case .saveScrollback: return "Save Scrollback\u{2026}"
@@ -96,6 +97,7 @@ public enum ActionCatalog {
             Group([.commandPalette]),
             Group([.previousPrompt, .nextPrompt]),
             Group([.selectCommandOutput, .copyCommandOutput]),
+            Group([.editAndRunCommand]),
             Group([.foldCommand, .foldAllLongOutput]),
         ]),
         Section(title: "View", groups: [

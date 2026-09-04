@@ -75,9 +75,18 @@ Metal renderer in `Tests/NyxRenderTests`.
 
 ## Not there yet
 
-Honest list. The app is ad-hoc signed, so it runs on the machine that built it and not on anybody
-else's — Developer ID and notarisation are not done. There is no automatic update. VoiceOver
-support is being added. Throughput is 190 MB/s against a design target of 300.
+Honest list.
+
+**Distribution.** `scripts/bundle.sh` produces an ad-hoc signed app, which runs on the machine that
+built it and nowhere else — Gatekeeper refuses an ad-hoc signature everywhere. `scripts/release.sh`
+signs, notarises and staples properly, and is ready to run, but it needs an Apple Developer account:
+a Developer ID certificate and a notarytool keychain profile. Neither can be faked, so the script
+checks for them and says what is missing rather than producing something that looks shippable.
+
+**No automatic update.** Nothing tells you a new version exists.
+
+**Throughput** is 190 MB/s against a design target of 300. The remaining work is known — a
+table-driven parser and a flat cell grid — and is not started.
 
 ## Snapshot test
 

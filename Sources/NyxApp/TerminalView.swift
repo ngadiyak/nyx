@@ -192,7 +192,8 @@ final class TerminalView: NSView, NSTextInputClient {
             // already marked clean; once per-row partial redraw lands, fix both here and there.
             t.clearDirty()
             return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
-                               cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit)
+                               cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit,
+                               selection: [])
         }
         // A missing drawable is transient; keep the frame stale so the next tick retries rather
         // than pausing the link on top of stale pixels.

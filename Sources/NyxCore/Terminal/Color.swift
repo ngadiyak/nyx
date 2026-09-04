@@ -65,9 +65,15 @@ public struct Palette: Equatable {
     public var foreground: RGB
     public var background: RGB
     public var cursor: RGB
+    /// Background painted behind selected cells.
+    public var selectionBackground: RGB
+    /// Foreground for selected cells, or nil to keep each cell's own colour. Themes that pick a
+    /// selection background close to the text colour set this; most do not need it.
+    public var selectionForeground: RGB?
 
     /// `ansi` is the 16 base colors; the 6x6x6 cube and the 24-step gray ramp are always the xterm defaults.
-    public init(ansi: [RGB], foreground: RGB, background: RGB, cursor: RGB) {
+    public init(ansi: [RGB], foreground: RGB, background: RGB, cursor: RGB,
+                selectionBackground: RGB? = nil, selectionForeground: RGB? = nil) {
         precondition(ansi.count == 16)
         var c = ansi
         for i in 0..<216 {
@@ -80,6 +86,8 @@ public struct Palette: Equatable {
         self.foreground = foreground
         self.background = background
         self.cursor = cursor
+        self.selectionBackground = selectionBackground ?? foreground.scaled(0.35)
+        self.selectionForeground = selectionForeground
     }
 
     public static let xtermAnsi16: [RGB] = [

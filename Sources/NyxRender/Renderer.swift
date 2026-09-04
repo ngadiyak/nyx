@@ -13,11 +13,16 @@ public struct RenderFrame {
     public var cursorShape: CursorShape
     public var focused: Bool
     public var preedit: String?
+    /// Selected column range per visible row, indexed the same way as `lines`. nil means nothing
+    /// selected on that row. The view computes these from the absolute selection and the viewport.
+    public var selection: [Range<Int>?]
 
     public init(cols: Int, rows: Int, lines: [Row], graphemes: [String], palette: Palette,
-                cursor: Cursor?, cursorShape: CursorShape, focused: Bool, preedit: String?) {
+                cursor: Cursor?, cursorShape: CursorShape, focused: Bool, preedit: String?,
+                selection: [Range<Int>?] = []) {
         self.cols = cols; self.rows = rows; self.lines = lines; self.graphemes = graphemes; self.palette = palette
         self.cursor = cursor; self.cursorShape = cursorShape; self.focused = focused; self.preedit = preedit
+        self.selection = selection
     }
 }
 
@@ -164,9 +169,15 @@ public final class Renderer {
                     let px = Float(padding + x * m.width), py = Float(padding + y * m.height)
                     let w = wide ? cw * 2 : cw
 
+                    let selected = y < f.selection.count && (f.selection[y]?.contains(x) ?? false)
+                    if selected {
+                        bg = f.palette.selectionBackground
+                        if let sf = f.palette.selectionForeground { fg = sf }
+                    }
+
                     let blockCursor = isCursor && f.focused && f.cursorShape == .block
                     if blockCursor { bg = f.palette.cursor; fg = f.palette.background }
-                    if bg != f.palette.background || blockCursor {
+                    if bg != f.palette.background || blockCursor || selected {
                         instances.append(rect(px, py, w, ch, bg))
                     }
 

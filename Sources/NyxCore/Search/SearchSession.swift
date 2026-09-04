@@ -58,8 +58,19 @@ public struct SearchSession: Equatable {
     /// path rather than on a timer that only runs while the bar happens to be open.
     @discardableResult
     public mutating func invalidateIfStale(in terminal: Terminal, viewportTop: Int) -> Bool {
-        guard search.isStale(terminal) else { return false }
-        refresh(in: terminal, viewportTop: viewportTop)
+        if search.isStale(terminal) {
+            refresh(in: terminal, viewportTop: viewportTop)
+            return true
+        }
+        // The gentler shift: the ring dropped rows off the top, so the same text now lives that
+        // many rows lower. The hit the user is standing on moves with the rest of them, and is
+        // dropped only when the row it was on has itself been evicted.
+        let dropped = search.rebase(terminal)
+        guard dropped > 0 else { return false }
+        if let hit = current {
+            let moved = SearchMatch(row: hit.row - dropped, columns: hit.columns)
+            current = search.index(of: moved) != nil ? moved : search.matches.first
+        }
         return true
     }
 

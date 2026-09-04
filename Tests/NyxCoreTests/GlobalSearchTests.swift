@@ -19,7 +19,9 @@ private func panes() -> ([SearchScope], [Int: Terminal]) {
 
 private func search(_ query: String) -> [GlobalSearchHit] {
     let (scopes, terminals) = panes()
-    return GlobalSearch.run(query: query, scopes: scopes) { terminals[$0.paneID] }
+    return GlobalSearch.run(query: query, scopes: scopes) { scope, work in
+        terminals[scope.paneID].map(work) ?? []
+    }
 }
 
 // MARK: - Finding
@@ -45,8 +47,8 @@ private func search(_ query: String) -> [GlobalSearchHit] {
 /// A pane closing while the search runs is ordinary, not an error.
 @Test func aPaneThatCannotBeReadIsSkipped() {
     let (scopes, terminals) = panes()
-    let hits = GlobalSearch.run(query: "error", scopes: scopes) {
-        $0.paneID == 3 ? nil : terminals[$0.paneID]
+    let hits = GlobalSearch.run(query: "error", scopes: scopes) { scope, work in
+        scope.paneID == 3 ? [] : (terminals[scope.paneID].map(work) ?? [])
     }
     #expect(hits.isEmpty)
 }
@@ -55,7 +57,7 @@ private func search(_ query: String) -> [GlobalSearchHit] {
 @Test func onePaneFullOfMatchesCannotSwampTheList() {
     let noisy = makeTerminal(cols: 20, rows: 4, scrollback: 500)
     for _ in 0..<200 { noisy.feed("match\r\n") }
-    let hits = GlobalSearch.run(query: "match", scopes: [scope(9, tab: 0, "yes")]) { _ in noisy }
+    let hits = GlobalSearch.run(query: "match", scopes: [scope(9, tab: 0, "yes")]) { _, work in work(noisy) }
     #expect(hits.count == GlobalSearch.hitsPerPane)
 }
 
@@ -64,7 +66,9 @@ private func search(_ query: String) -> [GlobalSearchHit] {
 /// The list should mirror the tab bar, not the order the buffers happened to be searched in.
 @Test func resultsAreGroupedInTheOrderTheScopesWereGiven() {
     let (scopes, terminals) = panes()
-    let hits = GlobalSearch.run(query: "e", scopes: scopes) { terminals[$0.paneID] }
+    let hits = GlobalSearch.run(query: "e", scopes: scopes) { scope, work in
+        terminals[scope.paneID].map(work) ?? []
+    }
     let groups = GlobalSearch.grouped(hits, scopes: scopes)
     #expect(groups.map(\.scope.paneID) == groups.map(\.scope.paneID).sorted())
     #expect(groups.allSatisfy { !$0.hits.isEmpty })
@@ -72,7 +76,9 @@ private func search(_ query: String) -> [GlobalSearchHit] {
 
 @Test func groupingDropsPanesWithNothingInThem() {
     let (scopes, terminals) = panes()
-    let hits = GlobalSearch.run(query: "error", scopes: scopes) { terminals[$0.paneID] }
+    let hits = GlobalSearch.run(query: "error", scopes: scopes) { scope, work in
+        terminals[scope.paneID].map(work) ?? []
+    }
     #expect(GlobalSearch.grouped(hits, scopes: scopes).count == 1)
 }
 

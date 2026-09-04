@@ -19,6 +19,9 @@ public struct SelectionController {
     private var mode: SelectionMode = .character
     /// The terminal's coordinate-space generation when the selection was made.
     private var generation: UInt64 = 0
+    /// How many rows the ring had evicted when the selection was made. Every row evicted since is a
+    /// row the selection's absolute coordinates have to come down by to keep covering its text.
+    private var evictedRows = 0
 
     public init() {}
 
@@ -40,6 +43,7 @@ public struct SelectionController {
         anchor = position
         isDragging = true
         generation = terminal.scrollbackGeneration
+        evictedRows = terminal.evictedRows
         return set(Self.expand(anchor: position, head: position, mode: mode, in: terminal, separators: separators))
     }
 
@@ -70,9 +74,35 @@ public struct SelectionController {
     /// content instead of disappearing.
     @discardableResult
     public mutating func invalidateIfStale(_ terminal: Terminal) -> Bool {
-        guard terminal.scrollbackGeneration != generation else { return false }
-        generation = terminal.scrollbackGeneration
-        return clear()
+        guard terminal.scrollbackGeneration == generation else {
+            generation = terminal.scrollbackGeneration
+            evictedRows = terminal.evictedRows
+            return clear()
+        }
+        return rebaseAfterTrimming(terminal)
+    }
+
+    /// Moves the selection up by however many rows the scrollback ring has dropped since it was
+    /// made, so it goes on covering the text it was made on.
+    ///
+    /// The rows are still there, one index lower each time the ring evicts; leaving the selection
+    /// where it was is what made a highlight sit still while other output slid through it. A
+    /// selection whose text has itself been evicted is dropped -- there is nothing left to point
+    /// at -- and one only partly gone is clamped to what survives.
+    private mutating func rebaseAfterTrimming(_ terminal: Terminal) -> Bool {
+        let dropped = terminal.evictedRows - evictedRows
+        guard dropped > 0 else { return false }
+        evictedRows = terminal.evictedRows
+        anchor = anchor.map { AbsolutePosition(row: max(0, $0.row - dropped), col: $0.col) }
+        guard let current = selection else { return false }
+        guard current.end.row - dropped >= 0 else { return clear() }
+
+        let shift = { (p: AbsolutePosition) -> AbsolutePosition in
+            p.row - dropped >= 0 ? AbsolutePosition(row: p.row - dropped, col: p.col)
+                                 : AbsolutePosition(row: 0, col: 0)
+        }
+        return set(Selection(anchor: shift(current.anchor), head: shift(current.head),
+                             mode: current.mode))
     }
 
     /// Drops the selection and any drag in progress. Typing does this.
@@ -93,6 +123,7 @@ public struct SelectionController {
         let rows = terminal.totalRows
         guard rows > 0, terminal.cols > 0 else { return clear() }
         generation = terminal.scrollbackGeneration
+        evictedRows = terminal.evictedRows
         anchor = AbsolutePosition(row: 0, col: 0)
         isDragging = false
         return set(Selection(anchor: AbsolutePosition(row: 0, col: 0),
@@ -107,6 +138,7 @@ public struct SelectionController {
     /// than leaving it pointing at whatever now occupies those rows.
     public mutating func replace(with selection: Selection, in terminal: Terminal) -> Bool {
         generation = terminal.scrollbackGeneration
+        evictedRows = terminal.evictedRows
         anchor = selection.anchor
         isDragging = false
         return set(selection)

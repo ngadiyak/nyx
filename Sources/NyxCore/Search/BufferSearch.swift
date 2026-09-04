@@ -30,6 +30,8 @@ public struct BufferSearch: Equatable {
     /// The buffer generation these matches were found in; a `clear` invalidates them the same way
     /// it invalidates a selection.
     private var generation: UInt64
+    /// Rows the ring had evicted when these matches were found; see `rebase`.
+    private var evictedRows = 0
     private var caseSensitive: Bool
 
     public init() {
@@ -56,6 +58,7 @@ public struct BufferSearch: Equatable {
         query = newQuery
         caseSensitive = sensitive
         generation = terminal.scrollbackGeneration
+        evictedRows = terminal.evictedRows
 
         guard !newQuery.isEmpty else {
             matches = []
@@ -76,6 +79,26 @@ public struct BufferSearch: Equatable {
     /// is no longer there.
     public func isStale(_ terminal: Terminal) -> Bool {
         !matches.isEmpty && generation != terminal.scrollbackGeneration
+    }
+
+    /// Moves every match up by the rows the scrollback ring has dropped since the search ran,
+    /// discarding the ones whose text has gone with them. Returns how many rows they moved by, so
+    /// the caller can move whatever else it holds in the same coordinates.
+    ///
+    /// Rebasing rather than re-scanning: with the bar open on a buffer producing output, the ring
+    /// evicts on nearly every frame, and re-running the query over ten thousand rows that often is
+    /// the difference between a smooth `make` and a stuttering one. The matches themselves have not
+    /// changed -- only their numbering has.
+    @discardableResult
+    public mutating func rebase(_ terminal: Terminal) -> Int {
+        let dropped = terminal.evictedRows - evictedRows
+        guard dropped > 0 else { return 0 }
+        evictedRows = terminal.evictedRows
+        matches = matches.compactMap { match in
+            match.row - dropped < 0 ? nil
+                : SearchMatch(row: match.row - dropped, columns: match.columns)
+        }
+        return dropped
     }
 
     // MARK: - Stepping

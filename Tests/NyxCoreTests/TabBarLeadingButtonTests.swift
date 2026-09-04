@@ -98,3 +98,55 @@ private func leading(_ widths: [Double], barWidth: Double, tabs: Int) -> Double 
                                  headerHeight: 0)
     #expect(hit == .select(0))
 }
+
+// MARK: - The pinned last button
+
+/// The bar's last leading button is the `+` that adds a quick action, and it is the only way to
+/// add one from the interface. Dropping it first -- which is what plain overflow does, and did --
+/// takes that away exactly when there are enough buttons to fill the bar.
+@Test func thePinnedButtonSurvivesOverflowAndTheOthersGoFirst() {
+    // The real shape of the bar: the tab-list button, three quick actions, then the 26pt `+`.
+    let bar: [Double] = [26, 60, 60, 60, 26]
+    // Six tabs need 240pt of a 300pt bar, leaving 60: the tab list, the pinned `+`, nothing else.
+    let laid = TabBarGeometry.leadingLayout(buttonWidths: bar, barWidth: 300, barHeight: 28,
+                                            slotCount: 6, headerHeight: 0, pinLast: true)
+    #expect(laid.map(\.index) == [0, 4])
+    #expect(laid.last?.rect.x == 26)          // straight after the buttons that did fit
+    #expect(laid.last?.rect.width == 26)
+
+    // Unpinned, the same bar drops the `+` and keeps a quick action nobody asked to keep.
+    let plain = TabBarGeometry.leadingLayout(buttonWidths: bar, barWidth: 300, barHeight: 28,
+                                             slotCount: 6, headerHeight: 0)
+    #expect(plain.map(\.index) == [0])
+}
+
+/// A quick action is dropped so the pinned button can be shown, not in addition to it.
+@Test func thePinnedButtonTakesItsRoomFromTheOthers() {
+    let widths: [Double] = [26, 60, 60, 26]
+    let laid = TabBarGeometry.leadingLayout(buttonWidths: widths, barWidth: 400, barHeight: 28,
+                                            slotCount: 4, headerHeight: 0, pinLast: true)
+    // Four tabs need 160pt, leaving 240: 26 + 60 + 60 + 26 = 172 all fit.
+    #expect(laid.map(\.index) == [0, 1, 2, 3])
+
+    let tighter = TabBarGeometry.leadingLayout(buttonWidths: widths, barWidth: 300, barHeight: 28,
+                                               slotCount: 4, headerHeight: 0, pinLast: true)
+    // 140pt of room: 26 + 60 fits with the pinned 26 reserved; the second quick action does not.
+    #expect(tighter.map(\.index) == [0, 1, 3])
+}
+
+/// Where a click lands has to agree with what was drawn: the hit test reports the button's own
+/// index, not its position among the ones that fit.
+@Test func aClickOnThePinnedButtonReportsThePinnedButton() {
+    let bar: [Double] = [26, 60, 60, 60, 26]
+    let hit = TabBarGeometry.hit(atX: 30, y: 14, slots: slots(6), barWidth: 300, barHeight: 28,
+                                 headerHeight: 0, trailingWidth: 26, leadingWidths: bar,
+                                 pinLastLeading: true)
+    #expect(hit == .leadingButton(4))
+}
+
+/// Without pinning, nothing changes: the plain overflow rule is what every other bar layout uses.
+@Test func pinningIsOptOut() {
+    let laid = TabBarGeometry.leadingLayout(buttonWidths: buttons, barWidth: 300, barHeight: 28,
+                                            slotCount: 6, headerHeight: 0)
+    #expect(laid.map(\.index) == [0, 1])
+}

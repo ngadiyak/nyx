@@ -60,6 +60,18 @@ public final class Terminal: TerminalActions {
     /// A resize deliberately does not bump it. Reflow moves content between rows but keeps it, so a
     /// selection made before a resize still points at the text the user chose.
     public private(set) var scrollbackGeneration: UInt64 = 0
+    /// How many rows the scrollback ring has thrown away since this terminal started.
+    ///
+    /// Past capacity every push drops the oldest row, and absolute row *n* comes to mean the row
+    /// below the one it used to mean -- silently, because the indices stay in range and the
+    /// generation is untouched (the content is still there, it has only moved). Anything holding
+    /// absolute coordinates across output subtracts the growth in this counter to keep pointing at
+    /// the text it was pointing at; a selection made before a long build used to end up covering
+    /// whatever had since slid under it, and copying it copied that instead.
+    ///
+    /// Never reset: the paths that throw the buffer away bump `scrollbackGeneration`, and holders
+    /// check that first, so a counter that only ever grows keeps every delta meaningful.
+    public private(set) var evictedRows: Int = 0
     /// Bumped whenever bytes are fed. Cheap enough to read on any path, and exact for the question
     /// a cache needs answered: has this buffer changed since the last time I looked?
     public private(set) var contentVersion: UInt64 = 0
@@ -425,7 +437,12 @@ public final class Terminal: TerminalActions {
             var recycled: Row
             if save {
                 removed.dirty = true
+                let stored = scrollback.count
                 recycled = scrollback.push(removed) ?? Row(cols: cols, fill: fill)
+                // Either the ring grew or it dropped its oldest row to make room. A zero-capacity
+                // scrollback drops every row and never grows, and that shifts absolute rows just
+                // the same, so this asks whether it grew rather than whether a row came back.
+                if scrollback.count == stored { evictedRows += 1 }
                 if viewportOffset > 0 { viewportOffset = min(viewportOffset + 1, scrollback.count) }
             } else {
                 recycled = removed

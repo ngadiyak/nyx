@@ -7,6 +7,24 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     private var banner: ConfigBanner?
     private var effectView: NSVisualEffectView?
     private var config: Config = .defaults
+    private var quickActionFailures: Any?
+
+    deinit {
+        if let quickActionFailures { NotificationCenter.default.removeObserver(quickActionFailures) }
+    }
+
+    /// A background quick action that fails has no pane to fail in -- nothing was typed anywhere,
+    /// and its output goes to /dev/null by design. The banner is where a window says things, so it
+    /// says this too, in the window the user is actually looking at: the notification reaches every
+    /// open window, and the same sentence appearing in four of them is worse than useful.
+    private func observeQuickActionFailures() {
+        quickActionFailures = NotificationCenter.default.addObserver(
+            forName: QuickActionRunner.failed, object: nil, queue: .main) { [weak self] note in
+            guard let self, let message = note.object as? String,
+                  self.window?.isKeyWindow ?? false else { return }
+            self.banner?.showNote(message)
+        }
+    }
 
     /// Builds a window with a live terminal in it, or shows the error and returns nil.
     ///
@@ -87,6 +105,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         controller.banner = banner
         controller.effectView = effectView
         controller.config = config
+        controller.observeQuickActionFailures()
         controller.applyWindowAppearance()
         return controller
     }

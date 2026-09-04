@@ -46,21 +46,27 @@ public enum GlobalSearch {
     /// legible and keeps a `yes` running in one pane from producing ten thousand rows.
     public static let hitsPerPane = 20
 
-    /// Runs `query` over every scope. `terminalFor` hands back the buffer for a pane; returning nil
-    /// skips it, which is what a pane closing mid-search looks like.
+    /// Runs `query` over every scope. `read` runs its body **while holding that pane's lock** and hands back the result.
+    ///
+    /// Deliberately shaped this way rather than taking the terminals themselves. A terminal handed
+    /// out of its lock is read while the PTY thread is inside `feed()`, and this searched every
+    /// open buffer at once: the first version crashed the whole application -- every shell in every
+    /// window -- as soon as anything was producing output while you typed in the search field.
+    /// Passing the work in instead of taking the object out makes that unrepresentable.
     public static func run(query: String, scopes: [SearchScope],
-                           terminalFor: (SearchScope) -> Terminal?) -> [GlobalSearchHit] {
+                           read: (SearchScope, (Terminal) -> [GlobalSearchHit]) -> [GlobalSearchHit])
+        -> [GlobalSearchHit] {
         guard !query.isEmpty else { return [] }
         var hits: [GlobalSearchHit] = []
-
         for scope in scopes {
-            guard let terminal = terminalFor(scope) else { continue }
-            var search = BufferSearch()
-            search.search(query, in: terminal)
-            for match in search.matches.prefix(hitsPerPane) {
-                let row = terminal.rowText(absoluteRow: match.row)
-                let (line, highlight) = context(of: match, in: row)
-                hits.append(GlobalSearchHit(scope: scope, match: match, line: line, highlight: highlight))
+            hits += read(scope) { terminal in
+                var search = BufferSearch()
+                search.search(query, in: terminal)
+                return search.matches.prefix(hitsPerPane).map { match in
+                    let row = terminal.rowText(absoluteRow: match.row)
+                    let (line, highlight) = context(of: match, in: row)
+                    return GlobalSearchHit(scope: scope, match: match, line: line, highlight: highlight)
+                }
             }
         }
         return hits

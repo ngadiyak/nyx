@@ -25,6 +25,18 @@ final class TabController: NSViewController, NSMenuItemValidation {
     private(set) var paneCreationFailure: Error?
 
     /// One tab: its panes, the title they last reported, and what it has to tell the user about.
+    /// What an "Add to Group" item carries: the tab by identity, the group by id. Both can go
+    /// while the menu is open -- the tab's shell exits, the group empties -- and both are checked
+    /// again when it is chosen.
+    private final class TabAndGroup {
+        let tab: Tab
+        let group: Int
+        init(tab: Tab, group: Int) {
+            self.tab = tab
+            self.group = group
+        }
+    }
+
     private final class Tab {
         let panes: PaneTreeView
         /// A name the user typed, which outranks whatever the shell goes on setting -- that being
@@ -483,7 +495,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
                 let entry = NSMenuItem(title: group.name, action: #selector(menuAddToGroup(_:)),
                                        keyEquivalent: "")
                 entry.target = self
-                entry.representedObject = [index, group.id]
+                entry.representedObject = TabAndGroup(tab: tabs[index], group: group.id)
                 submenu.addItem(entry)
             }
             item.submenu = submenu
@@ -568,9 +580,10 @@ final class TabController: NSViewController, NSMenuItemValidation {
     }
 
     @objc private func menuAddToGroup(_ sender: Any?) {
-        guard let pair = (sender as? NSMenuItem)?.representedObject as? [Int], pair.count == 2,
-              tabs.indices.contains(pair[0]) else { return }
-        apply(grouping.add(tabAt: pair[0], toGroup: pair[1]))
+        guard let pair = (sender as? NSMenuItem)?.representedObject as? TabAndGroup,
+              let index = tabs.firstIndex(where: { $0 === pair.tab }),
+              grouping.group(withID: pair.group) != nil else { return }
+        apply(grouping.add(tabAt: index, toGroup: pair.group))
         groupsChanged()
     }
 
@@ -639,18 +652,21 @@ final class TabController: NSViewController, NSMenuItemValidation {
                              enabled: Bool = true) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
-        item.representedObject = index
+        // The tab itself, not its index. A context menu stays open while the shells behind it keep
+        // running, and a tab that exits in that moment takes its slot out of the strip and shifts
+        // every index after it: "Close Tab" on the middle of three closed the one to its right.
+        item.representedObject = tabs[index]
         item.isEnabled = enabled
         return item
     }
 
     private func tabIndex(from sender: Any?) -> Int? {
-        // A menu item from the tab's own context menu carries its index. Anything else -- a menu
-        // bar item, a key binding, the palette -- means the tab you are looking at.
-        if let item = sender as? NSMenuItem, let index = item.representedObject as? Int {
-            // An item that names a tab means *that* tab. If the index has gone stale -- the tab
-            // closed while the menu was open -- the answer is nothing, not "some other tab".
-            return tabs.indices.contains(index) ? index : nil
+        // A menu item from the tab's own context menu names its tab. Anything else -- a menu bar
+        // item, a key binding, the palette -- means the tab you are looking at.
+        if let item = sender as? NSMenuItem, let tab = item.representedObject as? Tab {
+            // Where that tab is *now*. Gone while the menu was open means nothing happens, which is
+            // the only safe answer: acting on whatever took its place is the bug this replaced.
+            return tabs.firstIndex { $0 === tab }
         }
         return tabs.indices.contains(selected) ? selected : nil
     }
@@ -1115,6 +1131,8 @@ final class TabController: NSViewController, NSMenuItemValidation {
     private var globalHits: [GlobalSearchHit] = []
     private var globalIndex = 0
     private var globalQuery = ""
+    /// The pane whose search bar is on screen, so a cross-tab jump can take it along.
+    private weak var searchingPane: Pane?
 
     /// Runs `query` over every pane in every tab and returns the readout for the search bar.
     ///
@@ -1129,8 +1147,8 @@ final class TabController: NSViewController, NSMenuItemValidation {
             return ""
         }
         let scopes = searchScopes()
-        globalHits = GlobalSearch.run(query: query, scopes: scopes) { scope in
-            self.pane(withID: scope.paneID)?.terminalForSearch
+        globalHits = GlobalSearch.run(query: query, scopes: scopes) { scope, work in
+            self.pane(withID: scope.paneID)?.withTerminalForSearch(work) ?? []
         }
         guard !globalHits.isEmpty else { return "no matches" }
         let panes = GlobalSearch.paneCount(globalHits)
@@ -1142,6 +1160,11 @@ final class TabController: NSViewController, NSMenuItemValidation {
     /// back the readout. nil when there is nothing to step through.
     func stepGlobalSearch(forward: Bool) -> String? {
         guard !globalHits.isEmpty else { return nil }
+        // The bar belongs to the pane it was opened in, and switching tabs takes that pane off
+        // screen -- so after one cross-tab jump the bar was gone, its pane was no longer in the
+        // responder chain, and every further ⏎ did nothing. The bar moves to the pane the hit is
+        // in, which is also where a person is now looking.
+        defer { moveSearchBarToFocusedPane() }
         globalIndex = (globalIndex + (forward ? 1 : -1) + globalHits.count) % globalHits.count
         let hit = globalHits[globalIndex]
 
@@ -1155,9 +1178,19 @@ final class TabController: NSViewController, NSMenuItemValidation {
         return "\(globalIndex + 1) of \(globalHits.count) — \(hit.scope.title)"
     }
 
+    /// Carries an open search bar to whichever pane now has focus, with its query and scope intact.
+    private func moveSearchBarToFocusedPane() {
+        guard let source = searchingPane, let destination = focusedPane, source !== destination else { return }
+        let query = source.searchQuery
+        source.closeSearchForHandover()
+        destination.openSearch(query: query, allTabs: true)
+        searchingPane = destination
+    }
+
     /// Dropped when the search bar closes or its scope goes back to one pane, so a stale set of
     /// hits cannot send the next ⌘G to a tab nobody is searching any more.
     func endGlobalSearch() {
+        searchingPane = nil
         globalHits = []
         globalQuery = ""
         globalIndex = 0
@@ -1254,7 +1287,9 @@ extension TabController: ActionTarget {
                 return
             }
             toggleGroup(group.id)
-        case .find: focusedPane?.openSearch()
+        case .find:
+            focusedPane?.openSearch()
+            searchingPane = focusedPane
         case .findNext: if focusedPane?.stepSearch(forward: true) != true { NSSound.beep() }
         case .findPrevious: if focusedPane?.stepSearch(forward: false) != true { NSSound.beep() }
         case .commandPalette: toggleCommandPalette()
@@ -1263,7 +1298,11 @@ extension TabController: ActionTarget {
         case .saveScrollback: saveScrollback()
 
         case .copy: focusedPane?.copy(nil)
-        case .paste: focusedPane?.paste(nil)
+        case .paste:
+            // An image or an empty clipboard has nothing to paste. The menu item is greyed out for
+            // it, but a key binding reaches this directly, and silently doing nothing reads as a
+            // broken ⌘V rather than as an empty clipboard.
+            if TabController.clipboardHasText { focusedPane?.paste(nil) } else { NSSound.beep() }
         case .clearScreen: focusedPane?.clearScreen()
         case .fontBigger: focusedPane?.zoomIn(nil)
         case .fontSmaller: focusedPane?.zoomOut(nil)
@@ -1271,10 +1310,16 @@ extension TabController: ActionTarget {
         }
     }
 
+    /// Whether there is text to paste. Copying an image out of Preview leaves the pasteboard full
+    /// and `string(forType:)` empty, which is the case that made Paste look broken.
+    private static var clipboardHasText: Bool {
+        NSPasteboard.general.string(forType: .string)?.isEmpty == false
+    }
+
     func canPerform(_ action: TerminalAction) -> Bool {
         switch action {
-        case .pasteWithEditor:
-            return NSPasteboard.general.string(forType: .string)?.isEmpty == false
+        case .paste, .pasteWithEditor:
+            return focusedPane != nil && TabController.clipboardHasText
         case .newWindow, .openConfig, .reloadConfig, .newTab:
             return true
         case .nextTab, .previousTab:

@@ -1335,7 +1335,20 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// `⌘F`. Opening while already open just re-focuses the field and selects what is in it, which
     /// is what every editor does with a second ⌘F.
-    func openSearch() {
+    /// The query the bar is showing, so a search that jumps to another tab can take it along.
+    var searchQuery: String { searchBar?.query ?? "" }
+
+    /// Closes the bar without touching the hits a search over every tab is stepping through -- it
+    /// is being handed to another pane, not abandoned.
+    func closeSearchForHandover() {
+        guard let bar = searchBar else { return }
+        bar.removeFromSuperview()
+        searchBar = nil
+        selectionBeforeSearch = nil
+        markDirty()
+    }
+
+    func openSearch(query: String = "", allTabs: Bool = false) {
         if let bar = searchBar {
             bar.focusField()
             return
@@ -1349,6 +1362,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         addSubview(bar)
         searchBar = bar
         layoutSearchBar()
+        if !query.isEmpty || allTabs { bar.restore(query: query, allTabs: allTabs) }
         bar.focusField()
         markDirty()
     }
@@ -1463,9 +1477,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         bar.needsLayout = true
     }
 
-    /// The terminal, for a search that runs over every open buffer. Handed out rather than copied:
-    /// the search reads it under the session's own lock, which is where every other reader is.
-    var terminalForSearch: Terminal { session.withTerminal { $0 } }
+    /// Runs `body` against this pane's terminal while holding its lock.
+    ///
+    /// This used to hand the terminal *out* of the lock, with a comment claiming the opposite.
+    /// Searching every open buffer then read them with no lock at all while their PTY threads were
+    /// writing, and took the whole application down -- every shell in every window -- whenever
+    /// anything was producing output as you typed.
+    func withTerminalForSearch<T>(_ body: (Terminal) -> T) -> T { session.withTerminal(body) }
 
     /// Takes focus because a search landed here, without the side effects of a click.
     func focusFromSearch() {
@@ -1780,7 +1798,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // Cursor home, erase the screen, erase the scrollback -- fed to our own parser rather than
         // written to the PTY, so it works while the shell is busy running something.
         session.withTerminal { $0.feed("\u{1b}[H\u{1b}[2J\u{1b}[3J") }
-        dirty.set()
+        // `markDirty`, not `dirty.set()`. On an idle pane the display link is parked -- that is how
+        // this terminal holds 0% CPU doing nothing -- and setting the flag without waking it means
+        // the screen is cleared in the model and unchanged on screen until something else happens
+        // to draw. ⌘K on an idle prompt did nothing visible at all.
+        markDirty()
     }
 
     @objc func copy(_ sender: Any?) {

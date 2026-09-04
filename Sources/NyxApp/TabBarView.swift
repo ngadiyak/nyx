@@ -128,13 +128,19 @@ final class TabBarView: NSView {
         }
     }
 
-    /// The buttons that actually fit. `TabBarGeometry` drops the overflow rather than squeezing the
-    /// tabs, so this is shorter than `leadingButtons` on a narrow bar with many tabs.
-    private var fittedLeadingRects: [NSRect] {
-        TabBarGeometry.leadingRects(buttonWidths: leadingWidths, barWidth: Double(bounds.width),
-                                    barHeight: Double(bounds.height), slotCount: slots.count,
-                                    headerHeight: Double(headerHeight), metrics: TabBarView.metrics)
-            .map(ns)
+    /// The buttons that actually fit, each with the button it belongs to. `TabBarGeometry` drops
+    /// the overflow rather than squeezing the tabs, so this is shorter than `leadingButtons` on a
+    /// narrow bar with many tabs -- and the `+` is pinned, so what gets dropped is a quick action
+    /// and never the control that adds one.
+    private var fittedLeading: [(button: LeadingButton, rect: NSRect)] {
+        TabBarGeometry.leadingLayout(buttonWidths: leadingWidths, barWidth: Double(bounds.width),
+                                     barHeight: Double(bounds.height), slotCount: slots.count,
+                                     headerHeight: Double(headerHeight), pinLast: true,
+                                     metrics: TabBarView.metrics)
+            .compactMap { laid in
+                guard leadingButtons.indices.contains(laid.index) else { return nil }
+                return (leadingButtons[laid.index], ns(laid.rect))
+            }
     }
 
     /// The `+` sits after the last tab, where every browser and every other tabbed application
@@ -150,7 +156,8 @@ final class TabBarView: NSView {
     private var leadingWidth: Double {
         TabBarGeometry.leadingWidth(buttonWidths: leadingWidths, barWidth: Double(bounds.width),
                                     barHeight: Double(bounds.height), slotCount: slots.count,
-                                    headerHeight: Double(headerHeight), metrics: TabBarView.metrics)
+                                    headerHeight: Double(headerHeight), pinLast: true,
+                                    metrics: TabBarView.metrics)
     }
 
     /// The bar is drawn in the terminal's own palette, so it belongs to the theme rather than to
@@ -160,9 +167,16 @@ final class TabBarView: NSView {
         barBackground = nsColor(mix(palette.background, palette.foreground, 0.10), alpha: 1)
         selectedBackground = nsColor(palette.background, alpha: 1)
         textColor = nsColor(palette.foreground, alpha: 0.95)
-        dimTextColor = nsColor(palette.foreground, alpha: 0.55)
+        // 0.68, not 0.55. At 0.55 an unselected tab title was 2.46:1 against the bar in Solarized
+        // and 2.64:1 in nyx-light -- a title you have to lean in to read, on the control whose
+        // whole job is to be scanned. At 0.68 no theme falls under 3:1 and the selected tab, at
+        // full strength and a heavier weight, still reads as the selected one.
+        dimTextColor = nsColor(palette.foreground, alpha: 0.68)
         separatorColor = nsColor(palette.foreground, alpha: 0.15)
-        accentColor = nsColor(palette.cursor, alpha: 0.9)
+        // `palette.accent`, not `palette.cursor`. Four of the seven built-in themes make their
+        // cursor the foreground colour, which turned every accent in the bar -- the activity dot,
+        // the bell, a running toggle's fill -- into a shade of grey.
+        accentColor = nsColor(palette.accent, alpha: 0.9)
         needsDisplay = true
     }
 
@@ -221,13 +235,21 @@ final class TabBarView: NSView {
                            barWidth: Double(bounds.width), barHeight: Double(bounds.height),
                            headerHeight: Double(headerHeight),
                            trailingWidth: TabBarView.builtInButtonWidth,
-                           leadingWidths: leadingWidths, metrics: TabBarView.metrics)
+                           leadingWidths: leadingWidths, pinLastLeading: true,
+                           metrics: TabBarView.metrics)
+    }
+
+    /// A group's colour, as the palette holds it. The bright variant where that reads better on the
+    /// bar -- gruvbox's red is 2.7:1 against its own background and its bright red is 4.3:1, and a
+    /// group band is a thin tint of this colour before anything else happens to it.
+    private func rgb(ofGroup id: Int) -> RGB {
+        guard let group = grouping.group(withID: id),
+              (0..<16).contains(group.colorIndex) else { return palette.accent }
+        return palette.readable(group.colorIndex)
     }
 
     private func color(ofGroup id: Int) -> NSColor {
-        guard let group = grouping.group(withID: id),
-              palette.colors.indices.contains(group.colorIndex) else { return accentColor }
-        return nsColor(palette.colors[group.colorIndex], alpha: 1)
+        nsColor(rgb(ofGroup: id), alpha: 1)
     }
 
     // MARK: - Clicks
@@ -316,9 +338,8 @@ final class TabBarView: NSView {
     override func accessibilityChildren() -> [Any]? {
         var children: [NSAccessibilityElement] = []
 
-        for (index, frame) in fittedLeadingRects.enumerated() {
-            guard leadingButtons.indices.contains(index) else { continue }
-            switch leadingButtons[index] {
+        for (button, frame) in fittedLeading {
+            switch button {
             case .newTab:
                 children.append(element(TabBarLabels.newTab, .button, frame) { [weak self] in
                     self?.onNewTab?()
@@ -445,9 +466,9 @@ final class TabBarView: NSView {
     /// The `+`, the tab-list button, and one per quick action. Only the ones that fit are drawn --
     /// `TabBarGeometry` has already dropped the rest.
     private func drawLeadingButtons(_ dirtyRect: NSRect) {
-        for (index, frame) in fittedLeadingRects.enumerated() {
-            guard frame.intersects(dirtyRect), leadingButtons.indices.contains(index) else { continue }
-            switch leadingButtons[index] {
+        for (button, frame) in fittedLeading {
+            guard frame.intersects(dirtyRect) else { continue }
+            switch button {
             case .newTab: drawSymbol("plus", fallback: "+", in: frame)
             case .tabList: drawSymbol("list.bullet", fallback: "\u{2261}", in: frame)
             case .quick(let action): drawQuickActionButton(action, in: frame)
@@ -455,7 +476,7 @@ final class TabBarView: NSView {
             }
         }
         if let trailing = trailingRect { drawPlus(in: trailing) }
-        guard let last = fittedLeadingRects.last else { return }
+        guard let last = fittedLeading.last?.rect else { return }
         separatorColor.setFill()
         NSRect(x: last.maxX - 1, y: last.minY + 4, width: 1, height: last.height - 8).fill()
     }
@@ -474,12 +495,12 @@ final class TabBarView: NSView {
                               width: size.width, height: size.height))
     }
 
-    /// A quick action's button. A `toggle` that is running says so with a filled dot, because a
-    /// button that goes on claiming `caffeinate` is alive after it died is worse than no button.
-    /// Text drawn on top of the accent fill. Using the foreground colour there gives light-on-light
-    /// or dark-on-dark depending on the theme; the background always contrasts with the accent,
-    /// because that is what the accent was chosen against.
-    private var backgroundColorForAccentText: NSColor { barBackground }
+    /// Text drawn on top of a fill taken from the palette -- a running toggle's chip, a group's
+    /// name pill. Whichever of the theme's two neutrals reads on that particular fill: assuming the
+    /// background always does put dark text on gruvbox's dark red at 2.7:1.
+    private func textColor(on fill: RGB) -> NSColor {
+        nsColor(palette.textOn(fill), alpha: 1)
+    }
 
     /// Drawn as an empty chip with a `+` in it, not as another plain plus.
     ///
@@ -505,7 +526,7 @@ final class TabBarView: NSView {
         // next to tab titles. Every one gets a chip; a running toggle fills its chip with the
         // accent colour so "on" is a colour and not a shade of grey.
         if running {
-            accentColor.withAlphaComponent(0.85).setFill()
+            accentColor.withAlphaComponent(1).setFill()
             pill.fill()
         } else {
             dimTextColor.withAlphaComponent(0.12).setFill()
@@ -515,7 +536,7 @@ final class TabBarView: NSView {
             pill.stroke()
         }
         drawLabel(action.name, in: frame.insetBy(dx: 8, dy: 0),
-                  color: running ? backgroundColorForAccentText : textColor,
+                  color: running ? textColor(on: palette.accent) : textColor,
                   font: TabBarView.quickActionFont, centred: true)
     }
 
@@ -567,11 +588,11 @@ final class TabBarView: NSView {
     /// which is why it looks like a control rather than like a caption.
     private func drawGroupLabel(_ id: Int, in frame: NSRect) {
         guard let group = grouping.group(withID: id) else { return }
-        let color = self.color(ofGroup: id)
+        let fill = rgb(ofGroup: id)
         let pill = NSBezierPath(roundedRect: frame.insetBy(dx: 4, dy: 6), xRadius: 5, yRadius: 5)
-        color.withAlphaComponent(0.9).setFill()
+        nsColor(fill, alpha: 1).setFill()
         pill.fill()
-        drawLabel(group.name, in: frame.insetBy(dx: 8, dy: 0), color: barBackground,
+        drawLabel(group.name, in: frame.insetBy(dx: 8, dy: 0), color: textColor(on: fill),
                   font: .systemFont(ofSize: 10, weight: .semibold), centred: true)
     }
 
@@ -591,6 +612,14 @@ final class TabBarView: NSView {
         if isSelected {
             selectedBackground.setFill()
             frame.fill()
+            // A bar in the accent along the selected tab's bottom edge, over the line that runs
+            // under the whole bar. Without it the only things saying which tab is selected are a
+            // background one step off the bar's own and a slightly heavier weight -- true at a
+            // glance in nyx-dark, and much less so in Solarized, where those two colours are four
+            // units apart. This is the cue every tabbed application uses, and it is the one place
+            // in the bar where the theme's accent says something rather than decorating.
+            accentColor.setFill()
+            NSRect(x: frame.minX, y: frame.maxY - 2, width: frame.width, height: 2).fill()
         }
         separatorColor.setFill()
         NSRect(x: frame.maxX - 1, y: frame.minY + 4, width: 1, height: frame.height - 8).fill()

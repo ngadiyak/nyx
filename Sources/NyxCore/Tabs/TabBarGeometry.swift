@@ -230,27 +230,49 @@ public enum TabBarGeometry {
 
     /// The buttons that fit, in order, with their boxes. Anything past the budget is dropped.
     public static func leadingRects(buttonWidths: [Double], barWidth: Double, barHeight: Double,
-                                    slotCount: Int, headerHeight: Double,
+                                    slotCount: Int, headerHeight: Double, pinLast: Bool = false,
                                     metrics: TabBarMetrics = .standard) -> [PaneRect] {
+        leadingLayout(buttonWidths: buttonWidths, barWidth: barWidth, barHeight: barHeight,
+                      slotCount: slotCount, headerHeight: headerHeight, pinLast: pinLast,
+                      metrics: metrics).map(\.rect)
+    }
+
+    /// The same layout, saying *which* button each rect belongs to.
+    ///
+    /// The buttons that do not fit are dropped from the end -- except with `pinLast`, which keeps
+    /// room for the last one and drops from the end of the rest. The bar's last leading button is
+    /// the `+` that adds a quick action, and it was the first thing a narrow window threw away:
+    /// the one control that adds a button disappeared exactly when there were enough buttons to
+    /// fill the bar, leaving no way to add another and no way to see why.
+    public static func leadingLayout(buttonWidths: [Double], barWidth: Double, barHeight: Double,
+                                     slotCount: Int, headerHeight: Double, pinLast: Bool = false,
+                                     metrics: TabBarMetrics = .standard) -> [(index: Int, rect: PaneRect)] {
         let needed = Double(max(0, slotCount)) * metrics.minimumSlotWidth
         let budget = max(0, barWidth - needed)
-        var rects: [PaneRect] = []
+        let height = max(0, barHeight - headerHeight)
+        guard let lastIndex = buttonWidths.indices.last else { return [] }
+
+        let pinnedWidth = pinLast ? max(0, buttonWidths[lastIndex]) : 0
+        var laid: [(index: Int, rect: PaneRect)] = []
         var x: Double = 0
-        for width in buttonWidths {
-            guard width > 0, x + width <= budget else { break }
-            rects.append(PaneRect(x: x, y: headerHeight, width: width,
-                                  height: max(0, barHeight - headerHeight)))
+        for (index, width) in buttonWidths.enumerated() where !(pinLast && index == lastIndex) {
+            guard width > 0, x + width + pinnedWidth <= budget else { break }
+            laid.append((index, PaneRect(x: x, y: headerHeight, width: width, height: height)))
             x += width
         }
-        return rects
+        if pinnedWidth > 0, x + pinnedWidth <= budget {
+            laid.append((lastIndex, PaneRect(x: x, y: headerHeight, width: pinnedWidth, height: height)))
+        }
+        return laid
     }
 
     /// How much of the bar the buttons that fit have taken.
     public static func leadingWidth(buttonWidths: [Double], barWidth: Double, barHeight: Double,
-                                    slotCount: Int, headerHeight: Double,
+                                    slotCount: Int, headerHeight: Double, pinLast: Bool = false,
                                     metrics: TabBarMetrics = .standard) -> Double {
         leadingRects(buttonWidths: buttonWidths, barWidth: barWidth, barHeight: barHeight,
-                     slotCount: slotCount, headerHeight: headerHeight, metrics: metrics)
+                     slotCount: slotCount, headerHeight: headerHeight, pinLast: pinLast,
+                     metrics: metrics)
             .last.map { $0.x + $0.width } ?? 0
     }
 
@@ -284,24 +306,28 @@ public enum TabBarGeometry {
 
     public static func hit(atX x: Double, y: Double, slots: [Slot], barWidth: Double,
                            barHeight: Double, headerHeight: Double, trailingWidth: Double = 0,
-                           leadingWidths: [Double] = [],
+                           leadingWidths: [Double] = [], pinLastLeading: Bool = false,
                            metrics: TabBarMetrics = .standard) -> Hit? {
         guard x >= 0, x < barWidth, y >= 0, y <= barHeight else { return nil }
         if let trailing = trailingRect(buttonWidth: trailingWidth, barWidth: barWidth,
                                        barHeight: barHeight, slotCount: slots.count,
                                        leading: leadingWidth(buttonWidths: leadingWidths, barWidth: barWidth,
                                                              barHeight: barHeight, slotCount: slots.count,
-                                                             headerHeight: headerHeight, metrics: metrics),
+                                                             headerHeight: headerHeight,
+                                                             pinLast: pinLastLeading, metrics: metrics),
                                        headerHeight: headerHeight, metrics: metrics),
            trailing.contains(x: x, y: y) {
             return .newTab
         }
-        let buttons = leadingRects(buttonWidths: leadingWidths, barWidth: barWidth, barHeight: barHeight,
-                                   slotCount: slots.count, headerHeight: headerHeight, metrics: metrics)
-        if let button = buttons.firstIndex(where: { $0.contains(x: x, y: y) }) {
-            return .leadingButton(button)
+        let buttons = leadingLayout(buttonWidths: leadingWidths, barWidth: barWidth, barHeight: barHeight,
+                                    slotCount: slots.count, headerHeight: headerHeight,
+                                    pinLast: pinLastLeading, metrics: metrics)
+        // The button's own index, not its position among the ones that fit: with the `+` pinned,
+        // those stop being the same number the moment anything is dropped.
+        if let button = buttons.first(where: { $0.rect.contains(x: x, y: y) }) {
+            return .leadingButton(button.index)
         }
-        let leading = buttons.last.map { $0.x + $0.width } ?? 0
+        let leading = buttons.last.map { $0.rect.x + $0.rect.width } ?? 0
         guard !slots.isEmpty, x >= leading else { return nil }
         let width = slotWidth(barWidth: barWidth, slotCount: slots.count, leading: leading,
                               trailing: trailingWidth, metrics: metrics)

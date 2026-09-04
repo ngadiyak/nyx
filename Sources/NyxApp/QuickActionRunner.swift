@@ -15,6 +15,12 @@ final class QuickActionRunner {
 
     /// Posted when a toggle starts or stops, so buttons can redraw. The object is the action's name.
     static let stateChanged = Notification.Name("NyxQuickActionStateChanged")
+    /// Posted when a background command could not be started or died on its own. The object is a
+    /// sentence to show the user; a window puts it in its banner.
+    ///
+    /// A toggle whose command is misspelled used to fail in total silence: `/usr/bin/env` starts
+    /// fine and exits 127, so nothing throws, and the button lit for a frame and went out again.
+    static let failed = Notification.Name("NyxQuickActionFailed")
 
     private var running: [String: Process] = [:]
 
@@ -79,13 +85,21 @@ final class QuickActionRunner {
         // nobody reads until the process blocks on a full buffer.
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        process.terminationHandler = { [weak self] _ in
+        process.terminationHandler = { [weak self] finished in
             // It may have failed to start, or exited on its own; either way the button must stop
             // claiming it is on.
+            let status = finished.terminationStatus
             DispatchQueue.main.async {
                 guard let self, self.running[action.name] != nil else { return }
                 self.running[action.name] = nil
                 self.announce(action)
+                guard status != 0 else { return }
+                // 127 is what `env` exits with when it cannot find the command at all, which is
+                // the overwhelmingly likely cause and worth saying in those words.
+                let why = status == 127
+                    ? "command not found: \(argv.first ?? action.command)"
+                    : "exited with status \(status)"
+                self.report("\(action.name): \(why)")
             }
         }
 
@@ -94,6 +108,7 @@ final class QuickActionRunner {
             running[action.name] = process
         } catch {
             NSSound.beep()
+            report("\(action.name) could not start: \(error.localizedDescription)")
         }
         announce(action)
     }
@@ -101,6 +116,13 @@ final class QuickActionRunner {
     @objc private func stopEverything() {
         for process in running.values where process.isRunning { process.terminate() }
         running.removeAll()
+    }
+
+    /// Tells whatever is on screen that a background command failed. Nothing is retried and
+    /// nothing is logged to a file: the user pressed a button, so the answer belongs where they
+    /// pressed it.
+    private func report(_ message: String) {
+        NotificationCenter.default.post(name: QuickActionRunner.failed, object: message)
     }
 
     private func announce(_ action: QuickAction) {

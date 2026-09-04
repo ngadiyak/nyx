@@ -7,6 +7,11 @@ enum MainMenu {
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Nyx", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Settings...", action: #selector(AppDelegate.openConfig(_:)), keyEquivalent: ",")
+        let reloadSettings = NSMenuItem(title: "Reload Settings", action: #selector(AppDelegate.reloadConfig(_:)), keyEquivalent: ",")
+        reloadSettings.keyEquivalentModifierMask = [.command, .shift]
+        appMenu.addItem(reloadSettings)
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide Nyx", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Nyx", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")

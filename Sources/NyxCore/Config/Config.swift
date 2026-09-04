@@ -46,3 +46,66 @@ public struct Config: Equatable {
 
     public static let defaults = Config()
 }
+
+public extension Config {
+    /// A commented file listing every setting at its default value, for `⌘,` to create. Every line
+    /// is commented out, so `ConfigParser.parse` of this text returns exactly `Config.defaults` with
+    /// no diagnostics -- `ConfigTests.theDefaultFileTextParsesBackToTheDefaults` checks that, which
+    /// is what stops this file drifting from `Config`'s actual defaults as settings are added.
+    static var defaultFileText: String {
+        #"""
+        # Nyx configuration file.
+        #
+        # Every setting below is shown at its default value and commented out. Uncomment a line and
+        # edit it to change that setting; Nyx watches this file and reloads automatically on save.
+        # Lines starting with '#' are comments. `nyx-dark` and the other built-in theme names are
+        # documented in the reference; a `key = value` you don't recognise is reported, not fatal --
+        # the rest of the file, and your previous working config, stay in force.
+
+        # --- Font ---
+        # font-family = Menlo
+        # font-size = 13
+        # line-height = 1.0
+        # font-thicken = false
+
+        # --- Theme ---
+        # A single theme name, or `dark:<name>,light:<name>` to follow the system appearance.
+        # theme = nyx-dark
+        # One override per line: `palette = <0-255>=<#rrggbb>`.
+        # palette = 0=#1a1b26
+
+        # --- Cursor ---
+        # cursor-style = block
+        # cursor-blink = true
+
+        # --- Scrollback ---
+        # scrollback-lines = 10000
+
+        # --- Window ---
+        # padding = 8
+        # background-opacity = 1.0
+        # background-blur = 0
+        # window-decorations = true
+        # tab-bar = auto
+
+        # --- Shell ---
+        # shell =
+        # working-directory = inherit
+
+        # --- Behaviour ---
+        # copy-on-select = false
+        # middle-click-paste = true
+        # option-as-meta = none
+        # mouse-scroll-alt-screen = true
+        # bell = visual
+        # confirm-close-process = true
+        # clipboard-read = false
+        # word-separators = ()[]{}'"`, ;:|<>
+        # open-file-command =
+
+        # --- Key bindings ---
+        # One per line: `modifier+modifier+key=action`. See the reference for the action list.
+        # keybind = cmd+t=new_tab
+        """#
+    }
+}

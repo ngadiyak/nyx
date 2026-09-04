@@ -155,3 +155,44 @@ private func parse(_ s: String) -> (Config, [ConfigDiagnostic]) { ConfigParser.p
     #expect(d.isEmpty)
     #expect(c.fontThicken)
 }
+
+@Test func theDefaultFileTextParsesBackToTheDefaults() {
+    let (c, d) = ConfigParser.parse(Config.defaultFileText)
+    #expect(d.isEmpty, "default file has diagnostics: \(d)")
+    #expect(c == Config.defaults)
+}
+
+@Test func theDefaultFileTextIsFullyCommented() {
+    // Every setting line is commented out, so the file documents without overriding. Uncommenting
+    // any single line must still parse.
+    for line in Config.defaultFileText.split(separator: "\n") {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { continue }
+        #expect(t.hasPrefix("#"), "uncommented line in the default file: \(t)")
+    }
+}
+
+@Test func everySettingAppearsInTheDefaultFile() {
+    for key in ["font-family", "font-size", "line-height", "theme", "cursor-style", "cursor-blink",
+                "scrollback-lines", "padding", "background-opacity", "background-blur", "shell",
+                "working-directory", "copy-on-select", "middle-click-paste", "option-as-meta",
+                "bell", "confirm-close-process", "clipboard-read", "tab-bar", "window-decorations",
+                "word-separators", "open-file-command", "keybind", "palette"] {
+        #expect(Config.defaultFileText.contains(key), "default file does not mention \(key)")
+    }
+}
+
+@Test func configPathUsesNyxConfigEnvVarWhenSet() {
+    let url = ConfigPath.resolve(environment: ["NYX_CONFIG": "/tmp/custom-config"], home: "/Users/nik")
+    #expect(url.path == "/tmp/custom-config")
+}
+
+@Test func configPathFallsBackToDotConfigWhenUnset() {
+    let url = ConfigPath.resolve(environment: [:], home: "/Users/nik")
+    #expect(url.path == "/Users/nik/.config/nyx/config")
+}
+
+@Test func configPathIgnoresAnEmptyNyxConfigEnvVar() {
+    let url = ConfigPath.resolve(environment: ["NYX_CONFIG": ""], home: "/Users/nik")
+    #expect(url.path == "/Users/nik/.config/nyx/config")
+}

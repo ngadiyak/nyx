@@ -165,3 +165,57 @@ extension Transcript {
         }
     }
 }
+
+public extension Transcript {
+    /// Which form to write, from the name the user chose.
+    ///
+    /// The extension is the whole interface: `.txt` says "I want to read this", anything else says
+    /// "I want it to look like it did", and there is no third thing to ask about. Matched case
+    /// insensitively, because a save panel will happily hand back `Build.TXT`.
+    static func options(forFileNamed name: String) -> Options {
+        name.lowercased().hasSuffix(".txt") ? .plainText : .forRestoring
+    }
+
+    /// What the save panel says about the name currently in its field, so the choice is visible
+    /// before the file is written rather than discovered afterwards in `less`.
+    static func formatDescription(forFileNamed name: String) -> String {
+        options(forFileNamed: name).includeAttributes
+            ? "Saved as ANSI: colours and attributes are kept, and `less -R` shows them. "
+                + "End the name in .txt for plain text instead."
+            : "Saved as plain text: no colours, no escape sequences."
+    }
+
+    /// The name to offer. `.ans` rather than `.txt` because the default keeps colours, and a file
+    /// full of escape sequences called `.txt` is a small lie that `cat` tells on.
+    ///
+    /// The timestamp is local and sortable, and the title -- whatever the tab is called -- is
+    /// reduced to something a filesystem will take without complaint.
+    static func defaultFileName(title: String, date: Date, timeZone: TimeZone = .current) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let p = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        let stamp = String(format: "%04d-%02d-%02d-%02d%02d%02d", p.year ?? 0, p.month ?? 0,
+                           p.day ?? 0, p.hour ?? 0, p.minute ?? 0, p.second ?? 0)
+        let slug = fileNameSlug(title)
+        return slug.isEmpty ? "nyx-\(stamp).ans" : "\(slug)-\(stamp).ans"
+    }
+
+    /// A tab title is whatever the shell felt like setting -- a path, a command line, a directory
+    /// with a slash in it. Anything but letters, digits, dash and underscore becomes a dash, runs
+    /// collapse, and the result is cut short of anything a filesystem would refuse.
+    static func fileNameSlug(_ title: String, limit: Int = 40) -> String {
+        var out = ""
+        var pendingDash = false
+        for character in title {
+            if character.isLetter || character.isNumber || character == "_" {
+                if pendingDash && !out.isEmpty { out.append("-") }
+                pendingDash = false
+                out.append(character)
+                if out.count >= limit { break }
+            } else {
+                pendingDash = true
+            }
+        }
+        return out
+    }
+}

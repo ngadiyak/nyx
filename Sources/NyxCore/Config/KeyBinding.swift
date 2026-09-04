@@ -17,6 +17,7 @@ public enum TerminalAction: String, Equatable, CaseIterable {
     case find = "find", findNext = "find_next", findPrevious = "find_previous"
     case commandPalette = "command_palette"
     case foldCommand = "fold_command", foldAllLongOutput = "fold_all_long_output"
+    case saveScrollback = "save_scrollback"
 }
 
 /// A parsed `modifier+modifier+key=action` line from the config's `keybind` setting.

@@ -50,6 +50,7 @@ public extension TerminalAction {
         case .commandPalette: return "Command Palette"
         case .foldCommand: return "Fold Command Output"
         case .foldAllLongOutput: return "Fold All Long Output"
+        case .saveScrollback: return "Save Scrollback\u{2026}"
         }
     }
 
@@ -83,6 +84,7 @@ public enum ActionCatalog {
         Section(title: "Shell", groups: [
             Group([.newWindow, .newTab]),
             Group([.splitRight, .splitDown]),
+            Group([.saveScrollback]),
             Group([.closePane]),
         ]),
         Section(title: "Edit", groups: [

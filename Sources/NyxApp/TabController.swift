@@ -716,6 +716,56 @@ final class TabController: NSViewController, NSMenuItemValidation {
         overlay.needsLayout = true
     }
 
+    // MARK: - Saving the scrollback
+    //
+    // What gets written is `Transcript` in NyxCore: ANSI by default, so a saved session restores
+    // through the parser that is already there and `less -R` shows it as it looked, and plain text
+    // when the name says `.txt`. Which of the two, what the file is called, and what the panel says
+    // about it are all decided there. What is here is the panel and the write.
+
+    private func saveScrollback() {
+        guard let window = view.window, let pane = focusedPane else { return }
+        let title = tabs.indices.contains(selected) ? tabs[selected].title : ""
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = Transcript.defaultFileName(title: title, date: Date())
+        panel.canCreateDirectories = true
+        // Unrestricted on purpose: the extension is the whole interface for choosing the format,
+        // and a panel that refuses `.txt` would take that choice away.
+        panel.allowedContentTypes = []
+        panel.message = "Save this pane\u{2019}s scrollback."
+        panel.accessoryView = TabController.formatNote(for: panel.nameFieldStringValue)
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            let text = pane.scrollbackTranscript(options: Transcript.options(forFileNamed: url.lastPathComponent))
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                self?.reportSaveFailure(error, in: window)
+            }
+        }
+    }
+
+    /// The panel says which of the two forms the name it is showing will produce, so the choice is
+    /// visible before the file exists rather than discovered afterwards in `less`.
+    private static func formatNote(for name: String) -> NSView {
+        let label = NSTextField(wrappingLabelWithString: Transcript.formatDescription(forFileNamed: name))
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 44))
+        label.frame = NSRect(x: 16, y: 6, width: 388, height: 32)
+        container.addSubview(label)
+        return container
+    }
+
+    /// A failed write is worth saying out loud: the user asked for a file and there is none.
+    private func reportSaveFailure(_ error: Error, in window: NSWindow) {
+        let alert = NSAlert()
+        alert.messageText = "Could not save the scrollback."
+        alert.informativeText = error.localizedDescription
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window, completionHandler: nil)
+    }
+
     // MARK: - Closing something that is busy
 
     /// Asks before closing panes that have a program running in them. Nothing running,
@@ -843,6 +893,7 @@ extension TabController: ActionTarget {
         case .commandPalette: toggleCommandPalette()
         case .foldCommand: if focusedPane?.toggleFoldOfCurrentCommand() != true { NSSound.beep() }
         case .foldAllLongOutput: if focusedPane?.foldAllLongOutput() != true { NSSound.beep() }
+        case .saveScrollback: saveScrollback()
 
         case .copy: focusedPane?.copy(nil)
         case .paste: focusedPane?.paste(nil)
@@ -864,6 +915,8 @@ extension TabController: ActionTarget {
             return TabStrip.index(forCommandNumber: number, tabCount: tabs.count) != nil
         case .copy:
             return focusedPane?.hasSelection ?? false
+        case .saveScrollback:
+            return focusedPane?.hasScrollback ?? false
         case .findNext, .findPrevious:
             // Nothing to step through until ⌘F has been pressed and something typed.
             return focusedPane?.isSearching ?? false

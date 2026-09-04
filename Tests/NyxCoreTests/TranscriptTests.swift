@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import NyxCore
 
@@ -138,4 +139,105 @@ private func roundTrips(_ input: String, cols: Int = 40, rows: Int = 8,
     let t = makeTerminal(cols: 20, rows: 4).run("one\r\ntwo")
     #expect(t.transcript(rows: 0..<2).contains("\r\n"))
     #expect(!t.transcript(options: .plainText).contains("\r"))
+}
+
+// MARK: - Saving it to a file
+//
+// The extension is the whole interface for choosing a format, so what it decides is worth pinning
+// down: a save panel hands back whatever the user typed, in whatever case they typed it.
+
+@Test func aTxtNameMeansPlainText() {
+    let options = Transcript.options(forFileNamed: "build.txt")
+    #expect(!options.includeAttributes)
+    #expect(!options.carriageReturns)
+}
+
+@Test func anythingElseKeepsTheColours() {
+    #expect(Transcript.options(forFileNamed: "build.ans").includeAttributes)
+    #expect(Transcript.options(forFileNamed: "build").includeAttributes)
+    #expect(Transcript.options(forFileNamed: "build.log").includeAttributes)
+}
+
+/// A save panel will happily hand back `Build.TXT`, and the user meant plain text.
+@Test func theExtensionIsMatchedWithoutRegardToCase() {
+    #expect(!Transcript.options(forFileNamed: "Build.TXT").includeAttributes)
+}
+
+/// A file whose name merely contains "txt" is not a text file.
+@Test func onlyTheExtensionCounts() {
+    #expect(Transcript.options(forFileNamed: "txt-notes.ans").includeAttributes)
+}
+
+@Test func thePanelSaysWhichFormTheNameWillProduce() {
+    #expect(Transcript.formatDescription(forFileNamed: "a.txt").contains("plain text"))
+    #expect(Transcript.formatDescription(forFileNamed: "a.ans").contains("ANSI"))
+    // The one that keeps colours has to say how to get the other, or the choice is invisible.
+    #expect(Transcript.formatDescription(forFileNamed: "a.ans").contains(".txt"))
+}
+
+// MARK: - The name offered
+
+private func date(_ year: Int, _ month: Int, _ day: Int, _ hour: Int, _ minute: Int,
+                  _ second: Int) -> Date {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    return calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour,
+                                              minute: minute, second: second))!
+}
+
+/// `.ans`, not `.txt`: the default keeps colours, and a file full of escape sequences called
+/// `.txt` is a small lie that `cat` tells on.
+@Test func theOfferedNameCarriesTheTabTitleAndASortableStamp() {
+    let name = Transcript.defaultFileName(title: "build", date: date(2026, 9, 4, 13, 5, 7),
+                                          timeZone: TimeZone(identifier: "UTC")!)
+    #expect(name == "build-2026-09-04-130507.ans")
+}
+
+@Test func anUntitledTabStillGetsAName() {
+    let name = Transcript.defaultFileName(title: "", date: date(2026, 1, 2, 3, 4, 5),
+                                          timeZone: TimeZone(identifier: "UTC")!)
+    #expect(name == "nyx-2026-01-02-030405.ans")
+}
+
+/// A tab title is whatever the shell felt like setting: a path, a command line, a directory.
+@Test func aTitleWithSlashesInItDoesNotBecomeAPath() {
+    let name = Transcript.defaultFileName(title: "~/projects/nyx", date: date(2026, 1, 2, 3, 4, 5),
+                                          timeZone: TimeZone(identifier: "UTC")!)
+    #expect(!name.contains("/"))
+    #expect(name.hasPrefix("projects-nyx-"))
+}
+
+@Test func theSlugCollapsesRunsAndTrimsTheEnds() {
+    #expect(Transcript.fileNameSlug("  make   test  ") == "make-test")
+    #expect(Transcript.fileNameSlug("!!!") == "")
+    #expect(Transcript.fileNameSlug("a_b-c") == "a_b-c")
+}
+
+@Test func aVeryLongTitleIsCutShortOfWhatAFilesystemRefuses() {
+    let slug = Transcript.fileNameSlug(String(repeating: "a", count: 300))
+    #expect(slug.count == 40)
+}
+
+/// The round trip the ANSI form exists for: what is written back can be fed to the parser that is
+/// already there, and comes back looking the same.
+@Test func aSavedTranscriptFeedsBackIntoATerminal() {
+    let original = makeTerminal(cols: 20, rows: 3)
+    original.feed("\u{1b}[31mred\u{1b}[0m plain\r\nsecond\r\n")
+    let text = original.transcript(options: Transcript.options(forFileNamed: "session.ans"))
+
+    let restored = makeTerminal(cols: 20, rows: 3)
+    restored.feed(text)
+    #expect(restored.rowText(absoluteRow: 0).text.hasPrefix("red plain"))
+    #expect(restored.absoluteRow(0)?.cells[0].fg == .indexed(1))
+    // The reset after "red" has to survive too, or a saved transcript paints the rest of the line.
+    #expect(restored.absoluteRow(0)?.cells[4].fg == .default)
+}
+
+@Test func aPlainTextTranscriptCarriesNoEscapes() {
+    let t = makeTerminal(cols: 20, rows: 3)
+    t.feed("\u{1b}[31mred\u{1b}[0m\r\n")
+    let text = t.transcript(options: Transcript.options(forFileNamed: "session.txt"))
+    #expect(!text.contains("\u{1b}"))
+    #expect(!text.contains("\r"))
+    #expect(text.contains("red"))
 }

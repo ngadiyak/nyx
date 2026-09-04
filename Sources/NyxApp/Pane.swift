@@ -1463,6 +1463,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return true
     }
 
+    /// The whole buffer -- scrollback and screen -- as text. `Transcript` decides what "as text"
+    /// means; the pane only holds the lock while it is written out.
+    func scrollbackTranscript(options: Transcript.Options) -> String {
+        session.withTerminal { $0.transcript(options: options) }
+    }
+
+    /// Whether there is any buffer to save at all, so the menu item can grey out rather than
+    /// putting up a panel that would write an empty file.
+    var hasScrollback: Bool { session.withTerminal { $0.totalRows > 0 } }
+
     /// Whether ⌘C has anything to copy, so the menu item can grey out.
     var hasSelection: Bool {
         guard let selection else { return false }

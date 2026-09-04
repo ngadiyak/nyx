@@ -17,6 +17,7 @@ public enum TerminalAction: String, Equatable, CaseIterable {
     case find = "find", findNext = "find_next", findPrevious = "find_previous"
     case commandPalette = "command_palette"
     case editAndRunCommand = "edit_and_run_command"
+    case pasteWithEditor = "paste_with_editor"
     case foldCommand = "fold_command", foldAllLongOutput = "fold_all_long_output"
     case saveScrollback = "save_scrollback"
 }
@@ -155,5 +156,6 @@ public struct KeyBinding: Equatable {
         KeyBinding(key: .char("g"), modifiers: [.cmd, .shift], action: .findPrevious),
         KeyBinding(key: .char("p"), modifiers: [.cmd, .shift], action: .commandPalette),
         KeyBinding(key: .char("e"), modifiers: [.cmd], action: .editAndRunCommand),
+        KeyBinding(key: .char("v"), modifiers: [.cmd, .shift], action: .pasteWithEditor),
     ]
 }

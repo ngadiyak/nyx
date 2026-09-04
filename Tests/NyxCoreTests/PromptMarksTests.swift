@@ -156,3 +156,81 @@ private func session() -> Terminal {
     let row = try! #require((0..<t.totalRows).first { t.promptMarks(atAbsoluteRow: $0).contains(.promptStart) })
     #expect(t.exitStatus(atAbsoluteRow: row) == 7)
 }
+
+// MARK: - The current command line
+
+/// Reading what the user has typed but not yet run is what makes "edit this curl" possible: the
+/// command has not run, so history has nothing to offer, and the prompt shares its row with the
+/// typing, so a row of text is not an answer either.
+@Test func theCurrentInputIsTheTypingWithoutThePrompt() {
+    let t = makeTerminal(cols: 60, rows: 4, scrollback: 50)
+    t.feed(mark("A") + "$ " + mark("B") + "curl -X POST https://api.example.com")
+    #expect(t.currentInput == "curl -X POST https://api.example.com")
+}
+
+@Test func anEmptyPromptHasNoCurrentInput() {
+    let t = makeTerminal(cols: 40, rows: 4, scrollback: 50)
+    t.feed(mark("A") + "$ " + mark("B"))
+    #expect(t.currentInput == nil)
+}
+
+/// While a command is running there is no command line to edit, and offering the output as one
+/// would be worse than offering nothing.
+@Test func aRunningCommandHasNoCurrentInput() {
+    let t = makeTerminal(cols: 40, rows: 4, scrollback: 50)
+    t.feed(mark("A") + "$ " + mark("B") + "build\r\n" + mark("C") + "working...\r\n")
+    #expect(t.currentInput == nil)
+}
+
+/// A shell that emits no marks cannot say where its prompt ends, so there is nothing to separate.
+@Test func withoutMarksThereIsNoCurrentInput() {
+    #expect(makeTerminal(cols: 40, rows: 4).run("$ something typed").currentInput == nil)
+}
+
+/// A pasted command long enough to wrap is the whole point -- it must come back joined, not cut at
+/// the width of the window.
+@Test func aWrappedCommandLineIsReadWhole() {
+    let t = makeTerminal(cols: 20, rows: 6, scrollback: 50)
+    t.feed(mark("A") + "$ " + mark("B") + "curl -X POST -d 'a=1&b=2' https://example.com/very/long")
+    let input = try! #require(t.currentInput)
+    #expect(input.hasPrefix("curl -X POST"))
+    #expect(input.hasSuffix("/very/long"))
+    #expect(!input.contains("\n"))
+}
+
+// MARK: - Clicking into the command line
+
+/// The arithmetic behind clicking where you want to fix something: the difference between the
+/// caret's offset and the clicked cell's offset is the number of arrow keys to send.
+@Test func anOffsetIsCountedFromWhereTypingBegins() {
+    let t = makeTerminal(cols: 40, rows: 4, scrollback: 50)
+    t.feed(mark("A") + "$ " + mark("B") + "curl example.com")
+    // "$ " is two columns, so typing starts at column 2.
+    #expect(t.inputOffset(atAbsoluteRow: 0, column: 2) == 0)
+    #expect(t.inputOffset(atAbsoluteRow: 0, column: 6) == 4)
+    #expect(t.currentInputCursorOffset == 16)
+}
+
+/// A click on the prompt itself, or above the command line, is not a place the caret can go.
+@Test func aClickOutsideTheCommandLineHasNoOffset() {
+    let t = makeTerminal(cols: 40, rows: 4, scrollback: 50)
+    t.feed("earlier output\r\n" + mark("A") + "$ " + mark("B") + "curl example.com")
+    #expect(t.inputOffset(atAbsoluteRow: 1, column: 0) == nil)   // on the prompt
+    #expect(t.inputOffset(atAbsoluteRow: 0, column: 3) == nil)   // above it
+}
+
+/// The case that matters: a pasted command longer than the window is wide. Counting has to run
+/// through the wrap, or clicking on the second line moves the caret to the wrong place.
+@Test func anOffsetCountsThroughAWrappedLine() {
+    let t = makeTerminal(cols: 20, rows: 6, scrollback: 50)
+    t.feed(mark("A") + "$ " + mark("B") + "curl -X POST https://example.com/a")
+    // Row 0 holds "$ " plus 18 characters of the command; the next row continues it.
+    #expect(t.inputOffset(atAbsoluteRow: 1, column: 0) == 18)
+    #expect(t.inputOffset(atAbsoluteRow: 1, column: 5) == 23)
+}
+
+@Test func withoutMarksThereIsNothingToClickInto() {
+    let t = makeTerminal(cols: 40, rows: 4).run("$ curl example.com")
+    #expect(t.inputOffset(atAbsoluteRow: 0, column: 5) == nil)
+    #expect(t.currentInputCursorOffset == nil)
+}

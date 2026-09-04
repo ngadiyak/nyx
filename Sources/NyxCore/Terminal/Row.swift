@@ -21,6 +21,10 @@ public struct Row: Equatable {
     /// under the session lock, contending with the PTY reader. Recording it once, when the mark
     /// arrives, makes drawing the gutter cost only the rows on screen.
     public var commandStatus: Int32?
+    /// The column the user's typing starts at, from `OSC 133 ; B`. Without it the prompt and the
+    /// command share a row and there is no way to say where one ends -- which is what "edit what I
+    /// have typed" needs to know.
+    public var inputStartColumn: Int?
     /// The exit status from `OSC 133 ; D ; <status>`, on the row carrying the D mark. nil when the
     /// shell reported the end of a command without a status, or on any other row.
     public var exitStatus: Int32?
@@ -52,6 +56,7 @@ public struct Row: Equatable {
         promptMark = 0
         exitStatus = nil
         commandStatus = nil
+        inputStartColumn = nil
     }
 
     public var isBlank: Bool { cells.allSatisfy { $0.content == 0 && $0.bg == .default } }

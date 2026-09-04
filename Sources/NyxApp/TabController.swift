@@ -1174,6 +1174,7 @@ extension TabController: ActionTarget {
         case .selectCommandOutput: if focusedPane?.selectCommandOutput() != true { NSSound.beep() }
         case .copyCommandOutput: if focusedPane?.copyLastCommandOutput() != true { NSSound.beep() }
         case .editAndRunCommand: if focusedPane?.editAndRunLastCommand() != true { NSSound.beep() }
+        case .pasteWithEditor: if focusedPane?.pasteWithEditor() != true { NSSound.beep() }
         case .find: focusedPane?.openSearch()
         case .findNext: if focusedPane?.stepSearch(forward: true) != true { NSSound.beep() }
         case .findPrevious: if focusedPane?.stepSearch(forward: false) != true { NSSound.beep() }
@@ -1193,6 +1194,8 @@ extension TabController: ActionTarget {
 
     func canPerform(_ action: TerminalAction) -> Bool {
         switch action {
+        case .pasteWithEditor:
+            return NSPasteboard.general.string(forType: .string)?.isEmpty == false
         case .newWindow, .openConfig, .reloadConfig, .newTab:
             return true
         case .nextTab, .previousTab:

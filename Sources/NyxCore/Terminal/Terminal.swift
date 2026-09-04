@@ -1062,6 +1062,8 @@ public final class Terminal: TerminalActions {
             default: return
             }
             screen.rows[screen.cursor.y].promptMark |= mark
+            // Where the prompt ends and typing begins, on the row it happens on.
+            if mark == 2 { screen.rows[screen.cursor.y].inputStartColumn = screen.cursor.x }
             shellEmitsPromptMarks = true
             // `D;<status>` reports how the command ended. Without it a failed command is
             // indistinguishable from one that succeeded, which is most of the point of the mark.
@@ -1077,6 +1079,83 @@ public final class Terminal: TerminalActions {
         default:
             break
         }
+    }
+
+    /// What the user has typed at the current prompt but not yet run, or nil when there is nothing
+    /// to read: no shell integration, or a command already running.
+    ///
+    /// This is the text of the command line itself, taken from where the shell said its prompt ends
+    /// to wherever the cursor now is. It is what makes "edit what I just pasted" possible -- a long
+    /// `curl` sitting on the command line is exactly the thing a shell's line editor is worst at,
+    /// and until now the only way to change it was to fight the line editor.
+    public var currentInput: String? {
+        let cursorRow = scrollback.count + screen.cursor.y
+        // The typing starts on the most recent row carrying a `B`, at or above the cursor.
+        var row = cursorRow
+        var startColumn: Int?
+        while row >= 0, row > cursorRow - rows {
+            if let column = absoluteRow(row)?.inputStartColumn {
+                startColumn = column
+                break
+            }
+            // A `C` means output began: a command is running, and there is no input to edit.
+            if promptMarks(atAbsoluteRow: row).contains(.outputStart) { return nil }
+            row -= 1
+        }
+        guard let startColumn, row <= cursorRow else { return nil }
+
+        var text = ""
+        for absolute in row...cursorRow {
+            let line = rowText(absoluteRow: absolute)
+            let from = absolute == row ? startColumn : 0
+            let characters = Array(line.text)
+            let to = absolute == cursorRow ? min(characters.count, screen.cursor.x) : characters.count
+            guard from < to else { continue }
+            text += String(characters[from..<to])
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Where the current command line begins, as an absolute row and a column, or nil when there is
+    /// no editable command line.
+    public var currentInputStart: (row: Int, column: Int)? {
+        let cursorRow = scrollback.count + screen.cursor.y
+        var row = cursorRow
+        while row >= 0, row > cursorRow - rows {
+            if let column = absoluteRow(row)?.inputStartColumn { return (row, column) }
+            if promptMarks(atAbsoluteRow: row).contains(.outputStart) { return nil }
+            row -= 1
+        }
+        return nil
+    }
+
+    /// How many cells lie between the start of the command line and a position on screen, or nil
+    /// when the position is not on the command line at all.
+    ///
+    /// This is what lets a click move the shell's cursor: the difference between where the caret is
+    /// and where it was clicked, counted in cells, is exactly the number of arrow keys to send.
+    /// Counted through the wrap, because a pasted `curl` is longer than the window is wide, and
+    /// that is precisely the case worth clicking into.
+    public func inputOffset(atAbsoluteRow row: Int, column: Int) -> Int? {
+        guard let start = currentInputStart else { return nil }
+        let cursorRow = scrollback.count + screen.cursor.y
+        guard row >= start.row, row <= cursorRow else { return nil }
+        guard row > start.row || column >= start.column else { return nil }
+
+        var offset = 0
+        for absolute in start.row..<row {
+            let from = absolute == start.row ? start.column : 0
+            offset += max(0, cols - from)
+        }
+        offset += column - (row == start.row ? start.column : 0)
+        return max(0, offset)
+    }
+
+    /// Where the shell's caret sits within the command line.
+    public var currentInputCursorOffset: Int? {
+        let cursorRow = scrollback.count + screen.cursor.y
+        return inputOffset(atAbsoluteRow: cursorRow, column: screen.cursor.x)
     }
 
     /// Walks back from the cursor to the prompt this command started at and records how it ended.

@@ -867,8 +867,40 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     override func mouseUp(with event: NSEvent) {
         guard selectionController.isDragging else { report(event, .left, .release); return }
         lastMousePoint = nil
+        let wasEmpty = selection == nil || selection?.isEmpty == true
         if selectionController.end() { markDirty() }
         if config.copyOnSelect, selection != nil { copy(nil) }
+        // A click that selected nothing is a click, not a drag. On the command line that means
+        // "put the caret here" -- which is how anyone expects to fix one value in the middle of a
+        // pasted `curl`, rather than holding an arrow key.
+        if wasEmpty, event.clickCount == 1 {
+            moveShellCaret(to: convert(event.locationInWindow, from: nil))
+        }
+    }
+
+    /// Moves the shell's caret to a clicked cell by sending the arrow keys that get it there.
+    ///
+    /// A terminal cannot place another program's cursor; all it can do is press the keys the user
+    /// would have pressed. With shell integration the distance is exactly known -- the offset of
+    /// the click within the command line, minus the offset the caret is at -- so this is precise
+    /// rather than a guess, and it works through a line that has wrapped.
+    ///
+    /// Does nothing without marks, while a command is running, or on a click that is not on the
+    /// command line: in all of those there is no caret to move and arrows would do something else.
+    private func moveShellCaret(to point: NSPoint) {
+        let steps: Int? = session.withTerminal { terminal in
+            guard terminal.modes.mouse == .none else { return nil }   // a TUI owns its own clicks
+            let position = self.position(topLeft(point), in: terminal)
+            guard let target = terminal.inputOffset(atAbsoluteRow: position.row, column: position.col),
+                  let caret = terminal.currentInputCursorOffset else { return nil }
+            return target - caret
+        }
+        guard let steps, steps != 0 else { return }
+        let arrow: [UInt8] = steps > 0 ? [0x1B, 0x5B, 0x43] : [0x1B, 0x5B, 0x44]   // CSI C / CSI D
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(abs(steps) * 3)
+        for _ in 0..<abs(steps) { bytes += arrow }
+        send(bytes)
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -1693,9 +1725,47 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// say which command was meant, and the last one is what "run that again, but…" means.
     @discardableResult
     func editAndRunLastCommand() -> Bool {
+        // What is on the command line right now comes first. Pasting a long `curl` and then
+        // needing to change something in its body is the case this is for, and at that moment the
+        // command has not run yet -- looking only at history would offer the wrong thing.
+        if let typed: String = session.withTerminal({ $0.currentInput }) {
+            editCurrentInput(typed)
+            return true
+        }
         let row: Int? = session.withTerminal { $0.lastFinishedCommand?.promptRow }
         guard let row else { return false }
         return editAndRunCommand(atAbsoluteRow: row)
+    }
+
+    /// Edits the text already on the command line, then replaces it with the result.
+    private func editCurrentInput(_ text: String) {
+        presentCommandEditor(text: text, heading: "Edit the command line", runTitle: "Run") {
+            [weak self] edited in
+            guard let self else { return }
+            // Clear what is there before writing the replacement. `^E` then `^U` covers both of the
+            // common line editors: zsh's `^U` kills the whole line, bash's kills back from the
+            // cursor, so moving to the end first makes them agree.
+            self.send([0x05, 0x15])
+            let bracketed = self.session.withTerminal { $0.modes.bracketedPaste }
+            self.performPaste(edited, bracketed: bracketed)
+        }
+    }
+
+    /// `⌘⇧V`: paste, but look at it first. The plain paste path deliberately does not interrupt a
+    /// multi-line paste when bracketed paste is on -- the shell shows it rather than running it --
+    /// which is right for safety and wrong for the one case where you *want* the editor. This is
+    /// that case, asked for on purpose.
+    @discardableResult
+    func pasteWithEditor() -> Bool {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
+            return false
+        }
+        let bracketed = session.withTerminal { $0.modes.bracketedPaste }
+        presentCommandEditor(text: text, heading: "Edit before pasting", runTitle: "Paste") {
+            [weak self] edited in
+            self?.performPaste(edited, bracketed: bracketed)
+        }
+        return true
     }
 
     /// Opens the paste in the command editor, and pastes whatever comes back.

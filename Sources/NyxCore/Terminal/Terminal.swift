@@ -52,6 +52,14 @@ public final class Terminal: TerminalActions {
     public var screen: Screen
     var inactiveScreen: Screen
     public var scrollback: Scrollback
+    /// Increments whenever absolute row indices stop referring to the same content: discarding the
+    /// scrollback (ED 3), a full reset, or swapping the alternate screen in or out. Anything holding
+    /// absolute coordinates — a selection above all — is meaningless once this changes, and has no
+    /// other way to notice: the indices stay in range and silently address different rows.
+    ///
+    /// A resize deliberately does not bump it. Reflow moves content between rows but keeps it, so a
+    /// selection made before a resize still points at the text the user chose.
+    public private(set) var scrollbackGeneration: UInt64 = 0
     public var pen = Pen() { didSet { penCellDirty = true } }
     /// Cache of `pen.makeCell()`, rebuilt lazily whenever `pen` changes. Avoids rebuilding the
     /// pen-derived `Cell` template on every printed character, which is the common case in `put`.
@@ -482,6 +490,7 @@ public final class Terminal: TerminalActions {
         case 3:
             scrollback.removeAll()
             viewportOffset = 0
+            scrollbackGeneration &+= 1
             touch()
         default: break
         }
@@ -588,6 +597,7 @@ public final class Terminal: TerminalActions {
         cursorShape = .block
         palette = initialPalette
         viewportOffset = 0
+        scrollbackGeneration &+= 1
         touch()
     }
 
@@ -811,6 +821,8 @@ public final class Terminal: TerminalActions {
             if save { restoreCursor() }
         }
         viewportOffset = 0
+        // The screen under the scrollback changed wholesale; absolute rows now mean something else.
+        scrollbackGeneration &+= 1
         for y in 0..<rows { screen.rows[y].dirty = true }
         touch()
     }

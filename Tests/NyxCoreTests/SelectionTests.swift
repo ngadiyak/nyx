@@ -156,3 +156,43 @@ private let defaultSeparators: Set<Character> = Set(" ()[]{}'\"`,;:|<>")
     #expect(s.columnRange(onRow: 0, cols: t.cols) == nil)
     #expect(t.text(in: s) == "\nbbbb\ncccc")
 }
+
+// MARK: - Coordinate-space generation
+//
+// Absolute row indices stay in range across a cleared scrollback, a reset and an alternate-screen
+// swap, so nothing holding them can notice on its own that they now address different content.
+
+@Test func clearingTheScrollbackBumpsTheGeneration() {
+    let t = makeTerminal(cols: 10, rows: 2, scrollback: 10).run("one\r\ntwo\r\nthree\r\nfour")
+    let before = t.scrollbackGeneration
+    t.feed("\u{1B}[3J")
+    #expect(t.scrollback.count == 0)
+    #expect(t.scrollbackGeneration == before &+ 1)
+}
+
+@Test func aFullResetBumpsTheGeneration() {
+    let t = makeTerminal(cols: 10, rows: 2, scrollback: 10).run("one\r\ntwo\r\nthree")
+    let before = t.scrollbackGeneration
+    t.feed("\u{1B}c")
+    #expect(t.scrollbackGeneration == before &+ 1)
+}
+
+@Test func theAlternateScreenBumpsTheGenerationBothWays() {
+    let t = makeTerminal(cols: 10, rows: 2, scrollback: 10).run("one\r\ntwo\r\nthree")
+    let before = t.scrollbackGeneration
+    t.feed("\u{1B}[?1049h")
+    #expect(t.scrollbackGeneration == before &+ 1)
+    t.feed("\u{1B}[?1049l")
+    #expect(t.scrollbackGeneration == before &+ 2)
+}
+
+@Test func ordinaryOutputScrollingAndResizeKeepTheGeneration() {
+    let t = makeTerminal(cols: 10, rows: 2, scrollback: 10).run("one\r\ntwo\r\nthree\r\nfour")
+    let before = t.scrollbackGeneration
+    t.feed("more output\r\n")
+    t.scrollViewport(by: 2)
+    t.scrollViewportToBottom()
+    // A resize reflows but keeps the content, so a selection made before it still means something.
+    t.resize(cols: 6, rows: 3)
+    #expect(t.scrollbackGeneration == before)
+}

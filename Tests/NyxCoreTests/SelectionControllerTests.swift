@@ -186,3 +186,44 @@ private func wordTerminal() -> Terminal {
     c.drag(to: pos(2, 4), in: t)
     #expect(t.text(in: c.selection!) == "bcd\nhij\nnop")
 }
+
+// MARK: - Invalidation
+
+@Test func clearingTheScrollbackDropsASelectionAnchoredInIt() {
+    // The reviewer's reproduction: without this the selection survives `clear -x` and silently
+    // addresses whatever the live screen now holds at those absolute rows.
+    let t = makeTerminal(cols: 10, rows: 2, scrollback: 10).run("one\r\ntwo\r\nthree\r\nfour")
+    var c = SelectionController()
+    c.begin(at: pos(0, 0), clickCount: 1, block: false, in: t)
+    c.drag(to: pos(0, 3), in: t)
+    c.end()
+    #expect(t.text(in: c.selection!) == "one")
+    t.feed("\u{1B}[3J")
+    let dropped = c.invalidateIfStale(t)
+    #expect(dropped)
+    #expect(c.selection == nil)
+}
+
+@Test func invalidationKeepsASelectionMadeAfterTheChange() {
+    let t = makeTerminal(cols: 10, rows: 2, scrollback: 10).run("one\r\ntwo\r\nthree\r\nfour")
+    t.feed("\u{1B}[3J")
+    var c = SelectionController()
+    c.begin(at: pos(0, 0), clickCount: 1, block: false, in: t)
+    c.drag(to: pos(0, 5), in: t)
+    c.end()
+    let dropped = c.invalidateIfStale(t)
+    #expect(dropped == false)
+    #expect(t.text(in: c.selection!) == "three")
+}
+
+@Test func invalidationLeavesAStableCoordinateSpaceAlone() {
+    let t = wordTerminal()
+    var c = SelectionController()
+    c.begin(at: pos(0, 0), clickCount: 2, block: false, in: t)
+    c.end()
+    t.feed("\r\nmore\r\n")
+    t.resize(cols: 12, rows: 4)
+    let dropped = c.invalidateIfStale(t)
+    #expect(dropped == false)
+    #expect(c.selection != nil)
+}

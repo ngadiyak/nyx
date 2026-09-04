@@ -17,6 +17,8 @@ public struct SelectionController {
     /// shrink when the drag came back.
     private var anchor: AbsolutePosition?
     private var mode: SelectionMode = .character
+    /// The terminal's coordinate-space generation when the selection was made.
+    private var generation: UInt64 = 0
 
     public init() {}
 
@@ -37,6 +39,7 @@ public struct SelectionController {
         }
         anchor = position
         isDragging = true
+        generation = terminal.scrollbackGeneration
         return set(Self.expand(anchor: position, head: position, mode: mode, in: terminal, separators: separators))
     }
 
@@ -59,6 +62,17 @@ public struct SelectionController {
         guard selection?.isEmpty ?? false else { return false }
         selection = nil
         return true
+    }
+
+    /// Drops the selection if the terminal has thrown away the coordinate space it was anchored
+    /// in — a cleared scrollback, a reset, an alternate-screen swap. Absolute rows stay in range
+    /// across all three, so without this the same `Selection` quietly starts addressing unrelated
+    /// content instead of disappearing.
+    @discardableResult
+    public mutating func invalidateIfStale(_ terminal: Terminal) -> Bool {
+        guard terminal.scrollbackGeneration != generation else { return false }
+        generation = terminal.scrollbackGeneration
+        return clear()
     }
 
     /// Drops the selection and any drag in progress. Typing does this.

@@ -45,6 +45,10 @@ final class TabController: NSViewController, NSMenuItemValidation {
     private var config: Config
     private var tabs: [Tab] = []
     private var selected = 0
+    /// Which tabs belong to which group. Kept in step with `tabs` by hand -- every insertion and
+    /// removal tells it -- because the invariant it guarantees (a group's tabs are contiguous) is
+    /// only worth anything if it is never briefly untrue.
+    private var grouping = TabGrouping()
 
     private let tabBar = TabBarView(frame: .zero)
     private let paneContainer = NSView(frame: .zero)
@@ -86,6 +90,8 @@ final class TabController: NSViewController, NSMenuItemValidation {
         tabBar.onSelect = { [weak self] index in self?.selectTab(at: index) }
         tabBar.onClose = { [weak self] index in self?.closeTabs(at: [index]) }
         tabBar.onContextMenu = { [weak self] index, event in self?.showTabMenu(for: index, event: event) }
+        tabBar.onToggleGroup = { [weak self] id in self?.toggleGroup(id) }
+        tabBar.onGroupContextMenu = { [weak self] id, event in self?.showGroupMenu(for: id, event: event) }
         tabBar.onAppearanceChange = { [weak self] in self?.appearanceChanged() }
         tabBar.setColors(palette: Pane.resolvedPalette(for: config))
         view = root
@@ -127,6 +133,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
         guard tree.focusedPane != nil else { return }
         let tab = Tab(panes: tree)
         tabs.append(tab)
+        grouping.tabInserted(at: tabs.count - 1)
         wire(tab)
         show(tabs.count - 1)
     }
@@ -210,6 +217,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
                 tab.panes.terminate()
                 self.detach(tab)
                 self.tabs.remove(at: index)
+                self.grouping.tabRemoved(at: index)
             }
             guard let next else {
                 self.selected = 0
@@ -228,6 +236,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
         detach(tabs[index])
         let next = TabStrip.selectionAfterClosing(index, selected: selected, tabCount: tabs.count)
         tabs.remove(at: index)
+        grouping.tabRemoved(at: index)
         guard let next else {
             selected = 0
             refreshBar()
@@ -335,9 +344,15 @@ final class TabController: NSViewController, NSMenuItemValidation {
     private func refreshBar() {
         let visible = TabStrip.isBarVisible(config.tabBar, tabCount: tabs.count)
         tabBar.isHidden = !visible
-        tabBarHeight?.constant = visible ? TabBarView.height : 0
-        guard visible else { return }
-        tabBar.setTabs(tabs.map { TabBarItem(title: $0.title, indicator: $0.indicator) }, selected: selected)
+        guard visible else {
+            tabBarHeight?.constant = 0
+            return
+        }
+        tabBar.setTabs(tabs.map { TabBarItem(title: $0.title, indicator: $0.indicator) },
+                       selected: selected, grouping: grouping)
+        // Set after the tabs, because the bar is taller whenever a group is expanded and only it
+        // knows whether one is.
+        tabBarHeight?.constant = tabBar.preferredHeight
     }
 
     // MARK: - The tab context menu
@@ -359,10 +374,175 @@ final class TabController: NSViewController, NSMenuItemValidation {
         menu.addItem(.separator())
         menu.addItem(tabMenuItem("Duplicate Tab", #selector(menuDuplicateTab(_:)), index))
         menu.addItem(.separator())
+        addGroupItems(to: menu, forTabAt: index)
+        menu.addItem(.separator())
         menu.addItem(tabMenuItem("Rename Tab…", #selector(menuRenameTab(_:)), index))
         menu.addItem(tabMenuItem("Reset Title", #selector(menuResetTabTitle(_:)), index,
                                  enabled: tabs[index].customTitle != nil))
         NSMenu.popUpContextMenu(menu, with: event, for: tabBar)
+    }
+
+    /// The group half of a tab's menu. "Add to Group" is only offered when there is a group other
+    /// than this tab's own to add it to; an empty submenu is worse than no submenu.
+    private func addGroupItems(to menu: NSMenu, forTabAt index: Int) {
+        let current = grouping.group(ofTabAt: index)
+        menu.addItem(tabMenuItem("New Group from Tab…", #selector(menuNewGroup(_:)), index))
+
+        let others = grouping.groups.filter { $0.id != current?.id }
+        if !others.isEmpty {
+            let item = NSMenuItem(title: "Add to Group", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            submenu.autoenablesItems = false
+            for group in others {
+                let entry = NSMenuItem(title: group.name, action: #selector(menuAddToGroup(_:)),
+                                       keyEquivalent: "")
+                entry.target = self
+                entry.representedObject = [index, group.id]
+                submenu.addItem(entry)
+            }
+            item.submenu = submenu
+            menu.addItem(item)
+        }
+        guard current != nil else { return }
+        menu.addItem(tabMenuItem("Remove from Group", #selector(menuRemoveFromGroup(_:)), index))
+    }
+
+    private func showGroupMenu(for id: Int, event: NSEvent) {
+        guard let group = grouping.group(withID: id) else { return }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(groupMenuItem(group.isCollapsed ? "Expand Group" : "Collapse Group",
+                                   #selector(menuToggleGroup(_:)), id))
+        menu.addItem(.separator())
+        menu.addItem(groupMenuItem("Rename Group…", #selector(menuRenameGroup(_:)), id))
+
+        let colors = NSMenuItem(title: "Group Colour", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        for (name, colorIndex) in TabController.groupColors {
+            let entry = NSMenuItem(title: name, action: #selector(menuSetGroupColor(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = [id, colorIndex]
+            entry.state = group.colorIndex == colorIndex ? .on : .off
+            submenu.addItem(entry)
+        }
+        colors.submenu = submenu
+        menu.addItem(colors)
+        NSMenu.popUpContextMenu(menu, with: event, for: tabBar)
+    }
+
+    /// The six ANSI colours a group can be, by name. Indices into the theme's own palette rather
+    /// than hex values, so a group looks like it belongs to whatever theme is in force.
+    private static let groupColors: [(String, Int)] = [
+        ("Red", 1), ("Green", 2), ("Yellow", 3), ("Blue", 4), ("Magenta", 5), ("Cyan", 6),
+    ]
+
+    private func groupMenuItem(_ title: String, _ action: Selector, _ id: Int) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.representedObject = id
+        item.isEnabled = true
+        return item
+    }
+
+    /// Applies the move a grouping change asked for, so the tabs themselves end up in the order the
+    /// model already believes they are in. Nothing else may reorder `tabs`.
+    private func apply(_ move: TabMove?) {
+        guard let move, tabs.indices.contains(move.from) else { return }
+        let tab = tabs.remove(at: move.from)
+        tabs.insert(tab, at: min(move.to, tabs.count))
+        // The selection is an index, so it moves with whatever it was pointing at.
+        if selected == move.from {
+            selected = min(move.to, tabs.count - 1)
+        } else if move.from < selected && move.to >= selected {
+            selected -= 1
+        } else if move.from > selected && move.to <= selected {
+            selected += 1
+        }
+    }
+
+    private func groupsChanged() {
+        refreshTitles()
+        refreshBar()
+    }
+
+    @objc private func menuNewGroup(_ sender: Any?) {
+        guard let index = tabIndex(from: sender), let window = view.window else { return }
+        let tab = tabs[index]
+        askForName(title: "New Group", initial: tab.title, in: window) { [weak self, weak tab] name in
+            guard let self, let tab, let index = self.tabs.firstIndex(where: { $0 === tab }) else { return }
+            let free = TabController.groupColors.map(\.1)
+            let used = Set(self.grouping.groups.map(\.colorIndex))
+            let color = free.first { !used.contains($0) } ?? free[self.grouping.groups.count % free.count]
+            let made = self.grouping.newGroup(named: name, colorIndex: color, fromTabAt: index)
+            self.apply(made?.move)
+            self.groupsChanged()
+        }
+    }
+
+    @objc private func menuAddToGroup(_ sender: Any?) {
+        guard let pair = (sender as? NSMenuItem)?.representedObject as? [Int], pair.count == 2,
+              tabs.indices.contains(pair[0]) else { return }
+        apply(grouping.add(tabAt: pair[0], toGroup: pair[1]))
+        groupsChanged()
+    }
+
+    @objc private func menuRemoveFromGroup(_ sender: Any?) {
+        guard let index = tabIndex(from: sender) else { return }
+        apply(grouping.removeFromGroup(tabAt: index))
+        groupsChanged()
+    }
+
+    @objc private func menuToggleGroup(_ sender: Any?) {
+        guard let id = (sender as? NSMenuItem)?.representedObject as? Int else { return }
+        toggleGroup(id)
+    }
+
+    private func toggleGroup(_ id: Int) {
+        grouping.toggleCollapsed(group: id)
+        // A collapsed group hides its tabs, and the selected one may be among them: move the
+        // selection to something the user can still see rather than leaving it on a hidden tab.
+        if let group = grouping.group(withID: id), group.isCollapsed,
+           let range = grouping.range(ofGroup: id), range.contains(selected) {
+            show(range.lowerBound)
+        }
+        groupsChanged()
+    }
+
+    @objc private func menuSetGroupColor(_ sender: Any?) {
+        guard let pair = (sender as? NSMenuItem)?.representedObject as? [Int], pair.count == 2 else { return }
+        grouping.setColor(pair[1], forGroup: pair[0])
+        groupsChanged()
+    }
+
+    @objc private func menuRenameGroup(_ sender: Any?) {
+        guard let id = (sender as? NSMenuItem)?.representedObject as? Int,
+              let group = grouping.group(withID: id), let window = view.window else { return }
+        askForName(title: "Rename Group", initial: group.name, in: window) { [weak self] name in
+            self?.grouping.rename(group: id, to: name)
+            self?.groupsChanged()
+        }
+    }
+
+    /// One name-entry sheet, shared by "New Group", "Rename Group" and "Rename Tab". A sheet rather
+    /// than a modal alert, for the reason `confirmClose` gives: `runModal()` stops the run loop and
+    /// with it every session in every other tab.
+    private func askForName(title: String, initial: String, in window: NSWindow,
+                            then apply: @escaping (String) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = title
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = initial
+        alert.accessoryView = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return }
+            apply(name)
+        }
+        alert.window.initialFirstResponder = field
     }
 
     private func tabMenuItem(_ title: String, _ action: Selector, _ index: Int,

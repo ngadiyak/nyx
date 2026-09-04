@@ -10,13 +10,18 @@ public struct TabBarMetrics: Equatable {
     /// The gap between the indicator and the title, and between the title and the close button.
     public let gap: Double
 
+    /// The strip above an expanded group's tabs carrying its colour and its name, shown once.
+    public let groupHeaderHeight: Double
+
     public init(maxTabWidth: Double = 220, closeButtonSize: Double = 14,
-                indicatorSize: Double = 9, horizontalInset: Double = 7, gap: Double = 4) {
+                indicatorSize: Double = 9, horizontalInset: Double = 7, gap: Double = 4,
+                groupHeaderHeight: Double = 14) {
         self.maxTabWidth = maxTabWidth
         self.closeButtonSize = closeButtonSize
         self.indicatorSize = indicatorSize
         self.horizontalInset = horizontalInset
         self.gap = gap
+        self.groupHeaderHeight = groupHeaderHeight
     }
 
     public static let standard = TabBarMetrics()
@@ -45,8 +50,8 @@ public enum TabBarGeometry {
 
     public static func tabRect(index: Int, barWidth: Double, barHeight: Double, tabCount: Int,
                                metrics: TabBarMetrics = .standard) -> PaneRect {
-        let width = tabWidth(barWidth: barWidth, tabCount: tabCount, metrics: metrics)
-        return PaneRect(x: Double(index) * width, y: 0, width: width, height: barHeight)
+        slotRect(index: index, slotCount: tabCount, barWidth: barWidth, barHeight: barHeight,
+                 headerHeight: 0, metrics: metrics)
     }
 
     /// The close button, or nil when the tab is too narrow to carry one.
@@ -76,25 +81,126 @@ public enum TabBarGeometry {
         return PaneRect(x: left, y: tab.y, width: max(0, right - left), height: tab.height)
     }
 
-    /// What a click means: the close button of a tab, the tab itself, or nothing.
+    /// What a click means: the close button of a tab, the tab itself, a collapsed group's chip, a
+    /// group's header, or nothing.
     public enum Hit: Equatable {
         case select(Int)
         case close(Int)
+        /// The chip a collapsed group shows instead of its tabs; clicking it expands the group.
+        case expandGroup(Int)
+        /// The coloured strip above an expanded group's tabs.
+        case groupHeader(Int)
     }
 
     public static func hit(atX x: Double, y: Double, barWidth: Double, barHeight: Double,
                            tabCount: Int, metrics: TabBarMetrics = .standard) -> Hit? {
-        guard tabCount > 0, x >= 0, x < barWidth, y >= 0, y <= barHeight else { return nil }
-        let width = tabWidth(barWidth: barWidth, tabCount: tabCount, metrics: metrics)
-        guard width > 0 else { return nil }
-        let index = Int(x / width)
-        guard index < tabCount else { return nil }
-        let tab = tabRect(index: index, barWidth: barWidth, barHeight: barHeight,
-                          tabCount: tabCount, metrics: metrics)
-        if let close = closeRect(in: tab, metrics: metrics), close.contains(x: x, y: y) {
-            return .close(index)
+        hit(atX: x, y: y, slots: (0..<max(0, tabCount)).map { .tab(index: $0, group: nil) },
+            barWidth: barWidth, barHeight: barHeight, headerHeight: 0, metrics: metrics)
+    }
+
+    // MARK: - Groups
+    //
+    // With groups the bar stops being "one box per tab". It is a row of *slots*: an ungrouped tab
+    // is one slot, an expanded group is one slot per member with a header above them, and a
+    // collapsed group is a single chip however many tabs it holds. Everything below is written in
+    // slots, and the ungrouped case is just the one where every slot is a tab.
+
+    public enum Slot: Equatable {
+        /// A tab, and the expanded group it belongs to. A tab in a *collapsed* group gets no slot
+        /// of its own -- its group's chip stands in for it -- so a slot's group is always expanded.
+        case tab(index: Int, group: Int?)
+        /// A collapsed group and how many tabs it is standing in for.
+        case collapsedGroup(id: Int, tabCount: Int)
+    }
+
+    /// The bar's slots, left to right, from the tabs and how they are grouped.
+    public static func slots(tabCount: Int, grouping: TabGrouping) -> [Slot] {
+        var result: [Slot] = []
+        var index = 0
+        while index < tabCount {
+            let group = grouping.group(ofTabAt: index)
+            guard let group, group.isCollapsed, let range = grouping.range(ofGroup: group.id) else {
+                result.append(.tab(index: index, group: group?.id))
+                index += 1
+                continue
+            }
+            result.append(.collapsedGroup(id: group.id, tabCount: range.count))
+            index = range.upperBound
         }
-        return .select(index)
+        return result
+    }
+
+    /// The height the bar needs: its base, plus a row for group names when any group is expanded.
+    /// A collapsed group names itself on its chip and needs no header.
+    public static func barHeight(base: Double, grouping: TabGrouping,
+                                 metrics: TabBarMetrics = .standard) -> Double {
+        let expanded = grouping.groups.contains { !$0.isCollapsed && grouping.range(ofGroup: $0.id) != nil }
+        return base + (expanded ? metrics.groupHeaderHeight : 0)
+    }
+
+    public static func slotWidth(barWidth: Double, slotCount: Int,
+                                 metrics: TabBarMetrics = .standard) -> Double {
+        guard slotCount > 0, barWidth > 0 else { return 0 }
+        return min(metrics.maxTabWidth, barWidth / Double(slotCount))
+    }
+
+    /// A slot's box. The header row, when there is one, is taken off the top: slots sit below it,
+    /// so a group's name never overlaps the tab it names.
+    public static func slotRect(index: Int, slotCount: Int, barWidth: Double, barHeight: Double,
+                                headerHeight: Double, metrics: TabBarMetrics = .standard) -> PaneRect {
+        let width = slotWidth(barWidth: barWidth, slotCount: slotCount, metrics: metrics)
+        return PaneRect(x: Double(index) * width, y: headerHeight,
+                        width: width, height: max(0, barHeight - headerHeight))
+    }
+
+    /// The coloured strip over an expanded group, spanning the slots its tabs occupy.
+    public static func groupHeaderRect(fromSlot first: Int, toSlot last: Int, slotCount: Int,
+                                       barWidth: Double, headerHeight: Double,
+                                       metrics: TabBarMetrics = .standard) -> PaneRect {
+        let width = slotWidth(barWidth: barWidth, slotCount: slotCount, metrics: metrics)
+        let x = Double(first) * width
+        return PaneRect(x: x, y: 0, width: Double(last - first + 1) * width, height: headerHeight)
+    }
+
+    /// The slot runs each expanded group covers, as `(group id, first slot, last slot)`.
+    public static func groupHeaders(slots: [Slot]) -> [(id: Int, first: Int, last: Int)] {
+        var headers: [(id: Int, first: Int, last: Int)] = []
+        for (position, slot) in slots.enumerated() {
+            guard case .tab(_, let group) = slot, let id = group else { continue }
+            if let previous = headers.last, previous.id == id, previous.last == position - 1 {
+                headers[headers.count - 1] = (id: id, first: previous.first, last: position)
+            } else {
+                headers.append((id: id, first: position, last: position))
+            }
+        }
+        return headers
+    }
+
+    public static func hit(atX x: Double, y: Double, slots: [Slot], barWidth: Double,
+                           barHeight: Double, headerHeight: Double,
+                           metrics: TabBarMetrics = .standard) -> Hit? {
+        guard !slots.isEmpty, x >= 0, x < barWidth, y >= 0, y <= barHeight else { return nil }
+        let width = slotWidth(barWidth: barWidth, slotCount: slots.count, metrics: metrics)
+        guard width > 0 else { return nil }
+        let position = Int(x / width)
+        guard position < slots.count else { return nil }
+
+        // Above the slots is the header row, which belongs to whichever group is drawn there.
+        if headerHeight > 0, y < headerHeight {
+            guard case .tab(_, let group) = slots[position], let id = group else { return nil }
+            return .groupHeader(id)
+        }
+        switch slots[position] {
+        case .collapsedGroup(let id, _):
+            return .expandGroup(id)
+        case .tab(let index, _):
+            let slot = slotRect(index: position, slotCount: slots.count, barWidth: barWidth,
+                                barHeight: barHeight, headerHeight: headerHeight, metrics: metrics)
+            if let close = closeRect(in: slot, metrics: metrics), close.contains(x: x, y: y) {
+                return .close(index)
+            }
+            return .select(index)
+        }
     }
 }
 

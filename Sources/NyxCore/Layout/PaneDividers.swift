@@ -152,7 +152,9 @@ public extension PaneTree {
     }
 
     /// The bounds `layout` gives the two children of a split. Kept here rather than reaching into
-    /// `PaneTree.splitBounds`, which is private to that file; the rounding rule is the same one.
+    /// `PaneTree.splitBounds`, which is private to that file; the rounding and the clamp on the
+    /// second child's origin are the same rules, and `theDividerAlwaysSitsExactlyBetweenTheTwoPanes`
+    /// is what stops the two drifting apart.
     private static func childBounds(_ bounds: PaneRect, axis: SplitAxis, ratio: Double,
                                     dividerThickness: Double) -> (PaneRect, PaneRect) {
         switch axis {
@@ -161,13 +163,16 @@ public extension PaneTree {
             let firstWidth = (available * ratio).rounded()
             let secondWidth = max(0, available - firstWidth)
             return (PaneRect(x: bounds.x, y: bounds.y, width: firstWidth, height: bounds.height),
-                    PaneRect(x: bounds.x + firstWidth + dividerThickness, y: bounds.y, width: secondWidth, height: bounds.height))
+                    PaneRect(x: min(bounds.x + firstWidth + dividerThickness, bounds.x + bounds.width),
+                             y: bounds.y, width: secondWidth, height: bounds.height))
         case .vertical:
             let available = max(0, bounds.height - dividerThickness)
             let firstHeight = (available * ratio).rounded()
             let secondHeight = max(0, available - firstHeight)
             return (PaneRect(x: bounds.x, y: bounds.y, width: bounds.width, height: firstHeight),
-                    PaneRect(x: bounds.x, y: bounds.y + firstHeight + dividerThickness, width: bounds.width, height: secondHeight))
+                    PaneRect(x: bounds.x,
+                             y: min(bounds.y + firstHeight + dividerThickness, bounds.y + bounds.height),
+                             width: bounds.width, height: secondHeight))
         }
     }
 }

@@ -38,14 +38,38 @@ private func verticalPair() -> PaneTree {
 }
 
 @Test func theDividerAlwaysSitsExactlyBetweenTheTwoPanesItSeparates() {
-    // Whatever the rounding does, the gap the layout leaves and the divider rect must agree.
-    for ratio in [0.05, 0.13, 0.5, 0.77, 0.95] {
-        let tree = PaneTree.leaf(id(1)).splitting(id(1), axis: .horizontal, with: id(2), ratio: ratio)
-        let frames = tree.layout(in: full, dividerThickness: 1)
-        let divider = tree.dividers(in: full, dividerThickness: 1)[0]
-        #expect(divider.rect.x == frames[id(1)]!.x + frames[id(1)]!.width)
-        #expect(divider.rect.x + divider.rect.width == frames[id(2)]!.x)
+    // Whatever the rounding and clamping do, the gap the layout leaves and the divider rect must
+    // agree -- including in bounds too small to hold the divider at all.
+    let sizes = [full, PaneRect(x: 3, y: 5, width: 37, height: 11), PaneRect(x: 0, y: 0, width: 0.5, height: 4)]
+    for bounds in sizes {
+        for ratio in [0.05, 0.13, 0.5, 0.77, 0.95] {
+            let horizontal = PaneTree.leaf(id(1)).splitting(id(1), axis: .horizontal, with: id(2), ratio: ratio)
+            let hFrames = horizontal.layout(in: bounds, dividerThickness: 1)
+            let hDivider = horizontal.dividers(in: bounds, dividerThickness: 1)[0]
+            #expect(hDivider.rect.x == hFrames[id(1)]!.x + hFrames[id(1)]!.width)
+            #expect(hDivider.rect.x + hDivider.rect.width == hFrames[id(2)]!.x)
+
+            let vertical = PaneTree.leaf(id(1)).splitting(id(1), axis: .vertical, with: id(2), ratio: ratio)
+            let vFrames = vertical.layout(in: bounds, dividerThickness: 1)
+            let vDivider = vertical.dividers(in: bounds, dividerThickness: 1)[0]
+            #expect(vDivider.rect.y == vFrames[id(1)]!.y + vFrames[id(1)]!.height)
+            #expect(vDivider.rect.y + vDivider.rect.height == vFrames[id(2)]!.y)
+        }
     }
+}
+
+@Test func nestedDividersSitBetweenTheirOwnPanesToo() {
+    // The nested split's bounds come from this file's copy of the layout's splitting rule; if that
+    // ever drifts from `PaneTree`'s, the nested divider lands in the wrong place.
+    let tree = PaneTree.leaf(id(1))
+        .splitting(id(1), axis: .horizontal, with: id(2), ratio: 0.37)
+        .splitting(id(2), axis: .vertical, with: id(3), ratio: 0.62)
+    let frames = tree.layout(in: full, dividerThickness: 1)
+    let nested = tree.dividers(in: full, dividerThickness: 1)[1]
+    #expect(nested.rect.y == frames[id(2)]!.y + frames[id(2)]!.height)
+    #expect(nested.rect.y + nested.rect.height == frames[id(3)]!.y)
+    #expect(nested.rect.x == frames[id(2)]!.x)
+    #expect(nested.rect.width == frames[id(2)]!.width)
 }
 
 @Test func nestedSplitsEachGetTheirOwnDividerWithItsOwnPath() {

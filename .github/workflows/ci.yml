@@ -1,0 +1,99 @@
+name: CI
+
+# Every push and every pull request. The tests in this repository only ever ran when somebody
+# remembered to run them, which is the same as not having them: three broken features reached the
+# user during development, and a green suite on a machine nobody checks is not a safety net.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build
+        run: swift build 2>&1 | tee build.log
+
+      # The project's standing rule: a new warning is a defect. Enforced here rather than trusted.
+      - name: Fail on warnings
+        run: |
+          if grep -q "warning:" build.log; then
+            echo "::error::the build produced warnings"
+            grep "warning:" build.log | sort -u
+            exit 1
+          fi
+
+      # `--no-parallel` on purpose: the test runner in this project intermittently hangs at process
+      # launch when run in parallel. See CLAUDE.md.
+      - name: Test
+        run: swift test --no-parallel
+
+      - name: Release build
+        run: swift build -c release 2>&1 | tee release.log
+
+      - name: Fail on release warnings
+        run: |
+          if grep -q "warning:" release.log; then
+            echo "::error::the release build produced warnings"
+            grep "warning:" release.log | sort -u
+            exit 1
+          fi
+
+      # Throughput is a headline property of this terminal, and a regression in it is as real as a
+      # failing test. The floor is deliberately below the measured figure so ordinary noise on a
+      # shared runner does not fail the build.
+      - name: Benchmark
+        run: |
+          OUTPUT=$(make bench 2>&1 | tail -1)
+          echo "$OUTPUT"
+          THROUGHPUT=$(echo "$OUTPUT" | grep -oE '[0-9]+ MB/s' | grep -oE '[0-9]+')
+          if [ -z "$THROUGHPUT" ]; then
+            echo "::error::the benchmark printed nothing to measure"
+            exit 1
+          fi
+          if [ "$THROUGHPUT" -lt 120 ]; then
+            echo "::error::throughput fell to ${THROUGHPUT} MB/s"
+            exit 1
+          fi
+
+      - name: Bundle the app
+        run: ./scripts/bundle.sh
+
+      # The app has to survive being launched. Every feature that silently did nothing in this
+      # project got as far as it did because "it compiles" was treated as evidence.
+      - name: Launch check
+        run: |
+          ./build/Nyx.app/Contents/MacOS/Nyx &
+          PID=$!
+          sleep 8
+          if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID"
+            echo "app stayed up"
+          else
+            echo "::error::the app exited on its own within 8 seconds"
+            exit 1
+          fi
+
+      - name: Render the interface
+        run: NYX_UI_SNAPSHOT=ui-snapshots ./build/Nyx.app/Contents/MacOS/Nyx || true
+
+      # So a reviewer can look at what a change did to the interface without building it. The
+      # environment denies screen recording, which is why this renderer exists at all.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-snapshots
+          path: ui-snapshots/
+          if-no-files-found: warn

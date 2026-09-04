@@ -103,6 +103,13 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
         updateScopeTint(palette: palette)
     }
 
+    /// Puts a bar into the state another pane's bar was in, for a search that follows its hits
+    /// across tabs: same text, same scope, no re-typing and no reset to this pane only.
+    func restore(query: String, allTabs: Bool) {
+        field.stringValue = query
+        if allTabs != searchesAllTabs { toggleScope() }
+    }
+
     /// The "3 of 47" text, or an empty string before anything has been typed.
     func setReadout(_ text: String) {
         readout.stringValue = text
@@ -161,14 +168,16 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
     private func updateScopeTint(palette: Palette) {
         lastPalette = palette
         // Colour alone does not carry this: in several themes the cursor colour *is* the
-        // foreground, so on and off rendered pixel-identical. The state is a filled chip.
+        // foreground, so on and off rendered pixel-identical. The state is a filled chip, in the
+        // theme's accent rather than its cursor for the same reason, with whichever neutral reads
+        // on that accent.
         scope.contentTintColor = searchesAllTabs
-            ? nsColor(palette.background, alpha: 1)
+            ? nsColor(palette.textOn(palette.accent), alpha: 1)
             : nsColor(palette.foreground, alpha: 0.8)
         scope.wantsLayer = true
         scope.layer?.cornerRadius = 5
         scope.layer?.backgroundColor = searchesAllTabs
-            ? nsColor(palette.cursor, alpha: 0.9).cgColor
+            ? nsColor(palette.accent, alpha: 1).cgColor
             : NSColor.clear.cgColor
         scope.toolTip = searchesAllTabs
             ? "Searching every tab — click for this pane only"

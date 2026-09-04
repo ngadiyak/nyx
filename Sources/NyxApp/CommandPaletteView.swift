@@ -62,11 +62,13 @@ private final class PaletteListView: NSView {
             let title = NSMutableAttributedString(
                 string: result.item.title,
                 attributes: [.font: titleFont, .foregroundColor: nsColor(palette.foreground, alpha: 1)])
-            // Bold and in the theme's blue: the characters the query actually matched, which is
-            // what tells a user why this row is in the list at all.
+            // Bold and in the theme's accent: the characters the query actually matched, which is
+            // what tells a user why this row is in the list at all. Not `colors[12]` -- Solarized's
+            // bright blue is a grey identical to its foreground, so there the matched characters
+            // were bold and nothing else.
             for position in result.positions where position < title.length {
                 title.setAttributes([.font: matchFont,
-                                     .foregroundColor: nsColor(palette.colors[12], alpha: 1)],
+                                     .foregroundColor: nsColor(palette.accentText, alpha: 1)],
                                     range: NSRange(location: position, length: 1))
             }
             title.draw(at: NSPoint(x: rect.minX + 12, y: rect.minY + 5))

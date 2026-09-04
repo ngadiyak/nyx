@@ -65,7 +65,9 @@ final class StickyPromptView: NSView {
         label.font = font
         // The theme's own red for a failure, its foreground otherwise, over a background lifted
         // just far enough off the terminal's to read as a different surface rather than as text.
-        label.textColor = nsColor(failed ? palette.colors[1] : palette.foreground, alpha: 1)
+        // `readable(1)` rather than `colors[1]`: gruvbox's red is 2.7:1 against its own background
+        // and unreadable as a line of text; its bright red is 4.3:1.
+        label.textColor = nsColor(failed ? palette.readable(1) : palette.foreground, alpha: 1)
         layer?.backgroundColor = nsColor(palette.foreground, alpha: 0.10).cgColor
         layer?.borderWidth = 0
         isHidden = false

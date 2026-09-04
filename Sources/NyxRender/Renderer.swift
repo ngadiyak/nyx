@@ -182,6 +182,14 @@ public final class Renderer {
     private func buildInstances(_ f: RenderFrame, padding: Int) {
         let m = fonts.metrics
         let cw = Float(m.width), ch = Float(m.height), thick = Float(m.thickness)
+        // Read once per frame, not once per cell. Each of these walks the palette looking for the
+        // blend that satisfies its contrast rule, which is nothing at all sixty times a second and
+        // absurd two million times a second.
+        let matchBackground = f.palette.searchMatchBackground
+        let currentMatchBackground = f.palette.currentMatchBackground
+        let matchForeground = f.palette.searchMatchForeground
+        let noteForeground = f.palette.noteForeground
+
         for _ in 0..<2 {
             let gen = atlas.generation
             instances.removeAll(keepingCapacity: true)
@@ -215,8 +223,8 @@ public final class Renderer {
                         // rest are a tint behind unchanged text. Painting all of them the same way
                         // makes a page of matches into a page of yellow, and hides the one hit that
                         // the user is actually standing on.
-                        bg = isCurrentMatch ? f.palette.currentMatchBackground : f.palette.searchMatchBackground
-                        if isCurrentMatch { fg = f.palette.searchMatchForeground }
+                        bg = isCurrentMatch ? currentMatchBackground : matchBackground
+                        if isCurrentMatch { fg = matchForeground }
                     }
 
                     let blockCursor = isCursor && f.focused && f.cursorShape == .block
@@ -337,7 +345,7 @@ public final class Renderer {
                     let glyphText: GlyphText = text.unicodeScalars.count == 1
                         ? .scalar(text.unicodeScalars.first!.value) : .cluster(text)
                     if let g = atlas.glyph(for: GlyphKey(text: glyphText, bold: false, italic: false)) {
-                        glyphs.append(glyphQuad(g, cellX: px, cellY: py, color: f.palette.noteForeground))
+                        glyphs.append(glyphQuad(g, cellX: px, cellY: py, color: noteForeground))
                     }
                 }
             }

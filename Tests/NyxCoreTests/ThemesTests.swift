@@ -84,3 +84,185 @@ import Foundation
     #expect(Themes.parse("palette = 300=#ffffff\n") == nil)
     #expect(Themes.parse("palette = -1=#ffffff\n") == nil)
 }
+
+// MARK: - What makes a theme usable
+//
+// The rules below are the ones a theme has to satisfy for the interface built on top of it to be
+// visible. They exist because the previous round of this file checked one thing -- foreground
+// against background -- and every theme passed it while Solarized's bright black was pixel-identical
+// to its background, nyx-light's black was pixel-identical to its bright white, nyx-dark's bright
+// cyan was *darker* than its cyan, and selecting a line in nyx-light painted near-black under
+// near-black text. A rule that only looks at two of a theme's twenty colours is a rule that passes
+// things it should not.
+//
+// Every threshold here is a floor the seven built-ins clear, not an aspiration: a test that fails on
+// the code as shipped teaches nobody anything.
+
+/// Index 0 is exempt everywhere: black sitting on the background is what black is for, and five of
+/// the seven built-ins ship it within a point or two of the page. Index 8 is exempt from the
+/// contrast floor for the same reason -- "bright black" is the comment colour -- but has to be
+/// *visibly* off the background, which is the rule Solarized Dark used to fail by 0.00.
+@Test func noAnsiColourIsInvisibleOnItsOwnBackground() {
+    for (name, p) in Themes.builtin {
+        #expect(RGB.distance(p.colors[8], p.background) >= 12,
+                "\(name): bright black is \(RGB.distance(p.colors[8], p.background)) from the background")
+        for index in Array(1...7) + Array(9...15) {
+            let ratio = RGB.contrast(p.colors[index], p.background)
+            #expect(ratio >= 2.5, "\(name): colour \(index) is \(ratio):1 against the background")
+        }
+    }
+}
+
+/// Black and bright white are the two ends of the ramp; a theme that makes them the same colour
+/// renders `\u{1B}[30;107m` as nothing at all. nyx-light did, because its light palette had been
+/// built by darkening every slot including the one that was already the darkest.
+@Test func blackAndBrightWhiteAreDifferentColours() {
+    for (name, p) in Themes.builtin {
+        #expect(RGB.distance(p.colors[0], p.colors[15]) >= 20,
+                "\(name): black and bright white are \(RGB.distance(p.colors[0], p.colors[15])) apart")
+    }
+}
+
+/// On a dark theme "bright" means more light. A bright variant that renders dimmer than the colour
+/// it is meant to emphasise is backwards -- Tokyo Night's bright cyan was 7.3:1 against a cyan of
+/// 10.0:1 -- so bold text came out quieter than plain. Light themes are the other way round by
+/// design and are not held to this.
+@Test func brightVariantsAreNotDimmerThanTheirNormals() {
+    for (name, p) in Themes.builtin where !p.isLight {
+        for index in 8...15 {
+            let bright = p.colors[index].relativeLuminance
+            let normal = p.colors[index - 8].relativeLuminance
+            #expect(bright >= normal - 0.005,
+                    "\(name): colour \(index) is dimmer than colour \(index - 8)")
+        }
+    }
+}
+
+@Test func theCursorCanBeFound() {
+    for (name, p) in Themes.builtin {
+        #expect(RGB.contrast(p.cursor, p.background) >= 3,
+                "\(name): the cursor is \(RGB.contrast(p.cursor, p.background)):1 against the background")
+    }
+}
+
+/// The accent is what the chrome paints a running toggle, an activity dot and a panel's selected
+/// row in. Four of the seven themes make their cursor the foreground colour, so taking the cursor
+/// as the accent gave four themes an accent that was not a colour.
+@Test func everyThemeHasAnAccentThatIsAColour() {
+    for (name, p) in Themes.builtin {
+        #expect(p.accent.chroma >= 18, "\(name): the accent has chroma \(p.accent.chroma)")
+        #expect(RGB.distance(p.accent, p.foreground) >= 15,
+                "\(name): the accent is \(RGB.distance(p.accent, p.foreground)) from the foreground")
+        #expect(RGB.contrast(p.accent, p.background) >= 2.5,
+                "\(name): the accent is \(RGB.contrast(p.accent, p.background)):1 on the background")
+    }
+}
+
+/// Every band the interface paints under text, checked against the text that lands on it. The
+/// `target` allowance is what keeps this honest for a deliberately low-contrast theme: Solarized's
+/// own foreground only clears its background by 5.6:1, and a highlight there may cost a sixth of
+/// that rather than being blended away chasing 4.5.
+@Test func textReadsOnEveryBandDrawnUnderIt() {
+    for (name, p) in Themes.builtin {
+        let allowed = min(4.5, RGB.contrast(p.foreground, p.background) * 0.85) - 0.01
+        let selectionText = p.selectionForeground ?? p.foreground
+        #expect(RGB.contrast(selectionText, p.selectionBackground) >= 3,
+                "\(name): selected text is \(RGB.contrast(selectionText, p.selectionBackground)):1")
+        #expect(RGB.contrast(p.foreground, p.searchMatchBackground) >= allowed,
+                "\(name): text on a search hit is \(RGB.contrast(p.foreground, p.searchMatchBackground)):1")
+        #expect(RGB.contrast(p.searchMatchForeground, p.currentMatchBackground) >= 4.5,
+                "\(name): text on the current hit is \(RGB.contrast(p.searchMatchForeground, p.currentMatchBackground)):1")
+        // 3.5 rather than `allowed`: the selected row is a surface behind list rows, and it also
+        // has to stay visibly off the panel's own background, which in Solarized is a fight the
+        // contrast rule would otherwise win by making the row invisible.
+        #expect(RGB.contrast(p.foreground, p.panelSelectionBackground) >= 3.5,
+                "\(name): text on the selected row is \(RGB.contrast(p.foreground, p.panelSelectionBackground)):1")
+        #expect(RGB.contrast(p.noteForeground, p.background) >= 2.8,
+                "\(name): a duration note is \(RGB.contrast(p.noteForeground, p.background)):1")
+    }
+}
+
+/// A band you cannot see is not a band. Each one has to be visibly off the background it is drawn
+/// on -- Solarized shipped a selection 5 units from its own background -- and the current search
+/// hit has to be visibly different from the forty others, which is the whole reason there are two
+/// of them.
+@Test func everyBandIsVisiblyOffTheSurfaceUnderIt() {
+    for (name, p) in Themes.builtin {
+        #expect(RGB.distance(p.selectionBackground, p.background) >= 10,
+                "\(name): the selection is \(RGB.distance(p.selectionBackground, p.background)) from the background")
+        #expect(RGB.distance(p.searchMatchBackground, p.background) >= 10,
+                "\(name): a search hit is \(RGB.distance(p.searchMatchBackground, p.background)) from the background")
+        #expect(RGB.distance(p.panelSelectionBackground, p.background) >= 10,
+                "\(name): the selected row is \(RGB.distance(p.panelSelectionBackground, p.background)) from the background")
+        #expect(RGB.distance(p.currentMatchBackground, p.searchMatchBackground) >= 20,
+                "\(name): the current hit is \(RGB.distance(p.currentMatchBackground, p.searchMatchBackground)) from the others")
+    }
+}
+
+/// The command palette tints its selected row with the accent *and* draws the characters a query
+/// matched in the accent. In gruvbox those were 1.6:1 apart, so on the one row the user was looking
+/// at, the highlight that says why the row matched disappeared.
+@Test func theMatchHighlightSurvivesTheSelectedRow() {
+    for (name, p) in Themes.builtin {
+        #expect(RGB.contrast(p.accentText, p.panelSelectionBackground) >= 3,
+                "\(name): matched characters are \(RGB.contrast(p.accentText, p.panelSelectionBackground)):1 on the selected row")
+        #expect(RGB.contrast(p.accentText, p.background) >= 3,
+                "\(name): matched characters are \(RGB.contrast(p.accentText, p.background)):1 on the panel")
+        // And still a different colour from the text around them, which is the other half of the
+        // job: lifting the accent until it clears the selected row must not lift it into the
+        // foreground. gruvbox is the tight one at 23.7 -- its blue is low-chroma to begin with.
+        #expect(RGB.distance(p.accentText, p.foreground) >= 18,
+                "\(name): matched characters are \(RGB.distance(p.accentText, p.foreground)) from ordinary text")
+    }
+}
+
+/// A group's name sits on a pill filled with the group's own colour, and a running toggle's name
+/// sits on the accent. Both used to be drawn in the background colour on the assumption that the
+/// background contrasts with everything, which put dark text on gruvbox's dark red.
+@Test func labelsOnColouredFillsAreReadable() {
+    for (name, p) in Themes.builtin {
+        for index in 1...6 {
+            let fill = p.readable(index)
+            // 3:1 is the floor for a short bold label on a fill rather than a page of body text;
+            // the built-ins clear 3.2.
+            #expect(RGB.contrast(p.textOn(fill), fill) >= 3,
+                    "\(name): a group label on colour \(index) is \(RGB.contrast(p.textOn(fill), fill)):1")
+        }
+        #expect(RGB.contrast(p.textOn(p.accent), p.accent) >= 3,
+                "\(name): a running toggle's label is \(RGB.contrast(p.textOn(p.accent), p.accent)):1")
+    }
+}
+
+/// The block chrome paints failures, successes and running commands in the theme's red, green and
+/// yellow. gruvbox's red is 2.7:1 as a line of text; its bright red is 4.3:1.
+@Test func theBlockChromeUsesColoursYouCanRead() {
+    for (name, p) in Themes.builtin {
+        for index in [1, 2, 3] {
+            #expect(RGB.contrast(p.readable(index), p.background) >= 3,
+                    "\(name): a spine of colour \(index) is \(RGB.contrast(p.readable(index), p.background)):1")
+        }
+    }
+}
+
+/// A user theme file gets every derived colour the built-ins get, so the rules have to survive a
+/// palette nobody vetted. The xterm defaults are the harshest realistic case: a pure-black
+/// background with saturated primaries, and a "bright yellow" of #FFFF00.
+@Test func derivedColoursHoldUpOnAnUnvettedPalette() {
+    let p = Palette.xtermDefault()
+    #expect(RGB.contrast(p.searchMatchForeground, p.currentMatchBackground) >= 4.5)
+    #expect(RGB.contrast(p.foreground, p.panelSelectionBackground) >= 4)
+    #expect(RGB.distance(p.selectionBackground, p.background) >= 10)
+    #expect(RGB.distance(p.currentMatchBackground, p.searchMatchBackground) >= 20)
+    #expect(p.accent.chroma >= 18)
+}
+
+/// A light theme's selection used to be `foreground.scaled(0.35)`, a rule that only makes sense
+/// when the foreground is the light half of the theme. On nyx-light it produced a near-black slab
+/// under near-black text.
+@Test func aLightThemeGetsALightSelection() {
+    let light = Themes.palette(named: "nyx-light")
+    #expect(light.isLight)
+    #expect(light.selectionBackground.relativeLuminance > 0.25,
+            "the selection is \(light.selectionBackground.relativeLuminance) on a light theme")
+    #expect(RGB.contrast(light.foreground, light.selectionBackground) >= 4)
+}

@@ -19,6 +19,8 @@ final class ProjectActionsBar: NSView {
     private static let height: CGFloat = 32
     private let messageLabel = NSTextField(labelWithString: "")
     private let reviewButton = NSButton(title: "Review\u{2026}", target: nil, action: nil)
+    /// Held so the label and both button titles can be recoloured against the fill; see `show`.
+    private var ignoreButton: NSButton?
     private var heightConstraint: NSLayoutConstraint!
 
     override init(frame: NSRect) {
@@ -36,6 +38,7 @@ final class ProjectActionsBar: NSView {
         reviewButton.translatesAutoresizingMaskIntoConstraints = false
 
         let ignoreButton = NSButton(title: "Ignore", target: self, action: #selector(ignore))
+        self.ignoreButton = ignoreButton
         ignoreButton.bezelStyle = .inline
         // "Review…" and "Ignore" name themselves; what they are about is the strip, and this is
         // the one strip in the application where pressing the wrong thing runs somebody else's
@@ -78,8 +81,23 @@ final class ProjectActionsBar: NSView {
         // A project whose actions *changed* under an existing approval is the case worth a warning
         // colour: the user already said yes once, and this is telling them that yes no longer
         // covers what is in the file.
-        layer?.backgroundColor = (changed ? NSColor.systemYellow : NSColor.systemBlue)
-            .withAlphaComponent(0.85).cgColor
+        let fill = changed ? NSColor.systemYellow : NSColor.systemBlue
+        layer?.backgroundColor = fill.withAlphaComponent(0.85).cgColor
+        // Black or white against *this* fill, the way `ConfigBanner` already does it. The label was
+        // `labelColor`, which follows the system appearance rather than the strip it is written on,
+        // so in dark mode the warning read as white on systemYellow -- 1.9:1, and the one strip in
+        // the application where pressing the wrong thing runs somebody else's commands.
+        let ink = ConfigBanner.textColor(on: fill)
+        messageLabel.textColor = ink
+        for button in [reviewButton, ignoreButton].compactMap({ $0 }) {
+            button.contentTintColor = ink
+            // `contentTintColor` colours a borderless button's image and leaves a bezelled button's
+            // title alone, so the title is set as attributed text.
+            button.attributedTitle = NSAttributedString(
+                string: button.title,
+                attributes: [.foregroundColor: ink,
+                             .font: NSFont.systemFont(ofSize: 12, weight: .medium)])
+        }
         isHidden = false
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15

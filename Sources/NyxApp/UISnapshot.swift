@@ -50,10 +50,6 @@ enum UISnapshot {
         write(tabBar(palette: palette, config: config, tabs: 6, quickActions: quickActions(),
                      grouped: true, twoGroups: true),
               named: "tabbar-two-groups", into: directory, background: palette.background)
-        write(tabBar(palette: palette, config: config, tabs: 4, quickActions: quickActions(),
-                     runningToggle: true),
-              named: "tabbar-toggle-running", into: directory, background: palette.background)
-
         write(searchBar(palette: palette), named: "search-bar", into: directory,
               background: palette.background)
         write(searchBar(palette: palette, query: "connection refused", readout: "3 of 47"),
@@ -94,6 +90,12 @@ enum UISnapshot {
             var themed = config
             themed.themeName = name
             let themedPalette = Pane.resolvedPalette(for: themed)
+            // The whole theme on one page: the sixteen against each other and against the
+            // background, and every colour Nyx derives from them shown doing the job it was
+            // derived for. Everything else here is one control in one state; this is the sheet
+            // that makes "invisible in gruvbox" a thing you see rather than a thing you compute.
+            write(themeSheet(palette: themedPalette, name: name),
+                  named: "theme-\(name)-colours", into: directory, background: themedPalette.background)
             write(tabBar(palette: themedPalette, config: themed, tabs: 3, quickActions: quickActions()),
                   named: "theme-\(name)", into: directory, background: themedPalette.background)
             write(tabBar(palette: themedPalette, config: themed, tabs: 6,
@@ -103,9 +105,21 @@ enum UISnapshot {
             // row highlight that works in one theme can be unreadable in another.
             write(palettePanel(palette: themedPalette, config: themed),
                   named: "theme-\(name)-palette", into: directory, background: themedPalette.background)
+            // Filtered, because the characters a query matched are drawn in a colour of their own
+            // and the unfiltered list never shows it.
+            write(palettePanel(palette: themedPalette, config: themed, query: "spl"),
+                  named: "theme-\(name)-palette-filtered", into: directory,
+                  background: themedPalette.background)
             write(searchBar(palette: themedPalette, query: "connection refused", readout: "3 of 47"),
                   named: "theme-\(name)-search", into: directory, background: themedPalette.background)
         }
+
+        // Last, because starting a toggle leaves it running in the shared runner and every tab bar
+        // rendered afterwards would draw its quick action in the "on" state -- which is how every
+        // themed bar above came out with a filled Caffeine chip nobody had asked for.
+        write(tabBar(palette: palette, config: config, tabs: 4, quickActions: quickActions(),
+                     runningToggle: true),
+              named: "tabbar-toggle-running", into: directory, background: palette.background)
 
         FileHandle.standardError.write("wrote UI snapshots to \(directory.path)\n".data(using: .utf8)!)
     }
@@ -154,6 +168,13 @@ enum UISnapshot {
         bar.frame = NSRect(x: 0, y: 0, width: width, height: bar.preferredHeight)
         bar.layoutSubtreeIfNeeded()
         return bar
+    }
+
+    /// One page per theme: the sixteen ANSI colours as blocks *and* as text, the foreground,
+    /// cursor and selection doing what they do, and every colour `Palette` derives shown in its
+    /// own use. Read it as a checklist -- anything you cannot see here you cannot see in the app.
+    private static func themeSheet(palette: Palette, name: String) -> NSView {
+        ThemeSheetView(palette: palette, name: name)
     }
 
     private static func searchBar(palette: Palette, query: String = "", readout: String = "",
@@ -377,5 +398,167 @@ enum UISnapshot {
         else { return }
         CGImageDestinationAddImage(destination, image, nil)
         CGImageDestinationFinalize(destination)
+    }
+}
+
+/// The colour sheet drawn for `theme-<name>-colours.png`.
+///
+/// Not a stack of labels: every row here is a colour used the way the interface uses it -- text on
+/// a fill, a fill under text, a 2px spine in the left margin -- because a swatch says a colour
+/// exists and says nothing about whether you can read what is written on it. The numbers beside
+/// each ANSI colour are its WCAG contrast against this theme's background, which is the one figure
+/// that decides whether a program printing in that colour can be read at all.
+private final class ThemeSheetView: NSView {
+    private let palette: Palette
+    private let name: String
+
+    /// Room for sixteen colour rows in two columns, plus the derived block underneath.
+    static let size = NSSize(width: 760, height: 620)
+
+    init(palette: Palette, name: String) {
+        self.palette = palette
+        self.name = name
+        super.init(frame: NSRect(origin: .zero, size: ThemeSheetView.size))
+    }
+
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    override var isFlipped: Bool { true }
+
+    private static let ansiNames = [
+        "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+        "br black", "br red", "br green", "br yellow", "br blue", "br magenta", "br cyan", "br white",
+    ]
+
+    override func draw(_ dirtyRect: NSRect) {
+        nsColor(palette.background, alpha: 1).setFill()
+        dirtyRect.fill()
+
+        let mono = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        let bold = NSFont.monospacedSystemFont(ofSize: 11, weight: .bold)
+        let heading = NSFont.systemFont(ofSize: 15, weight: .semibold)
+
+        draw("\(name)  —  \(palette.isLight ? "light" : "dark"), foreground \(contrast(palette.foreground)) on background",
+             at: NSPoint(x: 20, y: 16), font: heading, color: palette.foreground)
+
+        // The sixteen. Left column normal, right column bright, so a bright that is dimmer than its
+        // own normal -- or identical to it -- is one glance rather than a memory test.
+        for index in 0..<16 {
+            let column = index / 8, row = index % 8
+            let x = 20.0 + Double(column) * 370
+            let y = 56.0 + Double(row) * 26
+            let colour = palette.colors[index]
+            nsColor(colour, alpha: 1).setFill()
+            NSBezierPath(roundedRect: NSRect(x: x, y: y, width: 34, height: 18),
+                         xRadius: 3, yRadius: 3).fill()
+            draw(String(format: "%2d %-11@", index, ThemeSheetView.ansiNames[index] as NSString),
+                 at: NSPoint(x: x + 42, y: y + 2), font: mono, color: palette.foreground)
+            // The same colour as text on the background, which is how a program actually uses it.
+            draw("The quick brown fox", at: NSPoint(x: x + 150, y: y + 2), font: mono, color: colour)
+            draw(contrast(colour), at: NSPoint(x: x + 300, y: y + 2), font: mono,
+                 color: palette.noteForeground)
+        }
+
+        var y = 280.0
+        func band(_ label: String, _ fill: RGB, _ text: RGB, _ note: String) {
+            draw(label, at: NSPoint(x: 20, y: y + 3), font: mono, color: palette.noteForeground)
+            nsColor(fill, alpha: 1).setFill()
+            NSBezierPath(roundedRect: NSRect(x: 180, y: y, width: 300, height: 20),
+                         xRadius: 4, yRadius: 4).fill()
+            draw("connection refused", at: NSPoint(x: 188, y: y + 3), font: mono, color: text)
+            draw(note, at: NSPoint(x: 496, y: y + 3), font: mono, color: palette.noteForeground)
+            y += 28
+        }
+
+        band("selection", palette.selectionBackground,
+             palette.selectionForeground ?? palette.foreground,
+             String(format: "%.2f:1", RGB.contrast(palette.selectionForeground ?? palette.foreground,
+                                                   palette.selectionBackground)))
+        band("search match", palette.searchMatchBackground, palette.foreground,
+             String(format: "%.2f:1", RGB.contrast(palette.foreground, palette.searchMatchBackground)))
+        band("current match", palette.currentMatchBackground, palette.searchMatchForeground,
+             String(format: "%.2f:1", RGB.contrast(palette.searchMatchForeground,
+                                                   palette.currentMatchBackground)))
+        band("panel selection", palette.panelSelectionBackground, palette.foreground,
+             String(format: "%.2f:1", RGB.contrast(palette.foreground, palette.panelSelectionBackground)))
+
+        // The cursor over its own background, and the note colour: both are text-sized, and both
+        // have been "obviously fine" in the theme whoever tuned them had open.
+        nsColor(palette.cursor, alpha: 1).setFill()
+        NSRect(x: 180, y: y, width: 9, height: 18).fill()
+        draw("cursor", at: NSPoint(x: 20, y: y + 3), font: mono, color: palette.noteForeground)
+        draw("block cursor over a line of output", at: NSPoint(x: 196, y: y + 3), font: mono,
+             color: palette.foreground)
+        draw(contrast(palette.cursor), at: NSPoint(x: 496, y: y + 3), font: mono,
+             color: palette.noteForeground)
+        y += 28
+        draw("duration note", at: NSPoint(x: 20, y: y + 3), font: mono, color: palette.noteForeground)
+        draw("make test", at: NSPoint(x: 180, y: y + 3), font: mono, color: palette.foreground)
+        draw("2.4s", at: NSPoint(x: 300, y: y + 3), font: mono, color: palette.noteForeground)
+        draw(contrast(palette.noteForeground), at: NSPoint(x: 496, y: y + 3), font: mono,
+             color: palette.noteForeground)
+        y += 36
+
+        // The three spine colours beside the rows they would mark, at the width they are drawn.
+        draw("block spines", at: NSPoint(x: 20, y: y + 3), font: mono, color: palette.noteForeground)
+        for (offset, entry) in [(1, "make test — exit 1"), (3, "make test — running"),
+                                (2, "make test — 2.4s")].enumerated() {
+            let top = y + Double(offset) * 22
+            nsColor(palette.readable(entry.0), alpha: 1).setFill()
+            NSRect(x: 180, y: top, width: 2, height: 18).fill()
+            draw(entry.1, at: NSPoint(x: 192, y: top + 3), font: mono,
+                 color: entry.0 == 1 ? palette.readable(1) : palette.foreground)
+        }
+        y += 74
+
+        // Six group pills, because a group can be any of six ANSI colours and only two of them
+        // have ever appeared in a snapshot.
+        draw("group pills", at: NSPoint(x: 20, y: y + 4), font: mono, color: palette.noteForeground)
+        var x = 180.0
+        for index in 1...6 {
+            let fill = palette.readable(index)
+            let label = ThemeSheetView.ansiNames[index] as NSString
+            let width = label.size(withAttributes: [.font: bold]).width + 18
+            nsColor(fill, alpha: 1).setFill()
+            NSBezierPath(roundedRect: NSRect(x: x, y: y, width: width, height: 20),
+                         xRadius: 5, yRadius: 5).fill()
+            draw(label as String, at: NSPoint(x: x + 9, y: y + 3), font: bold,
+                 color: palette.textOn(fill))
+            x += width + 8
+        }
+        y += 32
+
+        // The accent, in the two places the chrome puts it.
+        draw("accent", at: NSPoint(x: 20, y: y + 4), font: mono, color: palette.noteForeground)
+        nsColor(palette.accent, alpha: 1).setFill()
+        NSBezierPath(roundedRect: NSRect(x: 180, y: y, width: 84, height: 20),
+                     xRadius: 5, yRadius: 5).fill()
+        draw("Caffeine", at: NSPoint(x: 189, y: y + 3), font: bold,
+             color: palette.textOn(palette.accent))
+        nsColor(palette.panelSelectionBackground, alpha: 1).setFill()
+        NSBezierPath(roundedRect: NSRect(x: 276, y: y, width: 204, height: 20),
+                     xRadius: 5, yRadius: 5).fill()
+        let matched = NSMutableAttributedString(
+            string: "Split Right",
+            attributes: [.font: mono, .foregroundColor: nsColor(palette.foreground, alpha: 1)])
+        for position in [0, 1, 2] {
+            matched.setAttributes([.font: bold,
+                                   .foregroundColor: nsColor(palette.accentText, alpha: 1)],
+                                  range: NSRange(location: position, length: 1))
+        }
+        matched.draw(at: NSPoint(x: 285, y: y + 3))
+        draw(String(format: "match %.2f:1 on the selected row",
+                    RGB.contrast(palette.accentText, palette.panelSelectionBackground)),
+             at: NSPoint(x: 496, y: y + 3), font: mono, color: palette.noteForeground)
+    }
+
+    private func contrast(_ colour: RGB) -> String {
+        String(format: "%.2f:1", RGB.contrast(colour, palette.background))
+    }
+
+    private func draw(_ text: String, at point: NSPoint, font: NSFont, color: RGB) {
+        NSAttributedString(string: text,
+                           attributes: [.font: font, .foregroundColor: nsColor(color, alpha: 1)])
+            .draw(at: point)
     }
 }

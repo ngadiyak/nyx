@@ -5,8 +5,11 @@ import NyxCore
 
 private struct Pixel: Equatable { var r: UInt8, g: UInt8, b: UInt8 }
 
-/// The palette used by every test here: search colours pinned to primaries so a pixel identifies
-/// which of the three backgrounds -- match, current match, selection -- painted it.
+/// The palette used by every test here: the current match pinned to a primary and the selection to
+/// another, so a pixel identifies which of the three backgrounds -- match, current match,
+/// selection -- painted it. The ordinary match is not a separate hue by design: it is the current
+/// match's colour blended toward the background, which is what makes stepping read as "the same
+/// find, stronger" rather than as a different kind of mark.
 private func testPalette() -> Palette {
     var ansi = Palette.xtermAnsi16
     ansi[3] = RGB(0, 255, 0)     // every match
@@ -53,13 +56,25 @@ private func renderFrame(cols: Int = 4, rows: Int = 2,
     })
 }
 
+private func pixel(_ c: RGB) -> Pixel { Pixel(r: c.r, g: c.g, b: c.b) }
+
 /// The theme's match colour as it is actually painted: blended toward the background, so an
-/// ordinary hit is a tint rather than a slab of green. The current hit stays full strength, and the
-/// two being different is the property that matters.
-private let matchColor = Pixel(r: 0, g: 115, b: 0)
-private let rawMatchColor = Pixel(r: 0, g: 255, b: 0)
+/// ordinary hit is a tint rather than a slab of colour. The current hit stays full strength, and
+/// the two being different is the property that matters. Read from the palette rather than written
+/// down, so a change to the blending rule fails on the rule's own tests rather than here.
+private let matchColor = pixel(testPalette().searchMatchBackground)
+private let rawMatchColor = pixel(testPalette().currentMatchBackground)
 private let currentColor = Pixel(r: 255, g: 0, b: 255)
 private let selectionColor = Pixel(r: 0, g: 0, b: 255)
+
+/// The two hit colours have to be the same hue at different strengths, and unmistakably different
+/// from each other -- the property the pixel tests below are checking one cell at a time.
+@Test func theTwoHitColoursAreOneColourAtTwoStrengths() {
+    let p = testPalette()
+    #expect(p.searchMatchBackground != p.currentMatchBackground)
+    #expect(RGB.distance(p.searchMatchBackground, p.currentMatchBackground) >= 20)
+    #expect(RGB.contrast(p.foreground, p.searchMatchBackground) >= 4)
+}
 
 @Test func matchedColumnsPaintTheMatchBackground() throws {
     let (fonts, px) = try renderFrame(matches: [[1..<3], []])
@@ -68,8 +83,8 @@ private let selectionColor = Pixel(r: 0, g: 0, b: 255)
     #expect(px(w + w / 2, 2) == matchColor)
     #expect(px(2 * w + w / 2, 2) == matchColor)
     #expect(px(3 * w + w / 2, 2) != matchColor)
-    // Subdued, not the raw theme colour: forty hits painted at full strength is a page of colour
-    // in which the one you are standing on cannot be picked out.
+    // Subdued, not the full-strength colour the current hit gets: forty hits painted at full
+    // strength is a page of colour in which the one you are standing on cannot be picked out.
     #expect(px(w + w / 2, 2) != rawMatchColor)
 }
 

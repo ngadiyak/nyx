@@ -62,8 +62,9 @@ final class PromptGutterView: NSView {
             let y = topPadding + CGFloat(row) * cellHeight
             let rect = NSRect(x: inset, y: y + 1, width: width, height: max(1, cellHeight - 2))
             guard rect.intersects(dirtyRect) else { continue }
-            // The theme's own green and red, so the gutter matches whatever the shell prints.
-            let color = mark == .failed ? palette.colors[1] : palette.colors[2]
+            // The theme's own green and red, so the gutter matches whatever the shell prints, in
+            // whichever of the normal and bright variants reads on this background.
+            let color = mark == .failed ? palette.readable(1) : palette.readable(2)
             nsColor(color, alpha: 0.9).setFill()
             NSBezierPath(roundedRect: rect, xRadius: width / 2, yRadius: width / 2).fill()
         }

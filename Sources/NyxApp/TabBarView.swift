@@ -35,6 +35,12 @@ final class TabBarView: NSView {
     var onToggleGroup: ((Int) -> Void)?
     /// A right-click on either of those.
     var onGroupContextMenu: ((Int, NSEvent) -> Void)?
+    /// The `+` at the far left.
+    var onNewTab: (() -> Void)?
+    /// The list button beside it: the command palette, showing only the open tabs.
+    var onShowTabList: (() -> Void)?
+    /// One of the configured quick actions, by its index in `config.quickActions`.
+    var onQuickAction: ((Int) -> Void)?
     /// The system switched between light and dark; the controller decides whether the theme cares.
     var onAppearanceChange: (() -> Void)?
 
@@ -42,6 +48,12 @@ final class TabBarView: NSView {
     private var selected = 0
     private var grouping = TabGrouping()
     private var slots: [TabBarGeometry.Slot] = []
+    private var quickActions: [QuickAction] = []
+    /// What each leading button does, in the order they are laid out. Parallel to the widths handed
+    /// to `TabBarGeometry`, so a `.leadingButton(i)` hit indexes straight into it.
+    private var leadingButtons: [LeadingButton] = []
+    private var leadingWidths: [Double] = []
+    private var runningObserver: NSObjectProtocol?
 
     private var palette = Palette.xtermDefault()
     private var barBackground: NSColor = .clear
@@ -74,6 +86,55 @@ final class TabBarView: NSView {
         needsDisplay = true
     }
 
+    /// The quick actions from the config. A new `quick` line therefore adds its button on the next
+    /// reload, with no restart -- `TabController.apply` calls this.
+    func setQuickActions(_ actions: [QuickAction]) {
+        quickActions = actions
+        rebuildLeadingButtons()
+        needsDisplay = true
+    }
+
+    /// What each leading button is. The order is fixed: the two built-ins first, so a user's muscle
+    /// memory for `+` does not move when they add a quick action.
+    private enum LeadingButton: Equatable {
+        case newTab
+        case tabList
+        case quick(Int)
+    }
+
+    private static let builtInButtonWidth: Double = 26
+    private static let quickActionFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+
+    private func rebuildLeadingButtons() {
+        leadingButtons = [.newTab, .tabList] + quickActions.indices.map { .quick($0) }
+        leadingWidths = leadingButtons.map { button in
+            switch button {
+            case .newTab, .tabList:
+                return TabBarView.builtInButtonWidth
+            case .quick(let index):
+                let name = quickActions[index].name as NSString
+                let text = Double(name.size(withAttributes: [.font: TabBarView.quickActionFont]).width)
+                // Room either side, plus a dot for a toggle that is running.
+                return min(140, text + 20)
+            }
+        }
+    }
+
+    /// The buttons that actually fit. `TabBarGeometry` drops the overflow rather than squeezing the
+    /// tabs, so this is shorter than `leadingButtons` on a narrow bar with many tabs.
+    private var fittedLeadingRects: [NSRect] {
+        TabBarGeometry.leadingRects(buttonWidths: leadingWidths, barWidth: Double(bounds.width),
+                                    barHeight: Double(bounds.height), slotCount: slots.count,
+                                    headerHeight: Double(headerHeight), metrics: TabBarView.metrics)
+            .map(ns)
+    }
+
+    private var leadingWidth: Double {
+        TabBarGeometry.leadingWidth(buttonWidths: leadingWidths, barWidth: Double(bounds.width),
+                                    barHeight: Double(bounds.height), slotCount: slots.count,
+                                    headerHeight: Double(headerHeight), metrics: TabBarView.metrics)
+    }
+
     /// The bar is drawn in the terminal's own palette, so it belongs to the theme rather than to
     /// the system appearance.
     func setColors(palette: Palette) {
@@ -85,6 +146,21 @@ final class TabBarView: NSView {
         separatorColor = nsColor(palette.foreground, alpha: 0.15)
         accentColor = nsColor(palette.cursor, alpha: 0.9)
         needsDisplay = true
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard runningObserver == nil else { return }
+        // A toggle can stop on its own -- the process exits, or fails to start -- and the runner
+        // says so here. Without this the button would keep claiming it is on.
+        runningObserver = NotificationCenter.default.addObserver(
+            forName: QuickActionRunner.stateChanged, object: nil, queue: .main) { [weak self] _ in
+                self?.needsDisplay = true
+            }
+    }
+
+    deinit {
+        if let runningObserver { NotificationCenter.default.removeObserver(runningObserver) }
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -101,7 +177,7 @@ final class TabBarView: NSView {
     private func rect(forSlot index: Int) -> NSRect {
         ns(TabBarGeometry.slotRect(index: index, slotCount: slots.count, barWidth: bounds.width,
                                    barHeight: bounds.height, headerHeight: Double(headerHeight),
-                                   metrics: TabBarView.metrics))
+                                   leading: leadingWidth, metrics: TabBarView.metrics))
     }
 
     /// nil when the tab is too narrow to carry a close button, in which case none is drawn.
@@ -124,7 +200,8 @@ final class TabBarView: NSView {
     private func hit(at point: NSPoint) -> TabBarGeometry.Hit? {
         TabBarGeometry.hit(atX: Double(point.x), y: Double(point.y), slots: slots,
                            barWidth: Double(bounds.width), barHeight: Double(bounds.height),
-                           headerHeight: Double(headerHeight), metrics: TabBarView.metrics)
+                           headerHeight: Double(headerHeight), leadingWidths: leadingWidths,
+                           metrics: TabBarView.metrics)
     }
 
     private func color(ofGroup id: Int) -> NSColor {
@@ -140,7 +217,17 @@ final class TabBarView: NSView {
         case .close(let index): onClose?(index)
         case .select(let index): onSelect?(index)
         case .expandGroup(let id), .groupHeader(let id): onToggleGroup?(id)
+        case .leadingButton(let index): pressLeadingButton(index)
         case nil: break
+        }
+    }
+
+    private func pressLeadingButton(_ index: Int) {
+        guard leadingButtons.indices.contains(index) else { return }
+        switch leadingButtons[index] {
+        case .newTab: onNewTab?()
+        case .tabList: onShowTabList?()
+        case .quick(let action): onQuickAction?(action)
         }
     }
 
@@ -150,6 +237,7 @@ final class TabBarView: NSView {
         switch hit(at: convert(event.locationInWindow, from: nil)) {
         case .close(let index), .select(let index): onContextMenu?(index, event)
         case .expandGroup(let id), .groupHeader(let id): onGroupContextMenu?(id, event)
+        case .leadingButton: break
         case nil: break
         }
     }
@@ -170,10 +258,56 @@ final class TabBarView: NSView {
                 drawChip(groupID: id, tabCount: count, in: frame)
             }
         }
+        drawLeadingButtons(dirtyRect)
         drawGroupHeaders(dirtyRect)
         // The line under the whole bar, so the panes below it do not float.
         separatorColor.setFill()
         NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
+    }
+
+    /// The `+`, the tab-list button, and one per quick action. Only the ones that fit are drawn --
+    /// `TabBarGeometry` has already dropped the rest.
+    private func drawLeadingButtons(_ dirtyRect: NSRect) {
+        for (index, frame) in fittedLeadingRects.enumerated() {
+            guard frame.intersects(dirtyRect), leadingButtons.indices.contains(index) else { continue }
+            switch leadingButtons[index] {
+            case .newTab: drawSymbol("plus", fallback: "+", in: frame)
+            case .tabList: drawSymbol("list.bullet", fallback: "\u{2261}", in: frame)
+            case .quick(let action): drawQuickActionButton(action, in: frame)
+            }
+        }
+        guard let last = fittedLeadingRects.last else { return }
+        separatorColor.setFill()
+        NSRect(x: last.maxX - 1, y: last.minY + 4, width: 1, height: last.height - 8).fill()
+    }
+
+    private func drawSymbol(_ name: String, fallback: String, in frame: NSRect) {
+        let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
+            .applying(NSImage.SymbolConfiguration(hierarchicalColor: dimTextColor))
+        guard let image = NSImage(systemSymbolName: name, accessibilityDescription: name)?
+            .withSymbolConfiguration(configuration) else {
+            drawLabel(fallback, in: frame, color: dimTextColor,
+                      font: .systemFont(ofSize: 13, weight: .medium), centred: true)
+            return
+        }
+        let size = image.size
+        image.draw(in: NSRect(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2,
+                              width: size.width, height: size.height))
+    }
+
+    /// A quick action's button. A `toggle` that is running says so with a filled dot, because a
+    /// button that goes on claiming `caffeinate` is alive after it died is worse than no button.
+    private func drawQuickActionButton(_ index: Int, in frame: NSRect) {
+        guard quickActions.indices.contains(index) else { return }
+        let action = quickActions[index]
+        let running = action.kind == .toggle && QuickActionRunner.shared.isRunning(action)
+        if running {
+            accentColor.withAlphaComponent(0.30).setFill()
+            NSBezierPath(roundedRect: frame.insetBy(dx: 3, dy: 5), xRadius: 4, yRadius: 4).fill()
+        }
+        drawLabel(action.name, in: frame.insetBy(dx: 8, dy: 0),
+                  color: running ? textColor : dimTextColor,
+                  font: TabBarView.quickActionFont, centred: true)
     }
 
     /// One coloured strip per expanded group, spanning its tabs, with its name shown once.

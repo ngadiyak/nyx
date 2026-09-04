@@ -28,6 +28,10 @@ public struct TabBarMetrics: Equatable {
 
     /// Below this a tab has no room for its close button, and shows none.
     var minimumWidthForCloseButton: Double { closeButtonSize + horizontalInset * 2 }
+
+    /// The narrowest a tab may be squeezed to make room for the bar's leading buttons. The tabs are
+    /// what the bar is *for*, so a button that would push them below this is not shown at all.
+    public var minimumSlotWidth: Double { 40 }
 }
 
 /// Where each part of each tab sits, and what a click at a point means.
@@ -90,6 +94,8 @@ public enum TabBarGeometry {
         case expandGroup(Int)
         /// The coloured strip above an expanded group's tabs.
         case groupHeader(Int)
+        /// One of the buttons on the left of the bar, by its index in the list that fitted.
+        case leadingButton(Int)
     }
 
     public static func hit(atX x: Double, y: Double, barWidth: Double, barHeight: Double,
@@ -138,28 +144,64 @@ public enum TabBarGeometry {
         return base + (expanded ? metrics.groupHeaderHeight : 0)
     }
 
-    public static func slotWidth(barWidth: Double, slotCount: Int,
+    /// `leading` is the room taken by the bar's leading buttons; the slots share what is left.
+    public static func slotWidth(barWidth: Double, slotCount: Int, leading: Double = 0,
                                  metrics: TabBarMetrics = .standard) -> Double {
-        guard slotCount > 0, barWidth > 0 else { return 0 }
-        return min(metrics.maxTabWidth, barWidth / Double(slotCount))
+        let available = barWidth - leading
+        guard slotCount > 0, available > 0 else { return 0 }
+        return min(metrics.maxTabWidth, available / Double(slotCount))
     }
 
     /// A slot's box. The header row, when there is one, is taken off the top: slots sit below it,
     /// so a group's name never overlaps the tab it names.
     public static func slotRect(index: Int, slotCount: Int, barWidth: Double, barHeight: Double,
-                                headerHeight: Double, metrics: TabBarMetrics = .standard) -> PaneRect {
-        let width = slotWidth(barWidth: barWidth, slotCount: slotCount, metrics: metrics)
-        return PaneRect(x: Double(index) * width, y: headerHeight,
+                                headerHeight: Double, leading: Double = 0,
+                                metrics: TabBarMetrics = .standard) -> PaneRect {
+        let width = slotWidth(barWidth: barWidth, slotCount: slotCount, leading: leading, metrics: metrics)
+        return PaneRect(x: leading + Double(index) * width, y: headerHeight,
                         width: width, height: max(0, barHeight - headerHeight))
     }
 
     /// The coloured strip over an expanded group, spanning the slots its tabs occupy.
     public static func groupHeaderRect(fromSlot first: Int, toSlot last: Int, slotCount: Int,
-                                       barWidth: Double, headerHeight: Double,
+                                       barWidth: Double, headerHeight: Double, leading: Double = 0,
                                        metrics: TabBarMetrics = .standard) -> PaneRect {
-        let width = slotWidth(barWidth: barWidth, slotCount: slotCount, metrics: metrics)
-        let x = Double(first) * width
-        return PaneRect(x: x, y: 0, width: Double(last - first + 1) * width, height: headerHeight)
+        let width = slotWidth(barWidth: barWidth, slotCount: slotCount, leading: leading, metrics: metrics)
+        return PaneRect(x: leading + Double(first) * width, y: 0,
+                        width: Double(last - first + 1) * width, height: headerHeight)
+    }
+
+    // MARK: - The buttons on the left of the bar
+    //
+    // A `+`, a tab-list button, and one per configured quick action. They sit left of the first tab
+    // and must never overlap it, which is what makes them a layout question rather than a drawing
+    // one: at forty open tabs there is no room, and the answer is to show fewer buttons rather than
+    // to squeeze the tabs to nothing. The tabs are what the bar is for.
+
+    /// The buttons that fit, in order, with their boxes. Anything past the budget is dropped.
+    public static func leadingRects(buttonWidths: [Double], barWidth: Double, barHeight: Double,
+                                    slotCount: Int, headerHeight: Double,
+                                    metrics: TabBarMetrics = .standard) -> [PaneRect] {
+        let needed = Double(max(0, slotCount)) * metrics.minimumSlotWidth
+        let budget = max(0, barWidth - needed)
+        var rects: [PaneRect] = []
+        var x: Double = 0
+        for width in buttonWidths {
+            guard width > 0, x + width <= budget else { break }
+            rects.append(PaneRect(x: x, y: headerHeight, width: width,
+                                  height: max(0, barHeight - headerHeight)))
+            x += width
+        }
+        return rects
+    }
+
+    /// How much of the bar the buttons that fit have taken.
+    public static func leadingWidth(buttonWidths: [Double], barWidth: Double, barHeight: Double,
+                                    slotCount: Int, headerHeight: Double,
+                                    metrics: TabBarMetrics = .standard) -> Double {
+        leadingRects(buttonWidths: buttonWidths, barWidth: barWidth, barHeight: barHeight,
+                     slotCount: slotCount, headerHeight: headerHeight, metrics: metrics)
+            .last.map { $0.x + $0.width } ?? 0
     }
 
     /// The slot runs each expanded group covers, as `(group id, first slot, last slot)`.
@@ -178,11 +220,19 @@ public enum TabBarGeometry {
 
     public static func hit(atX x: Double, y: Double, slots: [Slot], barWidth: Double,
                            barHeight: Double, headerHeight: Double,
+                           leadingWidths: [Double] = [],
                            metrics: TabBarMetrics = .standard) -> Hit? {
-        guard !slots.isEmpty, x >= 0, x < barWidth, y >= 0, y <= barHeight else { return nil }
-        let width = slotWidth(barWidth: barWidth, slotCount: slots.count, metrics: metrics)
+        guard x >= 0, x < barWidth, y >= 0, y <= barHeight else { return nil }
+        let buttons = leadingRects(buttonWidths: leadingWidths, barWidth: barWidth, barHeight: barHeight,
+                                   slotCount: slots.count, headerHeight: headerHeight, metrics: metrics)
+        if let button = buttons.firstIndex(where: { $0.contains(x: x, y: y) }) {
+            return .leadingButton(button)
+        }
+        let leading = buttons.last.map { $0.x + $0.width } ?? 0
+        guard !slots.isEmpty, x >= leading else { return nil }
+        let width = slotWidth(barWidth: barWidth, slotCount: slots.count, leading: leading, metrics: metrics)
         guard width > 0 else { return nil }
-        let position = Int(x / width)
+        let position = Int((x - leading) / width)
         guard position < slots.count else { return nil }
 
         // Above the slots is the header row, which belongs to whichever group is drawn there.
@@ -195,7 +245,8 @@ public enum TabBarGeometry {
             return .expandGroup(id)
         case .tab(let index, _):
             let slot = slotRect(index: position, slotCount: slots.count, barWidth: barWidth,
-                                barHeight: barHeight, headerHeight: headerHeight, metrics: metrics)
+                                barHeight: barHeight, headerHeight: headerHeight, leading: leading,
+                                metrics: metrics)
             if let close = closeRect(in: slot, metrics: metrics), close.contains(x: x, y: y) {
                 return .close(index)
             }

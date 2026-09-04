@@ -92,8 +92,12 @@ final class TabController: NSViewController, NSMenuItemValidation {
         tabBar.onContextMenu = { [weak self] index, event in self?.showTabMenu(for: index, event: event) }
         tabBar.onToggleGroup = { [weak self] id in self?.toggleGroup(id) }
         tabBar.onGroupContextMenu = { [weak self] id, event in self?.showGroupMenu(for: id, event: event) }
+        tabBar.onNewTab = { [weak self] in self?.newTab() }
+        tabBar.onShowTabList = { [weak self] in self?.showTabList() }
+        tabBar.onQuickAction = { [weak self] index in self?.performQuickAction(index) }
         tabBar.onAppearanceChange = { [weak self] in self?.appearanceChanged() }
         tabBar.setColors(palette: Pane.resolvedPalette(for: config))
+        tabBar.setQuickActions(config.quickActions)
         view = root
         // The first tab exists before this view does, so the bar's state has to be caught up here
         // rather than only on the next change.
@@ -618,6 +622,13 @@ final class TabController: NSViewController, NSMenuItemValidation {
 
     private var paletteOverlay: CommandPaletteView?
 
+    /// The list button on the bar: the same panel, showing only the open tabs. A window with
+    /// thirty tabs is exactly when the bar stops being a way to find one.
+    func showTabList() {
+        closeCommandPalette()
+        openPalette(items: tabs.enumerated().map { PaletteItem.tab($0.offset, title: $0.element.title) })
+    }
+
     /// `⌘⇧P`. Pressing it again while the panel is up closes it, the way every palette behaves.
     func toggleCommandPalette() {
         if paletteOverlay != nil {
@@ -627,8 +638,15 @@ final class TabController: NSViewController, NSMenuItemValidation {
         let bindings = KeyBindingTable(user: config.keybinds)
         let items = PaletteSource.items(actions: ActionCatalog.allMenuActions,
                                         chord: { bindings.binding(for: $0)?.displayName },
+                                        quickActions: config.quickActions.map {
+                                            ($0, QuickActionRunner.shared.isRunning($0))
+                                        },
                                         themes: Themes.builtin.keys.sorted(),
                                         tabTitles: tabs.map(\.title))
+        openPalette(items: items)
+    }
+
+    private func openPalette(items: [PaletteItem]) {
         let overlay = CommandPaletteView(palette: Pane.resolvedPalette(for: config), items: items)
         overlay.onRun = { [weak self] item in self?.run(item) }
         overlay.onClose = { [weak self] in self?.closeCommandPalette() }
@@ -662,7 +680,16 @@ final class TabController: NSViewController, NSMenuItemValidation {
             if appDelegate?.write(setting: "theme", value: name) != true { NSSound.beep() }
         case .tab(let index):
             selectTab(at: index)
+        case .quickAction(let index):
+            performQuickAction(index)
         }
+    }
+
+    /// The quick actions are the user's own buttons; the runner owns what they do, including which
+    /// background ones are alive.
+    private func performQuickAction(_ index: Int) {
+        guard config.quickActions.indices.contains(index) else { return }
+        QuickActionRunner.shared.perform(config.quickActions[index], in: self, pane: focusedPane)
     }
 
     /// Centred horizontally over the panes and pinned near the top, which is where every command
@@ -725,6 +752,8 @@ final class TabController: NSViewController, NSMenuItemValidation {
         config = newConfig
         for tab in tabs { tab.panes.apply(newConfig) }
         tabBar.setColors(palette: Pane.resolvedPalette(for: newConfig))
+        // A new `quick` line gets its button here, without a restart.
+        tabBar.setQuickActions(newConfig.quickActions)
         refreshBar()
     }
 

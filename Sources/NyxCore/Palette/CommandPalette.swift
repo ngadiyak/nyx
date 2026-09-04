@@ -7,6 +7,8 @@ public enum PaletteItemKind: Equatable {
     case theme(String)
     /// A tab, by its index in the window's strip.
     case tab(Int)
+    /// A configured quick action, by its index in `config.quickActions`.
+    case quickAction(Int)
 }
 
 /// One row of the command palette.
@@ -35,6 +37,18 @@ public struct PaletteItem: Equatable {
 
     public static func theme(_ name: String) -> PaletteItem {
         PaletteItem(title: name, detail: "Theme", searchText: "\(name) theme", kind: .theme(name))
+    }
+
+    /// A quick action. A `toggle` reads as what pressing it would *do* -- "Stop Caffeine" while it
+    /// is running -- because a palette row is a verb, and one that says "Caffeine" leaves the user
+    /// guessing which way it will go.
+    public static func quickAction(_ action: QuickAction, index: Int, isRunning: Bool) -> PaletteItem {
+        let title = action.kind == .toggle
+            ? (isRunning ? "Stop \(action.name)" : "Start \(action.name)")
+            : action.name
+        return PaletteItem(title: title, detail: "Quick Action",
+                           searchText: "\(title) \(action.name) quick action",
+                           kind: .quickAction(index))
     }
 
     public static func tab(_ index: Int, title: String) -> PaletteItem {
@@ -105,12 +119,17 @@ public struct CommandPalette: Equatable {
 
 /// Building the palette's list out of what a window knows.
 ///
-/// Here rather than in the app so the order -- actions, then themes, then tabs -- and the way each
-/// kind is labelled are pinned by a test instead of by whoever last edited the view.
+/// Here rather than in the app so the order -- actions, quick actions, themes, then tabs -- and the
+/// way each kind is labelled are pinned by a test instead of by whoever last edited the view.
 public enum PaletteSource {
     public static func items(actions: [TerminalAction], chord: (TerminalAction) -> String?,
+                             quickActions: [(action: QuickAction, isRunning: Bool)] = [],
                              themes: [String], tabTitles: [String]) -> [PaletteItem] {
         actions.map { PaletteItem.action($0, chord: chord($0)) }
+            + quickActions.enumerated().map {
+                PaletteItem.quickAction($0.element.action, index: $0.offset,
+                                        isRunning: $0.element.isRunning)
+            }
             + themes.map(PaletteItem.theme)
             + tabTitles.enumerated().map { PaletteItem.tab($0.offset, title: $0.element) }
     }

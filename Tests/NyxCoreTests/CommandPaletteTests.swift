@@ -7,7 +7,7 @@ private func palette(_ titles: [String]) -> CommandPalette {
 
 // MARK: - The list
 
-/// Actions first, then themes, then tabs: the order a user builds a habit around.
+/// Actions first, then quick actions, themes, then tabs: the order a user builds a habit around.
 @Test func theListIsActionsThenThemesThenTabs() {
     let items = PaletteSource.items(actions: [.newTab, .copy], chord: { _ in nil },
                                     themes: ["dracula"], tabTitles: ["zsh"])
@@ -120,4 +120,33 @@ private func palette(_ titles: [String]) -> CommandPalette {
     #expect(KeyBinding(key: .up, modifiers: [.cmd], action: .previousPrompt).displayName == "⌘↑")
     #expect(KeyBinding(key: .enter, modifiers: [], action: .copy).displayName == "↩")
     #expect(KeyBinding(key: .f(5), modifiers: [], action: .copy).displayName == "F5")
+}
+
+// MARK: - Quick actions
+
+@Test func quickActionsSitBetweenTheActionsAndTheThemes() {
+    let quick = QuickAction(name: "Deploy", kind: .run, command: "./deploy.sh")
+    let items = PaletteSource.items(actions: [.newTab], chord: { _ in nil },
+                                    quickActions: [(quick, false)],
+                                    themes: ["dracula"], tabTitles: ["zsh"])
+    #expect(items.map(\.kind) == [.action(.newTab), .quickAction(0), .theme("dracula"), .tab(0)])
+    #expect(items[1].title == "Deploy")
+    #expect(items[1].detail == "Quick Action")
+}
+
+/// A palette row is a verb. "Caffeine" leaves the user guessing which way pressing it will go.
+@Test func aToggleReadsAsWhatPressingItWouldDo() {
+    let toggle = QuickAction(name: "Caffeine", kind: .toggle, command: "caffeinate -d")
+    let stopped = PaletteItem.quickAction(toggle, index: 0, isRunning: false)
+    let started = PaletteItem.quickAction(toggle, index: 0, isRunning: true)
+    #expect(stopped.title == "Start Caffeine")
+    #expect(started.title == "Stop Caffeine")
+}
+
+/// Its own name still finds it whichever way round the verb reads.
+@Test func aRunningToggleIsStillFoundByItsName() {
+    let toggle = QuickAction(name: "Caffeine", kind: .toggle, command: "caffeinate -d")
+    var p = CommandPalette(items: [PaletteItem.quickAction(toggle, index: 0, isRunning: true)])
+    p.setQuery("caffeine")
+    #expect(p.selected?.kind == .quickAction(0))
 }

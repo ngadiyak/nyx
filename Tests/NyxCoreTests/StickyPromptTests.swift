@@ -158,3 +158,83 @@ private func session() -> Terminal {
     #expect(folded < 14)
     #expect(unfolded == 14)
 }
+
+// MARK: - The strip's own text
+//
+// One row, as wide as the terminal, over a prompt string that is mostly padding. What survives the
+// cut is decided here so it can be asserted rather than squinted at.
+
+@Test func theStripShowsTheCommandWithItsWhitespaceCollapsed() {
+    let text = StickyPromptLabel.text(command: "$    make    test", exitStatus: 0, columns: 40)
+    #expect(text == "$ make test")
+}
+
+@Test func aFailedCommandCarriesItsStatusInTheTextAsWellAsTheColour() {
+    let text = StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: 40)
+    #expect(text == "$ make test  exit 2")
+}
+
+/// A command still running has no status, and neither has a shell that reports `D` without one.
+@Test func aRunningCommandGetsNoStatusSuffix() {
+    #expect(StickyPromptLabel.text(command: "$ build", exitStatus: nil, columns: 40) == "$ build")
+}
+
+/// The status is why the user scrolled back; it survives a cut that the tail of the command line
+/// does not.
+@Test func alongCommandIsCutButItsStatusIsKept() {
+    let long = "$ " + String(repeating: "x", count: 100)
+    let text = StickyPromptLabel.text(command: long, exitStatus: 1, columns: 20)
+    #expect(text.hasSuffix("  exit 1"))
+    #expect(text.count == 20)
+    #expect(text.contains("\u{2026}"))
+}
+
+@Test func aCommandThatFitsIsNotCut() {
+    let text = StickyPromptLabel.text(command: "$ ls", exitStatus: 0, columns: 40)
+    #expect(!text.contains("\u{2026}"))
+}
+
+@Test func aStripWithNoRoomAtAllIsEmptyRatherThanNegative() {
+    #expect(StickyPromptLabel.text(command: "$ ls", exitStatus: 0, columns: 0) == "")
+}
+
+@Test func collapsingTrimsBothEnds() {
+    #expect(StickyPromptLabel.collapsed("   a  b   ") == "a b")
+    #expect(StickyPromptLabel.collapsed("") == "")
+    #expect(StickyPromptLabel.collapsed("   ") == "")
+}
+
+// MARK: - The cheap "is this shell integrated at all" answer
+//
+// Asked once per frame by the strip and several times per keystroke by menu validation. It used to
+// mean scanning every row of the buffer to find out that a shell without integration has no marks.
+
+@Test func aShellWithNoIntegrationNeverClaimsPromptMarks() {
+    let t = makeTerminal(cols: 20, rows: 4)
+    t.feed("hello\r\nthere\r\n")
+    #expect(t.shellEmitsPromptMarks == false)
+    #expect(t.stickyPrompt() == nil)
+}
+
+@Test func theFirstPromptMarkIsEnoughToSaySo() {
+    let t = makeTerminal(cols: 20, rows: 4)
+    t.feed("\u{1b}]133;A\u{7}$ ")
+    #expect(t.shellEmitsPromptMarks)
+}
+
+/// A `clear` wipes the rows, not the shell's habits: the very next prompt would set it again, and
+/// flipping it back would only make the answer flap.
+@Test func clearingTheScrollbackLeavesTheShellIntegrated() {
+    let t = makeTerminal(cols: 20, rows: 4)
+    t.feed("\u{1b}]133;A\u{7}$ ")
+    t.feed("\u{1b}[H\u{1b}[2J\u{1b}[3J")
+    #expect(t.shellEmitsPromptMarks)
+}
+
+/// A full reset is a new terminal in every other respect, and this is no exception.
+@Test func aFullResetForgetsThatTheShellWasIntegrated() {
+    let t = makeTerminal(cols: 20, rows: 4)
+    t.feed("\u{1b}]133;A\u{7}$ ")
+    t.feed("\u{1b}c")
+    #expect(t.shellEmitsPromptMarks == false)
+}

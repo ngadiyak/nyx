@@ -80,6 +80,14 @@ public final class Terminal: TerminalActions {
     /// OSC 0 both.
     public private(set) var iconName = ""
     public private(set) var cwd: String?
+    /// Whether the shell in this terminal has ever emitted an `OSC 133` prompt mark.
+    ///
+    /// A session-level fact, and the cheap answer to a question several things ask on every frame
+    /// and every menu validation: without marks there are no commands to pin, fold, jump between or
+    /// copy the output of, and searching the buffer to find that out walks every row. Once true it
+    /// stays true until a full reset -- a `clear` wipes the rows but not the shell's habits, and the
+    /// very next prompt sets it again anyway.
+    public private(set) var shellEmitsPromptMarks = false
     public private(set) var cursorShape: CursorShape = .block
     /// Bytes the terminal wants written back to the application (DA, CPR, ...). Drained by the session.
     public var responses: [UInt8] = []
@@ -597,6 +605,7 @@ public final class Terminal: TerminalActions {
         cursorShape = .block
         palette = initialPalette
         viewportOffset = 0
+        shellEmitsPromptMarks = false
         scrollbackGeneration &+= 1
         touch()
     }
@@ -1053,6 +1062,7 @@ public final class Terminal: TerminalActions {
             default: return
             }
             screen.rows[screen.cursor.y].promptMark |= mark
+            shellEmitsPromptMarks = true
             // `D;<status>` reports how the command ended. Without it a failed command is
             // indistinguishable from one that succeeded, which is most of the point of the mark.
             if mark == 8 {

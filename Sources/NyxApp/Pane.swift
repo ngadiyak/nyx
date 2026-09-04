@@ -72,6 +72,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private var searchRefreshScheduled = false
     /// The status gutter down the left of the pane, inside its padding.
     private let gutter = PromptGutterView(frame: .zero)
+    /// The command line pinned over the top row while its output fills the viewport.
+    private let stickyStrip = StickyPromptView(frame: .zero)
+    /// The prompt row the strip currently names, for its click.
+    private var stickyPromptRow: Int?
     /// Notices that a command ended, from nothing but the prompt marks; see `CommandWatcher`.
     private var commandWatcher = CommandWatcher()
     private var commandCheckScheduled = false
@@ -105,6 +109,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         applyBackgroundAppearance()
         gutter.onSelectRow = { [weak self] row in self?.selectCommand(atVisibleRow: row) }
         addSubview(gutter)
+        stickyStrip.onClick = { [weak self] in self?.scrollToStickyPrompt() }
+        addSubview(stickyStrip)
         session.withTerminal { $0.setDefaultCursorShape(config.cursorStyle); $0.modes.cursorBlink = config.cursorBlink }
         session.onUpdate = { [weak self] in self?.sessionDidUpdate() }
         session.onEvent = { [weak self] e in DispatchQueue.main.async { self?.handle(e) } }
@@ -363,6 +369,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             session.resize(cols: c, rows: r)
         }
         session.withTerminal { $0.pixelSize = (c * fonts.metrics.width, r * fonts.metrics.height) }
+        // The strip is one terminal row tall, so it moves with the grid rather than with the view:
+        // a font change resizes it without the bounds changing at all.
+        layoutStickyStrip()
         markDirty()
     }
 
@@ -432,6 +441,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let focused = (window?.isKeyWindow ?? false) && window?.firstResponder === self
         let preedit = markedText.isEmpty ? nil : markedText
         var gutterMarks: [GutterMark?] = []
+        var sticky: (text: String, failed: Bool, row: Int)?
         let frame: RenderFrame = session.withTerminal { t in
             // Before anything reads the selection: a cleared scrollback, a reset or an
             // alternate-screen swap leaves it pointing at rows that now hold other content.
@@ -461,6 +471,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // Read here rather than on a timer: one cheap pass over the visible rows, and it is
             // guaranteed to describe the same viewport as the frame being drawn.
             gutterMarks = t.gutterMarks(rows: t.rows)
+            // Same pass, same lock, same viewport: the strip names the command whose output is on
+            // screen *in this frame*, and reading it anywhere else would let the two disagree.
+            // Costs one flag test for a shell with no integration, which is the whole reason
+            // `shellEmitsPromptMarks` exists.
+            if let pinned = t.stickyPrompt(), let region = t.command(containingAbsoluteRow: pinned.row) {
+                sticky = (StickyPromptLabel.text(command: t.commandText(of: region),
+                                                 exitStatus: pinned.exitStatus, columns: t.cols),
+                          pinned.failed, pinned.row)
+            }
             // A missing drawable is transient. On failure, re-setting dirty will repaint rows
             // already marked clean; once per-row partial redraw lands, fix both here and there.
             t.clearDirty()
@@ -471,6 +490,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         gutter.update(marks: gutterMarks, palette: frame.palette,
                       cellHeight: cellSizePoints.height, topPadding: padding)
+        stickyPromptRow = sticky?.row
+        let wasHidden = stickyStrip.isHidden
+        stickyStrip.update(text: sticky?.text, failed: sticky?.failed ?? false, palette: frame.palette,
+                           font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
+        // The strip claims the pointer only while it is up, so appearing or disappearing changes
+        // which view the cursor over the top row belongs to.
+        if wasHidden != stickyStrip.isHidden { window?.invalidateCursorRects(for: stickyStrip) }
         // A missing drawable is transient; keep the frame stale so the next tick retries rather
         // than pausing the link on top of stale pixels.
         if !renderer.draw(frame, in: metalLayer, padding: Int(padding * metalLayer.contentsScale)) { dirty.set() }
@@ -1138,11 +1164,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Whether the shell in this pane emits OSC 133 marks at all. Without them the prompt-jumping
     /// actions have nothing to jump between, and the menu greys them out rather than beeping.
     var hasPromptMarks: Bool {
-        // `promptRows` walks the entire buffer; this stops at the first prompt it finds, and menu
-        // validation asks four times per keystroke.
-        session.withTerminal { t in
-            (0..<t.totalRows).contains { t.promptMarks(atAbsoluteRow: $0).contains(.promptStart) }
-        }
+        // A stored flag on the terminal, set when the first `OSC 133` arrives. Menu validation asks
+        // this several times per keystroke, and the honest answer used to mean scanning every row
+        // of the buffer to find out that a shell without integration still has no marks.
+        session.withTerminal { $0.shellEmitsPromptMarks }
     }
 
 
@@ -1169,6 +1194,24 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         gutter.isHidden = width <= 0
         gutter.frame = NSRect(x: 0, y: 0, width: width, height: bounds.height)
         gutter.needsDisplay = true
+    }
+
+    /// Exactly one terminal row tall and exactly over the first one, inside the padding and clear
+    /// of the gutter -- so the strip covers a row of text and never the marks beside it.
+    private func layoutStickyStrip() {
+        let cell = cellSizePoints
+        let left = max(padding, CGFloat(PromptGutter.width(padding: Double(padding))))
+        stickyStrip.frame = NSRect(x: left, y: bounds.height - padding - cell.height,
+                                   width: max(0, bounds.width - left - padding), height: cell.height)
+    }
+
+    /// Clicking the strip goes to the command it names: the point of pinning it is to be able to
+    /// get back to where the output started.
+    private func scrollToStickyPrompt() {
+        guard let row = stickyPromptRow else { return }
+        session.withTerminal { t in _ = t.scrollToAbsoluteRow(row) }
+        onFocusRequested?()
+        markDirty()
     }
 
     /// A click on a mark selects that command's output.

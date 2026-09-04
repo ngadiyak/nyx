@@ -94,6 +94,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
     /// are placed by frame, like the panes inside them.
     override func viewDidLayout() {
         super.viewDidLayout()
+        layoutCommandPalette()
         guard tabs.indices.contains(selected) else { return }
         tabs[selected].panes.frame = paneContainer.bounds
     }
@@ -302,6 +303,74 @@ final class TabController: NSViewController, NSMenuItemValidation {
         tabBar.setTabs(tabs.map { TabBarItem(title: $0.title, indicator: $0.indicator) }, selected: selected)
     }
 
+    // MARK: - The command palette
+    //
+    // The panel belongs to the window rather than to a pane: two of its three sources -- the themes
+    // and the open tabs -- are things a pane knows nothing about, and every action it runs goes
+    // through this controller's `ActionTarget` conformance anyway.
+
+    private var paletteOverlay: CommandPaletteView?
+
+    /// `⌘⇧P`. Pressing it again while the panel is up closes it, the way every palette behaves.
+    func toggleCommandPalette() {
+        if paletteOverlay != nil {
+            closeCommandPalette()
+            return
+        }
+        let bindings = KeyBindingTable(user: config.keybinds)
+        let items = PaletteSource.items(actions: ActionCatalog.allMenuActions,
+                                        chord: { bindings.binding(for: $0)?.displayName },
+                                        themes: Themes.builtin.keys.sorted(),
+                                        tabTitles: tabs.map(\.title))
+        let overlay = CommandPaletteView(palette: Pane.resolvedPalette(for: config), items: items)
+        overlay.onRun = { [weak self] item in self?.run(item) }
+        overlay.onClose = { [weak self] in self?.closeCommandPalette() }
+        overlay.onHeightChange = { [weak self] _ in self?.layoutCommandPalette() }
+        view.addSubview(overlay)
+        paletteOverlay = overlay
+        layoutCommandPalette()
+        overlay.focusField()
+    }
+
+    func closeCommandPalette() {
+        guard let overlay = paletteOverlay else { return }
+        overlay.removeFromSuperview()
+        paletteOverlay = nil
+        // The window lost its first responder with the panel's field; give it back to the terminal.
+        if tabs.indices.contains(selected) { tabs[selected].panes.restoreFocus() }
+    }
+
+    /// Runs a row. The panel closes first in every case: an action that opens a sheet, or one that
+    /// closes this very pane, must not run underneath a panel that is still on screen.
+    private func run(_ item: PaletteItem) {
+        closeCommandPalette()
+        switch item.kind {
+        case .action(let action):
+            guard canPerform(action) else {
+                NSSound.beep()
+                return
+            }
+            perform(action)
+        case .theme(let name):
+            if appDelegate?.write(setting: "theme", value: name) != true { NSSound.beep() }
+        case .tab(let index):
+            selectTab(at: index)
+        }
+    }
+
+    /// Centred horizontally over the panes and pinned near the top, which is where every command
+    /// palette on this platform puts itself.
+    private func layoutCommandPalette() {
+        guard let overlay = paletteOverlay else { return }
+        let area = paneContainer.frame
+        let width = min(CommandPaletteView.width, max(280, area.width - 40))
+        let height = min(overlay.preferredHeight, max(80, area.height - 80))
+        overlay.frame = NSRect(x: area.midX - width / 2,
+                               y: area.maxY - height - min(60, area.height / 8),
+                               width: width, height: height)
+        overlay.needsLayout = true
+    }
+
     // MARK: - Closing something that is busy
 
     /// Asks before closing panes that have a program running in them. Nothing running,
@@ -424,9 +493,7 @@ extension TabController: ActionTarget {
         case .find: focusedPane?.openSearch()
         case .findNext: if focusedPane?.stepSearch(forward: true) != true { NSSound.beep() }
         case .findPrevious: if focusedPane?.stepSearch(forward: false) != true { NSSound.beep() }
-        case .commandPalette:
-            // Wired up with the palette overlay.
-            NSSound.beep()
+        case .commandPalette: toggleCommandPalette()
 
         case .copy: focusedPane?.copy(nil)
         case .paste: focusedPane?.paste(nil)

@@ -50,6 +50,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Writes one setting into the config file. The command palette's theme rows use it, and go
+    /// through exactly the path the settings window does: the file changes, the watcher notices,
+    /// and every window reloads. Nothing sets a theme behind the file's back.
+    @discardableResult
+    func write(setting key: String, value: String) -> Bool {
+        configStore.write([(key: key, value: value)])
+    }
+
     /// `⌘⇧,`: reload now rather than waiting for the debounced file watch.
     @objc func reloadConfig(_ sender: Any?) {
         configStore.reload()

@@ -1,0 +1,201 @@
+import AppKit
+import NyxCore
+
+/// The list inside the palette panel. A plain drawn view rather than an `NSTableView`: it shows a
+/// few dozen rows of two strings each, and the only interesting part -- which characters of a title
+/// are highlighted -- is `PaletteResult.positions`, computed in `NyxCore`.
+private final class PaletteListView: NSView {
+    static let rowHeight: CGFloat = 26
+
+    var onChoose: ((Int) -> Void)?
+
+    private var results: [PaletteResult] = []
+    private var selection = 0
+    private var palette: Palette
+
+    init(palette: Palette) {
+        self.palette = palette
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    /// Rows are drawn top-down, so the first result is at the top of the scroller.
+    override var isFlipped: Bool { true }
+
+    func update(results: [PaletteResult], selection: Int, palette: Palette) {
+        self.results = results
+        self.selection = selection
+        self.palette = palette
+        let height = CGFloat(results.count) * PaletteListView.rowHeight
+        setFrameSize(NSSize(width: max(frame.width, superview?.bounds.width ?? frame.width), height: height))
+        needsDisplay = true
+        scrollSelectionIntoView()
+    }
+
+    /// Keeps the ↑/↓ selection on screen without moving the list any further than it has to.
+    private func scrollSelectionIntoView() {
+        guard results.indices.contains(selection) else { return }
+        scrollToVisible(rowRect(selection))
+    }
+
+    private func rowRect(_ index: Int) -> NSRect {
+        NSRect(x: 0, y: CGFloat(index) * PaletteListView.rowHeight,
+               width: bounds.width, height: PaletteListView.rowHeight)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let titleFont = NSFont.systemFont(ofSize: 13)
+        let matchFont = NSFont.boldSystemFont(ofSize: 13)
+        let detailFont = NSFont.systemFont(ofSize: 11)
+        for (index, result) in results.enumerated() {
+            let rect = rowRect(index)
+            guard rect.intersects(dirtyRect) else { continue }
+            let isSelected = index == selection
+            if isSelected {
+                nsColor(palette.selectionBackground, alpha: 1).setFill()
+                rect.fill()
+            }
+            let title = NSMutableAttributedString(
+                string: result.item.title,
+                attributes: [.font: titleFont, .foregroundColor: nsColor(palette.foreground, alpha: 1)])
+            // Bold and in the theme's blue: the characters the query actually matched, which is
+            // what tells a user why this row is in the list at all.
+            for position in result.positions where position < title.length {
+                title.setAttributes([.font: matchFont,
+                                     .foregroundColor: nsColor(palette.colors[12], alpha: 1)],
+                                    range: NSRange(location: position, length: 1))
+            }
+            title.draw(at: NSPoint(x: rect.minX + 12, y: rect.minY + 5))
+
+            guard !result.item.detail.isEmpty else { continue }
+            let detail = NSAttributedString(
+                string: result.item.detail,
+                attributes: [.font: detailFont, .foregroundColor: nsColor(palette.foreground, alpha: 0.55)])
+            let size = detail.size()
+            detail.draw(at: NSPoint(x: rect.maxX - 12 - size.width, y: rect.minY + 7))
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let index = Int(point.y / PaletteListView.rowHeight)
+        guard results.indices.contains(index) else { return }
+        onChoose?(index)
+    }
+}
+
+/// The `⌘⇧P` panel: a field and a list of everything this window can do.
+///
+/// It owns no ranking, no ordering and no selection arithmetic -- that is `CommandPalette` in
+/// `NyxCore`. This converts keys into `moveSelection`/`setQuery`/"run the selected item" and draws
+/// what comes back.
+final class CommandPaletteView: NSView, NSTextFieldDelegate {
+    /// `⏎` or a click on a row.
+    var onRun: ((PaletteItem) -> Void)?
+    /// `⎋`.
+    var onClose: (() -> Void)?
+
+    static let width: CGFloat = 560
+    private static let fieldHeight: CGFloat = 34
+    private static let maximumVisibleRows = 10
+
+    private var model: CommandPalette
+    private var palette: Palette
+    private let field = NSTextField(frame: .zero)
+    private let scroller = NSScrollView(frame: .zero)
+    private let list: PaletteListView
+
+    init(palette: Palette, items: [PaletteItem]) {
+        self.palette = palette
+        self.model = CommandPalette(items: items)
+        self.list = PaletteListView(palette: palette)
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = nsColor(palette.background, alpha: 0.98).cgColor
+        layer?.borderColor = nsColor(palette.foreground, alpha: 0.25).cgColor
+        layer?.borderWidth = 1
+        layer?.cornerRadius = 8
+
+        field.delegate = self
+        field.placeholderString = "Run a command, pick a theme, switch to a tab"
+        field.font = .systemFont(ofSize: 14)
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.textColor = nsColor(palette.foreground, alpha: 1)
+        addSubview(field)
+
+        scroller.hasVerticalScroller = true
+        scroller.drawsBackground = false
+        scroller.documentView = list
+        list.onChoose = { [weak self] index in self?.run(rowAt: index) }
+        addSubview(scroller)
+        refresh()
+    }
+
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    /// How tall the panel wants to be for what it is showing, so an empty search does not leave a
+    /// tall panel of nothing.
+    var preferredHeight: CGFloat {
+        let rows = min(model.results.count, CommandPaletteView.maximumVisibleRows)
+        return CommandPaletteView.fieldHeight + max(PaletteListView.rowHeight, CGFloat(rows) * PaletteListView.rowHeight) + 8
+    }
+
+    /// Reports the height the panel now wants, so the owner can resize it as the list narrows.
+    var onHeightChange: ((CGFloat) -> Void)?
+
+    func focusField() {
+        window?.makeFirstResponder(field)
+    }
+
+    override func layout() {
+        super.layout()
+        let inset: CGFloat = 4
+        field.frame = NSRect(x: 12, y: bounds.height - CommandPaletteView.fieldHeight,
+                             width: bounds.width - 24, height: CommandPaletteView.fieldHeight)
+        scroller.frame = NSRect(x: inset, y: inset, width: bounds.width - inset * 2,
+                                height: max(0, bounds.height - CommandPaletteView.fieldHeight - inset))
+        list.setFrameSize(NSSize(width: scroller.contentSize.width, height: list.frame.height))
+    }
+
+    private func refresh() {
+        list.update(results: model.results, selection: model.selection, palette: palette)
+        onHeightChange?(preferredHeight)
+    }
+
+    private func run(rowAt index: Int) {
+        guard model.results.indices.contains(index) else { return }
+        onRun?(model.results[index].item)
+    }
+
+    // MARK: - Events
+
+    func controlTextDidChange(_ notification: Notification) {
+        model.setQuery(field.stringValue)
+        refresh()
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.moveUp(_:)):
+            model.moveSelection(by: -1)
+            refresh()
+            return true
+        case #selector(NSResponder.moveDown(_:)):
+            model.moveSelection(by: 1)
+            refresh()
+            return true
+        case #selector(NSResponder.insertNewline(_:)):
+            if let item = model.selected { onRun?(item) } else { NSSound.beep() }
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            onClose?()
+            return true
+        default:
+            return false
+        }
+    }
+}

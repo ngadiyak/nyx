@@ -957,6 +957,75 @@ final class TabController: NSViewController, NSMenuItemValidation {
         tabBar.setColors(palette: Pane.resolvedPalette(for: config))
     }
 
+    // MARK: - Searching every tab
+
+    /// Hits from the last search over every pane, and where we are in them.
+    private var globalHits: [GlobalSearchHit] = []
+    private var globalIndex = 0
+    private var globalQuery = ""
+
+    /// Runs `query` over every pane in every tab and returns the readout for the search bar.
+    ///
+    /// A per-pane search cannot answer the question people actually have once more than one tab is
+    /// open -- which of them had that error in it -- because answering it means visiting each tab
+    /// and asking again.
+    func runGlobalSearch(query: String) -> String {
+        globalQuery = query
+        globalIndex = 0
+        guard !query.isEmpty else {
+            globalHits = []
+            return ""
+        }
+        let scopes = searchScopes()
+        globalHits = GlobalSearch.run(query: query, scopes: scopes) { scope in
+            self.pane(withID: scope.paneID)?.terminalForSearch
+        }
+        guard !globalHits.isEmpty else { return "no matches" }
+        let panes = GlobalSearch.paneCount(globalHits)
+        let where_ = panes == 1 ? "1 pane" : "\(panes) panes"
+        return "\(globalHits.count) in \(where_)"
+    }
+
+    /// Moves to the next or previous hit, switching tabs and focusing panes as it goes, and hands
+    /// back the readout. nil when there is nothing to step through.
+    func stepGlobalSearch(forward: Bool) -> String? {
+        guard !globalHits.isEmpty else { return nil }
+        globalIndex = (globalIndex + (forward ? 1 : -1) + globalHits.count) % globalHits.count
+        let hit = globalHits[globalIndex]
+
+        if let tab = tabs.indices.first(where: { tabs[$0].panes.contains(paneID: hit.scope.paneID) }),
+           tab != selected {
+            selectTab(at: tab)
+        }
+        guard let pane = self.pane(withID: hit.scope.paneID) else { return nil }
+        pane.focusFromSearch()
+        pane.reveal(match: hit.match, query: globalQuery)
+        return "\(globalIndex + 1) of \(globalHits.count) — \(hit.scope.title)"
+    }
+
+    /// Dropped when the search bar closes or its scope goes back to one pane, so a stale set of
+    /// hits cannot send the next ⌘G to a tab nobody is searching any more.
+    func endGlobalSearch() {
+        globalHits = []
+        globalQuery = ""
+        globalIndex = 0
+    }
+
+    private func searchScopes() -> [SearchScope] {
+        tabs.enumerated().flatMap { index, tab in
+            tab.panes.allPanes.map { pane in
+                SearchScope(paneID: pane.id.value, tabIndex: index, title: tab.title)
+            }
+        }
+    }
+
+    private func pane(withID id: Int) -> Pane? {
+        for tab in tabs {
+            if let pane = tab.panes.allPanes.first(where: { $0.id.value == id }) { return pane }
+        }
+        return nil
+    }
+
     // MARK: - Actions
     //
     // Reached through the responder chain: the focused `Pane` is the first responder, this

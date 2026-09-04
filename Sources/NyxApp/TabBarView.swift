@@ -41,6 +41,10 @@ final class TabBarView: NSView {
     var onShowTabList: (() -> Void)?
     /// One of the configured quick actions, by its index in `config.quickActions`.
     var onQuickAction: ((Int) -> Void)?
+    /// The trailing `+`.
+    var onAddQuickAction: (() -> Void)?
+    /// Right-click on a quick-action chip: its index and the event, for a menu.
+    var onQuickActionContextMenu: ((Int, NSEvent) -> Void)?
     /// The system switched between light and dark; the controller decides whether the theme cares.
     var onAppearanceChange: (() -> Void)?
 
@@ -100,16 +104,20 @@ final class TabBarView: NSView {
         case newTab
         case tabList
         case quick(Int)
+        /// Adds a quick action. Always present, including when there are none: with no buttons and
+        /// no `+`, the feature has no entry point at all and can only be found by reading the
+        /// config file, which is exactly the problem it exists to solve.
+        case addQuickAction
     }
 
     private static let builtInButtonWidth: Double = 26
     private static let quickActionFont = NSFont.systemFont(ofSize: 11, weight: .medium)
 
     private func rebuildLeadingButtons() {
-        leadingButtons = [.newTab, .tabList] + quickActions.indices.map { .quick($0) }
+        leadingButtons = [.newTab, .tabList] + quickActions.indices.map { .quick($0) } + [.addQuickAction]
         leadingWidths = leadingButtons.map { button in
             switch button {
-            case .newTab, .tabList:
+            case .newTab, .tabList, .addQuickAction:
                 return TabBarView.builtInButtonWidth
             case .quick(let index):
                 let name = quickActions[index].name as NSString
@@ -228,6 +236,7 @@ final class TabBarView: NSView {
         case .newTab: onNewTab?()
         case .tabList: onShowTabList?()
         case .quick(let action): onQuickAction?(action)
+        case .addQuickAction: onAddQuickAction?()
         }
     }
 
@@ -274,6 +283,7 @@ final class TabBarView: NSView {
             case .newTab: drawSymbol("plus", fallback: "+", in: frame)
             case .tabList: drawSymbol("list.bullet", fallback: "\u{2261}", in: frame)
             case .quick(let action): drawQuickActionButton(action, in: frame)
+            case .addQuickAction: drawSymbol("plus.circle", fallback: "+", in: frame)
             }
         }
         guard let last = fittedLeadingRects.last else { return }

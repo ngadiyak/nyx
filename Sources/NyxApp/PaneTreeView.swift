@@ -79,6 +79,8 @@ final class PaneTreeView: NSView {
     /// them at once -- closing a whole tab asks each whether it is busy.
     var allPanes: [Pane] { Array(panes.values) }
 
+    func contains(paneID: Int) -> Bool { panes.values.contains { $0.id.value == paneID } }
+
     // MARK: - Layout
 
     private var modelBounds: PaneRect {

@@ -123,3 +123,86 @@ private func roundTrip(_ key: String, _ value: String, in text: String) -> Confi
     #expect(config.tabBar == .always)
     #expect(config.backgroundBlur == 20)
 }
+
+// MARK: - Rewriting a whole list
+
+private func list(_ values: [String], into text: String) -> String {
+    ConfigWriter.settingList("quick", values: values, in: text)
+}
+
+private func quickLines(_ text: String) -> [String] {
+    ConfigParser.parse(text).config.quickActions.map { "\($0.name)|\($0.kind.rawValue)|\($0.command)" }
+}
+
+@Test func aListReplacesEveryLineInOrder() {
+    let text = """
+    quick = A | toggle | a
+    quick = B | b
+    """
+    let out = list(["C | toggle | c", "D | d"], into: text)
+    #expect(quickLines(out) == ["C|toggle|c", "D|send|d"])
+}
+
+/// Adding a button must not scatter one list across two places in the file.
+@Test func anExtraValueGoesRightAfterTheLastExistingLine() {
+    let text = """
+    # buttons
+    quick = A | a
+    quick = B | b
+
+    font-size = 15
+    """
+    let out = list(["A | a", "B | b", "C | c"], into: text)
+    let lines = out.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    #expect(lines[3] == "quick = C | c")
+    #expect(out.contains("font-size = 15"))
+    #expect(out.contains("# buttons"))
+}
+
+/// Removing takes the surplus from the back, so the lines that survive keep their positions and
+/// whatever comments were written above them stay attached to the right entries.
+@Test func removingShrinksTheListFromTheBack() {
+    let text = """
+    quick = A | a
+    quick = B | b
+    quick = C | c
+    """
+    #expect(quickLines(list(["A | a"], into: text)) == ["A|send|a"])
+}
+
+@Test func aFileWithNoSuchKeyGetsTheWholeListAppended() {
+    let out = list(["A | a", "B | b"], into: "font-size = 14")
+    #expect(out.hasPrefix("font-size = 14"))
+    #expect(quickLines(out) == ["A|send|a", "B|send|b"])
+}
+
+@Test func anEmptyListRemovesEveryLine() {
+    let out = list([], into: "quick = A | a\nquick = B | b\nfont-size = 14")
+    #expect(quickLines(out).isEmpty)
+    #expect(out.contains("font-size = 14"))
+}
+
+/// Commented-out examples are the user's notes, not entries, and must survive being edited around.
+@Test func commentedExamplesAreNotTouched() {
+    let text = """
+    # quick = Example | echo hi
+    quick = A | a
+    """
+    let out = list(["A | a", "B | b"], into: text)
+    #expect(out.contains("# quick = Example | echo hi"))
+    #expect(quickLines(out) == ["A|send|a", "B|send|b"])
+}
+
+/// Whatever the interface writes has to read back as what it wrote.
+@Test func aListWrittenFromTheInterfaceRoundTrips() {
+    let actions = [
+        QuickAction(name: "Caffeine", kind: .toggle, command: "caffeinate -d"),
+        QuickAction(name: "Logs", kind: .run, command: "tail -f x | grep err"),
+        QuickAction(name: "Deploy", kind: .send, command: "./deploy.sh"),
+    ]
+    let values = actions.map { "\($0.name) | \($0.kind.rawValue) | \($0.command)" }
+    let out = ConfigWriter.settingList("quick", values: values, in: Config.defaultFileText)
+    let parsed = ConfigParser.parse(out)
+    #expect(parsed.diagnostics.isEmpty)
+    #expect(parsed.config.quickActions == actions)
+}

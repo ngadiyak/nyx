@@ -53,7 +53,11 @@ private func renderFrame(cols: Int = 4, rows: Int = 2,
     })
 }
 
-private let matchColor = Pixel(r: 0, g: 255, b: 0)
+/// The theme's match colour as it is actually painted: blended toward the background, so an
+/// ordinary hit is a tint rather than a slab of green. The current hit stays full strength, and the
+/// two being different is the property that matters.
+private let matchColor = Pixel(r: 0, g: 115, b: 0)
+private let rawMatchColor = Pixel(r: 0, g: 255, b: 0)
 private let currentColor = Pixel(r: 255, g: 0, b: 255)
 private let selectionColor = Pixel(r: 0, g: 0, b: 255)
 
@@ -64,6 +68,9 @@ private let selectionColor = Pixel(r: 0, g: 0, b: 255)
     #expect(px(w + w / 2, 2) == matchColor)
     #expect(px(2 * w + w / 2, 2) == matchColor)
     #expect(px(3 * w + w / 2, 2) != matchColor)
+    // Subdued, not the raw theme colour: forty hits painted at full strength is a page of colour
+    // in which the one you are standing on cannot be picked out.
+    #expect(px(w + w / 2, 2) != rawMatchColor)
 }
 
 @Test func severalMatchesOnARowAreAllPainted() throws {

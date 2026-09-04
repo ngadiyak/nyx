@@ -39,6 +39,52 @@ public enum ConfigWriter {
         values.reduce(text) { setting($1.key, to: $1.value, in: $0) }
     }
 
+    /// Rewrites every active line for an additive key -- `quick`, `keybind` -- so the file holds
+    /// exactly `values`, in that order.
+    ///
+    /// This is what lets buttons be added, edited, reordered and removed from the interface rather
+    /// than by hand. Setting one key by name cannot express "there are now three of these, and the
+    /// second one changed", which is what dragging a button or deleting one actually means.
+    ///
+    /// Existing lines are rewritten where they are, so the block stays under whatever heading and
+    /// comments the user put it under. Extra values go in immediately after the last existing line
+    /// -- not at the end of the file, which would scatter one list across two places. Surplus lines
+    /// are removed. A key with no lines yet is appended.
+    public static func settingList(_ key: String, values: [String], in text: String) -> String {
+        var lines = ConfigGrammar.lines(text).map(String.init)
+        let existing = activeLines(for: key, in: lines)
+
+        guard !existing.isEmpty else {
+            guard !values.isEmpty else { return text }
+            if lines.last?.isEmpty == false { lines.append("") }
+            lines.append(contentsOf: values.map { "\(key) = \($0)" })
+            return lines.joined(separator: "\n")
+        }
+
+        // Rewrite in place for as many as there are lines for.
+        for (offset, index) in existing.enumerated() where offset < values.count {
+            lines[index] = replacingValue(in: lines[index], with: values[offset])
+        }
+
+        if values.count > existing.count {
+            let extra = values[existing.count...].map { "\(key) = \($0)" }
+            lines.insert(contentsOf: extra, at: existing[existing.count - 1] + 1)
+        } else if values.count < existing.count {
+            // Removed from the back, so the surviving lines keep their positions and their
+            // neighbouring comments stay attached to the right entries.
+            for index in existing[values.count...].sorted(by: >) { lines.remove(at: index) }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Every uncommented line setting `key`, in file order.
+    private static func activeLines(for key: String, in lines: [String]) -> [Int] {
+        lines.indices.filter { index in
+            let line = lines[index].trimmingCharacters(in: .whitespaces)
+            return !line.hasPrefix("#") && self.key(of: line) == key
+        }
+    }
+
     // MARK: - Finding the line
 
     /// The last uncommented line setting `key`. Last, not first: a file with the key twice is in

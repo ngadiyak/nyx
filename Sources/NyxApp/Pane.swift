@@ -1176,6 +1176,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         bar.onQueryChange = { [weak self] text in self?.searchQueryChanged(text) }
         bar.onStep = { [weak self] forward in _ = self?.stepSearch(forward: forward) }
         bar.onClose = { [weak self] in self?.closeSearch() }
+        bar.onScopeChange = { [weak self] all in self?.searchScopeChanged(toAllTabs: all) }
         addSubview(bar)
         searchBar = bar
         layoutSearchBar()
@@ -1204,6 +1205,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     private func searchQueryChanged(_ text: String) {
+        if searchBar?.searchesAllTabs == true {
+            searchBar?.setReadout(globalSearchOwner?.runGlobalSearch(query: text) ?? "")
+            return
+        }
         session.withTerminal { t in
             searchSession.update(query: text, in: t, viewportTop: t.viewportTopRow)
         }
@@ -1212,16 +1217,45 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         markDirty()
     }
 
+    /// Switching scope re-runs the query, so the readout and the highlights describe what is
+    /// actually being searched rather than what was searched before the toggle.
+    private func searchScopeChanged(toAllTabs all: Bool) {
+        if !all { globalSearchOwner?.endGlobalSearch() }
+        searchQueryChanged(searchBar?.query ?? "")
+    }
+
+    /// The object that can see every tab. A pane knows only its own buffer, which is the whole
+    /// reason a per-pane search cannot answer "which tab was that in".
+    private var globalSearchOwner: TabController? { actionTarget as? TabController }
+
     /// `⏎`/`⇧⏎` and ⌘G/⌘⇧G. Returns false when there is nothing to step through, so the caller can
     /// beep rather than doing nothing silently.
     @discardableResult
     func stepSearch(forward: Bool) -> Bool {
+        if searchBar?.searchesAllTabs == true {
+            guard let owner = globalSearchOwner, let readout = owner.stepGlobalSearch(forward: forward)
+            else { return false }
+            searchBar?.setReadout(readout)
+            return true
+        }
         guard searchBar != nil, !searchSession.isEmpty else { return false }
         searchSession.step(forward: forward)
         revealCurrentMatch()
         searchBar?.setReadout(searchSession.readout)
         markDirty()
         return true
+    }
+
+    /// Shows a hit that a search over every tab found in this pane: scroll to it, select it, and
+    /// highlight it the way a local search would, so stepping across tabs looks like one search
+    /// rather than several.
+    func reveal(match: SearchMatch, query: String) {
+        session.withTerminal { t in
+            searchSession.update(query: query, in: t, viewportTop: match.row)
+            _ = t.scrollToAbsoluteRow(match.row, margin: max(1, t.rows / 3))
+            _ = selectionController.replace(with: match.selection, in: t)
+        }
+        markDirty()
     }
 
     /// Brings the current hit on screen and selects it, so `⎋` can be followed by ⌘C.
@@ -1258,6 +1292,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         bar.frame = NSRect(x: bounds.width - width - 8, y: bounds.height - SearchBarView.height - 8,
                            width: width, height: SearchBarView.height)
         bar.needsLayout = true
+    }
+
+    /// The terminal, for a search that runs over every open buffer. Handed out rather than copied:
+    /// the search reads it under the session's own lock, which is where every other reader is.
+    var terminalForSearch: Terminal { session.withTerminal { $0 } }
+
+    /// Takes focus because a search landed here, without the side effects of a click.
+    func focusFromSearch() {
+        onFocusRequested?()
+        window?.makeFirstResponder(self)
     }
 
     // MARK: - Shell integration

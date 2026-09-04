@@ -193,8 +193,12 @@ public final class Renderer {
                         bg = f.palette.selectionBackground
                         if let sf = f.palette.selectionForeground { fg = sf }
                     } else if isMatch {
+                        // The current hit is painted at full strength with contrasting text; the
+                        // rest are a tint behind unchanged text. Painting all of them the same way
+                        // makes a page of matches into a page of yellow, and hides the one hit that
+                        // the user is actually standing on.
                         bg = isCurrentMatch ? f.palette.currentMatchBackground : f.palette.searchMatchBackground
-                        fg = f.palette.searchMatchForeground
+                        if isCurrentMatch { fg = f.palette.searchMatchForeground }
                     }
 
                     let blockCursor = isCursor && f.focused && f.cursorShape == .block

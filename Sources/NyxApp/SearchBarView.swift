@@ -14,6 +14,8 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
     var onStep: ((Bool) -> Void)?
     /// `⎋` or the close button.
     var onClose: (() -> Void)?
+    /// The scope toggle: `true` once the search covers every tab rather than this pane.
+    var onScopeChange: ((Bool) -> Void)?
 
     static let height: CGFloat = 36
     static let preferredWidth: CGFloat = 400
@@ -25,6 +27,9 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
     private let previous = NSButton(frame: .zero)
     private let next = NSButton(frame: .zero)
     private let close = NSButton(frame: .zero)
+    /// "This pane" or "All tabs". A per-pane search cannot answer "which of my tabs had that
+    /// error in it", which is the question people actually have once more than one tab is open.
+    private let scope = NSButton(frame: .zero)
 
     init(palette: Palette) {
         super.init(frame: NSRect(x: 0, y: 0, width: SearchBarView.preferredWidth, height: SearchBarView.height))
@@ -44,12 +49,15 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
         field.isContinuous = false
         readout.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         readout.alignment = .right
+        configure(scope, symbol: "square.on.square", fallback: "All", action: #selector(toggleScope))
+        scope.setButtonType(.pushOnPushOff)
+        scope.toolTip = "Search every tab"
         configure(previous, symbol: "chevron.left", fallback: "<", action: #selector(stepBackward))
         configure(next, symbol: "chevron.right", fallback: ">", action: #selector(stepForward))
         configure(close, symbol: "xmark", fallback: "x", action: #selector(dismiss))
         fieldBackground.wantsLayer = true
         addSubview(fieldBackground)
-        for view in [field, readout, previous, next, close] { addSubview(view) }
+        for view in [field, readout, scope, previous, next, close] { addSubview(view) }
         apply(palette: palette)
     }
 
@@ -80,6 +88,7 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
         field.textColor = nsColor(palette.foreground, alpha: 1)
         readout.textColor = nsColor(palette.foreground, alpha: 0.7)
         for button in [previous, next, close] { button.contentTintColor = nsColor(palette.foreground, alpha: 0.8) }
+        updateScopeTint(palette: palette)
     }
 
     /// The "3 of 47" text, or an empty string before anything has been typed.
@@ -100,7 +109,7 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
         super.layout()
         let inset: CGFloat = 8, gap: CGFloat = 6, button: CGFloat = 24
         let wellHeight: CGFloat = 24
-        let buttonsWidth = button * 3 + gap * 2
+        let buttonsWidth = button * 4 + gap * 3
         let readoutWidth: CGFloat = 66
         let wellWidth = max(80, bounds.width - inset * 2 - buttonsWidth - readoutWidth - gap * 3)
 
@@ -113,13 +122,34 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
         x += wellWidth + gap
         readout.frame = NSRect(x: x, y: (bounds.height - 14) / 2, width: readoutWidth, height: 14)
         x += readoutWidth + gap
-        for control in [previous, next, close] {
+        for control in [scope, previous, next, close] {
             control.frame = NSRect(x: x, y: (bounds.height - button) / 2, width: button, height: button)
             x += button + gap
         }
     }
 
     // MARK: - Events
+
+    /// Whether the search covers every tab.
+    private(set) var searchesAllTabs = false
+    private var lastPalette: Palette?
+
+    @objc private func toggleScope() {
+        searchesAllTabs.toggle()
+        scope.state = searchesAllTabs ? .on : .off
+        if let lastPalette { updateScopeTint(palette: lastPalette) }
+        onScopeChange?(searchesAllTabs)
+    }
+
+    /// The toggle is the one control here with a state, so it says so in colour rather than only in
+    /// the pressed look, which is nearly invisible on a borderless button.
+    private func updateScopeTint(palette: Palette) {
+        lastPalette = palette
+        scope.contentTintColor = searchesAllTabs
+            ? nsColor(palette.cursor, alpha: 1)
+            : nsColor(palette.foreground, alpha: 0.8)
+        scope.toolTip = searchesAllTabs ? "Searching every tab" : "Search every tab"
+    }
 
     @objc private func stepForward() { onStep?(true) }
     @objc private func stepBackward() { onStep?(false) }

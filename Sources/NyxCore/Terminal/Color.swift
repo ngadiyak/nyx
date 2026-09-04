@@ -21,6 +21,15 @@ public struct Color: Equatable, Hashable {
 }
 
 public struct RGB: Equatable, Hashable {
+    /// `amount` is how much of `other` shows through: 0 keeps `colour`, 1 gives `other`.
+    public static func blend(_ colour: RGB, into other: RGB, amount: Double) -> RGB {
+        let t = min(max(amount, 0), 1)
+        func mix(_ a: UInt8, _ b: UInt8) -> UInt8 {
+            UInt8(max(0, min(255, (Double(a) * (1 - t) + Double(b) * t).rounded())))
+        }
+        return RGB(mix(colour.r, other.r), mix(colour.g, other.g), mix(colour.b, other.b))
+    }
+
     public var r: UInt8, g: UInt8, b: UInt8
 
     public init(_ r: UInt8, _ g: UInt8, _ b: UInt8) { self.r = r; self.g = g; self.b = b }
@@ -105,15 +114,29 @@ public struct Palette: Equatable {
     /// user theme file, which sets the same keys the built-ins do -- gets a search colour that
     /// belongs to it without a new setting to fill in. Yellow is what editors have settled on for
     /// find, and a theme's yellow is by construction legible against its background.
-    public var searchMatchBackground: RGB { colors[3] }
+    /// Blended well toward the background rather than used at full strength. Every hit painted in
+    /// full yellow makes a page of matches into a page of yellow, and -- worse -- makes the hit you
+    /// are actually standing on indistinguishable from the forty you are not. Subdued here, full
+    /// strength for the current one: the difference has to be visible at a glance, not on
+    /// inspection.
+    public var searchMatchBackground: RGB { RGB.blend(colors[3], into: background, amount: 0.55) }
 
     /// Background behind the current hit: the same hue, brighter, so the two are distinguishable
     /// at a glance without either becoming a different colour from "found text".
     public var currentMatchBackground: RGB { colors[11] }
 
-    /// Text drawn on either of those. The background colour is the one thing a theme guarantees
-    /// contrasts with its own yellow.
+    /// Text drawn on the *current* hit, which is painted at full strength. The background colour is
+    /// the one thing a theme guarantees contrasts with its own yellow.
+    ///
+    /// The other hits keep the ordinary foreground: their highlight is a tint behind unchanged
+    /// text, which is what makes them read as marked rather than as selected.
     public var searchMatchForeground: RGB { background }
+
+    /// Mixes `colour` into `background`. `amount` is how much of the background wins, so 0 is the
+    /// colour untouched and 1 is the background.
+    static func blendedTowardBackground(_ colour: RGB, _ background: RGB, _ amount: Double) -> RGB {
+        RGB.blend(colour, into: background, amount: amount)
+    }
 
     public func resolve(_ c: Color, isForeground: Bool) -> RGB {
         switch c.kind {

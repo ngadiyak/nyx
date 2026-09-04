@@ -186,13 +186,24 @@ private let defaultSeparators: Set<Character> = Set(" ()[]{}'\"`,;:|<>")
     #expect(t.scrollbackGeneration == before &+ 2)
 }
 
-@Test func ordinaryOutputScrollingAndResizeKeepTheGeneration() {
+@Test func ordinaryOutputScrollingAndAHeightChangeKeepTheGeneration() {
     let t = makeTerminal(cols: 10, rows: 2, scrollback: 10).run("one\r\ntwo\r\nthree\r\nfour")
     let before = t.scrollbackGeneration
     t.feed("more output\r\n")
     t.scrollViewport(by: 2)
     t.scrollViewportToBottom()
-    // A resize reflows but keeps the content, so a selection made before it still means something.
-    t.resize(cols: 6, rows: 3)
+    // Changing the height redistributes rows between the scrollback and the screen without
+    // renumbering them, so a selection made before it still means what it meant.
+    t.resize(cols: 10, rows: 4)
     #expect(t.scrollbackGeneration == before)
+}
+
+/// A width change is the other case, and it is the one the old comment here got wrong. Re-wrapping
+/// moves content between rows by no fixed offset: absolute row *n* means something else afterwards,
+/// and everything holding one has to be told.
+@Test func aWidthChangeBumpsTheGeneration() {
+    let t = makeTerminal(cols: 10, rows: 2, scrollback: 10).run("one\r\ntwo\r\nthree\r\nfour")
+    let before = t.scrollbackGeneration
+    t.resize(cols: 6, rows: 2)
+    #expect(t.scrollbackGeneration != before)
 }

@@ -32,6 +32,9 @@ public struct BufferSearch: Equatable {
     private var generation: UInt64
     /// Rows the ring had evicted when these matches were found; see `rebase`.
     private var evictedRows = 0
+    /// The buffer's content version when they were found. Narrowing filters the matches already in
+    /// hand, so it can only be right when nothing has been written since.
+    private var contentVersion: UInt64 = 0
     private var caseSensitive: Bool
 
     public init() {
@@ -48,17 +51,28 @@ public struct BufferSearch: Equatable {
     /// A query is case-insensitive until the user types a capital, which is the behaviour every
     /// editor has settled on: it does what you meant without a switch to find.
     public mutating func search(_ newQuery: String, in terminal: Terminal) {
+        // Before anything else: the matches being narrowed hold absolute rows, and the ring may
+        // have trimmed since the last keystroke. `canNarrow` only asks about the generation, which
+        // an eviction never bumps -- so narrowing over stale numbers re-read rows that had moved
+        // and silently dropped the matches that moved with them, on the path every keystroke takes.
+        rebase(terminal)
         let sensitive = newQuery.contains(where: \.isUppercase)
+        // Narrowing filters what was already found; it never looks at a row that was not a match
+        // before. That is only sound while the buffer has not changed -- with output arriving
+        // between two keystrokes, the matches in the new rows would never be found and the readout
+        // would quietly under-count as you typed.
         let canNarrow = !query.isEmpty
             && newQuery.hasPrefix(query)
             && sensitive == caseSensitive
             && generation == terminal.scrollbackGeneration
+            && contentVersion == terminal.contentVersion
             && !matches.isEmpty
 
         query = newQuery
         caseSensitive = sensitive
         generation = terminal.scrollbackGeneration
         evictedRows = terminal.evictedRows
+        contentVersion = terminal.contentVersion
 
         guard !newQuery.isEmpty else {
             matches = []
@@ -85,10 +99,10 @@ public struct BufferSearch: Equatable {
     /// discarding the ones whose text has gone with them. Returns how many rows they moved by, so
     /// the caller can move whatever else it holds in the same coordinates.
     ///
-    /// Rebasing rather than re-scanning: with the bar open on a buffer producing output, the ring
-    /// evicts on nearly every frame, and re-running the query over ten thousand rows that often is
-    /// the difference between a smooth `make` and a stuttering one. The matches themselves have not
-    /// changed -- only their numbering has.
+    /// Rebasing rather than re-scanning, because nothing about the matches has changed except
+    /// their numbering. `SearchSession.refresh` does re-scan, on a timer, when the buffer's content
+    /// actually changes; this is what keeps the highlights on their text in the frames between
+    /// those, and it is what the incremental narrowing path needs to be given correct row numbers.
     @discardableResult
     public mutating func rebase(_ terminal: Terminal) -> Int {
         let dropped = terminal.evictedRows - evictedRows

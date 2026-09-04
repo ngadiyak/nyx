@@ -49,6 +49,22 @@ mouse reporting for TUIs; true colour, every underline style, ligature-free mono
 font fallback and colour emoji; seven themes with separate light and dark choices; a settings
 window that edits the config file rather than shadowing it.
 
+**About the themes.** Every built-in has to clear the same floor: nothing invisible against the
+background, no colour indistinguishable from ordinary text, and every bright variant more legible
+than its normal — the rules are in `ThemesTests.swift`, and Nyx's own interface colours (search
+highlights, selection, the accent) are derived from each theme's sixteen rather than hard-coded,
+so `palette = N=#rrggbb` in your config restyles the whole interface and not just the grid. Three
+of the ports deviate from upstream where upstream fails that floor, and each says so in
+`Themes.swift`. The largest is
+**`solarized-dark`**: the canonical xterm mapping fills five of its bright slots with Solarized's
+greyscale ramp, which puts a bright black *pixel-identical to the background* (1.00:1, invisible)
+and a bright yellow that is a grey. Those five slots are brighter mixes of Solarized's own accent
+hues here, the foreground is base1 rather than base0 (5.6:1 rather than 4.8:1), and the selection is
+lifted off base03. `catppuccin-mocha` moves bright white to Text (upstream made it dimmer than
+white), and `nyx-dark` replaces Tokyo Night's bright row (three duplicates, an orange in the yellow
+slot, and a bright cyan darker than cyan). Every one of those changes is named, with its before and
+after, in the doc comment on the theme itself.
+
 **Sessions.** Quitting remembers every window, tab and split, each pane's working directory and its
 scrollback; the next launch puts them back. `restore-session = no` turns it off. A snapshot that
 cannot be read — corrupt, or from a newer Nyx — opens one ordinary window rather than nothing.

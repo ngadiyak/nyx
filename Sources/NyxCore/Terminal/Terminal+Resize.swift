@@ -172,8 +172,17 @@ extension Terminal {
         let earliestFirst = max(0, lastContent + 1 - newRows)
         var first = max(0, out.count - newRows)
         if newCursor.y < first { first = max(newCursor.y, earliestFirst) }
+        // Absolute rows are the scrollback followed by the screen, so rebuilding the ring here
+        // renumbers them -- and two different things can happen, needing two different answers.
+        let widthChanged = newCols != cols
         scrollback.removeAll()
         for i in 0..<first { scrollback.push(out[i]) }
+        // Rows the ring could not take back are gone exactly as an eviction: everything holding an
+        // absolute row comes down by that many and goes on covering its own text.
+        recordEvictions(first - scrollback.count)
+        // A re-wrap, though, moves content between rows by no fixed offset, so nothing can be
+        // corrected -- a selection made before the drag would come back covering a stranger.
+        if widthChanged { invalidateAbsoluteRows() }
         var rows = Array(out[first..<min(out.count, first + newRows)])
         while rows.count < newRows { rows.append(Row(cols: newCols)) }
         for i in 0..<rows.count { rows[i].dirty = true }

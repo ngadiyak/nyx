@@ -57,8 +57,11 @@ public final class Terminal: TerminalActions {
     /// absolute coordinates — a selection above all — is meaningless once this changes, and has no
     /// other way to notice: the indices stay in range and silently address different rows.
     ///
-    /// A resize deliberately does not bump it. Reflow moves content between rows but keeps it, so a
-    /// selection made before a resize still points at the text the user chose.
+    /// A resize bumps it only when the width changed. Changing the height redistributes rows
+    /// between the scrollback and the screen without renumbering them, so a selection survives
+    /// dragging the bottom edge of the window. Changing the width re-wraps: content moves between
+    /// rows by no fixed offset, and there is nothing an absolute coordinate could be corrected by,
+    /// so holders drop instead of landing on text the user never chose.
     public private(set) var scrollbackGeneration: UInt64 = 0
     /// How many rows the scrollback ring has thrown away since this terminal started.
     ///
@@ -72,6 +75,18 @@ public final class Terminal: TerminalActions {
     /// Never reset: the paths that throw the buffer away bump `scrollbackGeneration`, and holders
     /// check that first, so a counter that only ever grows keeps every delta meaningful.
     public private(set) var evictedRows: Int = 0
+
+    /// Rows lost somewhere other than the scroll path -- a reflow whose result does not fit the
+    /// ring drops its oldest rows exactly as an eviction does, and shifts absolute rows the same
+    /// way. `private(set)` is per file, and the reflow lives in `Terminal+Resize`.
+    func recordEvictions(_ count: Int) {
+        guard count > 0 else { return }
+        evictedRows += count
+    }
+
+    /// Absolute rows have stopped meaning what they meant, by no fixed offset. See
+    /// `scrollbackGeneration` -- this is the only way to say so from outside this file.
+    func invalidateAbsoluteRows() { scrollbackGeneration &+= 1 }
     /// Bumped whenever bytes are fed. Cheap enough to read on any path, and exact for the question
     /// a cache needs answered: has this buffer changed since the last time I looked?
     public private(set) var contentVersion: UInt64 = 0

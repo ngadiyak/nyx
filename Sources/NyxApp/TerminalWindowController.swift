@@ -20,10 +20,22 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     private func observeQuickActionFailures() {
         quickActionFailures = NotificationCenter.default.addObserver(
             forName: QuickActionRunner.failed, object: nil, queue: .main) { [weak self] note in
-            guard let self, let message = note.object as? String,
-                  self.window?.isKeyWindow ?? false else { return }
-            self.banner?.showNote(message)
+            guard let self, let message = note.object as? String, self.shouldReport else { return }
+            self.banner?.showFailure(message)
         }
+    }
+
+    /// Whether this window is the one that should carry a failure message.
+    ///
+    /// The key window, when there is one. When Nyx is not frontmost there is none -- and a toggle
+    /// that dies while you are in another application is exactly when you are least likely to have
+    /// noticed the button go out -- so the frontmost Nyx window says it instead, and it is still
+    /// there when you come back.
+    private var shouldReport: Bool {
+        guard let window else { return false }
+        if window.isKeyWindow { return true }
+        guard NSApp.keyWindow == nil else { return false }
+        return NSApp.orderedWindows.first { $0.isVisible && $0.delegate is TerminalWindowController } === window
     }
 
     /// Builds a window with a live terminal in it, or shows the error and returns nil.
@@ -126,9 +138,6 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// kept that one field's old value -- applying it here is always safe, even when `diagnostics`
     /// is non-empty: every field that parsed cleanly still takes effect, and only the field with the
     /// bad line stays where it was.
-    /// The pane keystrokes would go to. Used by the paste smoke check.
-    var focusedPane: Pane? { tabs?.focusedPane }
-
     func configChanged(_ newConfig: Config, diagnostics: [ConfigDiagnostic]) {
         let diff = ConfigDiff(from: config, to: newConfig)
         config = newConfig

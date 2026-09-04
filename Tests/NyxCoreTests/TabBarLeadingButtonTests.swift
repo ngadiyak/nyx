@@ -109,7 +109,7 @@ private func leading(_ widths: [Double], barWidth: Double, tabs: Int) -> Double 
     let bar: [Double] = [26, 60, 60, 60, 26]
     // Six tabs need 240pt of a 300pt bar, leaving 60: the tab list, the pinned `+`, nothing else.
     let laid = TabBarGeometry.leadingLayout(buttonWidths: bar, barWidth: 300, barHeight: 28,
-                                            slotCount: 6, headerHeight: 0, pinLast: true)
+                                            slotCount: 6, headerHeight: 0, pinnedTail: 1)
     #expect(laid.map(\.index) == [0, 4])
     #expect(laid.last?.rect.x == 26)          // straight after the buttons that did fit
     #expect(laid.last?.rect.width == 26)
@@ -124,12 +124,12 @@ private func leading(_ widths: [Double], barWidth: Double, tabs: Int) -> Double 
 @Test func thePinnedButtonTakesItsRoomFromTheOthers() {
     let widths: [Double] = [26, 60, 60, 26]
     let laid = TabBarGeometry.leadingLayout(buttonWidths: widths, barWidth: 400, barHeight: 28,
-                                            slotCount: 4, headerHeight: 0, pinLast: true)
+                                            slotCount: 4, headerHeight: 0, pinnedTail: 1)
     // Four tabs need 160pt, leaving 240: 26 + 60 + 60 + 26 = 172 all fit.
     #expect(laid.map(\.index) == [0, 1, 2, 3])
 
     let tighter = TabBarGeometry.leadingLayout(buttonWidths: widths, barWidth: 300, barHeight: 28,
-                                               slotCount: 4, headerHeight: 0, pinLast: true)
+                                               slotCount: 4, headerHeight: 0, pinnedTail: 1)
     // 140pt of room: 26 + 60 fits with the pinned 26 reserved; the second quick action does not.
     #expect(tighter.map(\.index) == [0, 1, 3])
 }
@@ -140,7 +140,7 @@ private func leading(_ widths: [Double], barWidth: Double, tabs: Int) -> Double 
     let bar: [Double] = [26, 60, 60, 60, 26]
     let hit = TabBarGeometry.hit(atX: 30, y: 14, slots: slots(6), barWidth: 300, barHeight: 28,
                                  headerHeight: 0, trailingWidth: 26, leadingWidths: bar,
-                                 pinLastLeading: true)
+                                 pinnedLeadingTail: 1)
     #expect(hit == .leadingButton(4))
 }
 
@@ -149,4 +149,21 @@ private func leading(_ widths: [Double], barWidth: Double, tabs: Int) -> Double 
     let laid = TabBarGeometry.leadingLayout(buttonWidths: buttons, barWidth: 300, barHeight: 28,
                                             slotCount: 6, headerHeight: 0)
     #expect(laid.map(\.index) == [0, 1])
+}
+
+/// Two pinned buttons -- the `+` and the chip that reaches what did not fit -- keep their room
+/// together or not at all. A `+` with no chip beside it is a bar that dropped a configured button
+/// and says nothing about it.
+@Test func aPinnedTailIsLaidOutWholeOrNotAtAll() {
+    let bar: [Double] = [26, 60, 60, 26, 26]   // tab list, two actions, the chip, the `+`
+    // Six tabs claim 240pt of a 330pt bar: 90 left, enough for the tab list and both pinned.
+    let laid = TabBarGeometry.leadingLayout(buttonWidths: bar, barWidth: 330, barHeight: 28,
+                                            slotCount: 6, headerHeight: 0, pinnedTail: 2)
+    #expect(laid.map(\.index) == [0, 3, 4])
+    #expect(laid.map(\.rect.x) == [0, 26, 52])
+
+    // A bar with no room even for the tail shows none of it, rather than half of it.
+    let tiny = TabBarGeometry.leadingLayout(buttonWidths: bar, barWidth: 280, barHeight: 28,
+                                            slotCount: 6, headerHeight: 0, pinnedTail: 2)
+    #expect(tiny.isEmpty)
 }

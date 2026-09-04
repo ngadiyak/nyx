@@ -18,6 +18,13 @@ public enum TabBarLabels {
     public static let tabList = "All tabs (⌘⇧P)"
     public static let addQuickAction = "Add a button for a command you run often"
 
+    /// The chip standing in for the buttons the bar was too narrow to draw. Says how many, because
+    /// a button that is simply absent looks like a button that broke.
+    public static func moreQuickActions(count: Int) -> String {
+        count == 1 ? "1 more button — no room for it here"
+                   : "\(count) more buttons — no room for them here"
+    }
+
     public static func close(tabTitled title: String?) -> String {
         guard let title, !title.isEmpty else { return "Close tab" }
         return "Close \(title) (⌘W)"

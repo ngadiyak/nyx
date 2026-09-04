@@ -180,10 +180,8 @@ public struct Palette: Equatable {
     /// A theme is light when its page is brighter than its ink.
     public var isLight: Bool { background.relativeLuminance > foreground.relativeLuminance }
 
-    /// The darker of the theme's two neutrals, and the lighter. Highlights are painted between
-    /// them: a slab reads as a highlight when it sits *away* from the page, in the direction the
-    /// ink is not.
-    var ink: RGB { isLight ? foreground : background }
+    /// The lighter of the theme's two neutrals. A colour lifted toward it gets brighter without
+    /// leaving the theme, which is what `accentText` needs.
     var page: RGB { isLight ? background : foreground }
 
     /// How much contrast a derived colour has to keep. 4.5 where the theme can afford it; where it
@@ -289,17 +287,31 @@ public struct Palette: Equatable {
     /// whose bright yellow has no colour in it falls back to its ordinary one. Then the slab is
     /// lightened until the dark half of the theme reads on it, which is what makes this work on a
     /// light theme: there the raw yellow is dark enough to be body text, and a highlighter is not.
-    public var currentMatchBackground: RGB {
+    /// The current hit and the text on it, decided together -- one cannot be chosen without the
+    /// other, and deriving them separately is how they came to disagree.
+    ///
+    /// The slab is the theme's yellow at full strength; the text is whichever of the theme's two
+    /// neutrals already reads on that yellow, and the slab moves only if neither does. Forcing the
+    /// text to be the dark neutral instead -- the "black on a highlighter" idiom -- meant that on a
+    /// light theme, whose yellow is dark enough to be body text, the slab had to be lightened to a
+    /// khaki before the dark text cleared it, leaving no room between it and the tint the ordinary
+    /// hits get. Letting the theme choose gives nyx-light a strong dark gold with the page colour
+    /// on it, 46 units clear of the ordinary hits instead of 17.
+    private var currentMatch: (background: RGB, foreground: RGB) {
         let raw = colors[11].chroma >= 18 ? colors[11] : colors[3]
-        return Palette.pushed(raw, toward: page, until: ink, reaches: 4.5, from: 0, to: 0.60)
+        let text = RGB.contrast(background, raw) >= RGB.contrast(foreground, raw)
+            ? background : foreground
+        let away = text == background ? foreground : background
+        return (Palette.pushed(raw, toward: away, until: text, reaches: 4.5, from: 0, to: 0.60), text)
     }
 
-    /// Text drawn on the *current* hit, which is painted at full strength: the dark half of the
-    /// theme, which `currentMatchBackground` has already been made to clear.
+    public var currentMatchBackground: RGB { currentMatch.background }
+
+    /// Text drawn on the *current* hit, which is painted at full strength.
     ///
     /// The other hits keep the ordinary foreground: their highlight is a tint behind unchanged
     /// text, which is what makes them read as marked rather than as selected.
-    public var searchMatchForeground: RGB { ink }
+    public var searchMatchForeground: RGB { currentMatch.foreground }
 
     /// The selected row in a panel Nyx draws itself -- the palette, a list.
     ///

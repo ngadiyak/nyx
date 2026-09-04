@@ -218,14 +218,30 @@ private func wordTerminal() -> Terminal {
 
 @Test func invalidationLeavesAStableCoordinateSpaceAlone() {
     let t = wordTerminal()
+    let width = t.cols
     var c = SelectionController()
     c.begin(at: pos(0, 0), clickCount: 2, block: false, in: t)
     c.end()
     t.feed("\r\nmore\r\n")
-    t.resize(cols: 12, rows: 4)
+    // Output and a taller window: the rows the selection covers are still the rows it covers.
+    t.resize(cols: width, rows: 4)
     let dropped = c.invalidateIfStale(t)
     #expect(dropped == false)
     #expect(c.selection != nil)
+}
+
+/// A narrower window is not a stable coordinate space: the text re-wraps onto different rows, and
+/// there is no offset that would put the selection back on what the user chose. Dropping it is the
+/// only honest answer -- a highlight left sitting on whatever slid underneath is the worst of the
+/// three, because nothing on screen says it happened.
+@Test func aRewrapDropsTheSelection() {
+    let t = wordTerminal()
+    var c = SelectionController()
+    c.begin(at: pos(0, 0), clickCount: 2, block: false, in: t)
+    c.end()
+    t.resize(cols: t.cols / 2, rows: 4)
+    #expect(c.invalidateIfStale(t) == true)
+    #expect(c.selection == nil)
 }
 
 // MARK: - Select all

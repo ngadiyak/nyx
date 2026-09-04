@@ -67,6 +67,13 @@ final class ConfigBanner: NSView {
         show(text: text, color: .systemBlue)
     }
 
+    /// Something went wrong. The same yellow as a config error, because that is what this strip
+    /// already means by yellow -- `command not found` announced in the blue "by the way" colour
+    /// reads as a note about a setting rather than as the button having failed.
+    func showFailure(_ text: String) {
+        show(text: text, color: .systemYellow)
+    }
+
     /// Disappears on the next clean reload -- the caller calls this whenever a reload leaves
     /// nothing to report.
     func hide() {

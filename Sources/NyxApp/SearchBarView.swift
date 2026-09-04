@@ -107,7 +107,11 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
     /// across tabs: same text, same scope, no re-typing and no reset to this pane only.
     func restore(query: String, allTabs: Bool) {
         field.stringValue = query
-        if allTabs != searchesAllTabs { toggleScope() }
+        // Sets the scope *without* announcing it. Restoring a bar is not a person pressing the
+        // scope button: going through the toggle ran the whole cross-tab search again and reset
+        // its position, so the first ⏎ that crossed a tab had to be pressed twice.
+        guard allTabs != searchesAllTabs else { return }
+        setScope(allTabs, notify: false)
     }
 
     /// The "3 of 47" text, or an empty string before anything has been typed.
@@ -156,11 +160,13 @@ final class SearchBarView: NSView, NSTextFieldDelegate {
     private(set) var searchesAllTabs = false
     private var lastPalette: Palette?
 
-    @objc private func toggleScope() {
-        searchesAllTabs.toggle()
-        scope.state = searchesAllTabs ? .on : .off
+    @objc private func toggleScope() { setScope(!searchesAllTabs, notify: true) }
+
+    private func setScope(_ all: Bool, notify: Bool) {
+        searchesAllTabs = all
+        scope.state = all ? .on : .off
         if let lastPalette { updateScopeTint(palette: lastPalette) }
-        onScopeChange?(searchesAllTabs)
+        if notify { onScopeChange?(all) }
     }
 
     /// The toggle is the one control here with a state, so it says so in colour rather than only in

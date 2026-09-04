@@ -119,7 +119,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
         tabBar.onNewTab = { [weak self] in self?.newTab() }
         tabBar.onShowTabList = { [weak self] in self?.showTabList() }
         tabBar.onQuickAction = { [weak self] index in self?.performQuickAction(index) }
-        tabBar.onAddQuickAction = { [weak self] in self?.editQuickAction(at: nil) }
+        tabBar.onAddQuickAction = { [weak self] in self?.editQuickAction(editing: nil) }
         tabBar.onQuickActionContextMenu = { [weak self] index, event in
             self?.showQuickActionMenu(index, event)
         }
@@ -1045,17 +1045,22 @@ final class TabController: NSViewController, NSMenuItemValidation {
 
     // MARK: - Editing the buttons
 
-    /// The sheet for adding a button, or editing the one at `index`.
-    private func editQuickAction(at index: Int?) {
-        let existing = index.flatMap { config.quickActions.indices.contains($0) ? config.quickActions[$0] : nil }
+    /// The sheet for adding a button, or editing `existing`.
+    ///
+    /// The button is carried as a value and looked up again when the sheet closes, never held as
+    /// an index: the config file is watched, so any window -- or an editor outside Nyx -- can
+    /// rewrite the list while this sheet is open, and an index would then name somebody else.
+    private func editQuickAction(editing existing: QuickAction?) {
         let editor = QuickActionEditor(editing: existing)
         editor.onFinish = { [weak self] action in
             self?.dismiss(editor)
             guard let self, let action else { return }
             var actions = self.config.quickActions
-            if let index, actions.indices.contains(index) {
+            if let existing, let index = actions.firstIndex(of: existing) {
                 actions[index] = action
             } else {
+                // Either this is a new button, or the one being edited is gone. Appending an edit
+                // of a button somebody deleted is better than overwriting whatever took its slot.
                 actions.append(action)
             }
             (NSApp.delegate as? AppDelegate)?.setQuickActions(actions)
@@ -1086,8 +1091,19 @@ final class TabController: NSViewController, NSMenuItemValidation {
     private func item(_ title: String, _ action: Selector, _ index: Int) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
-        item.tag = index
+        // The button itself, not where it sits. `quick` lines are watched: another window's
+        // settings sheet, or a text editor, can rewrite the list while this menu is open, and
+        // "Remove" acting on a shifted index deletes the wrong button -- straight to disk.
+        item.representedObject = config.quickActions[index]
         return item
+    }
+
+    /// The button a menu item names, as the config has it *now*. Nil when it is no longer there,
+    /// which means the item does nothing rather than something to a stranger.
+    private func quickAction(from sender: NSMenuItem) -> QuickAction? {
+        guard let action = sender.representedObject as? QuickAction,
+              config.quickActions.contains(action) else { return nil }
+        return action
     }
 
     private func mutateQuickActions(_ change: (inout [QuickAction]) -> Void) {
@@ -1096,31 +1112,37 @@ final class TabController: NSViewController, NSMenuItemValidation {
         (NSApp.delegate as? AppDelegate)?.setQuickActions(actions)
     }
 
-    @objc private func menuEditQuickAction(_ sender: NSMenuItem) { editQuickAction(at: sender.tag) }
+    @objc private func menuEditQuickAction(_ sender: NSMenuItem) {
+        guard let action = quickAction(from: sender) else { return }
+        editQuickAction(editing: action)
+    }
 
     @objc private func menuDuplicateQuickAction(_ sender: NSMenuItem) {
+        guard let action = quickAction(from: sender) else { return }
         mutateQuickActions { actions in
-            guard actions.indices.contains(sender.tag) else { return }
-            let original = actions[sender.tag]
-            actions.insert(QuickAction(name: original.name + " copy", kind: original.kind,
-                                       command: original.command), at: sender.tag + 1)
+            guard let index = actions.firstIndex(of: action) else { return }
+            actions.insert(QuickAction(name: action.name + " copy", kind: action.kind,
+                                       command: action.command), at: index + 1)
         }
     }
 
     @objc private func menuRemoveQuickAction(_ sender: NSMenuItem) {
+        guard let action = quickAction(from: sender) else { return }
         mutateQuickActions { actions in
-            guard actions.indices.contains(sender.tag) else { return }
-            actions.remove(at: sender.tag)
+            guard let index = actions.firstIndex(of: action) else { return }
+            actions.remove(at: index)
         }
     }
 
-    @objc private func menuMoveQuickActionLeft(_ sender: NSMenuItem) { moveQuickAction(sender.tag, by: -1) }
-    @objc private func menuMoveQuickActionRight(_ sender: NSMenuItem) { moveQuickAction(sender.tag, by: 1) }
+    @objc private func menuMoveQuickActionLeft(_ sender: NSMenuItem) { moveQuickAction(sender, by: -1) }
+    @objc private func menuMoveQuickActionRight(_ sender: NSMenuItem) { moveQuickAction(sender, by: 1) }
 
-    private func moveQuickAction(_ index: Int, by offset: Int) {
+    private func moveQuickAction(_ sender: NSMenuItem, by offset: Int) {
+        guard let action = quickAction(from: sender) else { return }
         mutateQuickActions { actions in
+            guard let index = actions.firstIndex(of: action) else { return }
             let target = index + offset
-            guard actions.indices.contains(index), actions.indices.contains(target) else { return }
+            guard actions.indices.contains(target) else { return }
             actions.swapAt(index, target)
         }
     }
@@ -1133,6 +1155,9 @@ final class TabController: NSViewController, NSMenuItemValidation {
     private var globalQuery = ""
     /// The pane whose search bar is on screen, so a cross-tab jump can take it along.
     private weak var searchingPane: Pane?
+    /// Panes a cross-tab jump has revealed a hit in. They hold highlights and a selection they did
+    /// not ask for, and only this knows which ones to clean up when the search ends.
+    private var visitedPaneIDs: Set<Int> = []
 
     /// Runs `query` over every pane in every tab and returns the readout for the search bar.
     ///
@@ -1164,7 +1189,6 @@ final class TabController: NSViewController, NSMenuItemValidation {
         // screen -- so after one cross-tab jump the bar was gone, its pane was no longer in the
         // responder chain, and every further ⏎ did nothing. The bar moves to the pane the hit is
         // in, which is also where a person is now looking.
-        defer { moveSearchBarToFocusedPane() }
         globalIndex = (globalIndex + (forward ? 1 : -1) + globalHits.count) % globalHits.count
         let hit = globalHits[globalIndex]
 
@@ -1175,15 +1199,25 @@ final class TabController: NSViewController, NSMenuItemValidation {
         guard let pane = self.pane(withID: hit.scope.paneID) else { return nil }
         pane.focusFromSearch()
         pane.reveal(match: hit.match, query: globalQuery)
-        return "\(globalIndex + 1) of \(globalHits.count) — \(hit.scope.title)"
+        visitedPaneIDs.insert(hit.scope.paneID)
+        let readout = "\(globalIndex + 1) of \(globalHits.count) — \(hit.scope.title)"
+        // Carried to the destination rather than left to the caller: the pane the caller is
+        // holding no longer has the bar, so setting it there put "2 of 4" on nothing at all and
+        // the bar went on showing the summary from when the search was first run.
+        moveSearchBarToFocusedPane(readout: readout)
+        return readout
     }
 
     /// Carries an open search bar to whichever pane now has focus, with its query and scope intact.
-    private func moveSearchBarToFocusedPane() {
-        guard let source = searchingPane, let destination = focusedPane, source !== destination else { return }
+    private func moveSearchBarToFocusedPane(readout: String?) {
+        guard let source = searchingPane, let destination = focusedPane, source !== destination else {
+            if let readout { searchingPane?.setSearchReadout(readout) }
+            return
+        }
         let query = source.searchQuery
         source.closeSearchForHandover()
-        destination.openSearch(query: query, allTabs: true)
+        destination.openSearch(query: query, allTabs: true, capturingSelection: false)
+        if let readout { destination.setSearchReadout(readout) }
         searchingPane = destination
     }
 
@@ -1194,6 +1228,10 @@ final class TabController: NSViewController, NSMenuItemValidation {
         globalHits = []
         globalQuery = ""
         globalIndex = 0
+        // Every pane a jump landed in still has the highlights and the selection that jump made,
+        // and no bar of its own to clear them with.
+        for id in visitedPaneIDs { pane(withID: id)?.clearSearchResidue() }
+        visitedPaneIDs = []
     }
 
     private func searchScopes() -> [SearchScope] {

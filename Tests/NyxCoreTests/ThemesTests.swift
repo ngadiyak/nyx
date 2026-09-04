@@ -104,11 +104,36 @@ import Foundation
 /// *visibly* off the background, which is the rule Solarized Dark used to fail by 0.00.
 @Test func noAnsiColourIsInvisibleOnItsOwnBackground() {
     for (name, p) in Themes.builtin {
+        // Bright black is the third grey: not black, not the page, and not the body text either.
         #expect(RGB.distance(p.colors[8], p.background) >= 12,
                 "\(name): bright black is \(RGB.distance(p.colors[8], p.background)) from the background")
+        #expect(RGB.distance(p.colors[8], p.foreground) >= 12,
+                "\(name): bright black is \(RGB.distance(p.colors[8], p.foreground)) from the foreground")
         for index in Array(1...7) + Array(9...15) {
             let ratio = RGB.contrast(p.colors[index], p.background)
             #expect(ratio >= 2.5, "\(name): colour \(index) is \(ratio):1 against the background")
+        }
+    }
+}
+
+/// A colour indistinguishable from ordinary text carries no information: the escape sequence runs,
+/// the text changes colour, and nothing on screen changes. nyx-dark's bright blue was 11.4 from its
+/// foreground and nyx-light's cyan 13.2 -- both close enough that a line printed in them read as an
+/// ordinary line.
+///
+/// Ten slots, not sixteen. The four neutrals -- black, white, bright black, bright white -- *are*
+/// the theme's greyscale ramp, and every theme in this set but one draws its foreground straight
+/// out of that ramp: dracula's and one-dark's foreground is their white, gruvbox's, catppuccin's
+/// and nyx-light's is their bright white. `\u{1B}[37m` rendering in the default text colour is what
+/// "white" means on those themes, not a defect, and a rule that condemned it would be a rule
+/// demanding four upstream palettes be rewritten to no purpose. What must not happen is a *colour*
+/// disappearing into the text, and that is what this checks.
+@Test func noChromaticColourIsIndistinguishableFromOrdinaryText() {
+    for (name, p) in Themes.builtin {
+        for index in Array(1...6) + Array(9...14) {
+            let distance = RGB.distance(p.colors[index], p.foreground)
+            #expect(distance >= 15,
+                    "\(name): colour \(index) is \(distance) from the foreground")
         }
     }
 }
@@ -123,17 +148,27 @@ import Foundation
     }
 }
 
-/// On a dark theme "bright" means more light. A bright variant that renders dimmer than the colour
-/// it is meant to emphasise is backwards -- Tokyo Night's bright cyan was 7.3:1 against a cyan of
-/// 10.0:1 -- so bold text came out quieter than plain. Light themes are the other way round by
-/// design and are not held to this.
-@Test func brightVariantsAreNotDimmerThanTheirNormals() {
-    for (name, p) in Themes.builtin where !p.isLight {
-        for index in 8...15 {
-            let bright = p.colors[index].relativeLuminance
-            let normal = p.colors[index - 8].relativeLuminance
-            #expect(bright >= normal - 0.005,
-                    "\(name): colour \(index) is dimmer than colour \(index - 8)")
+/// "Bright" means emphasis, and emphasis is contrast against the page -- not luminance.
+///
+/// Stated as luminance this rule is dark-theme-only, because on a light theme a brighter colour is
+/// a *less* legible one; stated as contrast it is appearance-independent, and holds for all seven.
+/// That distinction is not academic. The first version of this test said luminance and was guarded
+/// by `where !p.isLight`, so it skipped nyx-light -- the one theme where every bright variant was
+/// still less legible than its normal, which is the identical defect the same commit had just
+/// fixed in nyx-dark. A rule written to describe a repair notices nothing; a rule written as a rule
+/// would have failed on the theme that was never repaired.
+///
+/// Slots 9...15. Slot 8 is exempt and has its own rule above: "bright black" is the only slot where
+/// bright does not mean stronger. It is the comment grey -- the tone between the ink and the page --
+/// and which side of black that falls on depends on which of them the page is. Every other bright
+/// is its normal with more emphasis, in either polarity.
+@Test func brightVariantsAreNotWeakerThanTheirNormals() {
+    for (name, p) in Themes.builtin {
+        for index in 9...15 {
+            let bright = RGB.contrast(p.colors[index], p.background)
+            let normal = RGB.contrast(p.colors[index - 8], p.background)
+            #expect(bright >= normal - 0.15,
+                    "\(name): colour \(index) is \(bright):1 where colour \(index - 8) is \(normal):1")
         }
     }
 }

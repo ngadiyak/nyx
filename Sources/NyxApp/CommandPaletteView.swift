@@ -49,6 +49,15 @@ private final class PaletteListView: NSView {
         let titleFont = NSFont.systemFont(ofSize: 13)
         let matchFont = NSFont.boldSystemFont(ofSize: 13)
         let detailFont = NSFont.systemFont(ofSize: 11)
+        // Resolved once per draw, not once per row and not once per matched character. Each of
+        // these walks the palette -- `accentText` tries five candidates through Lab and chroma,
+        // then blends against a contrast floor that itself derives `panelSelectionBackground` --
+        // and `accentText` was being recomputed inside the inner loop, so a query matching four
+        // characters on thirty rows resolved it a hundred and twenty times a frame.
+        let rowSelection = nsColor(palette.panelSelectionBackground, alpha: 1)
+        let titleColor = nsColor(palette.foreground, alpha: 1)
+        let matchColor = nsColor(palette.accentText, alpha: 1)
+        let detailColor = nsColor(palette.foreground, alpha: 0.55)
         for (index, result) in results.enumerated() {
             let rect = rowRect(index)
             guard rect.intersects(dirtyRect) else { continue }
@@ -56,19 +65,18 @@ private final class PaletteListView: NSView {
             if isSelected {
                 // Inset and rounded: a full-bleed fill runs under the panel's own rounded corners
                 // and border, which looks like the highlight escaped rather than like a selection.
-                nsColor(palette.panelSelectionBackground, alpha: 1).setFill()
+                rowSelection.setFill()
                 NSBezierPath(roundedRect: rect.insetBy(dx: 5, dy: 1), xRadius: 5, yRadius: 5).fill()
             }
             let title = NSMutableAttributedString(
                 string: result.item.title,
-                attributes: [.font: titleFont, .foregroundColor: nsColor(palette.foreground, alpha: 1)])
+                attributes: [.font: titleFont, .foregroundColor: titleColor])
             // Bold and in the theme's accent: the characters the query actually matched, which is
             // what tells a user why this row is in the list at all. Not `colors[12]` -- Solarized's
             // bright blue is a grey identical to its foreground, so there the matched characters
             // were bold and nothing else.
             for position in result.positions where position < title.length {
-                title.setAttributes([.font: matchFont,
-                                     .foregroundColor: nsColor(palette.accentText, alpha: 1)],
+                title.setAttributes([.font: matchFont, .foregroundColor: matchColor],
                                     range: NSRange(location: position, length: 1))
             }
             title.draw(at: NSPoint(x: rect.minX + 12, y: rect.minY + 5))
@@ -76,7 +84,7 @@ private final class PaletteListView: NSView {
             guard !result.item.detail.isEmpty else { continue }
             let detail = NSAttributedString(
                 string: result.item.detail,
-                attributes: [.font: detailFont, .foregroundColor: nsColor(palette.foreground, alpha: 0.55)])
+                attributes: [.font: detailFont, .foregroundColor: detailColor])
             let size = detail.size()
             detail.draw(at: NSPoint(x: rect.maxX - 12 - size.width, y: rect.minY + 7))
         }

@@ -623,6 +623,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                   mouseReporting: t.modes.mouse != .none,
                                                   hasMarks: t.shellEmitsPromptMarks)
                 ? t.visibleBlocks(rows: t.rows) : []
+            // The three block colours, once per frame. `readable` picks between a colour and its
+            // bright variant by contrast against the background -- a handful of Lab conversions --
+            // and evaluating it per block, per frame, put that on the render path for nothing: the
+            // palette cannot change between two blocks of the same frame.
+            let failedColor = t.palette.readable(1)
+            let runningColor = t.palette.readable(3)
+            let doneColor = t.palette.readable(2)
             spines = blocks.compactMap { block -> (rows: Range<Int>, color: RGB)? in
                 // The prompt you are typing at has not run anything; the gutter already decided a
                 // running command draws nothing, and a spine that says "in progress" beside an idle
@@ -631,8 +638,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 let placed = block.visibleRows.compactMap { screenRow($0 + max(0, t.viewportTopRow)) }
                 guard let first = placed.min(), let last = placed.max() else { return nil }
                 return (rows: first..<(last + 1),
-                        color: block.failed ? t.palette.readable(1)
-                             : (block.isRunning ? t.palette.readable(3) : t.palette.readable(2)))
+                        color: block.failed ? failedColor : (block.isRunning ? runningColor : doneColor))
             }
             // A summary only where the command it describes is on screen, and only when it has
             // something to say -- `exit 0` on a command that took no time is not news.
@@ -641,7 +647,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 let text = block.summary()
                 guard !text.isEmpty else { return nil }
                 return (row: row, text: text,
-                        color: block.failed ? t.palette.readable(1) : t.palette.noteForeground)
+                        color: block.failed ? failedColor : t.palette.noteForeground)
             }
             // The summary already carries the duration, and both draw right-aligned on the command's
             // row: left alone they paint the same glyphs twice in two colours, on the failure case
@@ -1344,16 +1350,52 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         guard let bar = searchBar else { return }
         bar.removeFromSuperview()
         searchBar = nil
-        selectionBeforeSearch = nil
+        // The highlights and the selection go with the bar. Leaving them behind stranded a pane in
+        // another tab painted with matches and holding a selection the user never made, with no
+        // way to clear either: ⎋ reaches the bar, and the bar is somewhere else now.
+        clearSearchState()
         markDirty()
     }
 
-    func openSearch(query: String = "", allTabs: Bool = false) {
+    /// Drops search highlights and puts the selection back, without touching the bar. What
+    /// `closeSearch` does to the buffer, for the paths that close the bar some other way.
+    func clearSearchState() {
+        searchSession.clear()
+        let restored = selectionBeforeSearch
+        selectionBeforeSearch = nil
+        session.withTerminal { t in
+            if let restored {
+                _ = selectionController.replace(with: restored, in: t)
+            } else {
+                _ = selectionController.clear()
+            }
+        }
+    }
+
+    /// Clears what a cross-tab search left on a pane that no longer has the bar: the highlights,
+    /// and the selection it made around the hit it jumped to.
+    func clearSearchResidue() {
+        guard searchBar == nil, !searchSession.isEmpty || selection != nil else { return }
+        clearSearchState()
+        markDirty()
+    }
+
+    /// Puts the readout on this pane's bar, for a cross-tab jump whose position was computed
+    /// before the bar arrived here.
+    func setSearchReadout(_ text: String) {
+        searchBar?.setReadout(text)
+    }
+
+    /// `capturingSelection` is false when the bar is being *moved* here from another pane rather
+    /// than opened by the user. What it captures is "the selection to put back when the search
+    /// ends" -- and on a handover the only selection there is is the one the search itself just
+    /// made, so capturing it made closing the search restore the highlight it was clearing.
+    func openSearch(query: String = "", allTabs: Bool = false, capturingSelection: Bool = true) {
         if let bar = searchBar {
             bar.focusField()
             return
         }
-        selectionBeforeSearch = selection
+        selectionBeforeSearch = capturingSelection ? selection : nil
         let bar = SearchBarView(palette: Pane.resolvedPalette(for: config))
         bar.onQueryChange = { [weak self] text in self?.searchQueryChanged(text) }
         bar.onStep = { [weak self] forward in _ = self?.stepSearch(forward: forward) }
@@ -1373,16 +1415,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         guard let bar = searchBar else { return }
         bar.removeFromSuperview()
         searchBar = nil
-        searchSession.clear()
-        let restored = selectionBeforeSearch
-        selectionBeforeSearch = nil
-        session.withTerminal { t in
-            if let restored {
-                _ = selectionController.replace(with: restored, in: t)
-            } else {
-                _ = selectionController.clear()
-            }
-        }
+        clearSearchState()
+        // Closing the bar ends the cross-tab search too, and clears whatever it left on the panes
+        // it visited. Without this the hit list outlived the bar, and the next ⌘G sent the user to
+        // a tab nobody was searching.
+        globalSearchOwner?.endGlobalSearch()
         window?.makeFirstResponder(self)
         markDirty()
     }

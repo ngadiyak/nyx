@@ -57,15 +57,18 @@ final class PromptGutterView: NSView {
         guard cellHeight > 0, bounds.width > 0 else { return }
         let inset: CGFloat = 1
         let width = max(1, bounds.width - inset * 2)
+        // The theme's own green and red, so the gutter matches whatever the shell prints, in
+        // whichever of the normal and bright variants reads on this background. Both resolved
+        // before the loop: `readable` compares two contrast ratios, which is not much, and is not
+        // worth doing once per visible row per frame.
+        let failedColor = nsColor(palette.readable(1), alpha: 0.9)
+        let succeededColor = nsColor(palette.readable(2), alpha: 0.9)
         for row in marks.indices {
             guard let mark = mark(at: row) else { continue }
             let y = topPadding + CGFloat(row) * cellHeight
             let rect = NSRect(x: inset, y: y + 1, width: width, height: max(1, cellHeight - 2))
             guard rect.intersects(dirtyRect) else { continue }
-            // The theme's own green and red, so the gutter matches whatever the shell prints, in
-            // whichever of the normal and bright variants reads on this background.
-            let color = mark == .failed ? palette.readable(1) : palette.readable(2)
-            nsColor(color, alpha: 0.9).setFill()
+            (mark == .failed ? failedColor : succeededColor).setFill()
             NSBezierPath(roundedRect: rect, xRadius: width / 2, yRadius: width / 2).fill()
         }
     }

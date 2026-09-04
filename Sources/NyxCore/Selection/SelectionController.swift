@@ -93,16 +93,32 @@ public struct SelectionController {
         let dropped = terminal.evictedRows - evictedRows
         guard dropped > 0 else { return false }
         evictedRows = terminal.evictedRows
-        anchor = anchor.map { AbsolutePosition(row: max(0, $0.row - dropped), col: $0.col) }
+        let mode = selection?.mode ?? self.mode
+        let shift = Self.shift(by: dropped, mode: mode)
+        // The drag origin moves by the same rule as the endpoints. Rebasing it differently made
+        // the two disagree, and the next drag then expanded from a column the user never pressed.
+        anchor = anchor.map(shift)
         guard let current = selection else { return false }
         guard current.end.row - dropped >= 0 else { return clear() }
-
-        let shift = { (p: AbsolutePosition) -> AbsolutePosition in
-            p.row - dropped >= 0 ? AbsolutePosition(row: p.row - dropped, col: p.col)
-                                 : AbsolutePosition(row: 0, col: 0)
-        }
         return set(Selection(anchor: shift(current.anchor), head: shift(current.head),
                              mode: current.mode))
+    }
+
+    /// How one endpoint moves when the ring drops `dropped` rows off the top.
+    ///
+    /// An endpoint whose row survives keeps both coordinates. One whose row has gone is clamped to
+    /// the top of the buffer -- and what "the top" means depends on the mode. A character or word
+    /// selection runs to the end of every row but its last, so its surviving start is the start of
+    /// row 0. A **block** selection uses the same column span on every row it covers, so zeroing
+    /// that endpoint's column widens the whole block: a five-column block became fifteen columns
+    /// wide, and copying it copied three times what was highlighted.
+    private static func shift(by dropped: Int, mode: SelectionMode) -> (AbsolutePosition) -> AbsolutePosition {
+        { position in
+            guard position.row - dropped < 0 else {
+                return AbsolutePosition(row: position.row - dropped, col: position.col)
+            }
+            return AbsolutePosition(row: 0, col: mode == .block ? position.col : 0)
+        }
     }
 
     /// Drops the selection and any drag in progress. Typing does this.

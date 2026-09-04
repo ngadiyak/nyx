@@ -108,6 +108,10 @@ final class TabBarView: NSView {
         /// no `+`, the feature has no entry point at all and can only be found by reading the
         /// config file, which is exactly the problem it exists to solve.
         case addQuickAction
+        /// The buttons this bar is too narrow to show. Appears only when there are some, and is
+        /// pinned beside the `+`: a configured button that is simply not there, with nothing
+        /// saying so, reads as a button that stopped working.
+        case overflow
     }
 
     private static let builtInButtonWidth: Double = 26
@@ -117,7 +121,7 @@ final class TabBarView: NSView {
         leadingButtons = [.tabList] + quickActions.indices.map { .quick($0) } + [.addQuickAction]
         leadingWidths = leadingButtons.map { button in
             switch button {
-            case .newTab, .tabList, .addQuickAction:
+            case .newTab, .tabList, .addQuickAction, .overflow:
                 return TabBarView.builtInButtonWidth
             case .quick(let index):
                 let name = quickActions[index].name as NSString
@@ -128,19 +132,52 @@ final class TabBarView: NSView {
         }
     }
 
+    /// The bar as it is actually laid out: which buttons, how wide, and how many of them are
+    /// pinned. Everything that draws, hit-tests or measures the leading buttons goes through this,
+    /// so a click always lands on the button that was drawn there.
+    ///
+    /// Two passes, because whether the overflow chip is needed depends on the layout and the
+    /// layout depends on the chip. The first pass pins the `+`; if it dropped anything, the second
+    /// makes room for a chip beside it and pins both.
+    private var resolvedLeading: (buttons: [LeadingButton], widths: [Double], pinnedTail: Int) {
+        let first = layout(widths: leadingWidths, pinnedTail: 1)
+        guard first.count < leadingButtons.count else {
+            return (leadingButtons, leadingWidths, 1)
+        }
+        var buttons = leadingButtons
+        var widths = leadingWidths
+        buttons.insert(.overflow, at: buttons.count - 1)
+        widths.insert(TabBarView.builtInButtonWidth, at: widths.count - 1)
+        return (buttons, widths, 2)
+    }
+
+    private func layout(widths: [Double], pinnedTail: Int) -> [(index: Int, rect: PaneRect)] {
+        TabBarGeometry.leadingLayout(buttonWidths: widths, barWidth: Double(bounds.width),
+                                     barHeight: Double(bounds.height), slotCount: slots.count,
+                                     headerHeight: Double(headerHeight), pinnedTail: pinnedTail,
+                                     metrics: TabBarView.metrics)
+    }
+
     /// The buttons that actually fit, each with the button it belongs to. `TabBarGeometry` drops
     /// the overflow rather than squeezing the tabs, so this is shorter than `leadingButtons` on a
-    /// narrow bar with many tabs -- and the `+` is pinned, so what gets dropped is a quick action
-    /// and never the control that adds one.
+    /// narrow bar with many tabs -- and the tail is pinned, so what gets dropped is a quick action,
+    /// never the control that adds one nor the chip that reaches the dropped ones.
     private var fittedLeading: [(button: LeadingButton, rect: NSRect)] {
-        TabBarGeometry.leadingLayout(buttonWidths: leadingWidths, barWidth: Double(bounds.width),
-                                     barHeight: Double(bounds.height), slotCount: slots.count,
-                                     headerHeight: Double(headerHeight), pinLast: true,
-                                     metrics: TabBarView.metrics)
+        let resolved = resolvedLeading
+        return layout(widths: resolved.widths, pinnedTail: resolved.pinnedTail)
             .compactMap { laid in
-                guard leadingButtons.indices.contains(laid.index) else { return nil }
-                return (leadingButtons[laid.index], ns(laid.rect))
+                guard resolved.buttons.indices.contains(laid.index) else { return nil }
+                return (resolved.buttons[laid.index], ns(laid.rect))
             }
+    }
+
+    /// The quick actions the bar could not show, by their index in the configured list.
+    private var hiddenQuickActions: [Int] {
+        var shown: Set<Int> = []
+        for (button, _) in fittedLeading {
+            if case .quick(let index) = button { shown.insert(index) }
+        }
+        return quickActions.indices.filter { !shown.contains($0) }
     }
 
     /// The `+` sits after the last tab, where every browser and every other tabbed application
@@ -154,10 +191,12 @@ final class TabBarView: NSView {
     }
 
     private var leadingWidth: Double {
-        TabBarGeometry.leadingWidth(buttonWidths: leadingWidths, barWidth: Double(bounds.width),
-                                    barHeight: Double(bounds.height), slotCount: slots.count,
-                                    headerHeight: Double(headerHeight), pinLast: true,
-                                    metrics: TabBarView.metrics)
+        let resolved = resolvedLeading
+        return TabBarGeometry.leadingWidth(buttonWidths: resolved.widths, barWidth: Double(bounds.width),
+                                           barHeight: Double(bounds.height), slotCount: slots.count,
+                                           headerHeight: Double(headerHeight),
+                                           pinnedTail: resolved.pinnedTail,
+                                           metrics: TabBarView.metrics)
     }
 
     /// The bar is drawn in the terminal's own palette, so it belongs to the theme rather than to
@@ -231,12 +270,14 @@ final class TabBarView: NSView {
     }
 
     private func hit(at point: NSPoint) -> TabBarGeometry.Hit? {
-        TabBarGeometry.hit(atX: Double(point.x), y: Double(point.y), slots: slots,
-                           barWidth: Double(bounds.width), barHeight: Double(bounds.height),
-                           headerHeight: Double(headerHeight),
-                           trailingWidth: TabBarView.builtInButtonWidth,
-                           leadingWidths: leadingWidths, pinLastLeading: true,
-                           metrics: TabBarView.metrics)
+        let resolved = resolvedLeading
+        return TabBarGeometry.hit(atX: Double(point.x), y: Double(point.y), slots: slots,
+                                  barWidth: Double(bounds.width), barHeight: Double(bounds.height),
+                                  headerHeight: Double(headerHeight),
+                                  trailingWidth: TabBarView.builtInButtonWidth,
+                                  leadingWidths: resolved.widths,
+                                  pinnedLeadingTail: resolved.pinnedTail,
+                                  metrics: TabBarView.metrics)
     }
 
     /// A group's colour, as the palette holds it. The bright variant where that reads better on the
@@ -294,13 +335,15 @@ final class TabBarView: NSView {
             guard let group = grouping.group(withID: id) else { return nil }
             return TabBarLabels.group(named: group.name, isCollapsed: group.isCollapsed)
         case .leadingButton(let index):
-            guard leadingButtons.indices.contains(index) else { return nil }
-            switch leadingButtons[index] {
+            let buttons = resolvedLeading.buttons
+            guard buttons.indices.contains(index) else { return nil }
+            switch buttons[index] {
             case .tabList: return TabBarLabels.tabList
             case .addQuickAction: return TabBarLabels.addQuickAction
             case .quick(let action):
                 guard quickActions.indices.contains(action) else { return nil }
                 return quickActionLabel(action, forAccessibility: false)
+            case .overflow: return TabBarLabels.moreQuickActions(count: hiddenQuickActions.count)
             case .newTab: return TabBarLabels.newTab
             }
         case nil:
@@ -351,6 +394,11 @@ final class TabBarView: NSView {
             case .addQuickAction:
                 children.append(element(TabBarLabels.addQuickAction, .button, frame) { [weak self] in
                     self?.onAddQuickAction?()
+                })
+            case .overflow:
+                let label = TabBarLabels.moreQuickActions(count: hiddenQuickActions.count)
+                children.append(element(label, .button, frame) { [weak self] in
+                    self?.showOverflowMenu()
                 })
             case .quick(let action):
                 guard quickActions.indices.contains(action) else { continue }
@@ -413,13 +461,37 @@ final class TabBarView: NSView {
     }
 
     private func pressLeadingButton(_ index: Int) {
-        guard leadingButtons.indices.contains(index) else { return }
-        switch leadingButtons[index] {
+        let buttons = resolvedLeading.buttons
+        guard buttons.indices.contains(index) else { return }
+        switch buttons[index] {
         case .newTab: onNewTab?()
         case .tabList: onShowTabList?()
         case .quick(let action): onQuickAction?(action)
         case .addQuickAction: onAddQuickAction?()
+        case .overflow: showOverflowMenu()
         }
+    }
+
+    /// The buttons that did not fit, as a menu. Same commands, same right-click menu on each entry
+    /// as the chips have; the bar being narrow changes where they are, not what they do.
+    private func showOverflowMenu() {
+        let hidden = hiddenQuickActions
+        guard !hidden.isEmpty, let event = NSApp.currentEvent else { return }
+        let menu = NSMenu()
+        for index in hidden {
+            let action = quickActions[index]
+            let item = NSMenuItem(title: action.name, action: #selector(pressHiddenQuickAction(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.toolTip = action.command
+            item.tag = index
+            menu.addItem(item)
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func pressHiddenQuickAction(_ sender: NSMenuItem) {
+        onQuickAction?(sender.tag)
     }
 
     /// A right-click anywhere on a tab -- its close button included, where a context menu is more
@@ -429,7 +501,8 @@ final class TabBarView: NSView {
         case .close(let index), .select(let index): onContextMenu?(index, event)
         case .expandGroup(let id), .groupHeader(let id): onGroupContextMenu?(id, event)
         case .leadingButton(let index):
-            if case .quick(let action)? = leadingButtons.indices.contains(index) ? leadingButtons[index] : nil {
+            let buttons = resolvedLeading.buttons
+            if case .quick(let action)? = buttons.indices.contains(index) ? buttons[index] : nil {
                 onQuickActionContextMenu?(action, event)
             }
         case .newTab: break
@@ -473,6 +546,7 @@ final class TabBarView: NSView {
             case .tabList: drawSymbol("list.bullet", fallback: "\u{2261}", in: frame)
             case .quick(let action): drawQuickActionButton(action, in: frame)
             case .addQuickAction: drawAddQuickActionButton(in: frame)
+            case .overflow: drawOverflowButton(in: frame)
             }
         }
         if let trailing = trailingRect { drawPlus(in: trailing) }
@@ -506,6 +580,18 @@ final class TabBarView: NSView {
     ///
     /// There is already a `+` at the far left for a new tab; a second identical one a few pixels
     /// away is a coin toss. Shaped like the buttons it makes, it reads as "add one of these".
+    /// The chip that stands for the buttons there was no room for. A count rather than an
+    /// ellipsis: "2" says how much is missing, which is the question a missing button raises.
+    private func drawOverflowButton(in frame: NSRect) {
+        let hidden = hiddenQuickActions.count
+        let pill = NSBezierPath(roundedRect: frame.insetBy(dx: 3, dy: 5), xRadius: 5, yRadius: 5)
+        dimTextColor.withAlphaComponent(0.35).setStroke()
+        pill.lineWidth = 1
+        pill.stroke()
+        drawLabel(hidden > 9 ? "9+" : "\(hidden)", in: frame, color: dimTextColor,
+                  font: TabBarView.quickActionFont, centred: true)
+    }
+
     private func drawAddQuickActionButton(in frame: NSRect) {
         let pill = NSBezierPath(roundedRect: frame.insetBy(dx: 3, dy: 5), xRadius: 5, yRadius: 5)
         dimTextColor.withAlphaComponent(0.35).setStroke()

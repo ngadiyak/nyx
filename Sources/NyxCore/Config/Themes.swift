@@ -12,25 +12,38 @@ public enum Themes {
     /// orange, which was the prettiest colour in the theme and the wrong colour to reach for when
     /// something asks for bright yellow -- the search highlight, which is built from that slot,
     /// came out orange in this theme and yellow in every other.
+    ///
+    /// Bright blue is `93B4FF` rather than the `A9C1FF` a first pass produced: that was 11.4 from
+    /// the foreground, close enough that a line of bright blue read as a line of ordinary text.
     private static let nyxDark = Palette(
         ansi: [0x1E2129, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xA9B1D6,
-               0x414868, 0xFF9EAE, 0xB9F27C, 0xFFC777, 0xA9C1FF, 0xD2B4FF, 0xB4E7FF, 0xD5DCFF].map { RGB(hex: $0) },
+               0x414868, 0xFF9EAE, 0xB9F27C, 0xFFC777, 0x93B4FF, 0xD2B4FF, 0xB4E7FF, 0xD5DCFF].map { RGB(hex: $0) },
         foreground: RGB(hex: 0xC0CAF5),
         background: RGB(hex: 0x1A1B26),
         cursor: RGB(hex: 0xC0CAF5)
     )
 
-    /// Light counterpart with the same hues as `nyx-dark`, darkened just enough to read on a
-    /// light background.
+    /// Light counterpart with the same hues as `nyx-dark`.
     ///
-    /// Black was the same colour as bright white here -- both the foreground -- so anything
-    /// printing black on bright white printed nothing at all; black is now the darkest colour in
-    /// the theme and bright white stays the foreground. White and bright yellow were 2.2:1 and
-    /// 2.7:1 against the page, which is a colour you can see is there and cannot read; both are
-    /// darkened to clear 3.
+    /// Three separate defects, all of them the same mistake -- a light theme built by taking a dark
+    /// theme's rules and darkening every slot:
+    ///
+    /// - Black was the same colour as bright white (both the foreground), so anything printing
+    ///   black on bright white printed nothing. Black is now the darkest colour in the theme.
+    /// - White and bright yellow were 2.2:1 and 2.7:1 against the page: colours you can see are
+    ///   there and cannot read.
+    /// - **Every** bright variant was *less* legible than its normal -- red 5.35:1 → 3.79:1, cyan
+    ///   7.21:1 → 4.26:1 -- which is precisely the defect diagnosed and fixed in `nyx-dark`. On a
+    ///   dark theme "bright" means more light; on a light one, more light means *less* contrast,
+    ///   so the brights here are the same hue with more chroma and less lightness. Bright is
+    ///   emphasis in both directions, and the rule that says so is written against contrast rather
+    ///   than luminance so it holds in both.
+    ///
+    /// Cyan moved from `0F4B6E` to `0E5A70` for the same reason bright blue moved in `nyx-dark`:
+    /// at 13.2 from the foreground it was a navy that read as ordinary text.
     private static let nyxLight = Palette(
-        ansi: [0x101119, 0x8C4351, 0x485E30, 0x8F5E15, 0x34548A, 0x5A4A78, 0x0F4B6E, 0x767B8B,
-               0x545A6E, 0xC64343, 0x587539, 0x97731F, 0x2959AA, 0x7847BD, 0x007197, 0x343B58].map { RGB(hex: $0) },
+        ansi: [0x101119, 0x8C4351, 0x485E30, 0x8F5E15, 0x34548A, 0x5A4A78, 0x0E5A70, 0x767B8B,
+               0x545A6E, 0x7F2D40, 0x344E1A, 0x7C4900, 0x104683, 0x49396C, 0x004861, 0x343B58].map { RGB(hex: $0) },
         foreground: RGB(hex: 0x343B58),
         background: RGB(hex: 0xE1E2E7),
         cursor: RGB(hex: 0x34548A)
@@ -48,6 +61,23 @@ public enum Themes {
     /// untouched. The foreground moves from base0 to base1, Solarized's own emphasised text, for
     /// 5.6:1 rather than 4.8:1 -- the theme is meant to be quiet, not unreadable, and every colour
     /// Nyx derives is bounded by how much contrast the foreground has to give away.
+    ///
+    /// Every deviation from the canonical mapping, so nobody has to diff it:
+    ///
+    ///     slot  8 bright black    002B36 -> 586E75   (was the background exactly, 1.00:1)
+    ///     slot 10 bright green    586E75 -> 9EB300   (was base01, a grey)
+    ///     slot 11 bright yellow   657B83 -> D3A400   (was base00, a grey)
+    ///     slot 12 bright blue     839496 -> 4FA6E8   (was base0 -- the foreground itself)
+    ///     slot 13 bright magenta  6C71C4 -> 8A8FDC   (violet, lifted above magenta)
+    ///     slot 14 bright cyan     93A1A1 -> 3FBFB4   (was base1, a grey)
+    ///     foreground              839496 -> 93A1A1   (base0 -> base1)
+    ///     selection               073642 -> 0E4A57   (base02 is 5 units from base03)
+    ///
+    /// This is a real deviation under an upstream name and it is deliberate: the alternative is
+    /// shipping a theme whose bright black cannot be seen, which is the one thing
+    /// `noAnsiColourIsInvisibleOnItsOwnBackground` exists to forbid. Carving an exception into that
+    /// rule for one named theme would leave the rule enforcing nothing. Slots 0..7, 9, 15 and the
+    /// background are untouched Solarized.
     private static let solarizedDark = Palette(
         ansi: [0x073642, 0xDC322F, 0x859900, 0xB58900, 0x268BD2, 0xD33682, 0x2AA198, 0xEEE8D5,
                0x586E75, 0xCB4B16, 0x9EB300, 0xD3A400, 0x4FA6E8, 0x8A8FDC, 0x3FBFB4, 0xFDF6E3].map { RGB(hex: $0) },

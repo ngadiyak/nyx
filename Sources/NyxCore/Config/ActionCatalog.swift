@@ -40,6 +40,14 @@ public extension TerminalAction {
         case .fontReset: return "Actual Size"
         case .openConfig: return "Settings..."
         case .reloadConfig: return "Reload Settings"
+        case .previousPrompt: return "Previous Prompt"
+        case .nextPrompt: return "Next Prompt"
+        case .selectCommandOutput: return "Select Command Output"
+        case .copyCommandOutput: return "Copy Last Command Output"
+        case .find: return "Find..."
+        case .findNext: return "Find Next"
+        case .findPrevious: return "Find Previous"
+        case .commandPalette: return "Command Palette"
         }
     }
 
@@ -77,7 +85,13 @@ public enum ActionCatalog {
         ]),
         Section(title: "Edit", groups: [
             Group([.copy, .paste]),
+            Group([.find, .findNext, .findPrevious]),
             Group([.clearScreen]),
+        ]),
+        Section(title: "Go", groups: [
+            Group([.commandPalette]),
+            Group([.previousPrompt, .nextPrompt]),
+            Group([.selectCommandOutput, .copyCommandOutput]),
         ]),
         Section(title: "View", groups: [
             Group([.fontBigger, .fontSmaller, .fontReset]),

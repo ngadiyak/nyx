@@ -417,6 +417,14 @@ extension TabController: ActionTarget {
         case .growDown: panes?.resizeFocused(.down)
         case .toggleZoom: panes?.toggleZoom()
 
+        case .previousPrompt: if focusedPane?.jumpToPrompt(forward: false) != true { NSSound.beep() }
+        case .nextPrompt: if focusedPane?.jumpToPrompt(forward: true) != true { NSSound.beep() }
+        case .selectCommandOutput: if focusedPane?.selectCommandOutput() != true { NSSound.beep() }
+        case .copyCommandOutput: if focusedPane?.copyLastCommandOutput() != true { NSSound.beep() }
+        case .find, .findNext, .findPrevious, .commandPalette:
+            // Wired up with the search bar and the palette overlay.
+            NSSound.beep()
+
         case .copy: focusedPane?.copy(nil)
         case .paste: focusedPane?.paste(nil)
         case .clearScreen: focusedPane?.clearScreen()
@@ -437,6 +445,9 @@ extension TabController: ActionTarget {
             return TabStrip.index(forCommandNumber: number, tabCount: tabs.count) != nil
         case .copy:
             return focusedPane?.hasSelection ?? false
+        case .previousPrompt, .nextPrompt, .selectCommandOutput, .copyCommandOutput:
+            // A shell with no integration emits no marks, and these do nothing without them.
+            return focusedPane?.hasPromptMarks ?? false
         case .focusLeft, .focusRight, .focusUp, .focusDown,
              .growLeft, .growRight, .growUp, .growDown, .toggleZoom:
             return (panes?.paneCount ?? 0) > 1

@@ -100,6 +100,18 @@ public struct SelectionController {
                              mode: .character))
     }
 
+    /// Replaces the selection outright -- used where the selection comes from something other than
+    /// the pointer: a command's output region, or a search match.
+    ///
+    /// Captures the buffer generation like any other selection, so a `clear` still drops it rather
+    /// than leaving it pointing at whatever now occupies those rows.
+    public mutating func replace(with selection: Selection, in terminal: Terminal) -> Bool {
+        generation = terminal.scrollbackGeneration
+        anchor = selection.anchor
+        isDragging = false
+        return set(selection)
+    }
+
     private mutating func set(_ new: Selection) -> Bool {
         guard selection != new else { return false }
         selection = new
@@ -126,10 +138,20 @@ public struct SelectionController {
         }
     }
 
-    /// The word around a position, or the bare cell when there is no word there, so that a
-    /// double-click on a blank selects nothing instead of swallowing the run of blanks around it.
+    /// What a double-click takes: the structured thing under the pointer when there is one -- a
+    /// path, a URL, a `file:line`, a commit hash -- and the plain word otherwise.
+    ///
+    /// Selecting the whole path rather than the fragment between two slashes is the difference the
+    /// feature exists for, and it uses the same table `⌘`-click uses to decide what is openable, so
+    /// the two gestures cannot disagree about where a thing ends.
+    ///
+    /// Falls back to the bare cell when there is nothing there, so a double-click on a blank
+    /// selects nothing rather than swallowing the run of blanks around it.
     private static func wordSpan(_ p: AbsolutePosition, in terminal: Terminal,
                                  separators: Set<Character>) -> Range<Int> {
-        terminal.wordRange(at: p, separators: separators) ?? p.col..<p.col
+        if let token = terminal.token(atAbsoluteRow: p.row, column: p.col, separators: separators) {
+            return token.columns
+        }
+        return terminal.wordRange(at: p, separators: separators) ?? p.col..<p.col
     }
 }

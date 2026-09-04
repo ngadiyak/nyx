@@ -151,4 +151,18 @@ public extension Terminal {
                          head: AbsolutePosition(row: rows.upperBound - 1, col: cols),
                          mode: .character)
     }
+
+    /// Scrolls so that `row` sits a little below the top of the viewport, and reports whether the
+    /// viewport actually moved.
+    ///
+    /// A little below rather than flush at the top: jumping to a prompt is a request to read what
+    /// that command *did*, and a prompt pinned to the very first line puts its output entirely
+    /// below the fold.
+    func scrollToAbsoluteRow(_ row: Int, margin: Int = 1) -> Bool {
+        let target = max(0, row - margin)
+        let offset = max(0, min(scrollback.count, scrollback.count - target))
+        guard offset != viewportOffset else { return false }
+        viewportOffset = offset
+        return true
+    }
 }

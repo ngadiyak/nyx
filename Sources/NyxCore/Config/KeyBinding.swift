@@ -12,6 +12,10 @@ public enum TerminalAction: String, Equatable, CaseIterable {
     case copy = "copy", paste = "paste", clearScreen = "clear_screen"
     case fontBigger = "font_bigger", fontSmaller = "font_smaller", fontReset = "font_reset"
     case openConfig = "open_config", reloadConfig = "reload_config"
+    case previousPrompt = "previous_prompt", nextPrompt = "next_prompt"
+    case selectCommandOutput = "select_command_output", copyCommandOutput = "copy_command_output"
+    case find = "find", findNext = "find_next", findPrevious = "find_previous"
+    case commandPalette = "command_palette"
 }
 
 /// A parsed `modifier+modifier+key=action` line from the config's `keybind` setting.
@@ -129,5 +133,11 @@ public struct KeyBinding: Equatable {
         KeyBinding(key: .char("k"), modifiers: [.cmd], action: .clearScreen),
         KeyBinding(key: .char(","), modifiers: [.cmd], action: .openConfig),
         KeyBinding(key: .char(","), modifiers: [.cmd, .shift], action: .reloadConfig),
+        KeyBinding(key: .up, modifiers: [.cmd], action: .previousPrompt),
+        KeyBinding(key: .down, modifiers: [.cmd], action: .nextPrompt),
+        KeyBinding(key: .char("f"), modifiers: [.cmd], action: .find),
+        KeyBinding(key: .char("g"), modifiers: [.cmd], action: .findNext),
+        KeyBinding(key: .char("g"), modifiers: [.cmd, .shift], action: .findPrevious),
+        KeyBinding(key: .char("p"), modifiers: [.cmd, .shift], action: .commandPalette),
     ]
 }

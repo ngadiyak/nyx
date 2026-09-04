@@ -849,6 +849,59 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return true
     }
 
+    // MARK: - Shell integration
+
+    /// Whether the shell in this pane emits OSC 133 marks at all. Without them the prompt-jumping
+    /// actions have nothing to jump between, and the menu greys them out rather than beeping.
+    var hasPromptMarks: Bool {
+        session.withTerminal { !$0.promptRows.isEmpty }
+    }
+
+
+    /// Moves the viewport to the prompt above or below what is on screen, and returns whether it
+    /// moved -- the caller beeps when there is nowhere to go rather than doing nothing silently.
+    @discardableResult
+    func jumpToPrompt(forward: Bool) -> Bool {
+        let moved: Bool = session.withTerminal { t in
+            let from = t.viewportTopRow
+            guard let row = forward ? t.nextPrompt(after: from) : t.previousPrompt(before: from)
+            else { return false }
+            _ = t.scrollToAbsoluteRow(row)
+            return true
+        }
+        if moved { markDirty() }
+        return moved
+    }
+
+    /// Selects the output of the command the viewport is showing.
+    @discardableResult
+    func selectCommandOutput() -> Bool {
+        let selection: Selection? = session.withTerminal { t in
+            guard let region = t.command(containingAbsoluteRow: t.viewportTopRow) ?? t.lastFinishedCommand
+            else { return nil }
+            return t.selectionForOutput(of: region)
+        }
+        guard let selection else { return false }
+        session.withTerminal { t in _ = selectionController.replace(with: selection, in: t) }
+        markDirty()
+        return true
+    }
+
+    /// Copies the output of the last command that finished, without disturbing the selection --
+    /// the point is to grab it and paste it somewhere, not to change what is highlighted.
+    @discardableResult
+    func copyLastCommandOutput() -> Bool {
+        let text: String = session.withTerminal { t in
+            guard let region = t.lastFinishedCommand,
+                  let selection = t.selectionForOutput(of: region) else { return "" }
+            return t.text(in: selection)
+        }
+        guard !text.isEmpty else { return false }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        return true
+    }
+
     /// Whether ⌘C has anything to copy, so the menu item can grey out.
     var hasSelection: Bool {
         guard let selection else { return false }

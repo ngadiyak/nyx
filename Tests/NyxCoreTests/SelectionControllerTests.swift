@@ -277,3 +277,37 @@ private func wordTerminal() -> Terminal {
     _ = c.selectAll(in: t)
     #expect(!c.isDragging)
 }
+
+// MARK: - Smart selection
+
+/// Double-clicking inside a path takes the whole path, not the fragment between two slashes --
+/// which is what the plain word rule gives, since `/` is a word separator.
+@Test func doubleClickTakesAWholePath() {
+    let t = makeTerminal(cols: 60, rows: 3).run("error in /Users/nik/projects/nyx/README.md today")
+    var c = SelectionController()
+    _ = c.begin(at: pos(0, 20), clickCount: 2, block: false, in: t, separators: Set(" ()[]{}'\"`,;:|<>"))
+    #expect(t.text(in: try! #require(c.selection)) == "/Users/nik/projects/nyx/README.md")
+}
+
+@Test func doubleClickTakesAWholeUrlWithoutTrailingPunctuation() {
+    let t = makeTerminal(cols: 60, rows: 3).run("see https://example.com/a/b, then stop")
+    var c = SelectionController()
+    _ = c.begin(at: pos(0, 10), clickCount: 2, block: false, in: t, separators: Set(" ()[]{}'\"`,;:|<>"))
+    #expect(t.text(in: try! #require(c.selection)) == "https://example.com/a/b")
+}
+
+/// The compiler location, which is the case this is most useful for.
+@Test func doubleClickTakesAFileLineColumn() {
+    let t = makeTerminal(cols: 60, rows: 3).run("Sources/App/Main.swift:42:7: error: bad")
+    var c = SelectionController()
+    _ = c.begin(at: pos(0, 4), clickCount: 2, block: false, in: t, separators: Set(" ()[]{}'\"`,;:|<>"))
+    #expect(t.text(in: try! #require(c.selection)) == "Sources/App/Main.swift:42:7")
+}
+
+/// Ordinary prose must keep behaving the way it always did.
+@Test func doubleClickOnProseStillTakesJustTheWord() {
+    let t = makeTerminal(cols: 40, rows: 3).run("the quick brown fox")
+    var c = SelectionController()
+    _ = c.begin(at: pos(0, 5), clickCount: 2, block: false, in: t, separators: Set(" ()[]{}'\"`,;:|<>"))
+    #expect(t.text(in: try! #require(c.selection)) == "quick")
+}

@@ -117,7 +117,10 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         host = RemoteHost(link: connection, identity: identity, paired: {
             pairedBox.devices
         }, audit: { [weak self] event in
-            self?.appendAudit(event)
+            // Hopped to main rather than appended where it is raised: the host raises these on its
+            // own queue with the ids it has, and the names §5.5 promises the file holds -- the
+            // paired list and the titles of the open panes -- are main-thread state.
+            DispatchQueue.main.async { self?.appendAudit(event) }
         }, snapshotLines: config.remoteSnapshotLines)
         client = RemoteClient(link: connection, identity: identity, paired: { pairedBox.devices })
         // Every tab that is already open, before the socket is: the relay refuses an `attached` for
@@ -145,6 +148,7 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         // which is the right answer -- there is nothing left to unpublish from.
         host = nil
         client = nil
+        sessionTitles = [:]
         catalogue = RemoteCatalogue()
         catalogue.setPaired(paired.namesByID)
     }
@@ -405,18 +409,46 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
 
     // MARK: - The audit log
 
+    /// The title of every session this Mac has published in this run, by base64url session id.
+    ///
+    /// Entries are *not* dropped when a pane closes. `session ended` is audited from the host's
+    /// queue after `unpublish` has already taken the publication out of the list, so a map that
+    /// forgot the title at that moment would write `session ended  GntMPWQx` -- the one line in
+    /// the file about a session that no longer exists to be looked up anywhere else. Cleared with
+    /// the rest of the state in `stop()`.
+    private var sessionTitles: [String: String] = [:]
+
+    /// Main thread only, like everything else here. A handful of entries per window.
+    private func refreshSessionTitles() {
+        for entry in publications {
+            guard let publication = entry.value else { continue }
+            let title = publication.box.value.title
+            guard !title.isEmpty else { continue }
+            sessionTitles[RemoteID.base64url(publication.sessionID)] = title
+        }
+    }
+
     /// Appends one line to `~/.config/nyx/remote/audit.log`. Best effort and never reported: a log
     /// that cannot be written must not take the session down with it, and there is no screen this
     /// could be shown on at the moment it happens (the host's user is not looking at anything).
+    ///
+    /// Main thread only: it reads the paired list and the published titles to turn the event's ids
+    /// into the names of §5.5. Only the write itself goes to the audit queue.
     private func appendAudit(_ event: AuditLine.Event) {
-        let line = AuditLine.text(event, at: Date()) + "\n"
+        refreshSessionTitles()
+        let named = AuditNames.naming(event, names: paired.namesByID, titles: sessionTitles)
+        let line = AuditLine.text(named, at: Date()) + "\n"
         let url = RemoteFiles.auditLog(in: RemoteFiles.directory(besideConfigAt: ConfigStore.path))
         auditQueue.async {
             guard let data = line.data(using: .utf8) else { return }
             let manager = FileManager.default
             if !manager.fileExists(atPath: url.path) {
+                // 0700, like the identity's directory: the file names every device that has
+                // attached to this Mac and when, and `createDirectory` applies its attributes only
+                // to a directory it actually creates -- so this is the branch that must carry them.
                 try? manager.createDirectory(at: url.deletingLastPathComponent(),
-                                             withIntermediateDirectories: true)
+                                             withIntermediateDirectories: true,
+                                             attributes: [.posixPermissions: 0o700])
                 try? data.write(to: url)
                 return
             }

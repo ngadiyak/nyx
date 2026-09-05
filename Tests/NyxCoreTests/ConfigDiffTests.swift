@@ -114,3 +114,13 @@ import Testing
         #expect(diff.isEmpty, "expected no diff for \(c)")
     }
 }
+
+@Test func foldSettingsSetOnlyFoldingChanged() {
+    var c = Config.defaults
+    c.foldKeepLines = 5
+    let diff = ConfigDiff(from: .defaults, to: c)
+    #expect(diff.foldingChanged)
+    #expect(!diff.fontChanged && !diff.geometryChanged && !diff.paletteChanged)
+    #expect(!diff.isEmpty)
+    #expect(diff.deferredNotes.isEmpty)
+}

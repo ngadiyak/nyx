@@ -84,11 +84,11 @@ private func session() -> Terminal {
 @Test func foldingHidesTheOutputAndKeepsTheCommand() {
     let t = session()
     var folding = OutputFolding()
-    folding.fold(promptRow: 2)
+    folding.fold(2, .all)
 
     let rows = t.displayRows(in: 0..<14, folding: folding)
     #expect(rows.contains(.row(2)))
-    #expect(rows.contains { if case .fold(2, let hidden) = $0 { return hidden > 1 } else { return false } })
+    #expect(rows.contains { if case .fold(2, let hidden, _) = $0 { return hidden > 1 } else { return false } })
     #expect(!rows.contains(.row(6)))     // a row of the folded output
     #expect(rows.contains(.row(13)))     // the prompt after it is untouched
 }
@@ -96,18 +96,18 @@ private func session() -> Terminal {
 @Test func unfoldingPutsEverythingBack() {
     let t = session()
     var folding = OutputFolding()
-    folding.fold(promptRow: 2)
-    folding.unfold(promptRow: 2)
+    folding.fold(2, .all)
+    folding.unfold(2)
     let rows = t.displayRows(in: 0..<14, folding: folding)
     #expect(rows == (0..<14).map { .row($0) })
 }
 
 @Test func togglingSwitchesBothWays() {
     var folding = OutputFolding()
-    folding.toggle(promptRow: 2)
-    #expect(folding.isFolded(promptRow: 2))
-    folding.toggle(promptRow: 2)
-    #expect(!folding.isFolded(promptRow: 2))
+    folding.toggle(2, keep: 3)
+    #expect(folding.isFolded(2))
+    folding.toggle(2, keep: 3)
+    #expect(!folding.isFolded(2))
 }
 
 /// Folding a command that produced nothing would replace nothing with a placeholder saying nothing
@@ -115,15 +115,17 @@ private func session() -> Terminal {
 @Test func foldingACommandWithNoOutputChangesNothing() {
     let t = session()
     var folding = OutputFolding()
-    folding.fold(promptRow: 13)          // the prompt being typed at
+    folding.fold(3, .all)                // the prompt being typed at, id 3
     let rows = t.displayRows(in: 0..<14, folding: folding)
     #expect(rows == (0..<14).map { .row($0) })
 }
 
-@Test func aFoldOnARowThatIsNotAPromptIsIgnored() {
+/// Folds are keyed by command id, not by row -- an id with no matching command in the buffer folds
+/// nothing, rather than landing on whatever text happens to sit at some coincidental row.
+@Test func aFoldOnANonexistentCommandIsIgnored() {
     let t = session()
     var folding = OutputFolding()
-    folding.fold(promptRow: 5)           // a row of output, not a prompt
+    folding.fold(99, .all)
     let rows = t.displayRows(in: 0..<14, folding: folding)
     #expect(rows == (0..<14).map { .row($0) })
 }
@@ -133,30 +135,22 @@ private func session() -> Terminal {
 @Test func longOutputsCanBeFoldedInOneAction() {
     let t = session()
     var folding = OutputFolding()
-    folding.foldLongOutput(in: t, longerThan: 3)
-    #expect(folding.isFolded(promptRow: 2))      // ten rows of output
-    #expect(!folding.isFolded(promptRow: 0))     // one row
+    folding.foldLongOutput(in: t, longerThan: 3, keep: 3)
+    #expect(folding.isFolded(2))      // ten rows of output
+    #expect(!folding.isFolded(1))     // one row
 }
 
-/// Folds are keyed by absolute row, so a long session would accumulate them for rows that have
-/// scrolled out of the buffer entirely.
-@Test func foldsForRowsThatScrolledAwayArePruned() {
-    var folding = OutputFolding()
-    folding.fold(promptRow: 2)
-    folding.fold(promptRow: 900)
-    folding.prune(below: 100)
-    #expect(!folding.isFolded(promptRow: 2))
-    #expect(folding.isFolded(promptRow: 900))
-}
-
-@Test func theFoldedRowCountIsWhatTheViewportShouldMeasure() {
+/// Folds are keyed by command id rather than by row, so pruning against the oldest id still in the
+/// buffer is what keeps the set from growing over a long session; `OutputFoldingTests` covers the
+/// rule itself. What is left to check here is the plain viewport shape once a fold is in force.
+@Test func aFullFoldMakesTheDisplayedRangeShorterThanTheRequestedOne() {
     let t = session()
     var folding = OutputFolding()
-    folding.fold(promptRow: 2)
-    let folded = t.displayRowCount(in: 0..<14, folding: folding)
-    let unfolded = t.displayRowCount(in: 0..<14, folding: OutputFolding())
-    #expect(folded < 14)
-    #expect(unfolded == 14)
+    folding.fold(2, .all)
+    let folded = t.displayRows(in: 0..<14, folding: folding)
+    let unfolded = t.displayRows(in: 0..<14, folding: OutputFolding())
+    #expect(folded.count < 14)
+    #expect(unfolded.count == 14)
 }
 
 // MARK: - The strip's own text

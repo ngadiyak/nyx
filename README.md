@@ -10,6 +10,7 @@ A fast, light, native terminal for macOS. Swift + Metal, no dependencies, no Xco
 
 Design: `docs/superpowers/specs/2026-09-03-nyx-terminal-design.md`
 Working rules and two traps that cost hours: `CLAUDE.md`
+Architecture, configuration reference, verification, workflow, status: `docs/`
 
 ## What it does
 
@@ -24,13 +25,19 @@ which source yours and then add `OSC 133` hooks; nothing in your home directory 
 
 **Because it knows where commands begin and end:**
 
-- `⌘↑` / `⌘↓` jump between prompts.
-- A gutter marks each command green or red by its exit status.
-- How long each command took is written dim at the end of its own line — no hovering, no folding.
-- A command's output folds to one line and unfolds again.
-- The command line you are reading stays pinned at the top while you scroll its output.
-- Right-click a command to run it again, or to edit it first.
-- A notification when a long command finishes while you are looking elsewhere.
+- A command and its output are a block: a spine beside the rows it owns, and `exit 1 · 8.8s ▾`
+  at the end of its command line. Click the chevron to fold the output down to its last three
+  lines (⌥-click hides all of it); click the placeholder to bring it back. `⌘⇧↑` folds from the
+  keyboard. The status mark in the gutter folds on click too, and is the fallback when a command
+  line leaves no room even for the chevron.
+- Hover a block and it shows what you can do to it: Copy, and a `⋯` menu with the command, the
+  output, both as a Markdown block, the output to a file, run again, edit and run.
+- A running command counts up on its own row. "Notify When Done" on it asks for a notification
+  whatever it takes, however long or short; otherwise you get one when something took a while
+  and you were elsewhere.
+- `⌘↑` / `⌘↓` jump between prompts; a gutter marks each command green or red; the command line
+  you are reading stays pinned at the top, with its status, while you scroll its output.
+- Blocks come back after a relaunch, because the session's scrollback is saved with its marks.
 
 **Editing what you are about to run.** Click anywhere in the command line to put the shell's caret
 there. Paste several lines and they open in an editor first — a shell's line editor is a poor place

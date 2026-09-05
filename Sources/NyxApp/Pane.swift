@@ -78,6 +78,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private let gutter = PromptGutterView(frame: .zero)
     /// The command line pinned over the top row while its output fills the viewport.
     private let stickyStrip = StickyPromptView(frame: .zero)
+    /// The hovered block's Copy/⋯/chevron strip, drawn over its command row the same way.
+    private let blockHeader = BlockHeaderView(frame: .zero)
     /// The prompt row the strip currently names, for its click.
     private var stickyPromptRow: Int?
     /// Which commands' output is collapsed. Empty for almost every pane that ever exists, which is
@@ -88,6 +90,28 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// The last frame's display rows, so a click can tell which visible row is a fold placeholder
     /// and which command it stands for. Empty whenever nothing is folded.
     private var foldRowsOnScreen: [DisplayRow] = []
+    /// What the buffer had evicted the last time folds and armed notifications were pruned. Nothing
+    /// else can retire a command id, so an unchanged pair means the walk to find the oldest one
+    /// would answer exactly what it answered last frame.
+    /// -1 so the first prune always runs.
+    private var lastPruneEvictedRows = -1
+    private var lastPruneGeneration: UInt64 = 0
+    /// The block under the pointer, re-resolved by `BlockHover` in every frame against that frame's
+    /// own blocks and display rows -- so it follows the rows when they scroll and disappears when a
+    /// TUI takes the screen.
+    private(set) var hoveredBlock: BlockHover?
+    /// The headers built for the last frame, by visible row, so a click on a summary can be resolved
+    /// and the overlay can be fed without another walk.
+    private var headersOnScreen: [Int: BlockHeader] = [:]
+    /// The cell range of each summary on its row, for the chevron click target.
+    private var summaryColumnsOnScreen: [Int: Range<Int>] = [:]
+    /// How much of the hover strip fits on the row it was placed on. Decided in `render()` by
+    /// `CommandBlockChrome.overlayPlacement`; applied after the lock, where AppKit lives.
+    private var hoverOverlayControls: OverlayControls = .full
+    /// Ticks once a second while a running command's row is on screen, so its elapsed time moves.
+    private var runningTimer: Timer?
+    /// Whether a command was running at the last check, to notice the moment a new one starts.
+    private var commandWasRunning = false
     /// Notices that a command ended, from nothing but the prompt marks; see `CommandWatcher`.
     private var commandWatcher = CommandWatcher()
     private var commandCheckScheduled = false
@@ -133,6 +157,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         addSubview(gutter)
         stickyStrip.onClick = { [weak self] in self?.scrollToStickyPrompt() }
         addSubview(stickyStrip)
+        blockHeader.onAction = { [weak self] action, id in self?.perform(action, on: id) }
+        blockHeader.onToggleFold = { [weak self] id, full in self?.toggleFold(ofCommand: id, full: full) }
+        addSubview(blockHeader)
         session.withTerminal { $0.setDefaultCursorShape(config.cursorStyle); $0.modes.cursorBlink = config.cursorBlink }
         session.onUpdate = { [weak self] in self?.sessionDidUpdate() }
         session.onEvent = { [weak self] e in DispatchQueue.main.async { self?.handle(e) } }
@@ -222,6 +249,46 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let top = terminal.viewportTopRow
             return terminal.transcript(rows: top..<(top + terminal.rows), options: .plainText)
         }
+    }
+
+    /// The subviews (gutter, sticky strip, block header overlay) plus one element per block's
+    /// chevron, which is drawn in Metal as a glyph and has nothing else in the view hierarchy to
+    /// report it. Without this the fold control is invisible to VoiceOver even while the mouse can
+    /// click it.
+    override func accessibilityChildren() -> [Any]? {
+        var children = subviews.filter { !$0.isHidden } as [Any]
+        let cell = cellSizePoints
+        // The row the visible overlay covers already contributes its own chevron button through
+        // `blockHeader`, included above as a subview; adding a second element for the same row
+        // here would report the same control twice.
+        let coveredRow = blockHeader.isHidden ? nil : hoveredBlock?.headerRow
+        for (row, columns) in summaryColumnsOnScreen {
+            if let coveredRow, coveredRow == row { continue }
+            guard let header = headersOnScreen[row], header.hasOutput else { continue }
+            let frame = NSRect(x: padding + CGFloat(columns.lowerBound) * cell.width,
+                               y: bounds.height - padding - CGFloat(row + 1) * cell.height,
+                               width: CGFloat(columns.count) * cell.width, height: cell.height)
+            children.append(DrawnControlElement.make(
+                label: "\(header.title(for: .toggleFold)) of the command on line \(row + 1)",
+                role: .button, frame: frame, in: self,
+                press: { [weak self] in self?.toggleFold(ofCommand: header.id, full: false) }))
+        }
+        // The fold placeholder is a button -- clicking it puts the output back -- and it is drawn
+        // as a row of cells, so nothing in the view hierarchy reports it. Without this, a folded
+        // block could be opened with a mouse and by no other means.
+        for (row, entry) in foldRowsOnScreen.enumerated() {
+            guard case .fold(let id, let hidden, _) = entry, id != 0 else { continue }
+            let frame = NSRect(x: padding, y: bounds.height - padding - CGFloat(row + 1) * cell.height,
+                               width: bounds.width - padding * 2, height: cell.height)
+            children.append(DrawnControlElement.make(
+                label: "Unfold the \(hidden) hidden lines of the command on line \(row + 1)",
+                role: .button, frame: frame, in: self,
+                press: { [weak self] in
+                    self?.folding.unfold(id)
+                    self?.markDirty()
+                }))
+        }
+        return children
     }
 
     override func isAccessibilityEnabled() -> Bool { true }
@@ -381,6 +448,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func terminate() {
         displayLink?.invalidate()
         displayLink = nil
+        runningTimer?.invalidate()
+        runningTimer = nil
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
         session.terminate()
@@ -392,6 +461,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         super.viewDidMoveToWindow()
         displayLink?.invalidate()
         displayLink = nil
+        runningTimer?.invalidate()
+        runningTimer = nil
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
         guard let window else { return }
@@ -530,6 +601,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         isOccluded = !(window?.occlusionState.contains(.visible) ?? true)
         if isOccluded {
             displayLink?.isPaused = true
+            // Nothing occluded is worth a tick a second for; render() starts it again once a
+            // running block is next actually drawn, which markDirty() below brings about.
+            runningTimer?.invalidate()
+            runningTimer = nil
         } else {
             markDirty()   // the flag may have accumulated changes while we were hidden
         }
@@ -584,10 +659,22 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let focused = (window?.isKeyWindow ?? false) && window?.firstResponder === self
         let preedit = markedText.isEmpty ? nil : markedText
         var gutterMarks: [GutterMark?] = []
+        // Whether each marked row's command is folded, so the mark can say which way pressing it
+        // goes. Read in the same pass as the marks themselves.
+        var gutterFolded: [Bool] = []
+        // And whether each has anything to fold: a command that printed nothing gets its dot and
+        // nothing else -- no pointing hand, no tooltip, no accessibility button.
+        var gutterHasOutput: [Bool] = []
+        // And whether the shell said each command started, which is what draws a running ring: a
+        // `sleep 10` one second in has started and has nothing to fold, and both are true at once.
+        var gutterHasStarted: [Bool] = []
         var notes: [String?] = []
         var spines: [(rows: Range<Int>, color: RGB)] = []
         var summaries: [(row: Int, text: String, color: RGB)] = []
-        var sticky: (text: String, failed: Bool, row: Int)?
+        var sticky: (text: String, failed: Bool, row: Int, summary: String)?
+        var anyRunningOnScreen = false
+        // Set under the lock, acted on after it: the overlay and the cursor rects are AppKit calls.
+        var hoverChanged = false
         // What the buffer looked like when the frame was built. The dirty flags are cleared against
         // it once the frame is on screen, so a write that lands in between keeps its flags.
         var builtAtContentVersion: UInt64 = 0
@@ -603,6 +690,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             if hoveredLinkGeneration != t.scrollbackGeneration {
                 hoveredLinkGeneration = t.scrollbackGeneration
                 hoveredLink = nil
+                // A block hover is a range of rows in the same absolute space; a `clear` moves
+                // every one of them out from under it. Re-resolved below from the pointer's own
+                // position, so the very next frame puts it back if there is still a block there.
+                self.hoveredBlock = nil
             }
             // A fold is an absolute row, and a `clear` makes every absolute row mean something
             // else; keeping them would collapse whatever landed on those indices.
@@ -611,10 +702,30 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 self.folding.unfoldAll()
             }
             // Folds whose prompt has gone -- evicted from the ring, or overwritten -- are dropped
-            // here rather than accumulating over a session. Costs one row read per fold, and
-            // nothing at all when there are none.
-            if !self.folding.isEmpty { self.folding.prune(in: t) }
-            let cursor: Cursor? = (t.modes.showCursor && t.viewportOffset == 0) ? t.screen.cursor : nil
+            // here rather than accumulating over a session, and with them any notification armed
+            // for an id that can never finish now.
+            //
+            // Only when the buffer actually lost rows. `oldestCommandID` walks forward from the
+            // start of the ring looking for the first prompt, and doing that on every frame of a
+            // session that has one fold open -- under the session lock, on the render path -- was
+            // paying for a scan whose answer cannot have changed. Nothing else moves the oldest id:
+            // it changes when rows are evicted, or when the whole buffer is replaced.
+            let bufferMoved = t.evictedRows != self.lastPruneEvictedRows
+                || t.scrollbackGeneration != self.lastPruneGeneration
+            if bufferMoved, !(self.folding.isEmpty && self.armedNotifications.isEmpty) {
+                self.lastPruneEvictedRows = t.evictedRows
+                self.lastPruneGeneration = t.scrollbackGeneration
+                let oldest = t.oldestCommandID
+                if !self.folding.isEmpty { self.folding.prune(olderThan: oldest) }
+                if !self.armedNotifications.isEmpty {
+                    self.armedNotifications = self.armedNotifications.filter { $0 >= oldest }
+                }
+            }
+            // Screen coordinates: `cursor.y` counts from the top of the live screen. The renderer
+            // takes it as an index into the lines it is handed, which are display slots, so with a
+            // fold on screen it is remapped below -- and the IME preedit with it, since that is
+            // drawn from the same coordinate.
+            var cursor: Cursor? = (t.modes.showCursor && t.viewportOffset == 0) ? t.screen.cursor : nil
             // Resolved here, inside the lock, so the highlighted columns belong to the same
             // viewport as the lines being drawn.
             let top = t.viewportTopRow
@@ -643,10 +754,20 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // fold pulled up into that slot.
                 let display = t.displayRows(from: top, count: t.rows, folding: self.folding)
                 self.foldRowsOnScreen = display
+                // The caret goes through the same map as the text under it. Without this it was
+                // drawn at `cursor.y` -- as many rows below the prompt as the folds above had
+                // hidden -- which with two folds on screen put it nine rows down an empty screen.
+                // A caret whose row is inside a fold is not drawn at all: it has no slot.
+                if let c = cursor {
+                    let absolute = t.scrollback.count + c.y
+                    cursor = DisplayRows.cursorSlot(absoluteRow: absolute, in: display)
+                        .map { Cursor(x: c.x, y: $0) }
+                }
                 lines = display.map { row in
                     switch row {
                     case .row(let absolute): return t.absoluteRow(absolute) ?? Row(cols: t.cols)
-                    case .fold(_, let hidden): return t.foldPlaceholderRow(hiddenRows: hidden)
+                    case .fold(_, let hidden, let status):
+                        return t.foldPlaceholderRow(hiddenRows: hidden, status: status)
                     }
                 } + Array(repeating: Row(cols: t.cols), count: max(0, t.rows - display.count))
                 selected = display.map { row in
@@ -681,17 +802,64 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 return foldRowsOnScreen.firstIndex { if case .row(absolute) = $0 { return true } else { return false } }
             }
 
-            gutterMarks = Pane.place(t.gutterMarks(rows: t.rows), from: max(0, t.viewportTopRow),
-                                     rows: t.rows, screenRow: screenRow)
-            notes = Pane.place(t.durationNotes(rows: t.rows), from: max(0, t.viewportTopRow),
-                               rows: t.rows, screenRow: screenRow)
+            // The window of absolute rows this frame actually shows. Without a fold it is
+            // `top ..< top + rows`; with one, hiding a thousand rows pulls rows from far below into
+            // the same slots, and a chrome window of `rows` absolute rows stopped above every block
+            // under the placeholder -- they lost their spine, their summary and their gutter mark.
+            let windowTop = max(0, t.viewportTopRow)
+            let lastRowOnScreen: Int = {
+                let plain = windowTop + t.rows - 1
+                guard !self.foldRowsOnScreen.isEmpty else { return plain }
+                let displayed = self.foldRowsOnScreen.compactMap { entry -> Int? in
+                    if case .row(let absolute) = entry { return absolute } else { return nil }
+                }
+                return displayed.max() ?? plain
+            }()
+
+            // Per display slot when a fold is on screen, per visible row otherwise. Not through a
+            // window of absolute rows reaching `lastRowOnScreen`: that window spans everything the
+            // fold hides, and a mark per row of it costs 3.3 ms a frame at a 10,000-row fold
+            // against 0.019 ms for the rows actually drawn. `visibleBlocks` below does take the
+            // window, because a block's own region spans the hidden rows and it walks commands
+            // rather than rows.
+            if self.foldRowsOnScreen.isEmpty {
+                gutterMarks = t.gutterMarks(rows: t.rows)
+                gutterFolded = t.foldStates(rows: t.rows, folding: self.folding)
+                let states = t.commandStates(rows: t.rows)
+                gutterHasStarted = states.started
+                gutterHasOutput = states.hasOutput
+                notes = t.durationNotes(rows: t.rows)
+            } else {
+                let pad = max(0, t.rows - self.foldRowsOnScreen.count)
+                gutterMarks = t.gutterMarks(onDisplayRows: self.foldRowsOnScreen)
+                    + Array(repeating: nil, count: pad)
+                gutterFolded = t.foldStates(onDisplayRows: self.foldRowsOnScreen, folding: self.folding)
+                    + Array(repeating: false, count: pad)
+                let states = t.commandStates(onDisplayRows: self.foldRowsOnScreen)
+                gutterHasStarted = states.started + Array(repeating: false, count: pad)
+                gutterHasOutput = states.hasOutput + Array(repeating: false, count: pad)
+                notes = t.durationNotes(onDisplayRows: self.foldRowsOnScreen)
+                    + Array(repeating: nil, count: pad)
+            }
             // Blocks are chrome over an unmodified grid, so they step aside entirely when a
             // full-screen program owns the display or the mouse. This is the rule that keeps vim,
             // htop and tmux behaving exactly as they did.
-            let blocks = CommandBlockChrome.isAllowed(altScreen: t.modes.altScreen,
-                                                  mouseReporting: t.modes.mouse != .none,
-                                                  hasMarks: t.shellEmitsPromptMarks)
-                ? t.visibleBlocks(rows: t.rows) : []
+            let chromeAllowed = CommandBlockChrome.isAllowed(altScreen: t.modes.altScreen,
+                                                             mouseReporting: t.modes.mouse != .none,
+                                                             hasMarks: t.shellEmitsPromptMarks)
+            let blocks = chromeAllowed ? t.visibleBlocks(from: windowTop, through: lastRowOnScreen) : []
+            // Which block the pointer is on, decided here rather than in `mouseMoved`, against the
+            // very blocks and display rows this frame is about to draw.
+            //
+            // Recomputing it only on a pointer move meant the tint outlived what it was describing:
+            // it stayed on screen when a TUI took the display (nothing gated `highlightedRows` on
+            // `chromeAllowed`), and after a scroll it sat on whatever rows had moved into those
+            // slots. Doing it per frame makes the hover follow the rows the way the hovered link
+            // does (spec 4.2), and no scroll, fold, search reveal or autoscroll needs to remember
+            // to invalidate it.
+            let previousHover = self.hoveredBlock
+            self.hoveredBlock = self.resolveBlockHover(in: t, blocks: blocks, allowed: chromeAllowed,
+                                                       viewportTop: windowTop)
             // The three block colours, once per frame. `readable` picks between a colour and its
             // bright variant by contrast against the background -- a handful of Lab conversions --
             // and evaluating it per block, per frame, put that on the render path for nothing: the
@@ -704,51 +872,197 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // running command draws nothing, and a spine that says "in progress" beside an idle
                 // prompt would sit there amber forever.
                 guard block.region.outputStart != nil else { return nil }
-                let placed = block.visibleRows.compactMap { screenRow($0 + max(0, t.viewportTopRow)) }
-                guard let first = placed.min(), let last = placed.max() else { return nil }
-                return (rows: first..<(last + 1),
+                // `block.visibleRows` spans everything a tail fold hides once `visibleBlocks`
+                // widened the window to the block's own region, so calling `screenRow` -- itself a
+                // linear search of the display slots -- once per row here was quadratic in the
+                // hidden row count. `DisplayRows.slots` walks the display once instead; with no
+                // folds on screen `screenRow` is already O(1) per row and stays as it was.
+                let placedRange: Range<Int>?
+                if self.foldRowsOnScreen.isEmpty {
+                    let placed = block.visibleRows.compactMap { screenRow($0 + windowTop) }
+                    if let first = placed.min(), let last = placed.max() {
+                        placedRange = first..<(last + 1)
+                    } else {
+                        placedRange = nil
+                    }
+                } else {
+                    placedRange = DisplayRows.slots(coveredBy: block.visibleRows, commandID: block.region.id,
+                                                    in: self.foldRowsOnScreen, viewportTop: windowTop)
+                }
+                guard let placedRange else { return nil }
+                return (rows: placedRange,
                         color: block.failed ? failedColor : (block.isRunning ? runningColor : doneColor))
             }
             // A summary only where the command it describes is on screen, and only when it has
             // something to say -- `exit 0` on a command that took no time is not news.
+            let now = t.now()
+            var headers: [Int: BlockHeader] = [:]
+            var summaryColumns: [Int: Range<Int>] = [:]
+            // Which display slot the hover strip goes on. Only the hovered block ever sets it, so
+            // "no room for a strip anywhere on this command" comes out as no overlay at all.
+            var stripSlots: [UInt32: Int] = [:]
+            // Every slot whose duration note the summary now speaks for, including the prompt row
+            // when the summary moved off it onto a wrapped continuation.
+            var notesSpokenFor: Set<Int> = []
+            let overlayFont = NSFont.monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular)
+            let cellWidth = self.cellSizePoints.width
             summaries = blocks.compactMap { block -> (row: Int, text: String, color: RGB)? in
-                guard block.showsHeader, let row = screenRow(block.region.promptRow) else { return nil }
-                let text = block.summary()
-                guard !text.isEmpty else { return nil }
-                return (row: row, text: text,
-                        color: block.failed ? failedColor : t.palette.noteForeground)
+                guard block.showsHeader, let promptSlot = screenRow(block.region.promptRow) else { return nil }
+                let header = block.header(now: now, folding: self.folding,
+                                          notifyArmed: self.armedNotifications.contains(block.region.id),
+                                          anyFolds: !self.folding.isEmpty,
+                                          hasOutput: t.commandHasOutput(atAbsoluteRow: block.region.promptRow))
+                let text = header.summaryWithChevron
+                // Every row of the command line is a candidate, not just the prompt row: a pasted
+                // `curl` wraps, and the row that has room is usually the last one.
+                let lastCommandRow = block.region.outputStart.map { $0 - 1 } ?? block.region.promptRow
+                var candidates: [(absoluteRow: Int, lastUsedColumn: Int)] = []
+                var slotOf: [Int: Int] = [:]
+                if lastCommandRow >= block.region.promptRow {
+                    for absolute in block.region.promptRow...lastCommandRow {
+                        guard let slot = screenRow(absolute), slot < lines.count else { continue }
+                        slotOf[absolute] = slot
+                        var last = -1
+                        for (column, cell) in lines[slot].cells.enumerated() where cell.content != 0 {
+                            last = column
+                        }
+                        candidates.append((absoluteRow: absolute, lastUsedColumn: last))
+                    }
+                }
+                // The hovered block's strip is placed by the same ladder against the same rows, from
+                // the view's own measured widths. Measured here, under the lock, because the answer
+                // decides what the Metal pass draws on those rows and the frame is built here; the
+                // widths are cached per header and font, so in steady state this is three dictionary
+                // lookups and no layout pass.
+                if self.hoveredBlock?.id == block.region.id, self.hoveredBlock?.headerRow != nil,
+                   cellWidth > 0 {
+                    var stripColumns: [OverlayControls: Int] = [:]
+                    for controls in OverlayControls.allCases {
+                        let width = self.blockHeader.width(for: controls, header: header, font: overlayFont)
+                        stripColumns[controls] = Int((width / cellWidth).rounded(.up))
+                    }
+                    if let overlay = CommandBlockChrome.overlayPlacement(commandRows: candidates,
+                                                                        stripColumns: stripColumns,
+                                                                        cols: t.cols),
+                       let slot = slotOf[overlay.row] {
+                        headers[slot] = header
+                        stripSlots[block.region.id] = slot
+                        self.hoverOverlayControls = overlay.controls
+                        notesSpokenFor.insert(slot)
+                        notesSpokenFor.insert(promptSlot)
+                        // The strip is the only chrome on the block while it is up: it carries the
+                        // chevron in every control set, so a second one drawn in Metal would be the
+                        // same control twice.
+                        return nil
+                    }
+                    // Nothing fits: no strip, and the Metal chevron below stays, so hovering never
+                    // takes the fold control away.
+                }
+                // Nothing to say and nothing to fold: a quick success with no output. No summary,
+                // and no click target either.
+                guard !text.isEmpty else {
+                    headers[promptSlot] = header
+                    return nil
+                }
+                // The same rule the renderer uses to decide what it draws and where, so the click
+                // target and the pixels can never disagree.
+                guard let placement = CommandBlockChrome.summaryPlacement(
+                        commandRows: candidates, textCount: text.count,
+                        chevronCount: header.chevron.count, cols: t.cols),
+                      let slot = slotOf[placement.row] else { return nil }
+                headers[slot] = header
+                summaryColumns[slot] = placement.columns
+                notesSpokenFor.insert(slot)
+                notesSpokenFor.insert(promptSlot)
+                // A running block used to differ from a finished one only by the digit in the
+                // elapsed time -- the same grey `12s ▾` a finished command's `12s ▾` shows. The
+                // theme's running colour is the one the spine already uses for the same state,
+                // so a glance down the screen says which command is still going.
+                return (row: slot, text: placement.text == .full ? text : header.chevron,
+                        color: block.failed ? failedColor
+                            : (block.isRunning ? runningColor : t.palette.noteForeground))
             }
-            // The summary already carries the duration, and both draw right-aligned on the command's
-            // row: left alone they paint the same glyphs twice in two colours, on the failure case
-            // this feature exists to make obvious.
-            for summary in summaries where notes.indices.contains(summary.row) {
-                notes[summary.row] = nil
+            // The overlay goes where it fits, which is not always the prompt row: a strip placed
+            // from the prompt row alone and sized only from its own content painted over the end of
+            // the command it describes, and in a narrow split hid a word of it. No placement means
+            // no overlay: the tint, the Metal chevron, the gutter mark and the context menu remain.
+            if let hover = self.hoveredBlock, hover.headerRow != nil,
+               stripSlots[hover.id] != hover.headerRow {
+                self.hoveredBlock = hover.attachingHeader(to: stripSlots[hover.id])
+            }
+            hoverChanged = self.hoveredBlock != previousHover
+            self.headersOnScreen = headers
+            self.summaryColumnsOnScreen = summaryColumns
+            anyRunningOnScreen = blocks.contains { $0.isRunning && $0.showsHeader }
+            // The summary already carries the duration, and both draw right-aligned on a row of the
+            // command: left alone they paint the same glyphs twice in two colours, on the failure
+            // case this feature exists to make obvious.
+            //
+            // Keyed off where a summary was actually *placed*, not off the list of summaries asked
+            // for: a command line that leaves room for nothing at all means the renderer draws
+            // nothing there, and erasing the duration note as well left that row with neither. The
+            // command's prompt row goes with it, because a summary that moved onto a wrapped
+            // continuation row would otherwise say the duration one row below the note.
+            for row in notesSpokenFor where notes.indices.contains(row) {
+                notes[row] = nil
             }
             // Same pass, same lock, same viewport: the strip names the command whose output is on
             // screen *in this frame*, and reading it anywhere else would let the two disagree.
             // Costs one flag test for a shell with no integration, which is the whole reason
             // `shellEmitsPromptMarks` exists.
             if let pinned = t.stickyPrompt(), let region = t.command(containingAbsoluteRow: pinned.row) {
+                // Same fields the hover overlay would show for this command, so the strip and the
+                // overlay never disagree about what a command's duration or exit status was.
+                let summary = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
+                    .header(now: t.now(), folding: self.folding, notifyArmed: false,
+                            anyFolds: !self.folding.isEmpty,
+                            hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow)).summary
                 sticky = (StickyPromptLabel.text(command: t.commandText(of: region),
                                                  exitStatus: pinned.exitStatus, columns: t.cols),
-                          pinned.failed, pinned.row)
+                          pinned.failed, pinned.row, summary)
             }
             builtAtContentVersion = t.contentVersion
             return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
                                cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit,
                                selection: selected, searchMatches: matches, currentSearchMatch: current,
                                hoveredLink: hovered, rowNotes: notes, blockSpines: spines,
-                               blockSummaries: summaries, dirtyRows: self.dirtyRows(of: t, top: top))
+                               blockSummaries: summaries, highlightedRows: self.hoveredBlock?.rows,
+                               dirtyRows: self.dirtyRows(of: t, top: top))
         }
-        gutter.update(marks: gutterMarks, palette: frame.palette,
-                      cellHeight: cellSizePoints.height, topPadding: padding)
+        // A running command's elapsed time only moves if something asks for a redraw; nothing else
+        // on this row changes while it runs. One timer per pane, alive only while it would do
+        // anything -- the idle-CPU cost of a terminal sitting at a prompt must stay at zero.
+        if anyRunningOnScreen, runningTimer == nil {
+            runningTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.markDirty() }
+        } else if !anyRunningOnScreen, let timer = runningTimer {
+            timer.invalidate()
+            runningTimer = nil
+        }
+        // The pointing hand over a gutter mark is a cursor rect, and nothing rebuilds those on its
+        // own between frames: after a command finished, its new mark had no hand until the window
+        // was resized. Only when the set of pressable marks actually moved -- `resetCursorRects` is
+        // not free to ask for per frame.
+        if gutter.update(marks: gutterMarks, folded: gutterFolded, hasStarted: gutterHasStarted,
+                         hasOutput: gutterHasOutput, palette: frame.palette,
+                         cellHeight: cellSizePoints.height, topPadding: padding) {
+            window?.invalidateCursorRects(for: gutter)
+        }
         stickyPromptRow = sticky?.row
         let wasHidden = stickyStrip.isHidden
-        stickyStrip.update(text: sticky?.text, failed: sticky?.failed ?? false, palette: frame.palette,
+        stickyStrip.update(text: sticky?.text, summary: sticky?.summary ?? "", failed: sticky?.failed ?? false,
+                           palette: frame.palette,
                            font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
         // The strip claims the pointer only while it is up, so appearing or disappearing changes
         // which view the cursor over the top row belongs to.
         if wasHidden != stickyStrip.isHidden { window?.invalidateCursorRects(for: stickyStrip) }
+        // After the sticky strip so a running command's timer and a fold toggle -- both of which
+        // can change the header without a matching pointer move -- refresh the overlay's text too;
+        // `update` compares before it applies, so redrawing here every frame is cheap. `frame.palette`
+        // was already read under the lock this frame; passing it on saves a second lock take.
+        blockHeaderChanged(palette: frame.palette)
+        // Only when the block under the pointer actually changed: rebuilding cursor rects asks
+        // AppKit to re-run `resetCursorRects` for the view, which is not free per frame.
+        if hoverChanged { updateHoverCursor() }
         switch renderer.draw(frame, in: metalLayer, padding: Int(padding * metalLayer.contentsScale),
                              syncOutput: syncOutput) {
         case .presented:
@@ -1069,6 +1383,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let wasEmpty = selection == nil || selection?.isEmpty == true
         if selectionController.end() { markDirty() }
         if config.copyOnSelect, selection != nil { copy(nil) }
+        // The summary -- `exit 1 · 8.8s ▾` -- is a target of its own, checked before the spine: the
+        // two never overlap, but the summary is the more specific claim on the click.
+        if wasEmpty, event.clickCount == 1,
+           toggleFoldOnSummary(at: convert(event.locationInWindow, from: nil),
+                               full: event.modifierFlags.contains(.option)) { return }
         // The spine is a target: clicking it folds the block, which is what a bar drawn beside a
         // command's rows is inviting. Checked before the caret move, since the spine is in the
         // padding and no caret can live there.
@@ -1089,17 +1408,36 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// gesture that means two things depending on a few pixels is a gesture people stop trusting.
     private func foldBlock(atPointInPadding point: NSPoint) -> Bool {
         guard point.x < CGFloat(padding) else { return false }
-        let promptRow: Int? = session.withTerminal { t in
+        let id: UInt32? = session.withTerminal { t in
             guard CommandBlockChrome.isAllowed(altScreen: t.modes.altScreen,
                                                mouseReporting: t.modes.mouse != .none,
                                                hasMarks: t.shellEmitsPromptMarks) else { return nil }
             let position = self.position(topLeft(point), in: t)
-            return t.block(atAbsoluteRow: position.row, rows: t.rows)?.region.promptRow
+            return t.block(atAbsoluteRow: position.row, rows: t.rows)?.region.id
         }
-        guard let promptRow else { return false }
-        folding.toggle(promptRow: promptRow)
-        markDirty()
+        guard let id, id != 0 else { return false }
+        toggleFold(ofCommand: id, full: false)
         return true
+    }
+
+    /// A click on a block's summary -- `exit 1 · 8.8s ▾` -- folds and unfolds it. ⌥ folds fully.
+    private func toggleFoldOnSummary(at point: NSPoint, full: Bool) -> Bool {
+        guard let row = visibleRow(at: point), let columns = summaryColumnsOnScreen[row],
+              let header = headersOnScreen[row], header.hasOutput else { return false }
+        let column = Int((Double(point.x) - Double(padding)) / Double(cellSizePoints.width))
+        guard columns.contains(column) else { return false }
+        toggleFold(ofCommand: header.id, full: full)
+        return true
+    }
+
+    /// The one place a fold is toggled from a control, so every route agrees on the shape.
+    func toggleFold(ofCommand id: UInt32, full: Bool) {
+        if full { folding.toggleFull(id) } else { folding.toggle(id, keep: config.foldKeepLines) }
+        onFocusRequested?()
+        // Folding reshuffles the display slots under the pointer without a matching mouse-move. The
+        // next frame re-resolves the hover against the new slots, so nothing to do here but ask
+        // for one.
+        markDirty()
     }
 
     /// Moves the shell's caret to a clicked cell by sending the arrow keys that get it there.
@@ -1240,25 +1578,44 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         session.withTerminal { if selectionController.selectAll(in: $0) { markDirty() } }
     }
 
-    /// The right-click menu. Built from `TerminalAction` like the main menu, so an item here cannot
-    /// do something different from the same item there, and both grey out by the same rule.
+    /// The right-click menu, in two halves.
+    ///
+    /// The block group at the top comes from `BlockHeader.actions`, the same list the hover
+    /// overlay's ⋯ menu builds from, so the mouse route and the menu route cannot offer different
+    /// things or grey out differently. Everything below it is built from `TerminalAction` like the
+    /// main menu, so an item here cannot do something different from the same item there.
+    ///
+    /// Auto-enabling stays on: `validateMenuItem` greys out Copy, Paste and Select All, and passes
+    /// the block group's own `isEnabled` back through unchanged.
     private func contextMenu(at point: NSPoint? = nil) -> NSMenu {
         let menu = NSMenu()
         // The command under the pointer, when there is one. This is the entry that turns the
         // scrollback into something you can act on rather than only read: the prompt marks say
-        // where each command began, so "that one, with a change" is answerable.
-        if let point, let row = commandRow(under: point) {
-            let rerun = NSMenuItem(title: "Edit and Run This Command…",
-                                   action: #selector(editAndRunFromMenu(_:)), keyEquivalent: "")
-            rerun.target = self
-            rerun.tag = row
-            menu.addItem(rerun)
-            let again = NSMenuItem(title: "Run This Command Again",
-                                   action: #selector(rerunFromMenu(_:)), keyEquivalent: "")
-            again.target = self
-            again.tag = row
-            menu.addItem(again)
-            menu.addItem(.separator())
+        // where each command began, so the whole block's actions -- not just rerun and edit -- are
+        // answerable from a right-click.
+        if let point, let id = commandID(under: point) {
+            let header: BlockHeader? = session.withTerminal { t in
+                guard let row = t.promptRow(ofCommand: id),
+                      let region = t.command(containingAbsoluteRow: row) else { return nil }
+                let block = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
+                return block.header(now: t.now(), folding: self.folding,
+                                    notifyArmed: self.armedNotifications.contains(id),
+                                    anyFolds: !self.folding.isEmpty,
+                                    hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow))
+            }
+            if let header {
+                for (index, entry) in header.actions.enumerated() {
+                    if index > 0 && entry.action.startsGroup { menu.addItem(.separator()) }
+                    let item = NSMenuItem(title: header.title(for: entry.action),
+                                          action: #selector(blockActionFromMenu(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = BlockMenuEntry(action: entry.action, id: id)
+                    item.isEnabled = entry.enabled
+                    if case .notifyWhenDone(let armed) = entry.action { item.state = armed ? .on : .off }
+                    menu.addItem(item)
+                }
+                menu.addItem(.separator())
+            }
         }
         let groups: [[TerminalAction]] = [
             [.copy, .paste],
@@ -1297,6 +1654,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(copy(_:)) { return hasSelection }
         if item.action == #selector(selectAll(_:)) { return session.withTerminal { $0.totalRows > 0 } }
+        // The block group sets its own `isEnabled` per action (`.copyOutput` needs output,
+        // `.editAndRun` needs the command to have finished). This menu leaves auto-enabling on, so
+        // AppKit asks here as well; handing back what the item already decided is what keeps the
+        // two from contradicting each other. Turning auto-enabling off for the whole menu instead
+        // silenced Copy, Paste, Select All and Toggle Zoom, which have no such case here.
+        if item.action == #selector(blockActionFromMenu(_:)) { return item.isEnabled }
         return true
     }
 
@@ -1314,14 +1677,49 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// The cell the pointer was last over, so a mouse-move inside one cell does no work at all --
     /// hit-testing tokenizes a row through five regular expressions and may `stat` a path.
     private var lastHoverCell: (row: Int, col: Int)?
-    /// The same thing in view coordinates, for the pointing-hand cursor rect.
-    private var hoveredRect: NSRect?
+    /// The same thing in view coordinates, for the pointing-hand cursor rect. A list rather than
+    /// one rect: a link and a block's summary can both want the pointing hand at once.
+    private var hoveredRect: [NSRect] = []
+
+    /// Where the pointer last was, in view coordinates, or nil when it is outside the pane.
+    ///
+    /// Kept rather than acted on: which block it is over is answered in `render()`, against the
+    /// blocks and display rows of the frame being drawn. See `resolveBlockHover`.
+    private var lastPointerPoint: NSPoint?
+
+    /// Which block the pointer sits on -- for the tint and the overlay -- against one frame's
+    /// blocks. `resolve` answers in viewport-relative absolute space; `placed` re-expresses that in
+    /// the display slots actually on screen, which differ from absolute space only when a fold is
+    /// showing. Called under the session lock from `render()`.
+    private func resolveBlockHover(in t: Terminal, blocks: [CommandBlock], allowed: Bool,
+                                   viewportTop: Int) -> BlockHover? {
+        guard allowed, let point = lastPointerPoint, bounds.contains(point) else { return nil }
+        let visible = visibleRow(at: point)
+        let pointerRow: Int?
+        if let visible, foldRowsOnScreen.indices.contains(visible),
+           case .fold(let commandID, _, _) = foldRowsOnScreen[visible] {
+            // The pointer is on a fold placeholder, which has no absolute row of its own: it
+            // stands for the block whose output it hides, so hover that block directly.
+            pointerRow = blocks.first { $0.region.id == commandID }?.visibleRows.lowerBound
+        } else {
+            let absolute = visible.flatMap { self.absoluteRow(forVisibleRow: $0, in: t) }
+            pointerRow = absolute.map { $0 - viewportTop }
+        }
+        let resolved = BlockHover.resolve(pointerRow: pointerRow, blocks: blocks, allowed: allowed)
+        guard !foldRowsOnScreen.isEmpty else { return resolved }
+        return resolved?.placed(onDisplayRows: foldRowsOnScreen, viewportTop: viewportTop)
+    }
 
     private func updateHover(at point: NSPoint) {
         guard bounds.contains(point) else {
             clearHover()
             return
         }
+        // The block hover is not computed here: the pointer's position is all this knows, and which
+        // block is under it depends on the frame. Recorded on every move, including a move inside
+        // one cell -- the cheap comparison below is about the link hit test, and the block hover
+        // costs nothing until the next frame asks for it.
+        lastPointerPoint = point
         // A mouse-move that stays inside one cell cannot change what is under the pointer, and
         // hit-testing is not cheap: it tokenizes the row through five regular expressions and may
         // `stat` a path. Mouse-move events arrive far faster than cells change.
@@ -1331,6 +1729,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         guard lastHoverCell == nil || lastHoverCell! != cell else { return }
         lastHoverCell = cell
+        // The pointer moved to another cell, so the block under it may have changed even if nothing
+        // else did; the next frame is where that is decided.
+        markDirty()
 
         let hit = token(under: point)
         // Resolved *outside* the session lock: a path needs the pane's working directory, and
@@ -1345,32 +1746,64 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     private func clearHover() {
         lastHoverCell = nil
-        guard hoveredLink != nil else { return }
+        // The pointer has left the pane; with no point to resolve against, the next frame finds no
+        // block and takes the overlay and the tint down with it.
+        lastPointerPoint = nil
+        let hadBlock = hoveredBlock != nil
+        let hadLink = hoveredLink != nil
         hoveredLink = nil
+        guard hadBlock || hadLink else { return }
         updateHoverCursor()
         markDirty()
     }
 
     /// The pointing hand is a cursor rect rather than a `NSCursor.set()`, so AppKit restores the
     /// arrow on its own when the pointer leaves the link -- and when it leaves the window entirely.
+    /// Two independent things can claim it at once: a link, and a block's summary.
     private func updateHoverCursor() {
-        hoveredRect = hoveredLink.flatMap { link in
+        let cell = cellSizePoints
+        var rects: [NSRect] = []
+        if let link = hoveredLink {
             let top = session.withTerminal { $0.viewportTopRow }
-            let cell = cellSizePoints
             let row = link.row - top
-            guard row >= 0 else { return nil }
-            let width = CGFloat(link.columns.count) * cell.width
-            return NSRect(x: padding + CGFloat(link.columns.lowerBound) * cell.width,
-                          y: bounds.height - padding - CGFloat(row + 1) * cell.height,
-                          width: width, height: cell.height)
+            if row >= 0 {
+                let width = CGFloat(link.columns.count) * cell.width
+                rects.append(NSRect(x: padding + CGFloat(link.columns.lowerBound) * cell.width,
+                                    y: bounds.height - padding - CGFloat(row + 1) * cell.height,
+                                    width: width, height: cell.height))
+            }
         }
+        if let row = hoveredBlock?.headerRow, let columns = summaryColumnsOnScreen[row] {
+            rects.append(NSRect(x: padding + CGFloat(columns.lowerBound) * cell.width,
+                                y: bounds.height - padding - CGFloat(row + 1) * cell.height,
+                                width: CGFloat(columns.count) * cell.width, height: cell.height))
+        }
+        hoveredRect = rects
         window?.invalidateCursorRects(for: self)
     }
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        guard let hoveredRect else { return }
-        addCursorRect(hoveredRect, cursor: .pointingHand)
+        for rect in hoveredRect { addCursorRect(rect, cursor: .pointingHand) }
+    }
+
+    /// Places the overlay over the hovered block's command row, or hides it. `palette` is the one
+    /// `render()` already read under the lock this frame; every other caller (a hover change, a
+    /// fold toggle) has no such value in hand and passes nil, which reads it here instead.
+    private func blockHeaderChanged(palette suppliedPalette: Palette? = nil) {
+        let palette = suppliedPalette ?? session.withTerminal { $0.palette }
+        guard let row = hoveredBlock?.headerRow, let header = headersOnScreen[row] else {
+            blockHeader.update(header: nil, controls: hoverOverlayControls, palette: palette,
+                               font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
+            return
+        }
+        blockHeader.update(header: header, controls: hoverOverlayControls, palette: palette,
+                           font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
+        let size = blockHeader.intrinsicContentSize
+        let origin = overlayOrigin(forHeaderRow: row)
+        blockHeader.frame = NSRect(x: origin.x - size.width, y: origin.y,
+                                   width: size.width, height: cellSizePoints.height)
+        window?.invalidateCursorRects(for: self)
     }
 
     /// The token under a view point, if any. One row is read, and the lock is released before the
@@ -1702,8 +2135,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func unfoldPlaceholder(at point: NSPoint) -> Bool {
         guard !folding.isEmpty, let visible = visibleRow(at: point),
               foldRowsOnScreen.indices.contains(visible),
-              case .fold(let promptRow, _) = foldRowsOnScreen[visible] else { return false }
-        folding.unfold(promptRow: promptRow)
+              case .fold(let id, _, _) = foldRowsOnScreen[visible] else { return false }
+        folding.unfold(id)
         markDirty()
         return true
     }
@@ -1715,19 +2148,18 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             selectCommand(atVisibleRow: row)
             return
         }
-        let absolute: Int? = session.withTerminal { t in
+        let commandID: UInt32? = session.withTerminal { t in
             guard let entry = self.absoluteRow(forVisibleRow: row, in: t),
                   let region = t.command(containingAbsoluteRow: entry),
-                  !region.outputRows.isEmpty else { return nil }
-            return region.promptRow
+                  t.commandHasOutput(atAbsoluteRow: region.promptRow) else { return nil }
+            return region.id
         }
-        guard let promptRow = absolute else {
-            NSSound.beep()
-            return
-        }
-        folding.toggle(promptRow: promptRow)
-        onFocusRequested?()
-        markDirty()
+        // No beep: `PromptGutterView` does not claim a click on a mark whose command printed
+        // nothing, so this is reached only if the buffer changed between the frame that drew the
+        // mark and the click -- a race, not a mistake the user made, and a beep would be blaming
+        // them for it.
+        guard let id = commandID, id != 0 else { return }
+        toggleFold(ofCommand: id, full: false)
     }
 
     /// Which absolute row a visible row is showing, through whatever folds are in force. nil for a
@@ -1739,17 +2171,19 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return absolute
     }
 
-    /// `fold_command`: collapses the command the viewport is showing, and expands it again.
+    /// `fold_command`: collapses the last command's output -- or, scrolled back, the one at the top
+    /// of the screen -- and expands it again. `Terminal.commandToFold` is the rule.
     @discardableResult
     func toggleFoldOfCurrentCommand() -> Bool {
-        let promptRow: Int? = session.withTerminal { t in
-            guard let region = t.command(containingAbsoluteRow: t.viewportTopRow) ?? t.lastFinishedCommand,
-                  !region.outputRows.isEmpty else { return nil }
-            return region.promptRow
+        let commandID: UInt32? = session.withTerminal { t in
+            // The same rule the chevron and the gutter mark use, so ⌘⇧↑ cannot fold a screenful
+            // of blank rows a command has not filled in yet.
+            guard let region = t.commandToFold(),
+                  t.commandHasOutput(atAbsoluteRow: region.promptRow) else { return nil }
+            return region.id
         }
-        guard let promptRow else { return false }
-        folding.toggle(promptRow: promptRow)
-        markDirty()
+        guard let id = commandID, id != 0 else { return false }
+        toggleFold(ofCommand: id, full: NSEvent.modifierFlags.contains(.option))
         return true
     }
 
@@ -1764,7 +2198,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             return true
         }
         session.withTerminal { t in
-            folding.foldLongOutput(in: t, longerThan: Pane.longOutputThreshold)
+            folding.foldLongOutput(in: t, longerThan: Pane.longOutputThreshold, keep: config.foldKeepLines)
         }
         guard !folding.isEmpty else { return false }
         markDirty()
@@ -1810,16 +2244,31 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     private func checkForFinishedCommand() {
         let now = Date.timeIntervalSinceReferenceDate
-        let bottom: (row: Int?, started: Bool) = session.withTerminal { t in
+        let bottom: (row: Int?, started: Bool, runningID: UInt32, previous: CommandRegion?) = session.withTerminal { t in
             guard t.totalRows > 0, let region = t.command(containingAbsoluteRow: t.totalRows - 1)
-            else { return (nil, false) }
-            return (region.promptRow, region.outputStart != nil)
+            else { return (nil, false, 0, nil) }
+            return (region.promptRow, region.outputStart != nil, t.runningCommand?.id ?? 0,
+                    region.outputStart != nil ? t.previousCommand(of: region) : nil)
         }
-        guard let finished = commandWatcher.observe(bottomPromptRow: bottom.row,
-                                                    outputStarted: bottom.started, now: now)
-        else { return }
-        // A command that finished while the user was watching it needs no notification.
-        guard window?.isKeyWindow != true else { return }
+        // The moment a new command starts running is when the one before it is "done with", and
+        // the only moment automatic folding is allowed to touch it.
+        if bottom.started, !commandWasRunning, config.foldLongOutput > 0, let previous = bottom.previous {
+            // The same predicate the chevron and the gutter use, so automatic folding cannot fold
+            // something the user is not allowed to fold by hand.
+            let hasOutput = session.withTerminal { $0.commandHasOutput(atAbsoluteRow: previous.promptRow) }
+            if folding.autoFold(previous, longerThan: config.foldLongOutput,
+                                keep: config.foldKeepLines, hasOutput: hasOutput) {
+                markDirty()
+            }
+        }
+        commandWasRunning = bottom.started
+        guard let finished = commandWatcher.observe(bottomPromptRow: bottom.row, outputStarted: bottom.started,
+                                                    runningID: bottom.runningID, now: now) else { return }
+        let armed = armedNotifications
+        armedNotifications.remove(finished.id)
+        guard CommandNotificationRule.shouldNotify(finished, armed: armed,
+                                                   windowFocused: window?.isKeyWindow == true,
+                                                   minimumDuration: commandWatcher.minimumDuration) else { return }
         let described: (text: String, status: Int32?) = session.withTerminal { t in
             guard let region = t.command(containingAbsoluteRow: finished.promptRow) else { return ("", nil) }
             return (t.commandText(of: region), region.exitStatus)
@@ -1829,12 +2278,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                                    exitStatus: described.status))
     }
 
-    /// Selects the output of the command the viewport is showing.
+    /// Selects the output of the last command -- or, scrolled back, the one at the top of the
+    /// screen. The same rule ⌘⇧↑ folds by, so the two gestures cannot name different commands.
     @discardableResult
     func selectCommandOutput() -> Bool {
         let selection: Selection? = session.withTerminal { t in
-            guard let region = t.command(containingAbsoluteRow: t.viewportTopRow) ?? t.lastFinishedCommand
-            else { return nil }
+            guard let region = t.commandToFold() else { return nil }
             return t.selectionForOutput(of: region)
         }
         guard let selection else { return false }
@@ -1856,6 +2305,126 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
         return true
+    }
+
+    /// `copy_block_markdown`: the last finished command and its output, fenced, for a chat or a ticket.
+    @discardableResult
+    func copyLastCommandAsMarkdown() -> Bool {
+        let markdown: String? = session.withTerminal { t in
+            guard let region = t.lastFinishedCommand else { return nil }
+            return BlockExport.markdown(command: t.commandLine(of: region), output: t.outputText(of: region))
+        }
+        guard let markdown else { return false }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(markdown, forType: .string)
+        return true
+    }
+
+    /// `save_command_output`: the last finished command's output to a file the user names.
+    @discardableResult
+    func saveLastCommandOutput() -> Bool {
+        let id: UInt32? = session.withTerminal { $0.lastFinishedCommand?.id }
+        guard let id else { return false }
+        saveOutput(ofCommand: id)
+        return true
+    }
+
+    /// The output of one block, through a save panel. Shared by the action and the ⋯ menu.
+    func saveOutput(ofCommand id: UInt32) {
+        guard let window else { return }
+        let text: String = session.withTerminal { t in
+            guard let row = t.promptRow(ofCommand: id), let region = t.command(containingAbsoluteRow: row)
+            else { return "" }
+            return t.outputText(of: region)
+        }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "output.txt"
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = []
+        panel.message = "Save this command\u{2019}s output."
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try (text + "\n").write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                // The user asked for a file and there is none. A `try?` here meant a full disk or a
+                // read-only folder looked exactly like a successful save.
+                self?.onSaveFailed?(error)
+            }
+        }
+    }
+
+    /// Told when writing a block's output failed, so the window that owns this pane can say so.
+    /// Set by `TabController`, which already has the alert for a failed scrollback save.
+    var onSaveFailed: ((Error) -> Void)?
+
+    /// Commands whose end the user asked to be told about, by id. See `CommandNotificationRule`.
+    private var armedNotifications: Set<UInt32> = []
+
+    var hasRunningCommand: Bool { session.withTerminal { $0.runningCommand != nil } }
+
+    /// `notify_when_done`: arm a notification for the command running now. Returns false at a prompt.
+    @discardableResult
+    func armNotificationForRunningCommand() -> Bool {
+        guard let id: UInt32 = session.withTerminal({ $0.runningCommand?.id }) else { return false }
+        setNotification(armed: !armedNotifications.contains(id), forCommand: id)
+        return true
+    }
+
+    func setNotification(armed: Bool, forCommand id: UInt32) {
+        if armed { armedNotifications.insert(id) } else { armedNotifications.remove(id) }
+        markDirty()
+    }
+
+    /// Every block action, from the ⋯ menu and the context menu, by command id.
+    func perform(_ action: BlockAction, on id: UInt32) {
+        let region: CommandRegion? = session.withTerminal { t in
+            t.promptRow(ofCommand: id).flatMap { t.command(containingAbsoluteRow: $0) }
+        }
+        guard let region else { NSSound.beep(); return }
+        switch action {
+        case .copyCommand:
+            // `commandLine`, not `commandText`: what belongs on the pasteboard is the command, not
+            // the machine's `PS1` in front of it.
+            let text = session.withTerminal { $0.commandLine(of: region) }
+            copyToPasteboard(text)
+        case .copyOutput:
+            let text = session.withTerminal { $0.outputText(of: region) }
+            copyToPasteboard(text)
+        case .copyMarkdown:
+            let md = session.withTerminal { BlockExport.markdown(command: $0.commandLine(of: region),
+                                                                 output: $0.outputText(of: region)) }
+            copyToPasteboard(md)
+        case .saveOutput: saveOutput(ofCommand: id)
+        case .runAgain:
+            // This one is typed at the shell. With the prompt still attached it ran
+            // `nik@host ~ % make test`, which is not a command.
+            let command = session.withTerminal { $0.commandLine(of: region) }
+            guard !command.isEmpty else { NSSound.beep(); return }
+            send(Array((command + "\r").utf8))
+        case .editAndRun:
+            if !editAndRunCommand(atAbsoluteRow: region.promptRow) { NSSound.beep() }
+        case .toggleFold: toggleFold(ofCommand: id, full: NSEvent.modifierFlags.contains(.option))
+        case .toggleFoldAll: _ = foldAllLongOutput()
+        case .notifyWhenDone(let armed): setNotification(armed: !armed, forCommand: id)
+        }
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        guard !text.isEmpty else { NSSound.beep(); return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    var headerForHoveredBlock: BlockHeader? {
+        guard let row = hoveredBlock?.headerRow else { return nil }
+        return headersOnScreen[row]
+    }
+
+    /// Top-right corner of a visible row, in view coordinates, for placing the overlay.
+    func overlayOrigin(forHeaderRow row: Int) -> NSPoint {
+        let cell = cellSizePoints
+        return NSPoint(x: bounds.width - padding, y: bounds.height - padding - CGFloat(row + 1) * cell.height)
     }
 
     /// The whole buffer -- scrollback and screen -- as text. `Transcript` decides what "as text"
@@ -1899,17 +2468,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// The last transcript built for a session snapshot, and the buffer state it described.
     private var cachedTranscript: (version: UInt64, generation: UInt64, text: String)?
-
-    /// Re-indexes anything produced per absolute row onto the screen rows actually being drawn.
-    private static func place<T>(_ values: [T?], from top: Int, rows: Int,
-                                 screenRow: (Int) -> Int?) -> [T?] {
-        var out = [T?](repeating: nil, count: max(0, rows))
-        for (offset, value) in values.enumerated() {
-            guard let value, let row = screenRow(top + offset), out.indices.contains(row) else { continue }
-            out[row] = value
-        }
-        return out
-    }
 
     /// The `font-family = system` case: macOS's own monospaced face, SF Mono.
     ///
@@ -2040,31 +2598,27 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
     }
 
-    /// The absolute row of the command whose region covers a point, or nil where there is none --
-    /// above the first prompt, or with a shell that emits no marks.
-    private func commandRow(under point: NSPoint) -> Int? {
-        session.withTerminal { terminal in
-            guard terminal.shellEmitsPromptMarks else { return nil }
-            let position = self.position(topLeft(point), in: terminal)
-            return terminal.command(containingAbsoluteRow: position.row)?.promptRow
+    /// One entry of the context menu's block group: which action, on which command.
+    private final class BlockMenuEntry: NSObject {
+        let action: BlockAction
+        let id: UInt32
+        init(action: BlockAction, id: UInt32) { self.action = action; self.id = id }
+    }
+
+    /// The id of the command whose region covers a point, or nil where there is none -- above the
+    /// first prompt, or with a shell that emits no marks.
+    private func commandID(under point: NSPoint) -> UInt32? {
+        session.withTerminal { t in
+            guard t.shellEmitsPromptMarks else { return nil }
+            let position = self.position(topLeft(point), in: t)
+            let id = t.command(containingAbsoluteRow: position.row)?.id ?? 0
+            return id == 0 ? nil : id
         }
     }
 
-    @objc private func editAndRunFromMenu(_ sender: NSMenuItem) {
-        if !editAndRunCommand(atAbsoluteRow: sender.tag) { NSSound.beep() }
-    }
-
-    /// No editor, no confirmation: the command exactly as it ran.
-    @objc private func rerunFromMenu(_ sender: NSMenuItem) {
-        let command: String = session.withTerminal { terminal in
-            guard let region = terminal.command(containingAbsoluteRow: sender.tag) else { return "" }
-            return terminal.commandText(of: region)
-        }
-        guard !command.isEmpty else {
-            NSSound.beep()
-            return
-        }
-        send(Array((command + "\r").utf8))
+    @objc private func blockActionFromMenu(_ sender: NSMenuItem) {
+        guard let entry = sender.representedObject as? BlockMenuEntry else { return }
+        perform(entry.action, on: entry.id)
     }
 
     /// `⌘E`: the last command that ran, in the editor. From the keyboard there is no pointer to
@@ -2130,7 +2684,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func editAndRunCommand(atAbsoluteRow row: Int) -> Bool {
         let command: String = session.withTerminal { terminal in
             guard let region = terminal.command(containingAbsoluteRow: row) else { return "" }
-            return terminal.commandText(of: region)
+            // The editor is prefilled with something the user is about to run, so it gets the
+            // command line without the prompt -- the same text `Run Again` sends.
+            return terminal.commandLine(of: region)
         }
         guard !command.isEmpty else { return false }
         presentCommandEditor(text: command, heading: "Edit and run", runTitle: "Run") {

@@ -134,7 +134,8 @@ private func p(_ s: String) -> KeyBinding? { KeyBinding.parse(s) }
     let table = KeyBindingTable(user: [])
     let expectedUnbound: Set<TerminalAction> = [
         .selectCommandOutput, .copyCommandOutput, .saveScrollback,
-        .foldCommand, .foldAllLongOutput,
+        .foldAllLongOutput,
+        .copyBlockMarkdown, .saveCommandOutput, .notifyWhenDone,
         // Reachable from the menu, the palette and a `keybind =` line, but not worth a default
         // chord: they act on a tab's grouping, which is not something anybody does hourly.
         .ungroupTab, .toggleTabGroup,
@@ -142,4 +143,15 @@ private func p(_ s: String) -> KeyBinding? { KeyBinding.parse(s) }
     for action in ActionCatalog.allMenuActions where !expectedUnbound.contains(action) {
         #expect(table.binding(for: action) != nil, "\(action.configName) lost its shortcut")
     }
+}
+
+@Test func foldCommandHasADefaultChord() {
+    let table = KeyBindingTable(user: [])
+    #expect(table.binding(for: .foldCommand) == KeyBinding(key: .up, modifiers: [.cmd, .shift], action: .foldCommand))
+}
+
+@Test func theNewBlockActionsParseFromTheConfigSpelling() {
+    #expect(p("cmd+shift+m=copy_block_markdown")?.action == .copyBlockMarkdown)
+    #expect(p("cmd+shift+s=save_command_output")?.action == .saveCommandOutput)
+    #expect(p("cmd+shift+n=notify_when_done")?.action == .notifyWhenDone)
 }

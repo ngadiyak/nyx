@@ -20,14 +20,20 @@ private func blockPalette() -> Palette {
 private func render(cols: Int = 8, rows: Int = 3, padding: Int,
                     spines: [(rows: Range<Int>, color: RGB)] = [],
                     summaries: [(row: Int, text: String, color: RGB)] = [],
-                    notes: [String?] = []) throws -> (FontSet, Int, (Int, Int) -> Pixel) {
+                    notes: [String?] = [],
+                    highlighted: Range<Int>? = nil,
+                    selection: [Range<Int>?] = [],
+                    lines givenLines: [Row]? = nil,
+                    cursor: Cursor? = nil) throws -> (FontSet, Int, (Int, Int) -> Pixel) {
     let device = try #require(MTLCreateSystemDefaultDevice())
     let fonts = FontSet(family: "Menlo", pointSize: 12, scale: 1)
     let r = try Renderer(device: device, fonts: fonts)
-    let lines = Array(repeating: Row(cols: cols), count: rows)
+    let lines = givenLines ?? Array(repeating: Row(cols: cols), count: rows)
     let frame = RenderFrame(cols: cols, rows: rows, lines: lines, graphemes: [], palette: blockPalette(),
-                            cursor: nil, cursorShape: .block, focused: true, preedit: nil,
-                            rowNotes: notes, blockSpines: spines, blockSummaries: summaries)
+                            cursor: cursor, cursorShape: .block, focused: true, preedit: nil,
+                            selection: selection,
+                            rowNotes: notes, blockSpines: spines, blockSummaries: summaries,
+                            highlightedRows: highlighted)
     let w = fonts.metrics.width * cols + padding * 2, h = fonts.metrics.height * rows + padding * 2
     let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: w, height: h,
                                                         mipmapped: false)
@@ -76,4 +82,85 @@ private let spineColor = RGB(0, 255, 0)
     let y = fonts.metrics.height / 2
     #expect(px(1, y) != Pixel(r: 0, g: 255, b: 0))
     #expect(px(2, y) != Pixel(r: 0, g: 255, b: 0))
+}
+
+/// The tint sits under the glyphs across the block's rows and nowhere else.
+@Test func hoveredRowsAreTintedAndOthersAreNot() throws {
+    let (fonts, w, px) = try render(padding: 0, highlighted: 0..<2)
+    let mid = w / 2
+    let tinted = px(mid, fonts.metrics.height / 2)
+    let plain = px(mid, fonts.metrics.height * 2 + fonts.metrics.height / 2)
+    #expect(tinted != Pixel(r: 0, g: 0, b: 0))
+    #expect(plain == Pixel(r: 0, g: 0, b: 0))
+}
+
+/// A selection (or a search hit, or a coloured cell, or the block cursor) is a background instance
+/// on top of the tint, not under it: it must stay visible on a hovered row, and only the cells with
+/// nothing else painted on them show the tint through.
+@Test func theTintNeverHidesWhatIsPaintedOnTopOfIt() throws {
+    let (fonts, _, px) = try render(padding: 0, highlighted: 0..<1, selection: [0..<2])
+    let y = fonts.metrics.height / 2
+    let selectedX = fonts.metrics.width / 2
+    let plainX = fonts.metrics.width * 4 + fonts.metrics.width / 2
+    #expect(px(selectedX, y) == Pixel(r: blockPalette().selectionBackground.r,
+                                      g: blockPalette().selectionBackground.g,
+                                      b: blockPalette().selectionBackground.b))
+    let tint = blockPalette().blockHoverBackground
+    #expect(px(plainX, y) == Pixel(r: tint.r, g: tint.g, b: tint.b))
+}
+
+/// The chevron is a real glyph at the end of the summary, in the summary's colour.
+@Test func theSummaryEndsInAChevron() throws {
+    let (fonts, w, px) = try render(cols: 12, padding: 0,
+                                    summaries: [(row: 0, text: "8.8s \u{25BE}", color: RGB(0, 255, 0))])
+    let lastCell = (w - fonts.metrics.width)..<w
+    var ink = 0
+    for x in lastCell { for y in 0..<fonts.metrics.height where px(x, y).g > 100 { ink += 1 } }
+    #expect(ink > 4)
+}
+
+/// The caret with a fold on screen.
+///
+/// `Pane.render()` used to hand the renderer `screen.cursor` — a *screen* row — while every line in
+/// the frame is a display slot. With a fold hiding rows above the prompt those are different
+/// numbers, and the block cursor was drawn as many rows below the prompt as the fold had hidden
+/// above it: nine, in the product manager's session. This builds the frame exactly the way the pane
+/// does, mapping the caret's absolute row through the same display rows the lines came from.
+@Test func theBlockCursorLandsOnThePromptWhenAFoldIsOnScreen() throws {
+    let cols = 12, rows = 6
+    let t = Terminal(cols: cols, rows: rows, scrollbackLimit: 200)
+    func mark(_ letter: String, _ status: Int32? = nil) -> String {
+        "\u{1b}]133;\(status.map { "\(letter);\($0)" } ?? letter)\u{7}"
+    }
+    t.feed(mark("A") + "$ " + mark("B") + "build\r\n" + mark("C"))
+    for i in 1...8 { t.feed("out \(i)\r\n") }
+    t.feed(mark("D", 0))
+    t.feed(mark("A") + "$ ")
+
+    var folding = OutputFolding()
+    folding.fold(try #require(t.command(containingAbsoluteRow: 0)).id, .all)
+    let top = t.viewportTopRow
+    let display = t.displayRows(from: top, count: rows, folding: folding)
+    let lines = display.map { entry -> Row in
+        switch entry {
+        case .row(let absolute): return t.absoluteRow(absolute) ?? Row(cols: cols)
+        case .fold(_, let hidden, let status): return t.foldPlaceholderRow(hiddenRows: hidden, status: status)
+        }
+    } + Array(repeating: Row(cols: cols), count: max(0, rows - display.count))
+
+    let caretAbsolute = t.scrollback.count + t.screen.cursor.y
+    let slot = try #require(DisplayRows.cursorSlot(absoluteRow: caretAbsolute, in: display))
+    let promptSlot = try #require(display.firstIndex { $0 == .row(caretAbsolute) })
+    #expect(slot == promptSlot)
+    // The defect it replaces: the raw screen row is a different slot entirely.
+    #expect(t.screen.cursor.y != slot)
+
+    let (fonts, _, px) = try render(cols: cols, rows: rows, padding: 4,
+                                    lines: lines, cursor: Cursor(x: t.screen.cursor.x, y: slot))
+    let m = fonts.metrics
+    let cursorCell = { (slot: Int) -> Pixel in
+        px(4 + t.screen.cursor.x * m.width + m.width / 2, 4 + slot * m.height + m.height / 2)
+    }
+    #expect(cursorCell(slot) == Pixel(r: 0, g: 0, b: 255))            // the palette's cursor colour
+    #expect(cursorCell(t.screen.cursor.y) != Pixel(r: 0, g: 0, b: 255))
 }

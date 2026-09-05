@@ -134,6 +134,22 @@ private func session() -> Terminal {
     #expect(region.exitStatus == 1)
 }
 
+/// The auto-fold trigger needs "the command before this one", not "the last one that finished" --
+/// at the instant a new command starts, the region *containing* its own first output row is
+/// already the new command, so `lastFinishedCommand` would answer with the wrong one.
+@Test func previousCommandIsTheOneWhoseRegionEndsJustAbove() {
+    let t = session()
+    let false_ = try! #require(t.command(containingAbsoluteRow: 2))
+    let previous = try! #require(t.previousCommand(of: false_))
+    #expect(previous.promptRow == 0)
+}
+
+@Test func theFirstCommandHasNoPreviousCommand() {
+    let t = session()
+    let first = try! #require(t.command(containingAbsoluteRow: 0))
+    #expect(t.previousCommand(of: first) == nil)
+}
+
 @Test func theOutputSelectionCoversExactlyTheOutputRows() {
     let t = session()
     let region = try! #require(t.command(containingAbsoluteRow: 0))
@@ -315,4 +331,94 @@ private func session() -> Terminal {
     let row = try! #require((0..<t.totalRows).first { t.promptMarks(atAbsoluteRow: $0).contains(.promptStart) })
     let region = try! #require(t.command(containingAbsoluteRow: row))
     #expect(abs((region.duration ?? 0) - 7) < 0.001)
+}
+
+// MARK: - The command line, without the shell's prompt
+
+/// A real prompt is not `$ `. `nik@host ~ %` in front of every copied command is what "Copy
+/// Command" used to produce, and "Run This Command Again" sent that whole string to the shell.
+private func promptedSession(cols: Int = 40, command: String = "make test") -> Terminal {
+    let t = makeTerminal(cols: cols, rows: 6, scrollback: 100)
+    t.feed(mark("A") + "nik@host ~ % " + mark("B") + command + "\r\n" + mark("C") + "ok\r\n" + mark("D", 0))
+    return t
+}
+
+@Test func theCommandLineDropsTheShellsOwnPrompt() {
+    let t = promptedSession()
+    let region = try! #require(t.command(containingAbsoluteRow: 0))
+    #expect(t.commandLine(of: region) == "make test")
+    // `commandText` is unchanged: a notification wants the host and directory for context.
+    #expect(t.commandText(of: region).contains("nik@host"))
+}
+
+/// A command longer than the window is the case "Run Again" must not corrupt: the two rows are one
+/// line, so they are joined with nothing between them rather than with a space.
+@Test func aWrappedCommandLineIsJoinedBackTogether() {
+    let t = promptedSession(cols: 20, command: "echo abcdefghij")
+    let region = try! #require(t.command(containingAbsoluteRow: 0))
+    #expect(t.commandLine(of: region) == "echo abcdefghij")
+}
+
+/// A shell that emits `A` and `C` but no `B` says nothing about where its prompt ends, so there is
+/// nothing to slice at and the older, wider answer is better than an empty one.
+@Test func withoutAnInputMarkTheCommandLineFallsBackToTheWholeRow() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 100)
+    t.feed(mark("A") + "nik@host ~ % make test\r\n" + mark("C") + "ok\r\n" + mark("D", 0))
+    let region = try! #require(t.command(containingAbsoluteRow: 0))
+    #expect(t.commandLine(of: region) == t.commandText(of: region))
+    #expect(t.commandLine(of: region).contains("nik@host"))
+}
+
+/// The prompt the user is typing at has no output yet; asking for its command line must not read
+/// past the end of the buffer.
+@Test func theCommandLineOfAPromptWithNothingTypedIsEmpty() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 100)
+    t.feed(mark("A") + "nik@host ~ % " + mark("B"))
+    let region = try! #require(t.command(containingAbsoluteRow: 0))
+    #expect(t.commandLine(of: region).isEmpty)
+}
+
+// MARK: - Which command a fold gesture acts on
+
+/// A 20-row build, then a three-row curl, then the prompt the user is typing at.
+private func buildThenCurl() -> Terminal {
+    let t = makeTerminal(cols: 40, rows: 10, scrollback: 200)
+    t.feed(mark("A") + "$ " + mark("B") + "make\r\n" + mark("C"))
+    for i in 1...20 { t.feed("build \(i)\r\n") }
+    t.feed(mark("D", 0))
+    t.feed(mark("A") + "$ " + mark("B") + "curl\r\n" + mark("C"))
+    for i in 1...3 { t.feed("json \(i)\r\n") }
+    t.feed(mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    return t
+}
+
+/// The top screen row at the bottom of a session is somewhere in the middle of the build's output,
+/// so folding "the command at the top" folded the build the user was not looking at.
+@Test func atTheBottomTheFoldTargetsTheLastCommand() throws {
+    let t = buildThenCurl()
+    let region = try #require(t.commandToFold())
+    #expect(t.commandLine(of: region) == "curl")
+}
+
+@Test func aRunningCommandIsTheOneTheBottomFolds() throws {
+    let t = buildThenCurl()
+    t.feed(mark("A") + "$ " + mark("B") + "sleep 10\r\n" + mark("C") + "starting\r\n")
+    let region = try #require(t.commandToFold())
+    #expect(t.commandLine(of: region) == "sleep 10")
+}
+
+/// Scrolled back, the top row is a deliberate choice and means what it says.
+@Test func scrolledBackTheFoldTargetsTheCommandAtTheTopOfTheScreen() throws {
+    let t = buildThenCurl()
+    _ = t.scrollToAbsoluteRow(5, margin: 0)
+    #expect(t.viewportOffset > 0)
+    let region = try #require(t.commandToFold())
+    #expect(t.commandLine(of: region) == "make")
+}
+
+@Test func withoutShellIntegrationThereIsNothingToFold() {
+    let t = makeTerminal(cols: 40, rows: 10, scrollback: 100)
+    t.feed("hello\r\n")
+    #expect(t.commandToFold() == nil)
 }

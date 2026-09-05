@@ -179,8 +179,15 @@ final class TabController: NSViewController, NSMenuItemValidation {
         { [weak self] seed in
             guard let self else { return nil }
             do {
-                return try Pane(.zero, config: self.config, workingDirectory: seed.workingDirectory,
-                                restoringTranscript: seed.transcript)
+                let pane = try Pane(.zero, config: self.config, workingDirectory: seed.workingDirectory,
+                                    restoringTranscript: seed.transcript)
+                // Every pane in this window is made here, splits included, so this is the one place
+                // a failed "Save Output…" needs wiring to reach the alert.
+                pane.onSaveFailed = { [weak self] error in
+                    guard let window = self?.view.window else { return }
+                    self?.reportSaveFailure(error, in: window, what: "this command\u{2019}s output")
+                }
+                return pane
             } catch {
                 self.paneCreationFailure = error
                 return nil
@@ -974,10 +981,11 @@ final class TabController: NSViewController, NSMenuItemValidation {
         return container
     }
 
-    /// A failed write is worth saying out loud: the user asked for a file and there is none.
-    private func reportSaveFailure(_ error: Error, in window: NSWindow) {
+    /// A failed write is worth saying out loud: the user asked for a file and there is none. Shared
+    /// with each pane's "Save Output…", which reaches it through `Pane.onSaveFailed`.
+    private func reportSaveFailure(_ error: Error, in window: NSWindow, what: String = "the scrollback") {
         let alert = NSAlert()
-        alert.messageText = "Could not save the scrollback."
+        alert.messageText = "Could not save \(what)."
         alert.informativeText = error.localizedDescription
         alert.addButton(withTitle: "OK")
         alert.beginSheetModal(for: window, completionHandler: nil)
@@ -1340,6 +1348,9 @@ extension TabController: ActionTarget {
         case .commandPalette: toggleCommandPalette()
         case .foldCommand: if focusedPane?.toggleFoldOfCurrentCommand() != true { NSSound.beep() }
         case .foldAllLongOutput: if focusedPane?.foldAllLongOutput() != true { NSSound.beep() }
+        case .copyBlockMarkdown: if focusedPane?.copyLastCommandAsMarkdown() != true { NSSound.beep() }
+        case .saveCommandOutput: if focusedPane?.saveLastCommandOutput() != true { NSSound.beep() }
+        case .notifyWhenDone: if focusedPane?.armNotificationForRunningCommand() != true { NSSound.beep() }
         case .saveScrollback: saveScrollback()
 
         case .copy: focusedPane?.copy(nil)
@@ -1386,9 +1397,11 @@ extension TabController: ActionTarget {
             // Nothing to step through until ⌘F has been pressed and something typed.
             return focusedPane?.isSearching ?? false
         case .previousPrompt, .nextPrompt, .selectCommandOutput, .copyCommandOutput,
-             .foldCommand, .foldAllLongOutput:
+             .foldCommand, .foldAllLongOutput, .copyBlockMarkdown, .saveCommandOutput:
             // A shell with no integration emits no marks, and these do nothing without them.
             return focusedPane?.hasPromptMarks ?? false
+        case .notifyWhenDone:
+            return focusedPane?.hasRunningCommand ?? false
         case .focusLeft, .focusRight, .focusUp, .focusDown,
              .growLeft, .growRight, .growUp, .growDown, .toggleZoom:
             return (panes?.paneCount ?? 0) > 1

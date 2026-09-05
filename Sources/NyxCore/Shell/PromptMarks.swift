@@ -33,21 +33,43 @@ public struct CommandRegion: Equatable {
     public let promptRow: Int
     /// Where the command's output begins, if the shell marked it.
     public let outputStart: Int?
-    /// The last row belonging to this command -- the row before the next prompt, or the end of the
-    /// buffer for the command still running.
+    /// The last row belonging to this command -- the row before the next prompt, or, for the last
+    /// command in the buffer, the last row anything has actually been written to.
+    ///
+    /// The clamp matters because "the end of the buffer" for a running command is the whole unwritten
+    /// screen below its cursor. `npm install` two lines in owned forty rows, so folding it reported
+    /// "… 38 lines hidden" for two real lines, and every further line it printed landed inside the
+    /// hidden range: the screen stopped changing.
     public let endRow: Int
     /// nil when the command is still running, or the shell reported no status.
     public let exitStatus: Int32?
     /// How long it ran, in seconds. nil while it is still running, or without shell integration.
     public let duration: Double?
+    /// The prompt row's `Row.commandID`. 0 for a region built before ids existed, so an old call
+    /// site that does not pass one still compiles.
+    public let id: UInt32
+    /// The clock reading `Terminal.runningCommand` recorded when this command started, carried
+    /// over only while it is still the one running. nil once it has finished, or for a command
+    /// built before `runningCommand` existed to ask.
+    public let startedAt: Double?
+
+    /// No prompt follows this command, so it is the last one in the buffer and `endRow` is a clamp
+    /// rather than a boundary: everything below it is unwritten screen that belongs to nobody. A
+    /// walk over the buffer's commands has to stop here rather than step past `endRow` and find
+    /// this same command again.
+    public let isLastInBuffer: Bool
 
     public init(promptRow: Int, outputStart: Int?, endRow: Int, exitStatus: Int32?,
-                duration: Double? = nil) {
+                duration: Double? = nil, id: UInt32 = 0, startedAt: Double? = nil,
+                isLastInBuffer: Bool = false) {
         self.promptRow = promptRow
         self.outputStart = outputStart
         self.endRow = endRow
         self.exitStatus = exitStatus
         self.duration = duration
+        self.id = id
+        self.startedAt = startedAt
+        self.isLastInBuffer = isLastInBuffer
     }
 
     /// The rows holding just the output, empty when the command produced none.
@@ -59,6 +81,20 @@ public struct CommandRegion: Equatable {
     /// A command the shell reported a non-zero status for. `nil` status is not failure -- it is a
     /// command still running, or a shell that reports `D` without one.
     public var failed: Bool { (exitStatus ?? 0) != 0 }
+
+    /// The one bit every piece of a block's chrome colours itself by. Kept here so the spine, the
+    /// gutter, the summary and a fold placeholder cannot each derive it a different way -- a
+    /// running block's placeholder was grey while its own spine was amber.
+    public var status: BlockStatus {
+        if failed { return .failed }
+        return (outputStart != nil && exitStatus == nil && duration == nil) ? .running : .succeeded
+    }
+}
+
+/// How a command ended, or that it has not. `.succeeded` covers a command that reported nothing:
+/// a shell that emits `D` without a status has not said anything went wrong.
+public enum BlockStatus: Equatable {
+    case running, succeeded, failed
 }
 
 /// How a duration is written where a person will read it.
@@ -130,15 +166,36 @@ public extension Terminal {
         let start = promptMarks(atAbsoluteRow: row).contains(.promptStart) ? row : previousPrompt(before: row)
         guard let start else { return nil }
         let next = nextPrompt(after: start)
-        let end = (next ?? totalRows) - 1
+        // Where the marks may be looked for: the whole region as the buffer describes it. Kept
+        // unclamped so that "the shell said this command started" -- `outputStart != nil`, which the
+        // command watcher, the notifications and the spine all read -- means the same thing it
+        // always did for a command that has begun and printed nothing yet.
+        let searchEnd = (next ?? totalRows) - 1
+        // Where the command *ends*, which is a different question. The last command in the buffer
+        // ends at the last row anything has been written to, not at the end of the buffer: the rows
+        // below its cursor are unwritten screen. Counting them made a running command's region forty
+        // rows long two lines in, so folding it said "… 38 lines hidden" for two real lines and then
+        // swallowed everything it printed afterwards -- the screen stopped changing.
+        let end: Int
+        if let next {
+            end = next - 1
+        } else {
+            var last = min(totalRows - 1, scrollback.count + screen.cursor.y)
+            // The cursor sits on the row the *next* character will go on. While that row is still
+            // empty the command has not written it, and counting it would put one blank line inside
+            // every fold of a command that is between lines. Exactly one step back, because a
+            // command that printed blank lines really did print them.
+            if last > start, absoluteRow(last)?.isBlank ?? true { last -= 1 }
+            end = last
+        }
 
         // Searched strictly after the prompt row, for the same ownership reason as the status
         // below: a command that produced no output leaves its `C` on the row its successor's
         // prompt lands on, and counting it would give the new prompt an output region made of
         // everything below it.
         var outputStart: Int?
-        if start < end {
-            for r in (start + 1)...end where promptMarks(atAbsoluteRow: r).contains(.outputStart) {
+        if start < searchEnd {
+            for r in (start + 1)...searchEnd where promptMarks(atAbsoluteRow: r).contains(.outputStart) {
                 outputStart = r
                 break
             }
@@ -157,8 +214,23 @@ public extension Terminal {
                 break
             }
         }
+        let id = absoluteRow(start)?.commandID ?? 0
         return CommandRegion(promptRow: start, outputStart: outputStart, endRow: max(start, end),
-                             exitStatus: status, duration: absoluteRow(start)?.commandDuration)
+                             exitStatus: status, duration: absoluteRow(start)?.commandDuration,
+                             id: id, startedAt: runningCommand?.id == id ? runningCommand?.startedAt : nil,
+                             isLastInBuffer: next == nil)
+    }
+
+    /// The command whose region ends just above `region`'s prompt, or nil for the first command.
+    ///
+    /// Not `lastFinishedCommand`: at the instant a new command starts running, the region *containing
+    /// the bottom row* is already the one that just started -- its own output has begun -- so asking
+    /// "what finished last" answers with the command that is running right now instead of the one
+    /// before it. Walking to the row above the prompt is the only way to name the one that actually
+    /// finished.
+    func previousCommand(of region: CommandRegion) -> CommandRegion? {
+        guard region.promptRow > 0 else { return nil }
+        return command(containingAbsoluteRow: region.promptRow - 1)
     }
 
     /// The most recently finished command -- what "copy the last command's output" means.
@@ -173,6 +245,25 @@ public extension Terminal {
             row = region.promptRow - 1
         }
         return nil
+    }
+
+    /// Which command a fold gesture acts on -- ⌘⇧↑, and "select the command's output" with it.
+    ///
+    /// "The command containing the top screen row" is right only when the user put that row there.
+    /// At the bottom of a session it is wherever the last few commands happened to leave the
+    /// scroll: after a twenty-row build and a three-row `curl`, the top row is in the middle of the
+    /// build's output, so ⌘⇧↑ folded the build while the user was looking at the curl. At the
+    /// bottom the answer is *this* command -- the one running, if one is, so a noisy build can be
+    /// folded to a live tail while it runs, else the last one that finished. Scrolled back, the top
+    /// row is a deliberate choice and still means what it says.
+    func commandToFold() -> CommandRegion? {
+        guard shellEmitsPromptMarks else { return nil }
+        guard viewportOffset == 0 else { return command(containingAbsoluteRow: viewportTopRow) }
+        if let running = runningCommand, running.id != 0,
+           let region = command(containingAbsoluteRow: totalRows - 1), region.id == running.id {
+            return region
+        }
+        return lastFinishedCommand
     }
 
     /// The selection covering a command's output, or nil when it produced none.

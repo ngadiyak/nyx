@@ -102,6 +102,11 @@ public final class Terminal: TerminalActions {
     func bumpContentVersion() { contentVersion &+= 1 }
     /// When the running command began, for the duration written on its prompt row at `D`.
     private var commandStartedAt: Double?
+    /// The id the next `OSC 133 ; A` will stamp on its row. See `Row.commandID`.
+    private var nextCommandID: UInt32 = 1
+    /// The id of the command whose `C` mark has arrived and whose `D` has not, with the clock
+    /// reading when it started. nil at a prompt, and after `D`.
+    public private(set) var runningCommand: (id: UInt32, startedAt: Double)?
     /// Injectable so a test can run a command in a controlled number of seconds rather than in
     /// however long the test itself took.
     public var now: () -> Double = { Date.timeIntervalSinceReferenceDate }
@@ -673,6 +678,7 @@ public final class Terminal: TerminalActions {
         palette = initialPalette
         viewportOffset = 0
         shellEmitsPromptMarks = false
+        runningCommand = nil
         scrollbackGeneration &+= 1
         touch()
     }
@@ -1175,12 +1181,24 @@ public final class Terminal: TerminalActions {
             // Where the prompt ends and typing begins, on the row it happens on.
             if mark == 2 { screen.rows[screen.cursor.y].inputStartColumn = screen.cursor.x }
             shellEmitsPromptMarks = true
+            if mark == 1 && screen.rows[screen.cursor.y].commandID == 0 {
+                screen.rows[screen.cursor.y].commandID = nextCommandID
+                nextCommandID &+= 1
+            }
             // `D;<status>` reports how the command ended. Without it a failed command is
             // indistinguishable from one that succeeded, which is most of the point of the mark.
             // `C`: the command starts running. The clock starts here rather than at the prompt, so
             // a terminal left open overnight does not report the first command of the morning as a
             // nine-hour job.
-            if mark == 4 { commandStartedAt = now() }
+            if mark == 4 {
+                commandStartedAt = now()
+                var owner: UInt32 = 0
+                withOwningPromptRow { row in owner = self.absoluteRow(row)?.commandID ?? 0 }
+                // The `C` normally lands on the row after the command line, but a command that
+                // prints nothing before its prompt returns can put it on the prompt row itself.
+                if owner == 0 { owner = screen.rows[screen.cursor.y].commandID }
+                runningCommand = owner == 0 ? nil : (owner, commandStartedAt!)
+            }
             if mark == 8 {
                 let fields = rest.split(separator: ";", omittingEmptySubsequences: false)
                 let status = fields.count > 1 ? Int32(fields[1]) : nil
@@ -1193,6 +1211,7 @@ public final class Terminal: TerminalActions {
                     recordCommandDuration(now() - started)
                     commandStartedAt = nil
                 }
+                runningCommand = nil
             }
         default:
             break
@@ -1323,6 +1342,28 @@ public final class Terminal: TerminalActions {
             }
             row -= 1
         }
+    }
+
+    /// The id on the first prompt in the buffer, or 0 when there is none. Walks from row 0 to the
+    /// first prompt, which is bounded by one command's output and is asked only when there are
+    /// folds or armed notifications to prune.
+    public var oldestCommandID: UInt32 {
+        for row in 0..<totalRows {
+            if let id = absoluteRow(row)?.commandID, id != 0 { return id }
+        }
+        return 0
+    }
+
+    /// The absolute row of the prompt carrying `id`, or nil once it has left the buffer. Visible
+    /// rows first: a click or a menu item almost always names a command on screen.
+    public func promptRow(ofCommand id: UInt32) -> Int? {
+        guard id != 0 else { return nil }
+        let top = max(0, viewportTopRow)
+        for row in top..<min(totalRows, top + rows) where absoluteRow(row)?.commandID == id { return row }
+        for row in stride(from: totalRows - 1, through: 0, by: -1) where absoluteRow(row)?.commandID == id {
+            return row
+        }
+        return nil
     }
 
     private func handlePaletteOSC(_ rest: String) {

@@ -56,6 +56,9 @@ public extension TerminalAction {
         case .toggleTabGroup: return "Collapse or Expand Group"
         case .foldCommand: return "Fold Command Output"
         case .foldAllLongOutput: return "Fold All Long Output"
+        case .copyBlockMarkdown: return "Copy Last Command as Markdown"
+        case .saveCommandOutput: return "Save Last Command Output\u{2026}"
+        case .notifyWhenDone: return "Notify When the Running Command Finishes"
         case .saveScrollback: return "Save Scrollback\u{2026}"
         }
     }
@@ -101,9 +104,10 @@ public enum ActionCatalog {
         Section(title: "Go", groups: [
             Group([.commandPalette]),
             Group([.previousPrompt, .nextPrompt]),
-            Group([.selectCommandOutput, .copyCommandOutput]),
+            Group([.selectCommandOutput, .copyCommandOutput, .copyBlockMarkdown, .saveCommandOutput]),
             Group([.editAndRunCommand]),
             Group([.foldCommand, .foldAllLongOutput]),
+            Group([.notifyWhenDone]),
         ]),
         Section(title: "View", groups: [
             Group([.fontBigger, .fontSmaller, .fontReset]),

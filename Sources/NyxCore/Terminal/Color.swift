@@ -343,6 +343,54 @@ public struct Palette: Equatable {
         return RGB.blend(foreground, into: background, amount: amount)
     }
 
+    /// The tint behind every row of the block under the pointer: says "these rows are one thing"
+    /// without competing with the selection colour, which is chosen to be seen. Background is the
+    /// dominant colour, blended toward `accent` a little and pushed further only in themes where a
+    /// little is invisible, too close to the selection, or too close to the foreground to read text
+    /// on top of.
+    ///
+    /// Three mistakes this shape prevents:
+    ///
+    /// - `RGB.blend(a, into: b, amount:)` keeps mostly `a` at a small amount. `noteForeground`
+    ///   above wants *text*, so it puts `foreground` first; a fill wants the opposite -- putting
+    ///   `foreground` first here made the result read as foreground-on-foreground, 1.1:1, because
+    ///   the "little" that bled in was the background, not the foreground.
+    /// - Blending toward `foreground` (correctly, as the minority colour this time) still fails
+    ///   one-dark: its selection is a step of grey on the very foreground/background axis this
+    ///   blend walks, so every amount is either too close to the background or too close to the
+    ///   selection -- there is no point on that line that clears both.
+    /// - Blending toward `cursor` fixes one-dark (`cursor == foreground` in most built-ins, so no
+    ///   behaviour change there; one-dark's cursor happens to carry its own hue, off the axis) but
+    ///   is not *vetted* -- a user theme is free to set a saturated `cursor` at the foreground's own
+    ///   luminance, which reads as black-on-black at 1:1 contrast for the loop's lower amounts. Only
+    ///   `accent`, already load-bearing for `panelSelectionBackground`, has been screened for chroma,
+    ///   distance from the foreground and contrast against the background, with a fallback to the
+    ///   theme's own blue when the cursor does not clear those.
+    ///
+    /// The loop checks all three floors together first (background, selection, foreground contrast)
+    /// and takes the first amount that clears every one. When no amount does, the selection floor is
+    /// the one to give up -- a tint that is merely readable but happens to sit near the selection's
+    /// colour is a smaller defect than a tint nobody can read text on. When even that combination
+    /// fails for every amount tried, the smallest one is still what ships: some tint, however faint,
+    /// beats none.
+    public var blockHoverBackground: RGB {
+        let amounts = Array(stride(from: 0.06, through: 0.20, by: 0.02))
+        func candidate(_ amount: Double) -> RGB { RGB.blend(background, into: accent, amount: amount) }
+        func clearsBackgroundAndContrast(_ c: RGB) -> Bool {
+            RGB.distance(c, background) >= 4 && RGB.contrast(foreground, c) >= 4.5
+        }
+        if let amount = amounts.first(where: { a in
+            let c = candidate(a)
+            return clearsBackgroundAndContrast(c) && RGB.distance(c, selectionBackground) >= 8
+        }) {
+            return candidate(amount)
+        }
+        if let amount = amounts.first(where: { clearsBackgroundAndContrast(candidate($0)) }) {
+            return candidate(amount)
+        }
+        return candidate(0.06)
+    }
+
     public func resolve(_ c: Color, isForeground: Bool) -> RGB {
         switch c.kind {
         case .default: return isForeground ? foreground : background

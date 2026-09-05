@@ -182,3 +182,168 @@ private func session() -> Terminal {
     let t = makeTerminal(cols: 40, rows: 6).run("$ build\r\ndone")
     #expect(t.durationNotes(rows: 6).allSatisfy { $0 == nil })
 }
+
+// MARK: - What a mark says it does
+
+// Pressing a mark folds the block; ⌥-click selects its output. The label promised the opposite.
+
+@Test func aMarkSaysItFoldsAndHowToSelectInstead() {
+    #expect(GutterMarkLabel.text(mark: .succeeded, folded: false, hasOutput: true, line: 4)
+        == "Command on line 4 succeeded. Fold its output. Option-click selects its output.")
+    #expect(GutterMarkLabel.text(mark: .failed, folded: true, hasOutput: true, line: 1)
+        == "Command on line 1 failed. Unfold its output. Option-click selects its output.")
+}
+
+@Test func aRunningCommandsMarkSaysSo() {
+    #expect(GutterMarkLabel.text(mark: .running, folded: false, hasOutput: true, line: 2)
+        == "Command on line 2 is still running. Fold its output. Option-click selects its output.")
+}
+
+/// `cd ..`, `export FOO=1`, `true`: the dot is a record of what happened, and there is nothing to
+/// fold and nothing to select, so it promises neither. It used to offer both and then beep.
+@Test func aMarkOnACommandThatPrintedNothingPromisesNothing() {
+    #expect(GutterMarkLabel.text(mark: .succeeded, folded: false, hasOutput: false, line: 3)
+        == "Command on line 3 succeeded.")
+    #expect(GutterMarkLabel.text(mark: .failed, folded: false, hasOutput: false, line: 3)
+        == "Command on line 3 failed.")
+}
+
+@Test func onlyAMarkWithOutputCanBePressed() {
+    #expect(GutterMark.succeeded.isActionable(hasOutput: true))
+    #expect(!GutterMark.succeeded.isActionable(hasOutput: false))
+    // Drawn and not pressable at once: a command that has started and printed nothing.
+    #expect(GutterMark.running.isDrawn(hasStarted: true))
+    #expect(!GutterMark.running.isActionable(hasOutput: false))
+}
+
+/// The prompt you are typing at carries a prompt mark and no status, so it reads as running. A ring
+/// there would sit beside an idle cursor for the rest of the session. What tells the two apart is
+/// the shell's `C` -- not whether anything has been printed, because a `sleep 10` has printed
+/// nothing and is exactly what the ring is for.
+@Test func aRunningMarkIsDrawnOnlyOnceTheShellSaidTheCommandStarted() {
+    #expect(!GutterMark.running.isDrawn(hasStarted: false))
+    #expect(GutterMark.running.isDrawn(hasStarted: true))
+    #expect(GutterMark.succeeded.isDrawn(hasStarted: false))   // a record, whatever it printed
+    #expect(GutterMark.failed.isDrawn(hasStarted: false))
+}
+
+// MARK: - Which commands printed anything
+
+@Test func aCommandThatPrintedNothingHasNoOutput() {
+    let t = makeTerminal(cols: 40, rows: 8, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "cd ..\r\n" + mark("C") + mark("D", 0))
+    t.feed(mark("A") + "$ " + mark("B") + "ls\r\n" + mark("C") + "a.txt\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    #expect(!t.commandHasOutput(atAbsoluteRow: 0))          // cd ..
+    #expect(t.commandHasOutput(atAbsoluteRow: 1))           // ls
+    #expect(!t.commandHasOutput(atAbsoluteRow: 3))          // the prompt being typed at
+}
+
+/// The cheap test is *stricter* than the region -- it also rejects output rows that are all blank --
+/// so wherever it says yes the region must too. The other direction is the point of the rule and is
+/// covered by the running-command cases below.
+@Test func theCheapOutputTestIsNeverLooserThanTheRegion() {
+    let t = makeTerminal(cols: 20, rows: 10, scrollback: 100)
+    // A wrapped command line, so the walk crosses rows that carry no marks at all.
+    t.feed(mark("A") + "$ " + mark("B") + "echo abcdefghijklmnop\r\n" + mark("C") + mark("D", 0))
+    t.feed(mark("A") + "$ " + mark("B") + "ls\r\n" + mark("C") + "a.txt\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ " + mark("B") + "echo\r\n" + mark("C") + "\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    var sawADivergence = false
+    for row in 0..<t.totalRows where t.promptMarks(atAbsoluteRow: row).contains(.promptStart) {
+        let regionHas = !(t.command(containingAbsoluteRow: row)?.outputRows.isEmpty ?? true)
+        let cheap = t.commandHasOutput(atAbsoluteRow: row)
+        if cheap { #expect(regionHas, "row \(row): cheap said yes where the region said no") }
+        if regionHas && !cheap { sawADivergence = true }
+    }
+    // The `echo` whose only output row is empty is exactly where the two part company.
+    #expect(sawADivergence)
+}
+
+// MARK: - Output means something on the rows, not just a mark saying it began
+
+// `OSC 133;C` arrives when the command *starts*, before it prints. A `sleep 10` one second in has
+// an output region made of the blank rows below it, and folding it collapsed five empty lines into
+// "… 5 lines hidden".
+
+@Test func aJustStartedCommandHasNothingToFoldYet() throws {
+    let t = makeTerminal(cols: 40, rows: 24, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "sleep 10\r\n" + mark("C"))
+    #expect(t.commandDidStart(atAbsoluteRow: 0))       // the shell said it began
+    #expect(!t.commandHasOutput(atAbsoluteRow: 0))     // and it has printed nothing
+    // So the ring is drawn -- something *is* running -- and it cannot be pressed.
+    let m = try #require(t.gutterMarks(rows: 24)[0])
+    #expect(m == .running)
+    #expect(m.isDrawn(hasStarted: true))
+    #expect(!m.isActionable(hasOutput: false))
+    #expect(GutterMarkLabel.text(mark: m, folded: false, hasOutput: false, line: 1)
+        == "Command on line 1 is still running.")
+}
+
+/// The prompt waiting for you to type has not started anything, so it has no ring.
+@Test func anIdlePromptHasNotStarted() {
+    let t = makeTerminal(cols: 40, rows: 8, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "ls\r\n" + mark("C") + "a.txt\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    #expect(!t.commandDidStart(atAbsoluteRow: 2))
+    #expect(t.commandDidStart(atAbsoluteRow: 0))
+}
+
+@Test func theSameCommandIsFoldableOnceItPrintsALine() throws {
+    let t = makeTerminal(cols: 40, rows: 24, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "sleep 10\r\n" + mark("C"))
+    #expect(!t.commandHasOutput(atAbsoluteRow: 0))
+    t.feed("compiling...\r\n")
+    #expect(t.commandHasOutput(atAbsoluteRow: 0))
+    let m = try #require(t.gutterMarks(rows: 24)[0])
+    #expect(m.isDrawn(hasStarted: true))
+    #expect(m.isActionable(hasOutput: true))
+}
+
+/// `echo` prints one empty line. There is nothing in it to fold.
+@Test func aFinishedCommandWhoseOutputIsOneEmptyLineHasNothingToFold() {
+    let t = makeTerminal(cols: 40, rows: 8, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "echo\r\n" + mark("C") + "\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    #expect(!t.commandHasOutput(atAbsoluteRow: 0))
+}
+
+/// Eight blank lines and still going: the rest is taken on trust rather than scanned, which is the
+/// trade `outputScanLimit` names.
+@Test func outputThatStaysBlankPastTheScanLimitIsAssumedToHaveContent() {
+    let t = makeTerminal(cols: 40, rows: 24, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "run\r\n" + mark("C"))
+    for _ in 0..<Terminal.outputScanLimit { t.feed("\r\n") }
+    #expect(t.commandHasOutput(atAbsoluteRow: 0))
+}
+
+@Test func outputStatesFollowTheRowsOnScreen() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "cd ..\r\n" + mark("C") + mark("D", 0))
+    t.feed(mark("A") + "$ " + mark("B") + "ls\r\n" + mark("C") + "a.txt\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    let states = t.outputStates(rows: 6)
+    #expect(!states[0])
+    #expect(states[1])
+}
+
+@Test func theGutterKnowsWhichOfItsCommandsAreFolded() {
+    let t = session()
+    var folding = OutputFolding()
+    let first = t.command(containingAbsoluteRow: 0)!
+    folding.fold(first.id, .all)
+    let states = t.foldStates(rows: 6, folding: folding)
+    #expect(states[0])                       // the folded command's prompt row
+    #expect(!states[1])                      // its output, which carries no prompt
+    #expect(!states[2])                      // the command that is not folded
+}
+
+@Test func aFoldPlaceholderSlotIsNotAFoldedCommandsPrompt() {
+    let t = session()
+    var folding = OutputFolding()
+    folding.fold(t.command(containingAbsoluteRow: 0)!.id, .all)
+    let display = t.displayRows(from: 0, count: 4, folding: folding)
+    let states = t.foldStates(onDisplayRows: display, folding: folding)
+    #expect(states[0])                       // slot 0 is the prompt of the folded command
+    #expect(!states[1])                      // slot 1 is the placeholder itself
+}

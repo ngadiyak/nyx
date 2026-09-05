@@ -36,6 +36,10 @@ public struct RenderFrame {
     /// A block's summary -- `exit 1 · 8.8s` -- pinned to the right of its command row. Same
     /// treatment as `rowNotes`, in the block's own colour so the status reads without being read.
     public var blockSummaries: [(row: Int, text: String, color: RGB)]
+    /// The visible rows of the block under the pointer, tinted as one. nil when nothing is hovered,
+    /// which is the state of every frame the mouse is not moving through. Chrome, not a row input:
+    /// drawn in `buildChrome`, outside the row cache.
+    public var highlightedRows: Range<Int>?
     /// Which visible rows changed since the frame before, indexed like `lines`; this is `Row.dirty`
     /// carried across the module boundary.
     ///
@@ -52,6 +56,7 @@ public struct RenderFrame {
                 rowNotes: [String?] = [],
                 blockSpines: [(rows: Range<Int>, color: RGB)] = [],
                 blockSummaries: [(row: Int, text: String, color: RGB)] = [],
+                highlightedRows: Range<Int>? = nil,
                 dirtyRows: [Bool] = []) {
         self.cols = cols; self.rows = rows; self.lines = lines; self.graphemes = graphemes; self.palette = palette
         self.cursor = cursor; self.cursorShape = cursorShape; self.focused = focused; self.preedit = preedit
@@ -61,6 +66,7 @@ public struct RenderFrame {
         self.rowNotes = rowNotes
         self.blockSpines = blockSpines
         self.blockSummaries = blockSummaries
+        self.highlightedRows = highlightedRows
         self.hoveredLink = hoveredLink
         self.dirtyRows = dirtyRows
     }
@@ -315,6 +321,10 @@ public final class Renderer {
         var currentMatchBackground: RGB
         var matchForeground: RGB
         var noteForeground: RGB
+        /// The hovered block's tint. Derived with a search through the palette for a blend that
+        /// clears three contrast floors at once, so it belongs with the other once-per-frame
+        /// lookups rather than being recomputed inside `buildChrome` on every hovered frame.
+        var blockHover: RGB
     }
 
     private func buildInstances(_ f: RenderFrame, padding: Int) {
@@ -347,7 +357,8 @@ public final class Renderer {
         let colors = FrameColors(matchBackground: f.palette.searchMatchBackground,
                                  currentMatchBackground: f.palette.currentMatchBackground,
                                  matchForeground: f.palette.searchMatchForeground,
-                                 noteForeground: f.palette.noteForeground)
+                                 noteForeground: f.palette.noteForeground,
+                                 blockHover: f.palette.blockHoverBackground)
         stats.frames += 1
         stats.rowsSeen += visible
 
@@ -473,6 +484,22 @@ public final class Renderer {
     private func buildChrome(_ f: RenderFrame, padding: Int, colors: FrameColors) {
         let m = fonts.metrics
         let cw = Float(m.width), ch = Float(m.height)
+        // The hovered block's tint: one translucent rect across the grid's width, outside the row
+        // cache (nothing per row changed). Inserted at the front of the background bucket, not
+        // appended -- `instances` already holds every row's backgrounds by the time chrome runs
+        // (the per-row loop in `assemble` ran first), and painting is last-instance-wins. A cell
+        // with the theme's own background emits no instance at all (`buildRow` only appends for a
+        // non-default background, a selection, a match or a block cursor), so those cells still
+        // show the tint underneath; a selected or matched or coloured cell paints over it and stays
+        // visible, which is the whole point of a tint that is chrome and not a cell.
+        if let rows = f.highlightedRows, !rows.isEmpty {
+            let top = Float(padding + max(0, rows.lowerBound) * m.height)
+            let height = Float(min(rows.count, f.rows - max(0, rows.lowerBound)) * m.height)
+            let width = Float(f.cols * m.width)
+            let tint = rect(Float(padding), top, width, height, colors.blockHover)
+            instances.insert(tint, at: 0)
+        }
+
         // A command's spine, drawn in the left padding: it says "these rows belong together"
         // without taking a column of text or touching a cell. Nothing about the grid changes,
         // which is what lets vim and htop keep behaving exactly as they did.
@@ -493,8 +520,7 @@ public final class Renderer {
         // so `exit 1` is read as a failure before it is read as words.
         for summary in f.blockSummaries {
             let characters = Array(summary.text)
-            let start = f.cols - characters.count
-            guard summary.row >= 0, summary.row < f.rows, start > 0 else { continue }
+            guard summary.row >= 0, summary.row < f.rows else { continue }
             let row = summary.row < f.lines.count ? f.lines[summary.row] : nil
             let lastUsed = row.map { line -> Int in
                 var last = -1
@@ -502,10 +528,13 @@ public final class Renderer {
                 return last
             } ?? -1
             // Never over the command it describes: a summary that overwrites the end of a long
-            // command line has destroyed the more important of the two.
-            guard lastUsed < start - 1 else { continue }
+            // command line has destroyed the more important of the two. `summaryColumns` is the one
+            // place that rule lives, so the pane's click target can never disagree with what is
+            // actually drawn.
+            guard let columns = CommandBlockChrome.summaryColumns(textCount: characters.count, cols: f.cols,
+                                                                  lastUsedColumn: lastUsed) else { continue }
             for (offset, character) in characters.enumerated() {
-                let px = Float(padding + (start + offset) * m.width)
+                let px = Float(padding + (columns.lowerBound + offset) * m.width)
                 let py = Float(padding + summary.row * m.height)
                 let text = String(character)
                 let glyphText: GlyphText = text.unicodeScalars.count == 1

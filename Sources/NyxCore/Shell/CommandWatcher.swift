@@ -5,10 +5,14 @@ public struct FinishedCommand: Equatable {
     /// The absolute row of the prompt it started at, so the caller can look up its status and text.
     public let promptRow: Int
     public let duration: Double
+    /// The id of the command that ran, from `Terminal.runningCommand?.id` -- 0 when none was tracked.
+    /// Lets `CommandNotificationRule` recognise a command the user armed by hand.
+    public let id: UInt32
 
-    public init(promptRow: Int, duration: Double) {
+    public init(promptRow: Int, duration: Double, id: UInt32 = 0) {
         self.promptRow = promptRow
         self.duration = duration
+        self.id = id
     }
 }
 
@@ -28,6 +32,7 @@ public struct CommandWatcher: Equatable {
     private var trackedPrompt: Int?
     private var startedAt: Double?
     private var wasRunning = false
+    private var trackedID: UInt32 = 0
 
     public init(minimumDuration: Double = 10) {
         self.minimumDuration = minimumDuration
@@ -47,21 +52,42 @@ public struct CommandWatcher: Equatable {
     /// a command is running, and then it is not.
     public mutating func observe(bottomPromptRow: Int?, outputStarted: Bool,
                                  now: Double) -> FinishedCommand? {
-        defer { wasRunning = outputStarted }
+        let finished = observe(bottomPromptRow: bottomPromptRow, outputStarted: outputStarted,
+                               runningID: 0, now: now)
+        guard let finished, finished.duration >= minimumDuration else { return nil }
+        return finished
+    }
 
+    /// As `observe(bottomPromptRow:outputStarted:now:)`, but reports *every* finished command with
+    /// its id, leaving "is it worth a notification" to `CommandNotificationRule` -- which can then
+    /// say yes to a two-second command the user armed by hand.
+    public mutating func observe(bottomPromptRow: Int?, outputStarted: Bool, runningID: UInt32,
+                                 now: Double) -> FinishedCommand? {
+        defer { wasRunning = outputStarted }
         if outputStarted {
             if !wasRunning { startedAt = now }
-            trackedPrompt = bottomPromptRow      // kept current as rows shift underneath
+            trackedPrompt = bottomPromptRow
+            if runningID != 0 { trackedID = runningID }
             return nil
         }
+        guard wasRunning, let started = startedAt, let row = trackedPrompt else {
+            startedAt = nil; trackedPrompt = nil; trackedID = 0
+            return nil
+        }
+        let finished = FinishedCommand(promptRow: row, duration: now - started, id: trackedID)
+        startedAt = nil; trackedPrompt = nil; trackedID = 0
+        return finished
+    }
+}
 
-        guard wasRunning, let started = startedAt else { return nil }
-        let ran = now - started
-        let row = trackedPrompt
-        startedAt = nil
-        trackedPrompt = nil
-        guard ran >= minimumDuration, let row else { return nil }
-        return FinishedCommand(promptRow: row, duration: ran)
+/// Whether a finished command is worth interrupting the user about.
+public enum CommandNotificationRule {
+    /// Armed by hand wins over everything: the user asked. Otherwise the old rule -- long enough
+    /// to have looked away from, and the window not in front.
+    public static func shouldNotify(_ finished: FinishedCommand, armed: Set<UInt32>,
+                                    windowFocused: Bool, minimumDuration: Double) -> Bool {
+        if finished.id != 0 && armed.contains(finished.id) { return true }
+        return !windowFocused && finished.duration >= minimumDuration
     }
 }
 
@@ -103,6 +129,51 @@ public extension Terminal {
         let text = (region.promptRow...min(last, totalRows - 1))
             .map { rowText(absoluteRow: $0).text }
             .joined(separator: " ")
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Just what the user typed, with the shell's own prompt sliced off at the `B` mark.
+    ///
+    /// `commandText` above keeps the prompt on purpose, which is right for a notification and wrong
+    /// for everything that treats the result as a command: "Copy Command", "Copy as Markdown",
+    /// "Run This Command Again" and "Edit and Run" all produced
+    /// `nik@nik-newmac ~ % printf ...` on a real `PS1`, and Run Again sent that whole string to the
+    /// shell. `Row.inputStartColumn` is the shell telling us exactly where its prompt ends, so
+    /// there is nothing to guess.
+    ///
+    /// Rows between the prompt and the output belong to the command line too. A row that soft-wrapped
+    /// is joined to the next with nothing between them -- it is one line, and a space inserted at the
+    /// wrap point would corrupt the command being re-run -- while a genuinely new row (a multi-line
+    /// command) is joined with a space, as `commandText` does.
+    ///
+    /// Falls back to `commandText` when the shell emitted no `B`: without it there is no way to say
+    /// where the prompt ends, and the wider answer beats an empty one.
+    func commandLine(of region: CommandRegion) -> String {
+        guard let inputStart = absoluteRow(region.promptRow)?.inputStartColumn else {
+            return commandText(of: region)
+        }
+        let last = min(region.outputStart.map { $0 - 1 } ?? region.promptRow, totalRows - 1)
+        guard last >= region.promptRow else { return "" }
+
+        var text = ""
+        for row in region.promptRow...last {
+            let line = rowText(absoluteRow: row)
+            let characters = Array(line.text)
+            // The `B` column is a terminal column; `columnOf` maps it to a character index, which is
+            // not the same number once a wide glyph sits in the prompt.
+            let from = row == region.promptRow
+                ? (line.columnOf.firstIndex { $0 >= inputStart } ?? characters.count)
+                : 0
+            guard from < characters.count else { continue }
+            // `rowText` pads every empty cell with a space so a column stays a column; a command
+            // line has no columns to preserve, and the padding would otherwise land in the middle
+            // of a multi-row command.
+            var piece = String(characters[from...])
+            while piece.hasSuffix(" ") { piece.removeLast() }
+            guard !piece.isEmpty else { continue }
+            if !text.isEmpty { text += (absoluteRow(row - 1)?.wrapped ?? false) ? "" : " " }
+            text += piece
+        }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

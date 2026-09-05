@@ -64,6 +64,12 @@ public struct Config: Equatable {
     public var shellIntegration: ShellIntegrationMode = .auto
     /// What a multi-line paste does. See `MultilinePaste`.
     public var multilinePaste: MultilinePaste = .edit
+    /// Rows of output a fold keeps visible at the end. Three, because the error and the summary
+    /// line of nearly every tool are in its last lines; 0 hides everything.
+    public var foldKeepLines: Int = 3
+    /// Fold finished output longer than this many rows once the next command starts. Off by
+    /// default: a terminal that hides things on its own has to earn that first.
+    public var foldLongOutput: Int = 0
     /// Task 8 populates this from `keybind` lines; see `KeyBinding.parse`.
     public var keybinds: [KeyBinding] = []
     /// User-defined buttons: `quick = <name> | <kind> | <command>`. Additive, like `keybind`.
@@ -141,6 +147,10 @@ public extension Config {
         # quick = Deploy | ./deploy.sh
 
         # multiline-paste = edit
+        # A folded command keeps its last few lines of output; 0 hides them all.
+        # fold-keep-lines = 3
+        # Fold output longer than this many rows once the next command starts. 0 is off.
+        # fold-long-output = 0
         # shell-integration = auto
         # open-file-command =
 

@@ -361,3 +361,12 @@ private let scalarDefaultFileKeys = [
     #expect(Config.defaults.multilinePaste == .edit)
     #expect(ConfigParser.parse("multiline-paste = nonsense").diagnostics.count == 1)
 }
+
+@Test func theFoldSettingsAreRead() {
+    #expect(Config.defaults.foldKeepLines == 3)
+    #expect(Config.defaults.foldLongOutput == 0)
+    #expect(ConfigParser.parse("fold-keep-lines = 5").config.foldKeepLines == 5)
+    #expect(ConfigParser.parse("fold-long-output = 200").config.foldLongOutput == 200)
+    #expect(ConfigParser.parse("fold-keep-lines = many").diagnostics.count == 1)
+    #expect(ConfigParser.parse("fold-long-output = -4").config.foldLongOutput == 0)
+}

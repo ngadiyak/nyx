@@ -86,6 +86,87 @@ enum UISnapshot {
         write(stickyPrompt(palette: palette, failed: true), named: "sticky-prompt-failed",
               into: directory, background: palette.background)
 
+        // The overlay's shipping height is one cell row -- what `Pane.cellSizePoints` gives it at
+        // the default font -- not an arbitrary round number. Rendering the snapshot shorter than
+        // that hid a real bug (Important 4): a stack pinned to both edges of a view shorter than
+        // its fitting size breaks a required constraint every frame.
+        let defaultFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let rowHeight = ceil(defaultFont.ascender - defaultFont.descender + defaultFont.leading)
+        for (name, header) in blockHeaderStates() {
+            // The `-light` and `-dark` pair is now the *same* picture on purpose: `update` sets the
+            // view's appearance from the palette, so the system's has no say. That is the fix for
+            // the disabled Copy reading at 1.13:1 in Light Mode over the dark theme; a pair that
+            // differs again is that bug coming back.
+            for appearance in [NSAppearance.Name.darkAqua, .aqua] {
+                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
+                view.appearance = NSAppearance(named: appearance)
+                view.update(header: header, controls: .full, palette: palette,
+                            font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+                let size = view.intrinsicContentSize
+                view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
+                view.layoutSubtreeIfNeeded()
+                write(view, named: "block-header-\(name)-\(appearance == .aqua ? "light" : "dark")",
+                      into: directory, background: palette.background)
+            }
+        }
+        // The two narrower strips. A crowded command line leaves no room for a 20-column strip, and
+        // one drawn anyway covers the end of the command it describes -- so the summary goes first
+        // and then Copy, and the ⋯ menu and the chevron, which between them reach every action,
+        // never do. These are what `CommandBlockChrome.overlayPlacement` picks between.
+        if let failed = blockHeaderStates().first(where: { $0.0 == "failed" })?.1 {
+            for (name, controls) in [("nocopy", OverlayControls.noCopy), ("minimal", .minimal)] {
+                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
+                view.appearance = NSAppearance(named: .darkAqua)
+                view.update(header: failed, controls: controls, palette: palette,
+                            font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+                let size = view.intrinsicContentSize
+                view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
+                view.layoutSubtreeIfNeeded()
+                write(view, named: "block-header-\(name)-dark", into: directory,
+                      background: palette.background)
+            }
+        }
+        // The gutter's four marks, in one picture. A no-output command's dot is identical to any
+        // other succeeded one on purpose -- it is a record of what happened, and the difference is
+        // that it offers no tooltip, no pointing hand and no accessibility button, none of which a
+        // still picture can show. The running mark is the one thing here that is a shape rather
+        // than a colour: hollow, so "in progress" survives being looked at in greyscale. The
+        // `-light` and `-dark` pair is byte-identical for the same reason the block-header pair is:
+        // the view paints from the palette, so the system appearance has no say. A pair that
+        // differs is that bug coming back.
+        for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
+            let cell = ceil(defaultFont.ascender - defaultFont.descender + defaultFont.leading)
+            // The shipping width: the gutter takes at most `PromptGutter.maximumWidth` of the
+            // pane's own padding, so a wider picture would flatter marks that are really 6 points.
+            let width = CGFloat(PromptGutter.width(padding: Double(8)))
+            let gutter = PromptGutterView(frame: NSRect(x: 0, y: 0, width: width, height: cell * 4))
+            gutter.appearance = NSAppearance(named: appearance)
+            gutter.update(marks: [.succeeded, .failed, .running, .succeeded],
+                          folded: [false, true, false, false],
+                          hasStarted: [true, true, true, false],
+                          hasOutput: [true, true, true, false],
+                          palette: palette, cellHeight: cell, topPadding: 0)
+            gutter.layoutSubtreeIfNeeded()
+            write(gutter, named: "gutter-marks-\(name)", into: directory, background: palette.background)
+        }
+        // One state against the light built-in theme, in the aqua appearance: everything above
+        // uses `nyx-dark` (the default config's theme) under both system appearances, which never
+        // looks at a *light theme's own* colours.
+        if let lightPalette = Themes.builtin["nyx-light"],
+           let finished = blockHeaderStates().first(where: { $0.0 == "finished" })?.1 {
+            let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
+            view.appearance = NSAppearance(named: .aqua)
+            view.update(header: finished, controls: .full, palette: lightPalette,
+                        font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+            let size = view.intrinsicContentSize
+            view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
+            view.layoutSubtreeIfNeeded()
+            write(view, named: "block-header-finished-light-theme", into: directory,
+                  background: lightPalette.background)
+        }
+        write(stickyPrompt(palette: palette, failed: true, summary: "exit 2 \u{b7} 8.8s"),
+              named: "sticky-prompt-summary", into: directory, background: palette.background)
+
         for name in Themes.builtin.keys.sorted() {
             var themed = config
             themed.themeName = name
@@ -295,10 +376,22 @@ enum UISnapshot {
         return result
     }
 
-    private static func stickyPrompt(palette: Palette, failed: Bool) -> NSView {
+    /// One `BlockHeader` per state the overlay can be in: the states nobody renders are the states
+    /// nobody has looked at.
+    private static func blockHeaderStates() -> [(String, BlockHeader)] {
+        [
+            ("finished", BlockHeader(id: 1, state: .finished, folded: false, hasOutput: true, anyFolds: false, notifyArmed: false, summary: "8.8s")),
+            ("failed", BlockHeader(id: 2, state: .failed(status: 1), folded: false, hasOutput: true, anyFolds: false, notifyArmed: false, summary: "exit 1 \u{b7} 8.8s")),
+            ("running", BlockHeader(id: 3, state: .running(elapsed: 12), folded: false, hasOutput: true, anyFolds: false, notifyArmed: true, summary: "12s")),
+            ("folded", BlockHeader(id: 4, state: .finished, folded: true, hasOutput: true, anyFolds: true, notifyArmed: false, summary: "8.8s")),
+            ("no-output", BlockHeader(id: 5, state: .finished, folded: false, hasOutput: false, anyFolds: false, notifyArmed: false, summary: "")),
+        ]
+    }
+
+    private static func stickyPrompt(palette: Palette, failed: Bool, summary: String = "") -> NSView {
         let view = StickyPromptView(frame: NSRect(x: 0, y: 0, width: 900, height: 22))
         view.update(text: failed ? "$ make test" : "$ ./deploy.sh --env production --wait",
-                    failed: failed, palette: palette,
+                    summary: summary, failed: failed, palette: palette,
                     font: .monospacedSystemFont(ofSize: 12, weight: .regular))
         view.layoutSubtreeIfNeeded()
         return view

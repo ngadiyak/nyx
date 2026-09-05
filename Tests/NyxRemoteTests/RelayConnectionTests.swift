@@ -503,3 +503,55 @@ func disconnectCancelsAReconnectThatIsAlreadyOnTheClock() throws {
             "it reconnected after disconnect(): \(recorder.snapshot { recorder.statuses })")
     #expect(connection.status == .offline)
 }
+
+/// Which trigger is a *user's* gesture and which one is a schedule.
+///
+/// `connect()` is somebody enabling remote sessions or fixing a token, and it starts the reconnect
+/// delays over: waiting out a 60 s delay earned by an outage that is over is the machine punishing
+/// the person who fixed it. `ensureConnected()` is a wake-from-sleep notification or a config
+/// reload -- things that fire on their own schedule -- and it must keep the delays, because
+/// treating each of them as a gesture would defeat the backoff entirely and hammer a relay that is
+/// down. The two are one word apart at every call site, so this is the difference nailed down.
+@Test func ensureConnectedKeepsTheReconnectDelaysAndConnectStartsThemOver() throws {
+    // Silent rather than refused: the socket stays open and unanswered for the whole test, so
+    // nothing can drop and advance the delays behind the assertions.
+    let listener = try SilentListener()
+    defer { listener.close() }
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("nyx-relay-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let fresh = Backoff(initial: 1, maximum: 60)
+    let connection = RelayConnection(url: URL(string: "ws://127.0.0.1:\(listener.port)/v1/ws")!,
+                                     token: "test-token", identity: try scratchIdentity(in: dir),
+                                     deviceName: "Sleepy Mac", handshakeTimeout: 30, backoff: fresh)
+    defer { connection.disconnect() }
+
+    connection.advanceBackoffForTesting(times: 3)
+    let earned = connection.backoffForTesting
+    #expect(earned != fresh)
+
+    connection.ensureConnected()
+    #expect(connection.backoffForTesting == earned)
+
+    connection.disconnect()
+    connection.advanceBackoffForTesting(times: 3)
+    #expect(connection.backoffForTesting == earned)
+
+    connection.connect()
+    #expect(connection.backoffForTesting == fresh)
+}
+
+// MARK: - What the settings page says about a connection
+
+@Test func everyConnectionStatusHasSomethingHonestToSay() {
+    let host = "nyx.agentforge.cc"
+    #expect(RelayConnection.Status.offline.statusText(relayHost: host) == .unreachable(host: host))
+    #expect(RelayConnection.Status.connecting.statusText(relayHost: host) == .connecting)
+    // Authenticating is still "Connecting…": the handshake is not something a user has a separate
+    // thought about, and a status that flickered through a fourth word would only look unstable.
+    #expect(RelayConnection.Status.authenticating.statusText(relayHost: host) == .connecting)
+    #expect(RelayConnection.Status.online.statusText(relayHost: host) == .online)
+    #expect(RelayConnection.Status.failed("bad_token").statusText(relayHost: host) == .badToken)
+    #expect(RelayConnection.Status.failed("replaced").statusText(relayHost: host) == .refused("replaced"))
+    #expect(RelayConnection.Status.failed("bad_signature").statusText(relayHost: host)
+        == .refused("bad_signature"))
+}

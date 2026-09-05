@@ -89,6 +89,20 @@ enum UISnapshot {
                   into: directory, background: windowGround(appearance))
             writeSettings(into: directory, appearance: appearance, suffix: "-\(name)")
         }
+        // The remote strip is an `NSButton` on a theme-coloured band, so unlike the block header it
+        // is *not* the same picture in both appearances: the button's bezel follows the system.
+        for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
+            for (stateName, state) in remoteStripStates() {
+                write(remoteStrip(state: state, palette: palette, appearance),
+                      named: "remote-strip-\(stateName)-\(name)", into: directory,
+                      background: palette.background)
+            }
+        }
+        write(tabBar(palette: palette, config: config, tabs: 3, quickActions: quickActions(),
+                     remoteBadgeAt: 1),
+              named: "tabbar-remote-badge", into: directory, background: palette.background)
+        write(remotePalettePanel(palette: palette), named: "command-palette-remote", into: directory,
+              background: palette.background)
         write(stickyPrompt(palette: palette, failed: false), named: "sticky-prompt", into: directory,
               background: palette.background)
         write(stickyPrompt(palette: palette, failed: true), named: "sticky-prompt-failed",
@@ -225,7 +239,8 @@ enum UISnapshot {
     private static func tabBar(palette: Palette, config: Config, tabs: Int,
                                quickActions: [QuickAction], grouped: Bool = false,
                                collapsed: Bool = false, twoGroups: Bool = false,
-                               runningToggle: Bool = false, width: CGFloat = 900) -> NSView {
+                               runningToggle: Bool = false, width: CGFloat = 900,
+                               remoteBadgeAt: Int? = nil) -> NSView {
         let bar = TabBarView()
         bar.setColors(palette: palette)
         if runningToggle {
@@ -249,9 +264,20 @@ enum UISnapshot {
 
         let titles = ["nyx — zsh", "vim Pane.swift", "make test", "tail -f system.log",
                       "ssh prod-web-01", "docker compose"]
-        let items = (0..<tabs).map { index in
-            TabBarItem(title: titles[index % titles.count],
-                       indicator: index == 2 ? .activity : (index == 3 ? .bell : TabIndicator.none))
+        let items = (0..<tabs).map { index -> TabBarItem in
+            // The two badges together in one picture: a tab this Mac is observing beside one it is
+            // writing to, so the pair can be told apart at a glance rather than one at a time.
+            let badge: String?
+            switch remoteBadgeAt {
+            case index: badge = "observer"
+            case .some(let first) where index == first + 1: badge = "writer"
+            default: badge = nil
+            }
+            let title = badge == nil ? titles[index % titles.count]
+                                     : "\u{27f5} Mac mini · \(titles[index % titles.count])"
+            return TabBarItem(title: title,
+                              indicator: index == 2 ? .activity : (index == 3 ? .bell : TabIndicator.none),
+                              label: badge)
         }
         bar.setTabs(items, selected: 0, grouping: grouping)
         bar.frame = NSRect(x: 0, y: 0, width: width, height: bar.preferredHeight)
@@ -450,6 +476,77 @@ enum UISnapshot {
             ("folded", BlockHeader(id: 4, state: .finished, folded: true, hasOutput: true, anyFolds: true, notifyArmed: false, summary: "8.8s")),
             ("no-output", BlockHeader(id: 5, state: .finished, folded: false, hasOutput: false, anyFolds: false, notifyArmed: false, summary: "")),
         ]
+    }
+
+    /// One picture per state the remote strip can be in. The live *writer* is deliberately not
+    /// here: that state has no strip at all, which is the point of it -- from the writer's side an
+    /// attached session looks exactly like a local one.
+    private static func remoteStripStates() -> [(String, AttachState)] {
+        func state(_ phase: AttachState.Phase, _ role: AttachState.Role) -> AttachState {
+            var s = AttachState(hostName: "Mac mini (office)", title: "swift test")
+            s.phase = phase
+            s.role = role
+            return s
+        }
+        return [
+            ("attaching", state(.attaching, .observer)),
+            ("observer", state(.live, .observer)),
+            ("reconnecting", state(.reconnecting, .writer)),
+            ("ended", state(.ended("Mac mini (office)"), .writer)),
+            ("failed", state(.failed(AttachFailure.text(code: "host_offline")), .observer)),
+        ]
+    }
+
+    private static func remoteStrip(state: AttachState, palette: Palette,
+                                    _ appearance: NSAppearance.Name) -> NSView {
+        let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let height = ceil(font.ascender - font.descender + font.leading)
+        let view = RemoteStripView(frame: NSRect(x: 0, y: 0, width: 900, height: height))
+        view.appearance = NSAppearance(named: appearance)
+        view.update(state: state, palette: palette,
+                    font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+        view.layoutSubtreeIfNeeded()
+        return view
+    }
+
+    /// The palette showing what the Remote section actually looks like: an online Mac with two
+    /// sessions, a Mac that is awake with nothing open, one that is asleep, and the relay status
+    /// row that appears in place of everything when the socket is down. Built through
+    /// `RemoteCatalogue` rather than by hand, so the rows are the ones a real presence and
+    /// catalogue message would produce.
+    private static func remotePalettePanel(palette: Palette) -> NSView {
+        let now = Date()
+        let iso = ISO8601DateFormatter()
+        var catalogue = RemoteCatalogue()
+        catalogue.applyPresence([
+            RemotePresence(deviceID: "d1", name: "Mac mini (office)", online: true),
+            RemotePresence(deviceID: "d2", name: "Nik's MacBook Pro", online: true),
+            RemotePresence(deviceID: "d3", name: "iMac (studio)", online: false),
+        ])
+        catalogue.applyCatalogue(deviceID: "d1", sessions: [
+            RemoteSessionInfo(sessionID: "s1", title: "zsh", cwd: NSHomeDirectory() + "/projects/nyx",
+                              repo: "nyx", branch: "feat/remote-sessions", process: "swift test",
+                              lastCommand: "make test",
+                              lastActivity: iso.string(from: now.addingTimeInterval(-120)),
+                              cols: 120, rows: 40),
+            RemoteSessionInfo(sessionID: "s2", title: "vim Pane.swift",
+                              cwd: NSHomeDirectory() + "/projects/nyx", repo: "nyx", branch: "main",
+                              process: "vim", lastCommand: "git status",
+                              lastActivity: iso.string(from: now.addingTimeInterval(-3600)),
+                              cols: 120, rows: 40),
+        ])
+        catalogue.applyCatalogue(deviceID: "d2", sessions: [])
+        var items = catalogue.paletteItems(now: now, home: NSHomeDirectory())
+        var withStatus = catalogue
+        withStatus.relayStatusText = "Relay unreachable (nyx.agentforge.cc)"
+        // The status row on its own, appended after the rest, so one picture carries both the
+        // ordinary list and the row that replaces it when the relay is down.
+        items.append(contentsOf: withStatus.paletteItems(now: now, home: NSHomeDirectory()).prefix(1))
+
+        let view = CommandPaletteView(palette: palette, items: items)
+        view.frame = NSRect(x: 0, y: 0, width: CommandPaletteView.width, height: view.preferredHeight)
+        view.layoutSubtreeIfNeeded()
+        return view
     }
 
     private static func stickyPrompt(palette: Palette, failed: Bool, summary: String = "") -> NSView {

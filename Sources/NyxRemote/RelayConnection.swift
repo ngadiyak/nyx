@@ -217,6 +217,16 @@ public final class RelayConnection {
 
     public func send(_ frame: BinaryFrame) { enqueue(.binary(frame)) }
 
+    /// The reconnect delays as they stand. Read on the queue that owns them, so a test sees the
+    /// state after every call it has already made rather than a torn one.
+    var backoffForTesting: Backoff { queue.sync { backoff } }
+
+    /// Winds the delays forward the way that many failed attempts would, without the minutes of
+    /// real waiting that earning them takes.
+    func advanceBackoffForTesting(times: Int) {
+        queue.sync { for _ in 0..<times { _ = backoff.next() } }
+    }
+
     /// Which of the relay's private close codes (the server plan's "Close codes") mean this device
     /// must stop rather than reconnect. Pure so the mapping is testable: the socket that carries
     /// these is the one case where the relay says why without sending a message first.
@@ -420,5 +430,26 @@ public final class RelayConnection {
         statusLock.lock()
         lockedDropped = count
         statusLock.unlock()
+    }
+}
+
+public extension RelayConnection.Status {
+    /// How the settings page and the palette's Remote section describe this connection.
+    ///
+    /// The mapping is here rather than in `NyxApp` because it is the one place that knows both
+    /// types: `RemoteStatusText.Connection` is Core's (and Core may not import CryptoKit, so it
+    /// cannot see this enum at all), and this is `NyxRemote`'s. `relayHost` is the relay URL's
+    /// host, which only the owner of the configuration knows.
+    ///
+    /// `offline` maps to "unreachable" rather than to a state of its own: from the page's point of
+    /// view a socket that is down and being retried and one that has never come up are the same
+    /// thing -- the relay is not answering.
+    func statusText(relayHost: String) -> RemoteStatusText.Connection {
+        switch self {
+        case .offline: return .unreachable(host: relayHost)
+        case .connecting, .authenticating: return .connecting
+        case .online: return .online
+        case .failed(let code): return code == "bad_token" ? .badToken : .refused(code)
+        }
     }
 }

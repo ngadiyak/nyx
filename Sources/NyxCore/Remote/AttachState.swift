@@ -14,6 +14,14 @@ public struct AttachState: Equatable {
         /// that ends a session names the host that ended it, and while the two are normally the
         /// same value, the strip should say what the message said, not what was cached at attach.
         case ended(String)
+        /// The attach never happened, and the associated string says why in the words a person can
+        /// act on ("Host is offline", not `host_offline`).
+        ///
+        /// Distinct from `ended` because the two are different sentences to read: `ended` is a
+        /// session that was there and stopped, `failed` is one that was never reached. They behave
+        /// identically otherwise -- no input, no button, and the tab closes on the next key --
+        /// which is why `closesOnNextKey` exists rather than each caller matching both cases.
+        case failed(String)
     }
 
     public enum Role: Equatable { case writer, observer }
@@ -30,7 +38,17 @@ public struct AttachState: Equatable {
         self.title = title
     }
 
-    public var tabTitle: String { "⟵ \(hostName) · \(title)" }
+    public var tabTitle: String { tabTitle(currentTitle: "") }
+
+    /// The tab's title. `currentTitle` is whatever the host's own shell has set with OSC 0/2 since
+    /// the attach -- those bytes arrive in the stream like every other -- and empty means it never
+    /// has, in which case the title the palette row carried is the best name there is.
+    ///
+    /// The arrow and the machine name stay in front of it either way: the one thing this tab must
+    /// never look like is a tab on this Mac.
+    public func tabTitle(currentTitle: String) -> String {
+        "⟵ \(hostName) · \(currentTitle.isEmpty ? title : currentTitle)"
+    }
 
     /// nil means no strip at all -- the one state (writer, live) where the tab looks exactly like a
     /// local one, because from the writer's side of a session that owns it, it is one.
@@ -44,6 +62,8 @@ public struct AttachState: Equatable {
             return "Reconnecting…"
         case .ended(let host):
             return "Session ended on \(host)"
+        case .failed(let reason):
+            return reason
         }
     }
 
@@ -51,7 +71,58 @@ public struct AttachState: Equatable {
         phase == .live && role == .observer ? "Take control" : nil
     }
 
+    /// What the strip's *label* reads when the button is drawn beside it.
+    ///
+    /// `stripText` is the whole sentence, for anything with only words to work with -- a screen
+    /// reader, a log line, a smoke hook. On screen the offer is a button, and a label repeating it
+    /// would put "Take control" twice on one row. Every other state's label is the sentence itself,
+    /// because every other state has no button.
+    public var stripLabel: String? {
+        switch phase {
+        case .live: return role == .observer ? "Observing" : nil
+        case .attaching, .snapshot, .reconnecting, .ended, .failed: return stripText
+        }
+    }
+
     public var acceptsInput: Bool { role == .writer && phase == .live }
 
+    /// Whether the next keystroke should close this tab instead of being sent anywhere.
+    ///
+    /// A tab in either of these two phases will never show another byte, so leaving it on screen
+    /// waiting to be closed by hand is a dead window the user has to tidy up; closing it on the
+    /// first key is what every "press any key to continue" has always meant. The keystroke is
+    /// deliberately swallowed rather than delivered to whatever tab comes next.
+    public var closesOnNextKey: Bool {
+        switch phase {
+        case .ended, .failed: return true
+        case .attaching, .snapshot, .live, .reconnecting: return false
+        }
+    }
+
     public var badge: String { role == .writer ? "writer" : "observer" }
+}
+
+/// Why an attach did not happen, in the words the strip shows.
+///
+/// The relay's `error.code` is a wire identifier -- `host_offline`, `not_paired` -- and a tab that
+/// printed one would be telling the user to go and read a protocol document. The mapping lives here
+/// rather than in `NyxRemote` because it is a decision about what a person is told, and because the
+/// list of codes is the spec's (§6.4), not the socket's.
+public enum AttachFailure {
+    public static func text(code: String) -> String {
+        switch code {
+        case "host_offline": return "Host is offline"
+        case "not_paired": return "Not paired with this device"
+        case "no_such_session": return "That session no longer exists"
+        case "too_many": return "The host has too many viewers"
+        // Deliberately not the code itself: a relay newer than this build can invent codes, and
+        // "The host could not be reached" is true of every one of them.
+        default: return "The host could not be reached"
+        }
+    }
+
+    /// An attach the relay never answered at all -- neither `attached` nor `error`. Distinct from
+    /// every code above because nothing on the far end has admitted to anything: the message may
+    /// have been dropped, or the host may have gone between the presence update and the attach.
+    public static let noAnswer = "No answer from the host"
 }

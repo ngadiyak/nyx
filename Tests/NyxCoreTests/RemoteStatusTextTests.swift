@@ -24,3 +24,22 @@ import Testing
     #expect(RemoteStatusText.text(mode: .on, connection: .badToken, deviceName: "MacBook")
         == "Relay rejected this device's token")
 }
+
+@Test func aRefusalNamesItsReason() {
+    #expect(RemoteStatusText.text(mode: .on, connection: .refused("replaced"), deviceName: "MacBook")
+        == "Relay refused this device (replaced)")
+}
+
+/// The keys are right and the relay is fine, but this Mac could not read or write its own identity
+/// file. Nothing else on the page can say that, and "Connecting…" for ever is the alternative.
+@Test func aStartupFailureOutranksTheConnection() {
+    #expect(RemoteStatusText.text(mode: .on, connection: .connecting, deviceName: "MacBook",
+                                  failure: "Remote sessions could not start: identity unreadable")
+        == "Remote sessions could not start: identity unreadable")
+}
+
+@Test func offStillOutranksAStartupFailure() {
+    #expect(RemoteStatusText.text(mode: .off, connection: .connecting, deviceName: "MacBook",
+                                  failure: "Remote sessions could not start: identity unreadable")
+        == "Remote sessions are off")
+}

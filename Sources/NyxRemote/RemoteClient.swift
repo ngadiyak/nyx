@@ -64,9 +64,31 @@ public final class RemoteClient {
         /// Set by `detach()`: the owner has closed the tab, so nothing more is reported to it and
         /// nothing more is sent on its behalf, even if the relay is still delivering frames.
         private var finished = false
+        /// The public half of the ephemeral key this attachment has an `attach` outstanding for,
+        /// or nil when it has none. It is the round marker: cleared the moment an `attached` is
+        /// accepted, so a second one inside the same round is dropped, and replaced by `begin()`,
+        /// so an answer to the *previous* round -- the corner Task 7 parked -- is dropped too
+        /// rather than building a cipher that decrypts nothing.
+        private var awaiting: String?
+        /// Every host ephemeral key this attachment has already built a cipher from.
+        ///
+        /// The host makes a fresh one per attach -- that is what forward secrecy per attachment
+        /// means -- so a repeat is a replay by construction, whether the relay re-delivered it or
+        /// somebody kept a copy. It is the only round marker on the wire: `attached` carries the
+        /// host's key and no echo of ours, so nothing else in the message says which of this
+        /// attachment's rounds it answers. One string per reconnect, so it does not grow.
+        private var usedHostKeys: Set<String> = []
+        /// Which attach round the outstanding timeout belongs to; a timer for a round that has
+        /// already been answered or superseded does nothing.
+        private var round = 0
+        private let timeout: TimeInterval
+        /// Timers only. `RemoteClient` deliberately has no queue of its own (see the type's note),
+        /// and a delayed check is the one thing it cannot do without somewhere to run.
+        private static let timers = DispatchQueue(label: "nyx.remote.client.timeout")
 
         init(sessionID: [UInt8], hostID: String, hostName: String, title: String,
-             link: RelayLink, identity: DeviceIdentity) {
+             link: RelayLink, identity: DeviceIdentity, timeout: TimeInterval) {
+            self.timeout = timeout
             self.sessionID = sessionID
             self.hostID = hostID
             self.hostName = hostName
@@ -131,9 +153,38 @@ public final class RemoteClient {
             ephemeral = E2ESession.ephemeral()
             e2e = nil
             let signed = try? E2ESession.signedPublicKey(ephemeral, sessionID: sessionID, identity: identity)
+            awaiting = signed?.pubkey
+            round += 1
+            let thisRound = round
             lock.unlock()
+            // Armed even when the signing failed and nothing was sent: with no `attach` on the wire
+            // there will certainly be no answer, and the tab must say so rather than sit in
+            // "Attaching…" for the rest of its life.
+            Attachment.timers.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                self?.attachTimedOut(round: thisRound)
+            }
             guard let signed else { return }
             link.send(.attach(to: hostID, sessionID: key, ephemeralPubkey: signed.pubkey, sig: signed.sig))
+        }
+
+        /// Nothing came back for this round. Neither `attached` nor `error` -- the relay may have
+        /// dropped the message, or the host may have gone between the presence update that put the
+        /// row in the palette and the attach itself.
+        private func attachTimedOut(round: Int) {
+            lock.lock()
+            let stale = finished || round != self.round || awaiting == nil
+            lock.unlock()
+            guard !stale else { return }
+            report(if: { self.isAwaitingAttach($0.phase) }) { $0.phase = .failed(AttachFailure.noAnswer) }
+        }
+
+        /// The relay refused the attach: `host_offline`, `not_paired`, `no_such_session`,
+        /// `too_many`. Only while an attach is outstanding -- an error that arrives after the
+        /// session is live is about something else, and must not close a working tab.
+        func handleError(code: String) {
+            report(if: { self.isAwaitingAttach($0.phase) }) {
+                $0.phase = .failed(AttachFailure.text(code: code))
+            }
         }
 
         /// A session id that is not 16 bytes cannot be attached to: the relay would answer
@@ -157,12 +208,18 @@ public final class RemoteClient {
                 return
             }
             lock.lock()
-            guard !finished, isAwaitingAttach(_state.phase),
+            // `awaiting` is what makes this one round's answer rather than any round's: it is set
+            // by `begin()` and cleared here, so a duplicate inside this round and an answer to the
+            // previous round are both dropped, whichever order they arrive in.
+            guard !finished, isAwaitingAttach(_state.phase), awaiting != nil,
+                  !usedHostKeys.contains(pubkey),
                   let session = try? E2ESession(mine: ephemeral, peer: pubkey,
                                                 sessionID: sessionID, isHost: false) else {
                 lock.unlock()
                 return
             }
+            awaiting = nil
+            usedHostKeys.insert(pubkey)
             e2e = session
             _cols = m.cols ?? _cols
             _rows = m.rows ?? _rows
@@ -224,20 +281,22 @@ public final class RemoteClient {
         /// attach, and the re-attach after a reconnect. In `snapshot` and `live` the handshake is
         /// over, and in `ended` there is nothing left to attach to.
         ///
-        /// One corner is knowingly parked: an `attached` from the *previous* round, replayed while
-        /// this attachment is `reconnecting`, is still accepted, and the cipher it builds pairs the
-        /// new ephemeral key with the old round's -- so it decrypts nothing the host now sends and
-        /// the tab sits at `snapshot`. It costs nothing but a stuck tab (no key is exposed: the
-        /// keys are derived, not carried), and it wants the same machinery as a failed attach --
-        /// a per-round marker on the attach and a timeout when no usable `attached` arrives --
-        /// which Task 9 has to build for `host_offline` and `not_paired` anyway.
+        /// It is not enough on its own: an `attached` from the *previous* round, replayed while
+        /// this attachment is `reconnecting`, is also one this phase would allow, and the cipher it
+        /// builds pairs the new ephemeral key with the old round's -- decrypting nothing the host
+        /// now sends, so the tab would sit at `snapshot` for ever. `awaiting` and `usedHostKeys`
+        /// are what close that, and `attachTimedOut` is what catches a round nothing answers.
         private func isAwaitingAttach(_ phase: AttachState.Phase) -> Bool {
             phase == .attaching || phase == .reconnecting
         }
 
+        /// Both of the phases from which nothing more will ever arrive: the session stopped, or it
+        /// was never reached. Frames, roles and `session_ended` are all dropped in either.
         private func isEnded(_ phase: AttachState.Phase) -> Bool {
-            if case .ended = phase { return true }
-            return false
+            switch phase {
+            case .ended, .failed: return true
+            case .attaching, .snapshot, .live, .reconnecting: return false
+            }
         }
 
         /// Mutates the state under the lock and reports it outside: `onState` redraws a tab, and
@@ -263,20 +322,28 @@ public final class RemoteClient {
     private let link: RelayLink
     private let identity: DeviceIdentity
     private let paired: () -> PairedDevices
+    private let attachTimeout: TimeInterval
     private let lock = NSLock()
     /// Keyed by session id, which is all a data frame carries: two attachments to the same session
     /// id would be the same session, and the relay does not allow two hosts to own one.
     private var attachments: [String: Attachment] = [:]
 
-    public init(link: RelayLink, identity: DeviceIdentity, paired: @escaping () -> PairedDevices) {
+    /// `attachTimeout` is a parameter so a test can watch an unanswered attach fail in a tenth of a
+    /// second rather than in fifteen. The default is long enough for a relay and a host that are
+    /// merely slow (the relay allows itself 10 s per handshake step) and short enough that a person
+    /// is not left reading "Attaching…" wondering whether it is working.
+    public init(link: RelayLink, identity: DeviceIdentity, paired: @escaping () -> PairedDevices,
+                attachTimeout: TimeInterval = 15) {
         self.link = link
         self.identity = identity
         self.paired = paired
+        self.attachTimeout = attachTimeout
     }
 
     public func attach(hostID: String, hostName: String, sessionID: [UInt8], title: String) -> Attachment {
         let attachment = Attachment(sessionID: sessionID, hostID: hostID, hostName: hostName,
-                                    title: title, link: link, identity: identity)
+                                    title: title, link: link, identity: identity,
+                                    timeout: attachTimeout)
         guard sessionID.count == 16 else {
             attachment.failImmediately()
             return attachment
@@ -292,6 +359,15 @@ public final class RemoteClient {
     }
 
     public func handle(_ m: RemoteMessage) {
+        // The relay's own refusals, which have no `from` -- the relay is not a device. They are
+        // routed by the `session_id` the relay echoes back; a pairing error carries none and
+        // belongs to the pairing sheet, not to any tab.
+        if m.t == "error" {
+            guard let key = m.sessionID, let attachment = self[key],
+                  m.to == nil || m.to == attachment.hostID else { return }
+            attachment.handleError(code: m.code ?? "")
+            return
+        }
         guard let key = m.sessionID, let from = m.from, let attachment = self[key],
               attachment.hostID == from else { return }
         switch m.t {

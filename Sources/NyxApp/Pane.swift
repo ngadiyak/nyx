@@ -31,6 +31,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// `OSC 7` where there is one, and from the process otherwise -- a `cd` in a shell with no
     /// integration is still a `cd`.
     var onWorkingDirectoryChange: ((String) -> Void)?
+    /// A remote pane's attachment changed phase or role, on the main queue. The tab takes its title
+    /// and its observer/writer badge from it; nil for every local pane.
+    var onRemoteStateChange: ((AttachState) -> Void)?
 
     /// Only ever touched on the main thread, where every pane is created.
     private static var nextID = 0
@@ -45,6 +48,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// see `PaneSession` for what a remote conformer answers for `pid` and
     /// `foregroundProcessGroup`.
     let session: any PaneSession
+    /// The same object as `session` when this pane shows another Mac's session, nil when it shows a
+    /// local shell. It is what the few things that genuinely differ ask -- the strip, the tab's
+    /// badge, whether a key closes a dead tab, whether this pane is worth saving in the session
+    /// file, whether it is published to paired Macs -- and nothing else in the pane branches on it.
+    let remote: RemoteSession?
     private let renderer: Renderer
     private var fonts: FontSet
     /// The full configuration currently in force. Kept apart from the actual font size in use
@@ -82,6 +90,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private let gutter = PromptGutterView(frame: .zero)
     /// The command line pinned over the top row while its output fills the viewport.
     private let stickyStrip = StickyPromptView(frame: .zero)
+    /// A remote pane's "Attaching…" / "Observing — Take control" / "Session ended" row, over the
+    /// same top row. Present only on a remote pane; when it is up, the sticky strip moves down a
+    /// row rather than the two of them sharing one.
+    private let remoteStrip = RemoteStripView(frame: .zero)
     /// The hovered block's Copy/⋯/chevron strip, drawn over its command row the same way.
     private let blockHeader = BlockHeaderView(frame: .zero)
     /// The prompt row the strip currently names, for its click.
@@ -134,8 +146,31 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// `session.start()`, which is the only moment at which nothing else can be writing to the
     /// terminal: feeding it afterwards would race the shell's first prompt and could interleave
     /// the two.
-    init(_ frame: NSRect, config: Config, workingDirectory: String? = nil,
-         restoringTranscript: String? = nil) throws {
+    convenience init(_ frame: NSRect, config: Config, workingDirectory: String? = nil,
+                     restoringTranscript: String? = nil) throws {
+        let palette = Pane.resolvedPalette(for: config)
+        let session = try TerminalSession(config: Pane.sessionConfig(for: config, cols: 80, rows: 24,
+                                                                     palette: palette,
+                                                                     inheriting: workingDirectory))
+        try self.init(frame, config: config, session: session, remote: nil,
+                      restoringTranscript: restoringTranscript)
+    }
+
+    /// A pane showing a session on a paired Mac.
+    ///
+    /// `state` is the attachment's state as it stands right now, so the strip is drawn before the
+    /// first frame rather than a moment after it: an attach that is still in "Attaching…" must not
+    /// spend its first redraw looking like an ordinary, silent terminal.
+    ///
+    /// There is no `workingDirectory` and no `restoringTranscript`: the host decides where its own
+    /// shell is, and what fills the buffer is its snapshot.
+    convenience init(_ frame: NSRect, config: Config, remote: RemoteSession, state: AttachState) throws {
+        try self.init(frame, config: config, session: remote, remote: remote, restoringTranscript: nil)
+        showRemote(state)
+    }
+
+    private init(_ frame: NSRect, config: Config, session: any PaneSession, remote: RemoteSession?,
+                 restoringTranscript: String?) throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw NyxError.noMetal }
         self.id = Pane.allocateID()
         self.config = config
@@ -145,9 +180,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                         lineHeight: CGFloat(config.lineHeight),
                         baseFont: Pane.systemMonospacedFont(for: config.fontFamily))
         renderer = try Renderer(device: device, fonts: fonts)
-        let palette = Pane.resolvedPalette(for: config)
-        session = try TerminalSession(config: Pane.sessionConfig(for: config, cols: 80, rows: 24, palette: palette,
-                                                                 inheriting: workingDirectory))
+        self.session = session
+        self.remote = remote
         super.init(frame: frame)
         wantsLayer = true
         layerContentsRedrawPolicy = .never
@@ -164,6 +198,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         blockHeader.onAction = { [weak self] action, id in self?.perform(action, on: id) }
         blockHeader.onToggleFold = { [weak self] id, full in self?.toggleFold(ofCommand: id, full: full) }
         addSubview(blockHeader)
+        if let remote {
+            remoteStrip.onTakeControl = { [weak self] in self?.takeControl() }
+            addSubview(remoteStrip)
+            // Wired before `start()`, like every other callback here: the attachment may already be
+            // past `attaching` by the time this pane exists.
+            remote.onStateChange = { [weak self] state in self?.showRemote(state) }
+        }
         session.withTerminal { $0.setDefaultCursorShape(config.cursorStyle); $0.modes.cursorBlink = config.cursorBlink }
         session.onUpdate = { [weak self] in self?.sessionDidUpdate() }
         session.onEvent = { [weak self] e in DispatchQueue.main.async { self?.handle(e) } }
@@ -1124,6 +1165,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
+        // A tab whose session ended on the host, or whose attach never happened, will never show
+        // another byte. The first key closes it -- what "press any key to continue" has always
+        // meant -- and the key is swallowed rather than handed on to whatever tab comes next.
+        if remoteClosesOnNextKey {
+            onExit?(0)
+            return
+        }
         // A chord bound to an action never reaches the shell. Most bindings are also menu key
         // equivalents, which AppKit consumes before `keyDown` is ever called; this path is what
         // makes a binding work when the config names a chord the menu cannot express.
@@ -2106,8 +2154,43 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func layoutStickyStrip() {
         let cell = cellSizePoints
         let left = max(padding, CGFloat(PromptGutter.width(padding: Double(padding))))
-        stickyStrip.frame = NSRect(x: left, y: bounds.height - padding - cell.height,
-                                   width: max(0, bounds.width - left - padding), height: cell.height)
+        let width = max(0, bounds.width - left - padding)
+        let top = bounds.height - padding - cell.height
+        remoteStrip.frame = NSRect(x: left, y: top, width: width, height: cell.height)
+        // A row lower while the remote strip is up. Two strips over one row would leave whichever
+        // was added last covering the other, and both of them are sentences somebody has to read.
+        let stickyRow = remote != nil && !remoteStrip.isHidden ? 1 : 0
+        stickyStrip.frame = NSRect(x: left, y: top - CGFloat(stickyRow) * cell.height,
+                                   width: width, height: cell.height)
+    }
+
+    // MARK: - The remote strip
+
+    /// Draws one `AttachState` and tells the tab about it. The only place a remote pane's chrome
+    /// changes; everything it decides -- the words, whether there is a button, whether input is
+    /// accepted at all -- is `AttachState` in NyxCore.
+    private func showRemote(_ state: AttachState) {
+        let wasHidden = remoteStrip.isHidden
+        remoteStrip.update(state: state, palette: Pane.resolvedPalette(for: config),
+                           font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
+        if wasHidden != remoteStrip.isHidden { layoutStickyStrip() }
+        onRemoteStateChange?(state)
+        markDirty()
+    }
+
+    /// The strip's button and the `remote_take_control` action. Returns whether there was anything
+    /// to take: a local pane, or one that is already writing, answers no and the caller beeps.
+    @discardableResult
+    func takeControl() -> Bool {
+        guard let remote, remote.state.stripButton != nil else { return false }
+        remote.attachment.takeControl()
+        return true
+    }
+
+    /// Whether the next keystroke should close this tab rather than be sent anywhere -- a session
+    /// that ended on the host, or an attach that never happened. Local panes always answer no.
+    private var remoteClosesOnNextKey: Bool {
+        remote?.state.closesOnNextKey ?? false
     }
 
     /// Clicking the strip goes to the command it names: the point of pinning it is to be able to
@@ -2447,7 +2530,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Capped by `SessionCapture` rather than written whole. Ten tabs of a full 10,000-line
     /// scrollback is megabytes of ANSI to build and write on the way out of the application, and
     /// nobody scrolls back through last week's build output anyway.
-    func sessionSnapshot(title: String?) -> PaneSnapshot {
+    /// nil for a remote pane. What a saved session can honestly restore is a shell on *this* Mac in
+    /// a directory; restoring a remote tab would mean re-attaching at launch to a machine that may
+    /// be asleep, unpaired or gone -- and its transcript is somebody else's screen, not this Mac's.
+    func sessionSnapshot(title: String?) -> PaneSnapshot? {
+        guard remote == nil else { return nil }
         // Reuses the last transcript when nothing has been written to this buffer since.
         //
         // Selecting a tab, renaming one, or moving it between groups all ask for a fresh snapshot

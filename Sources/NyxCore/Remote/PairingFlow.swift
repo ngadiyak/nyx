@@ -238,15 +238,25 @@ public struct PairingFlow: Equatable {
 
     /// What the pairing sheet shows for the current state: title, body, and the primary button's
     /// label (nil hides the button -- there is nothing to do yet but wait).
-    public var sheetText: (title: String, body: String, primary: String?) { Self.sheetText(for: state) }
+    public var sheetText: (title: String, body: String, primary: String?) {
+        Self.sheetText(for: state, side: side)
+    }
 
     /// The state-only half of `sheetText`, so `PairingSheet.update(state:)` can render a state it
     /// was just handed -- e.g. by `UISnapshot`, which pictures every state directly and never runs
     /// a real flow -- without needing a live `PairingFlow` instance to read it off of.
-    public static func sheetText(for state: State) -> (title: String, body: String, primary: String?) {
+    ///
+    /// `side` matters for exactly one state. `.idle` on the host is a sheet nobody is looking at
+    /// (the host's sheet only opens once a code has been requested), but `.idle` on the client *is*
+    /// the sheet: the code field, waiting to be typed into. With no title and no body it opened as
+    /// a blank box with a text field in the middle of it and no word about what to put there.
+    public static func sheetText(for state: State,
+                                 side: Side = .host) -> (title: String, body: String, primary: String?) {
         switch state {
         case .idle:
-            return ("", "", nil)
+            guard side == .client else { return ("", "", nil) }
+            return ("Enter the code shown on the other Mac",
+                    "Settings → Remote → Pair with another device… shows it", nil)
         case .opening:
             return ("Pairing…", "Requesting a code from the relay", nil)
         case .showingCode(let code, _):

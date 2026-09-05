@@ -282,7 +282,9 @@ public final class RemoteHost {
     }
 
     /// The relay's only word about a client that went away. Every device it lists as offline is
-    /// dropped from every session it was attached to, exactly as if it had sent `detach`.
+    /// dropped from every session it was attached to, exactly as if it had detached from every one
+    /// of them -- the plural matters, because a single `detach` names one session and this names
+    /// all of them at once.
     private func presence(_ m: RemoteMessage) {
         for device in m.devices ?? [] where !device.online {
             dropAttachments(of: device.deviceID)

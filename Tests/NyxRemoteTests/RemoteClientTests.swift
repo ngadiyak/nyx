@@ -14,12 +14,13 @@ private final class ClientFixture {
     let sessionID = testSessionID()
     let key = RemoteID.base64url(testSessionID())
 
-    init() throws {
+    init(attachTimeout: TimeInterval = 15) throws {
         identity = try testIdentity()
         link = FakeLink(deviceID: identity.deviceID)
         host = try TestPeer(isHost: true)
         let paired = self.paired
-        client = RemoteClient(link: link, identity: identity, paired: { paired.devices })
+        client = RemoteClient(link: link, identity: identity, paired: { paired.devices },
+                              attachTimeout: attachTimeout)
         paired.add(host.deviceID)
     }
 
@@ -34,6 +35,8 @@ private final class ClientFixture {
     @discardableResult
     func acceptAttach(role: String = "writer", cols: Int = 80, rows: Int = 24) throws -> RemoteMessage {
         let attach = try #require(link.messages(ofType: "attach").last)
+        // Every accepted attach is a fresh round on the host too, with a key of its own.
+        host.rotateEphemeral()
         let accepted = try host.completeAttach(attach, sessionID: sessionID, peerID: deviceID)
         #expect(accepted)
         let answer = try host.attachedMessage(to: deviceID, sessionID: sessionID, role: role, cols: cols, rows: rows)
@@ -446,4 +449,131 @@ private final class Recorder {
     // And the host opens all 200 in the order they arrived, which is the same statement made by
     // the side that actually enforces it.
     #expect(f.link.frames.allSatisfy { f.host.open($0) != nil })
+}
+
+// MARK: - Attaches that never happen
+
+@Test func aRelayErrorForThisSessionFailsTheAttachInWords() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    let recorder = Recorder()
+    recorder.watch(attachment)
+
+    f.client.handle(RemoteMessage(t: "error", to: f.host.deviceID, code: "host_offline",
+                                  sessionID: f.key, message: "device offline"))
+
+    #expect(attachment.state.phase == .failed("Host is offline"))
+    #expect(attachment.state.stripText == "Host is offline")
+    #expect(attachment.state.closesOnNextKey)
+    #expect(recorder.phases == [.failed("Host is offline")])
+}
+
+@Test func eachRelayErrorCodeReachesTheStripAsItsOwnSentence() throws {
+    for (code, sentence) in [("not_paired", "Not paired with this device"),
+                             ("no_such_session", "That session no longer exists"),
+                             ("too_many", "The host has too many viewers")] {
+        let f = try ClientFixture()
+        let attachment = f.attach()
+        f.client.handle(RemoteMessage(t: "error", code: code, sessionID: f.key))
+        #expect(attachment.state.phase == .failed(sentence))
+    }
+}
+
+/// A pairing error (`pair_expired`) carries no `session_id`, and an error for somebody else's
+/// session carries one that is not ours. Neither may knock this tab over.
+@Test func anErrorForAnotherSessionOrNoSessionIsIgnored() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    f.client.handle(RemoteMessage(t: "error", code: "pair_expired"))
+    f.client.handle(RemoteMessage(t: "error", code: "host_offline",
+                                  sessionID: RemoteID.base64url(testSessionID(7))))
+    #expect(attachment.state.phase == .attaching)
+}
+
+/// The relay echoes the `to` of the request that failed. An error naming a different host is an
+/// answer to somebody else's attach on the same session id, which cannot happen with one host per
+/// session -- but if it did, believing it would close a live tab.
+@Test func anErrorNamingADifferentHostIsIgnored() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    f.client.handle(RemoteMessage(t: "error", to: RemoteID.base64url([UInt8](repeating: 3, count: 32)),
+                                  code: "host_offline", sessionID: f.key))
+    #expect(attachment.state.phase == .attaching)
+}
+
+@Test func anErrorAfterTheSessionIsLiveIsIgnored() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach()
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    #expect(attachment.state.phase == .live)
+    f.client.handle(RemoteMessage(t: "error", code: "host_offline", sessionID: f.key))
+    #expect(attachment.state.phase == .live)
+}
+
+@Test func anAttachNobodyAnswersFailsRatherThanWaitingForEver() throws {
+    let f = try ClientFixture(attachTimeout: 0.05)
+    let attachment = f.attach()
+    let recorder = Recorder()
+    recorder.watch(attachment)
+    #expect(waitUntil(1) { attachment.state.phase == .failed("No answer from the host") })
+    #expect(recorder.phases == [.failed("No answer from the host")])
+}
+
+@Test func anAttachThatIsAnsweredDoesNotLaterTimeOut() throws {
+    let f = try ClientFixture(attachTimeout: 0.05)
+    let attachment = f.attach()
+    try f.acceptAttach()
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    usleep(150_000)
+    #expect(attachment.state.phase == .live)
+}
+
+/// A reconnect arms a fresh timeout, and answering *that* round stops it: a client whose socket
+/// came back and re-attached successfully must not be knocked into `failed` by the timer the
+/// re-attach armed.
+@Test func aReconnectThatIsAnsweredDoesNotTimeOutEither() throws {
+    let f = try ClientFixture(attachTimeout: 0.05)
+    let attachment = f.attach()
+    try f.acceptAttach()
+    f.client.linkDidReconnect()
+    #expect(attachment.state.phase == .reconnecting)
+    try f.acceptAttach()
+    usleep(150_000)
+    #expect(attachment.state.phase == .snapshot)
+}
+
+/// The stale-round replay Task 7 parked: an `attached` from the previous round, re-delivered while
+/// this attachment is `reconnecting`, used to be accepted and built a cipher pairing the *new*
+/// ephemeral key with the old round's -- decrypting nothing the host now sends, so the tab sat at
+/// `snapshot` for ever. The attachment now only accepts an `attached` for the key it currently has
+/// outstanding, so the stale one is dropped and the round's own answer still lands.
+@Test func anAttachedFromThePreviousRoundIsNotAcceptedAfterAReconnect() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    let stale = try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    #expect(attachment.state.phase == .live)
+
+    f.client.linkDidReconnect()
+    #expect(attachment.state.phase == .reconnecting)
+    f.client.handle(stale)
+    #expect(attachment.state.phase == .reconnecting)   // the old round's answer means nothing now
+
+    try f.acceptAttach(role: "observer")
+    #expect(attachment.state.phase == .snapshot)
+    #expect(attachment.state.role == .observer)
+}
+
+/// Two `attached` messages inside one round: the second is a duplicate whatever sent it, and
+/// rebuilding the cipher from it would wind the replay window back to zero.
+@Test func aSecondAttachedInsideOneRoundIsDropped() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    let answer = try f.acceptAttach()
+    #expect(attachment.state.phase == .snapshot)
+    let recorder = Recorder()
+    recorder.watch(attachment)
+    f.client.handle(answer)
+    #expect(recorder.phases.isEmpty)
 }

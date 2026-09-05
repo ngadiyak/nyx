@@ -75,3 +75,17 @@ import Testing
         #expect(!label.trimmingCharacters(in: .whitespaces).isEmpty)
     }
 }
+
+/// The observer/writer chip is drawn, so without this a screen reader has no way to tell a session
+/// it can type into from one it cannot -- which is the single most consequential thing about a
+/// remote tab.
+@Test func aTabsBadgeIsReadAloudAfterItsTitle() {
+    #expect(TabBarLabels.tab(titled: "⟵ iMac · zsh", position: 1, of: 2, indicator: .none,
+                             badge: "observer")
+        == "⟵ iMac · zsh, tab 1 of 2, observer")
+    #expect(TabBarLabels.tab(titled: "⟵ iMac · zsh", position: 1, of: 2, indicator: .activity,
+                             badge: "writer")
+        == "⟵ iMac · zsh, tab 1 of 2, new output, writer")
+    #expect(TabBarLabels.tab(titled: "zsh", position: 1, of: 2, indicator: .none, badge: nil)
+        == TabBarLabels.tab(titled: "zsh", position: 1, of: 2, indicator: .none))
+}

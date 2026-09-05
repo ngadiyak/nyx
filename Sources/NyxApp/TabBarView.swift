@@ -5,6 +5,17 @@ import NyxCore
 struct TabBarItem {
     var title: String
     var indicator: TabIndicator
+    /// A chip after the title: "observer"/"writer" on a tab attached to another Mac's session. nil
+    /// on every ordinary tab, which is all of them until one is opened from the palette's Remote
+    /// section. Drawn like a group's name chip, because it means the same kind of thing -- what
+    /// sort of tab this is, as opposed to which one.
+    var label: String?
+
+    init(title: String, indicator: TabIndicator, label: String? = nil) {
+        self.title = title
+        self.indicator = indicator
+        self.label = label
+    }
 }
 
 /// The strip of tabs above the panes: a single view that draws every tab itself.
@@ -261,8 +272,9 @@ final class TabBarView: NSView {
         ns(TabBarGeometry.indicatorRect(in: pane(tab), metrics: TabBarView.metrics))
     }
 
-    private func titleRect(in tab: NSRect, hasIndicator: Bool) -> NSRect {
-        ns(TabBarGeometry.titleRect(in: pane(tab), hasIndicator: hasIndicator, metrics: TabBarView.metrics))
+    private func titleRect(in tab: NSRect, hasIndicator: Bool, badge: NSRect? = nil) -> NSRect {
+        ns(TabBarGeometry.titleRect(in: pane(tab), hasIndicator: hasIndicator,
+                                    badge: badge.map(pane), metrics: TabBarView.metrics))
     }
 
     private func pane(_ r: NSRect) -> PaneRect {
@@ -416,7 +428,8 @@ final class TabBarView: NSView {
                 // A radio button, which is what a tab is: one of a set, exactly one of which is
                 // on. The value is what carries "this is the one you are looking at".
                 children.append(element(TabBarLabels.tab(titled: item.title, position: index + 1,
-                                                         of: items.count, indicator: item.indicator),
+                                                         of: items.count, indicator: item.indicator,
+                                                         badge: item.label),
                                         .radioButton, frame, value: index == selected ? 1 : 0) {
                     [weak self] in self?.onSelect?(index)
                 })
@@ -694,6 +707,23 @@ final class TabBarView: NSView {
                   font: .systemFont(ofSize: 11, weight: .medium), centred: true)
     }
 
+    /// The font the badge chip is set in. Small and medium: it is a category, not a name, and it
+    /// must not compete with the title beside it.
+    private static let badgeFont = NSFont.systemFont(ofSize: 9, weight: .medium)
+
+    /// How wide a badge's pill is for the text in it, or 0 when there is none. Measured here
+    /// because a string's width is a property of the font; `TabBarGeometry` is handed the number.
+    private func badgeWidth(_ label: String?) -> Double {
+        guard let label, !label.isEmpty else { return 0 }
+        let size = (label as NSString).size(withAttributes: [.font: TabBarView.badgeFont])
+        return Double(ceil(size.width)) + 10   // 5pt of pill on each side of the text
+    }
+
+    private func badgeRect(in tab: NSRect, label: String?) -> NSRect? {
+        TabBarGeometry.badgeRect(in: pane(tab), width: badgeWidth(label),
+                                 metrics: TabBarView.metrics).map(ns)
+    }
+
     private func draw(_ item: TabBarItem, in frame: NSRect, isSelected: Bool) {
         if isSelected {
             selectedBackground.setFill()
@@ -712,8 +742,22 @@ final class TabBarView: NSView {
 
         let hasIndicator = item.indicator != .none
         if hasIndicator { drawIndicator(item.indicator, in: indicatorRect(in: frame)) }
-        drawTitle(item.title, in: titleRect(in: frame, hasIndicator: hasIndicator), isSelected: isSelected)
+        let badge = badgeRect(in: frame, label: item.label)
+        if let badge, let label = item.label { drawBadge(label, in: badge) }
+        drawTitle(item.title, in: titleRect(in: frame, hasIndicator: hasIndicator, badge: badge),
+                  isSelected: isSelected)
         if let close = closeRect(in: frame) { drawCloseButton(in: close, isSelected: isSelected) }
+    }
+
+    /// The observer/writer chip: a filled pill in the theme's accent with text picked to read on
+    /// it, exactly like a group's name chip -- the bar already has one vocabulary for "what kind of
+    /// tab is this", and a second one would be a second thing to learn.
+    private func drawBadge(_ label: String, in frame: NSRect) {
+        let fill = palette.accent
+        nsColor(fill, alpha: 1).setFill()
+        NSBezierPath(roundedRect: frame, xRadius: 4, yRadius: 4).fill()
+        drawLabel(label, in: frame.insetBy(dx: 5, dy: 0), color: textColor(on: fill),
+                  font: TabBarView.badgeFont, centred: true)
     }
 
     private func drawIndicator(_ indicator: TabIndicator, in rect: NSRect) {

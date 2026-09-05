@@ -33,7 +33,6 @@ final class SettingsWindowController: NSWindowController {
     /// nothing at all (the same trap `CommandEditor` documents), which is what happened here first.
     private var activityView = NSTextView()
     private var pairingSheet: PairingSheet?
-    private var pairingFlow: PairingFlow?
 
     /// The name this Mac would show up as if `remote-device-name` were left empty -- the
     /// placeholder in that field, and what `refreshRemoteStatus` uses for "Online as <name>".
@@ -323,8 +322,24 @@ final class SettingsWindowController: NSWindowController {
         return formatter
     }()
 
+    /// The one line under the remote settings: what the connection is actually doing.
+    ///
+    /// Asked of the live coordinator, which is the only thing that knows. Without one -- a snapshot
+    /// run renders this page with no application state behind it -- the honest answer is the one
+    /// the configuration alone supports: off when it is off, and "Connecting…" when it is on but
+    /// nothing here has reached anything.
+    private func refreshRemoteStatus() {
+        let text = coordinator?.statusText
+            ?? RemoteStatusText.text(mode: config.remote, connection: .connecting,
+                                     deviceName: RemoteDeviceName.resolve(
+                                        configured: config.remoteDeviceName,
+                                        hostName: SettingsWindowController.localHostName))
+        remoteStatusLabel.stringValue = text
+        remoteStatusLabel.setAccessibilityValue(text)
+    }
+
     /// Reads the real `paired.json` and the last 20 lines of `audit.log` from beside the config
-    /// file in force -- the same files `RemoteHost`/`RemoteClient` (Task 9) read and write.
+    /// file in force -- the same files `RemoteHost`/`RemoteClient` read and write.
     private func refreshPairedDevicesAndActivity() {
         let dir = RemoteFiles.directory(besideConfigAt: ConfigStore.path)
         pairedRows = PairedDevices.load(from: RemoteFiles.pairedDevices(in: dir)).devices
@@ -364,46 +379,80 @@ final class SettingsWindowController: NSWindowController {
         refreshPairedDevicesAndActivity()
     }
 
-    /// Opens the pairing sheet in demo mode: driven only by a local `PairingFlow`, with no relay --
-    /// the real wiring (a live `RemoteCoordinator`) is Task 9. As host, faking the relay's
-    /// `pair_opened` acknowledgement immediately is what lets the button show a code at all;
-    /// without it the flow sits in `.opening` ("Requesting a code from the relay") forever, because
-    /// nothing here will ever answer it.
+    /// The `remote_pair` action, from the menu or a key binding: this window comes forward on its
+    /// Remote page with the pairing already started, so pairing is reachable by somebody who has
+    /// never opened the settings window.
+    func beginHostPairing() {
+        selectRemotePage()
+        pairAsHost(nil)
+    }
+
+    /// Shows a code for the other Mac to type. The real relay answers `pair_opened` before the code
+    /// is shown, so the sheet reads "Requesting a code from the relay" for as long as that takes --
+    /// a code shown before the relay has it is one the other Mac would be told does not exist.
     @objc private func pairAsHost(_ sender: Any?) {
-        var flow = PairingFlow(side: .host)
-        let code = PairCode.make(random: { Int.random(in: 0..<$0) })
-        _ = flow.handle(.open(code: code, now: Date()), selfID: "self")
-        _ = flow.handle(.opened(code: code), selfID: "self")
-        presentPairing(flow)
+        guard let coordinator else {
+            NSSound.beep()
+            return
+        }
+        presentPairing(side: .host)
+        coordinator.pairAsHost()
     }
 
     @objc private func pairAsClient(_ sender: Any?) {
-        presentPairing(PairingFlow(side: .client))
+        guard let coordinator else {
+            NSSound.beep()
+            return
+        }
+        presentPairing(side: .client)
+        coordinator.pairAsClient()
     }
 
-    private func presentPairing(_ flow: PairingFlow) {
-        guard let window else { return }
-        pairingFlow = flow
-        let sheet = PairingSheet(side: flow.side)
+    private func presentPairing(side: PairingFlow.Side) {
+        guard let window, let coordinator else { return }
+        dismissPairing()
+        let sheet = PairingSheet(side: side)
         sheet.onEvent = { [weak self] event in self?.handlePairingEvent(event) }
-        sheet.update(state: flow.state)
+        // Everything the sheet shows comes back through here, from the one flow the coordinator
+        // runs against the real relay. The sheet itself never decides anything.
+        coordinator.onPairingState = { [weak self] state in
+            self?.pairingSheet?.update(state: state)
+        }
         pairingSheet = sheet
         window.beginSheet(sheet.panel, completionHandler: nil)
     }
 
     private func handlePairingEvent(_ event: PairingFlow.Event) {
-        guard var flow = pairingFlow, let sheet = pairingSheet else { return }
-        _ = flow.handle(event, selfID: "self")
-        pairingFlow = flow
-        sheet.update(state: flow.state)
+        coordinator?.handlePairing(event)
+        // Cancel, and the two terminal states' single button, all close the sheet: `.paired` and
+        // `.failed` show "Done"/"Close", which the sheet reports as `.cancel`.
         if case .cancel = event { dismissPairing() }
     }
 
     private func dismissPairing() {
+        coordinator?.onPairingState = nil
+        coordinator?.cancelPairing()
         guard let sheet = pairingSheet, let window else { return }
         window.endSheet(sheet.panel)
         pairingSheet = nil
-        pairingFlow = nil
+    }
+
+    /// The application's remote sessions, or nil in a snapshot run (which has no coordinator at all
+    /// -- rendering a settings page must not open a socket).
+    private var coordinator: RemoteCoordinator? { (NSApp.delegate as? AppDelegate)?.remote }
+
+    /// The catalogue, the status or the paired list moved.
+    func remoteChanged() {
+        refreshRemoteStatus()
+    }
+
+    /// Brings the Remote page forward, for `remote_pair` arriving from the menu.
+    private func selectRemotePage() {
+        guard let content = window?.contentView,
+              let tabs = content.subviews.compactMap({ $0 as? NSTabView }).first else { return }
+        for index in 0..<tabs.numberOfTabViewItems where tabs.tabViewItem(at: index).label == "Remote" {
+            tabs.selectTabViewItem(at: index)
+        }
     }
 
     private func column(_ id: String, _ title: String, width: CGFloat) -> NSTableColumn {
@@ -714,14 +763,7 @@ final class SettingsWindowController: NSWindowController {
         set("remote-relay", c.remoteRelay)
         set("remote-relay-token", c.remoteRelayToken)
         set("remote-snapshot-lines", Double(c.remoteSnapshotLines), decimals: 0)
-        let resolvedDeviceName = RemoteDeviceName.resolve(configured: c.remoteDeviceName,
-                                                          hostName: SettingsWindowController.localHostName)
-        // No `RemoteCoordinator` exists yet (Task 9 wires the live connection), so the only
-        // connection state this page can honestly report while `remote` is on is "attempting to
-        // connect" -- never a stale "online" nobody actually reached.
-        remoteStatusLabel.stringValue = RemoteStatusText.text(mode: c.remote, connection: .connecting,
-                                                               deviceName: resolvedDeviceName)
-        remoteStatusLabel.setAccessibilityValue(remoteStatusLabel.stringValue)
+        refreshRemoteStatus()
         refreshPairedDevicesAndActivity()
 
         let table = KeyBindingTable(user: c.keybinds)

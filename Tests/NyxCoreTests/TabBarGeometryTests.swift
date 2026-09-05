@@ -94,6 +94,57 @@ private let barHeight = 28.0
     }
 }
 
+// MARK: - The badge
+
+@Test func theBadgeSitsBetweenTheTitleAndTheCloseButton() {
+    let tab = PaneRect(x: 0, y: 0, width: 220, height: barHeight)
+    let badge = try! #require(TabBarGeometry.badgeRect(in: tab, width: 52))
+    let close = try! #require(TabBarGeometry.closeRect(in: tab))
+    #expect(badge.x + badge.width <= close.x)
+    #expect(badge.y >= tab.y)
+    #expect(badge.y + badge.height <= tab.y + tab.height)
+    let title = TabBarGeometry.titleRect(in: tab, hasIndicator: false, badge: badge)
+    #expect(title.x + title.width <= badge.x)
+}
+
+/// The tab exists to be identified. A badge that leaves the title a handful of points says
+/// "observer" over a tab you can no longer tell from its neighbour, so past that point it goes and
+/// the strip inside the pane is the only thing saying it -- which it does in words, not a chip.
+@Test func aTabTooNarrowForABadgeAndATitleShowsNoBadge() {
+    #expect(TabBarGeometry.badgeRect(in: PaneRect(x: 0, y: 0, width: 220, height: barHeight),
+                                     width: 52) != nil)
+    #expect(TabBarGeometry.badgeRect(in: PaneRect(x: 0, y: 0, width: 110, height: barHeight),
+                                     width: 52) == nil)
+    #expect(TabBarGeometry.badgeRect(in: PaneRect(x: 0, y: 0, width: 20, height: barHeight),
+                                     width: 52) == nil)
+}
+
+@Test func aBadgeOfNoWidthIsNoBadge() {
+    #expect(TabBarGeometry.badgeRect(in: PaneRect(x: 0, y: 0, width: 220, height: barHeight),
+                                     width: 0) == nil)
+}
+
+/// A tab with no close button (too narrow, or twenty of them open) still puts the badge inside its
+/// own right-hand inset rather than over the tab beside it. Reached through metrics with a wide
+/// close button, because at the shipping sizes a tab loses its close button long before it has room
+/// for a badge -- so this is the arithmetic being right rather than a state the bar can be in.
+@Test func theBadgeStaysInsideATabWithNoCloseButton() {
+    let metrics = TabBarMetrics(closeButtonSize: 60)
+    let tab = PaneRect(x: 300, y: 0, width: 110, height: barHeight)
+    #expect(TabBarGeometry.closeRect(in: tab, metrics: metrics) == nil)
+    let badge = try! #require(TabBarGeometry.badgeRect(in: tab, width: 30, metrics: metrics))
+    #expect(badge.x + badge.width <= tab.x + tab.width)
+    #expect(badge.x > tab.x)
+}
+
+@Test func theTitleBoxIsNeverNegativeWithABadge() {
+    for width in [0.0, 4, 12, 21, 30, 64, 220] {
+        let tab = PaneRect(x: 0, y: 0, width: width, height: barHeight)
+        let badge = TabBarGeometry.badgeRect(in: tab, width: 52)
+        #expect(TabBarGeometry.titleRect(in: tab, hasIndicator: true, badge: badge).width >= 0)
+    }
+}
+
 // MARK: - Clicks
 
 @Test func aClickInTheBodyOfATabSelectsIt() {

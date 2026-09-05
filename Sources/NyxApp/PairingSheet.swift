@@ -138,7 +138,7 @@ final class PairingSheet: NSObject {
     /// `UISnapshot` picture every state directly -- then resizes the panel to fit.
     func update(state: PairingFlow.State) {
         self.state = state
-        let text = PairingFlow.sheetText(for: state)
+        let text = PairingFlow.sheetText(for: state, side: side)
         titleLabel.stringValue = text.title
         bodyLabel.stringValue = text.body
         bodyLabel.isHidden = text.body.isEmpty

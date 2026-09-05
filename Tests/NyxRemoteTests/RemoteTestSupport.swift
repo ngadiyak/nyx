@@ -90,7 +90,10 @@ enum TestPeerError: Error { case notAttached }
 /// merely checking that the thing under test agrees with itself.
 final class TestPeer {
     let identity: DeviceIdentity
-    let ephemeral = E2ESession.ephemeral()
+    /// A var, not a let: a real host and a real client each make a *fresh* ephemeral key for every
+    /// attach (that is what "forward secrecy per attachment" means), and a fixture that reused one
+    /// would make a replayed `attached` indistinguishable from a genuine second round.
+    private(set) var ephemeral = E2ESession.ephemeral()
     let isHost: Bool
     private(set) var e2e: E2ESession?
 
@@ -108,6 +111,12 @@ final class TestPeer {
     }
 
     var deviceID: String { identity.deviceID }
+
+    /// Starts a new attach round on this peer, the way a real one does.
+    func rotateEphemeral() {
+        ephemeral = E2ESession.ephemeral()
+        e2e = nil
+    }
 
     func attachMessage(to host: String, sessionID: [UInt8]) throws -> RemoteMessage {
         let signed = try E2ESession.signedPublicKey(ephemeral, sessionID: sessionID, identity: identity)

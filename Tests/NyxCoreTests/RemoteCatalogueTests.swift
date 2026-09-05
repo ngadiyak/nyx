@@ -45,6 +45,25 @@ private func session(id: String = "s1", title: String = "zsh", cwd: String = "/t
     #expect(items[0].kind == .remoteSession(deviceID: "d1", sessionID: ""))
 }
 
+@Test func anOnlineDeviceWithNoSessionsSaysSoInsteadOfVanishing() {
+    var c = RemoteCatalogue()
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "iMac", online: true)])
+    c.applyCatalogue(deviceID: "d1", sessions: [])
+    let items = c.paletteItems(now: now)
+    #expect(items.count == 1)
+    #expect(items[0].title == "iMac — no sessions")
+    #expect(items[0].detail == "")
+    #expect(items[0].kind == .remoteSession(deviceID: "d1", sessionID: ""))
+}
+
+/// The paired-but-never-seen case: a device only `setPaired` knows about is offline, and must not
+/// be reported as an online Mac that happens to be running nothing.
+@Test func aPairedDeviceThatHasNeverConnectedIsOfflineNotEmpty() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "iMac"])
+    #expect(c.paletteItems(now: now)[0].title == "iMac — offline")
+}
+
 // MARK: - relative()
 
 @Test func relativeJustUnderAMinuteIsJustNow() {
@@ -102,4 +121,12 @@ private func iso(secondsAgo: TimeInterval) -> String {
     let items = PaletteSource.items(actions: [.newTab], chord: { _ in nil },
                                     themes: ["dracula"], tabTitles: ["zsh"], remote: [remote])
     #expect(items.last?.kind == .remoteSession(deviceID: "d", sessionID: "s"))
+}
+
+@Test func aPaletteRowShortensTheHomeDirectory() {
+    var c = RemoteCatalogue()
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "iMac", online: true)])
+    c.applyCatalogue(deviceID: "d1", sessions: [session(cwd: "/Users/nik/projects/nyx")])
+    #expect(c.paletteItems(now: now, home: "/Users/nik")[0].detail.hasPrefix("~/projects/nyx"))
+    #expect(c.paletteItems(now: now)[0].detail.hasPrefix("/Users/nik/projects/nyx"))
 }

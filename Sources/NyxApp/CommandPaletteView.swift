@@ -13,6 +13,23 @@ private final class PaletteListView: NSView {
     private var selection = 0
     private var palette: Palette
 
+    /// One line, cut off with an ellipsis rather than wrapped: the rows are a fixed height, and a
+    /// string that wrapped would draw over the row beneath it.
+    private static let truncating: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingTail
+        return style
+    }()
+
+    /// The same, right-aligned: the detail sits against the row's right edge, so what is cut is
+    /// its tail and what survives is the directory and branch a remote row leads with.
+    private static let truncatingRight: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingTail
+        style.alignment = .right
+        return style
+    }()
+
     init(palette: Palette) {
         self.palette = palette
         super.init(frame: .zero)
@@ -79,14 +96,25 @@ private final class PaletteListView: NSView {
                 title.setAttributes([.font: matchFont, .foregroundColor: matchColor],
                                     range: NSRange(location: position, length: 1))
             }
-            title.draw(at: NSPoint(x: rect.minX + 12, y: rect.minY + 5))
-
-            guard !result.item.detail.isEmpty else { continue }
-            let detail = NSAttributedString(
+            let detail = NSMutableAttributedString(
                 string: result.item.detail,
                 attributes: [.font: detailFont, .foregroundColor: detailColor])
-            let size = detail.size()
-            detail.draw(at: NSPoint(x: rect.maxX - 12 - size.width, y: rect.minY + 7))
+            // How much of the row each half may have. Until the Remote section existed every detail
+            // was a chord or one word and the two could never collide; a remote session's detail is
+            // a sentence, and drawn at its natural width it ran straight through the title.
+            let widths = PaletteRowLayout.widths(rowWidth: Double(rect.width) - 24,
+                                                 titleWidth: Double(title.size().width),
+                                                 detailWidth: Double(detail.size().width))
+            title.addAttribute(.paragraphStyle, value: PaletteListView.truncating,
+                               range: NSRange(location: 0, length: title.length))
+            title.draw(in: NSRect(x: rect.minX + 12, y: rect.minY + 5,
+                                  width: CGFloat(widths.title), height: rect.height - 5))
+
+            guard !result.item.detail.isEmpty, widths.detail > 0 else { continue }
+            detail.addAttribute(.paragraphStyle, value: PaletteListView.truncatingRight,
+                                range: NSRange(location: 0, length: detail.length))
+            detail.draw(in: NSRect(x: rect.maxX - 12 - CGFloat(widths.detail), y: rect.minY + 7,
+                                   width: CGFloat(widths.detail), height: rect.height - 7))
         }
     }
 
@@ -208,6 +236,18 @@ final class CommandPaletteView: NSView, NSTextFieldDelegate {
 
     func focusField() {
         window?.makeFirstResponder(field)
+    }
+
+    /// Opens the panel with something already typed -- `remote_sessions` opens it filtered to the
+    /// Remote section. The text goes into the field as well as into the model, so backspacing works
+    /// from there rather than from an empty field showing a filtered list.
+    func setQuery(_ query: String) {
+        field.stringValue = query
+        model.setQuery(query)
+        refresh()
+        // The caret goes after what was typed for us, so the next keystroke narrows the list
+        // instead of replacing the word.
+        field.currentEditor()?.selectedRange = NSRange(location: query.count, length: 0)
     }
 
     override func layout() {

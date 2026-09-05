@@ -53,14 +53,18 @@ public enum TabBarLabels {
 
     /// A tab: what it is called, where it is in the strip, and what its indicator dot means. The
     /// position is what the drawn bar shows and a label alone cannot.
+    /// `badge` is the chip a remote tab carries -- "observer" or "writer". It is drawn, so a screen
+    /// reader has no other way to learn the one thing that decides whether typing into this tab
+    /// reaches anything at all.
     public static func tab(titled title: String, position: Int, of count: Int,
-                           indicator: TabIndicator) -> String {
+                           indicator: TabIndicator, badge: String? = nil) -> String {
         var out = "\(title), tab \(position) of \(count)"
         switch indicator {
         case .none: break
         case .activity: out += ", new output"
         case .bell: out += ", bell rang"
         }
+        if let badge, !badge.isEmpty { out += ", \(badge)" }
         return out
     }
 

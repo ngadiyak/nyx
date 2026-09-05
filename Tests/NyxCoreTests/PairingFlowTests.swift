@@ -184,6 +184,11 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
 
 @Test func sheetTextPerState() {
     #expect(PairingFlow(side: .host).sheetText == ("", "", nil))
+    // The client's idle state is a sheet somebody is looking at with a code field in it, so unlike
+    // the host's it has to say what to type and where the other Mac shows it.
+    #expect(PairingFlow(side: .client).sheetText
+        == ("Enter the code shown on the other Mac",
+            "Settings → Remote → Pair with another device… shows it", nil))
 
     var host = PairingFlow(side: .host)
     _ = host.handle(.open(code: "ABCDEF", now: t0), selfID: "id")

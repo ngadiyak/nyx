@@ -68,17 +68,32 @@ public struct RemoteCatalogue: Equatable {
     /// The Remote section of the command palette: a relay-status row if there is one, then one row
     /// per session of every online device, then one placeholder row per offline device -- so a
     /// paired Mac that is asleep still shows up, just not as something you can attach to.
-    public func paletteItems(now: Date) -> [PaletteItem] {
+    ///
+    /// Every paired device gets *some* row. A Mac that is awake but has published nothing (it was
+    /// just launched, or its user closed the last tab) would otherwise disappear from the list
+    /// entirely, which reads as a pairing that has broken rather than as a Mac with nothing open.
+    ///
+    /// `home` is the *local* user's home directory, collapsed to `~` in a row's detail the way a
+    /// shell prompt does. Local rather than the host's because it is a local palette being read;
+    /// on the two Macs this feature is for it is the same path, and where it is not, the row shows
+    /// the absolute path, which is never wrong -- only longer.
+    public func paletteItems(now: Date, home: String = "") -> [PaletteItem] {
         var items: [PaletteItem] = []
         if let status = relayStatusText {
             items.append(.remoteSession(deviceID: "", sessionID: "", title: status, detail: ""))
         }
         for device in devices {
             if device.online {
+                guard !device.sessions.isEmpty else {
+                    items.append(.remoteSession(deviceID: device.id, sessionID: "",
+                                                title: "\(device.name) — no sessions", detail: ""))
+                    continue
+                }
                 for session in device.sessions {
                     items.append(.remoteSession(deviceID: device.id, sessionID: session.sessionID,
                                                 title: "\(device.name) · \(session.title)",
-                                                detail: Self.detail(for: session, now: now)))
+                                                detail: Self.detail(for: session, now: now,
+                                                                    home: home)))
                 }
             } else {
                 items.append(.remoteSession(deviceID: device.id, sessionID: "",

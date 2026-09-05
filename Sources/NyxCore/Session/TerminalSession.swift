@@ -51,6 +51,23 @@ public final class TerminalSession {
     public var onUpdate: (() -> Void)?
     public var onEvent: ((TerminalEvent) -> Void)?
     public var onExit: ((Int32) -> Void)?
+
+    /// Every chunk of output, exactly as it came off the PTY, after it has been fed to the terminal.
+    ///
+    /// Unlike the callbacks above this one may be assigned at any time -- a remote host taps a
+    /// session that has been running for hours -- so it is held under the same lock the reader
+    /// thread already takes, rather than being a plain stored property racing with the reader.
+    ///
+    /// It is called on the reader thread with the terminal lock **released**, and it must return
+    /// immediately: everything it does happens between two reads of the PTY, so blocking here (on a
+    /// socket, say) stalls the child process. Hand the bytes to a queue and return. It must not
+    /// call back into this session's `withTerminal`-family methods for the same reason -- the
+    /// reader is waiting for it, not the other way round, so that is a stall, not a deadlock, but
+    /// it is still the wrong shape.
+    public var onOutput: (([UInt8]) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _onOutput }
+        set { lock.lock(); _onOutput = newValue; lock.unlock() }
+    }
     public var exitCode: Int32? { lock.lock(); defer { lock.unlock() }; return _exitCode }
     public var pid: pid_t { pty.pid }
 
@@ -70,6 +87,8 @@ public final class TerminalSession {
     private var thread: Thread?
     private var started = false
     private var _exitCode: Int32?
+    private var _onOutput: (([UInt8]) -> Void)?
+    private var _outputCount: UInt64 = 0
 
     /// Spawns the child process. No output is read until `start()` is called.
     public init(config: SessionConfig) throws {
@@ -119,6 +138,22 @@ public final class TerminalSession {
         return try body(terminal)
     }
 
+    /// The terminal *and* the number of output chunks fed into it, under one lock.
+    ///
+    /// The count is the sequence number the next `onOutput` call will report: chunks numbered below
+    /// it are already in what `body` sees, chunks from it on are not. That is the whole reason this
+    /// exists. `onOutput` is deliberately called after the lock is dropped, so there is a window in
+    /// which a chunk has been fed to the terminal but its tap call has not run yet; a caller that
+    /// spliced a snapshot into the live stream by "take the transcript, then take everything the
+    /// tap reports from now on" would send that chunk twice -- once inside the snapshot and once
+    /// after it. Taking the count here instead makes the join exact, because the count moves with
+    /// the feed and not with the tap.
+    public func withTerminalAndOutputCount<T>(_ body: (Terminal, UInt64) throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(terminal, _outputCount)
+    }
+
     public func send(_ bytes: [UInt8]) {
         guard !bytes.isEmpty else { return }
         writeQueue.async { [pty] in pty.write(bytes) }
@@ -147,9 +182,16 @@ public final class TerminalSession {
             var events: [TerminalEvent] = []
             lock.lock()
             terminal.feed(bytes)
+            _outputCount += 1
+            let tap = _onOutput
             if !terminal.responses.isEmpty { responses = terminal.responses; terminal.responses.removeAll(keepingCapacity: true) }
             if !terminal.events.isEmpty { events = terminal.events; terminal.events.removeAll() }
             lock.unlock()
+            // Before the redraw and before any reply goes back to the child: a remote client is
+            // waiting on these bytes over a network, so every microsecond spent here first is one
+            // it does not have to wait. The copy is unavoidable -- `buffer` is reused by the next
+            // read -- but it is only paid when something is actually tapping.
+            if let tap { tap(Array(bytes)) }
             if !responses.isEmpty { send(responses) }
             for e in events { onEvent?(e) }
             onUpdate?()

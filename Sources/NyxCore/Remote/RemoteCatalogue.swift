@@ -13,6 +13,14 @@ public struct RemoteCatalogue: Equatable {
     }
 
     private var byID: [String: Device] = [:]
+    /// The devices this Mac has actually paired with, from `setPaired`.
+    ///
+    /// Every `presence` and `catalogue` message is checked against it. The relay routes; it does
+    /// not vouch (§7.1), so an entry naming a device that is not in `paired.json` is either a bug
+    /// or a relay offering a row that looks like one of the user's own Macs, complete with a name
+    /// and a working directory of its choosing. Attaching to it would fail at the signature check
+    /// -- but the row has no business being in ⌘⇧P at all.
+    private var pairedIDs: Set<String> = []
 
     /// Shown in the settings page and, when set, as the palette's first Remote row -- so a relay
     /// outage or a bad token is something the user is told, not a list that quietly goes empty.
@@ -23,7 +31,7 @@ public struct RemoteCatalogue: Equatable {
     /// A `presence` message: who is online right now, by name. This is the freshest name Nyx has
     /// for a device, so it always wins over whatever `setPaired` supplied.
     public mutating func applyPresence(_ devices: [RemotePresence]) {
-        for p in devices {
+        for p in devices where pairedIDs.contains(p.deviceID) {
             var device = byID[p.deviceID] ?? Device(id: p.deviceID, name: p.name, online: p.online, sessions: [])
             device.name = p.name
             device.online = p.online
@@ -37,15 +45,23 @@ public struct RemoteCatalogue: Equatable {
     /// no `presence` has arrived yet -- the alternative, showing its sessions under "offline", would
     /// be actively wrong.
     public mutating func applyCatalogue(deviceID: String, sessions: [RemoteSessionInfo]) {
+        guard pairedIDs.contains(deviceID) else { return }
         var device = byID[deviceID] ?? Device(id: deviceID, name: "", online: true, sessions: [])
         device.sessions = sessions
         byID[deviceID] = device
     }
 
-    /// The locally paired devices' names, from `PairedDevices` on disk. Only fills in a name for a
-    /// device Nyx has no live (online) name for yet -- a device presence has already named should
-    /// keep the name presence gave it, not be second-guessed by a possibly stale local copy.
+    /// The locally paired devices' names, from `PairedDevices` on disk. Also *the* list of devices
+    /// this catalogue will accept anything about at all -- see `pairedIDs`.
+    ///
+    /// Only fills in a name for a device Nyx has no live (online) name for yet: a device presence
+    /// has already named should keep the name presence gave it, not be second-guessed by a
+    /// possibly stale local copy. Devices no longer in the list are dropped whole, because this is
+    /// what Remove in the settings page calls: unpairing has to take the Mac out of the palette,
+    /// with its live sessions, and not only out of `paired.json`.
     public mutating func setPaired(_ names: [String: String]) {
+        pairedIDs = Set(names.keys)
+        byID = byID.filter { pairedIDs.contains($0.key) }
         for (id, name) in names {
             if var device = byID[id] {
                 if !device.online { device.name = name }

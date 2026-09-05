@@ -16,6 +16,7 @@ private func session(id: String = "s1", title: String = "zsh", cwd: String = "/t
 
 @Test func presenceThenCatalogueProduceOneRowPerSession() {
     var c = RemoteCatalogue()
+    c.setPaired(["d1": "iMac"])
     c.applyPresence([RemotePresence(deviceID: "d1", name: "iMac", online: true)])
     c.applyCatalogue(deviceID: "d1", sessions: [
         session(title: "zsh", cwd: "/home/nik/projects/nyx", branch: "main",
@@ -47,6 +48,7 @@ private func session(id: String = "s1", title: String = "zsh", cwd: String = "/t
 
 @Test func anOnlineDeviceWithNoSessionsSaysSoInsteadOfVanishing() {
     var c = RemoteCatalogue()
+    c.setPaired(["d1": "iMac"])
     c.applyPresence([RemotePresence(deviceID: "d1", name: "iMac", online: true)])
     c.applyCatalogue(deviceID: "d1", sessions: [])
     let items = c.paletteItems(now: now)
@@ -108,6 +110,7 @@ private func iso(secondsAgo: TimeInterval) -> String {
 
 @Test func devicesSortOnlineFirstThenByName() {
     var c = RemoteCatalogue()
+    c.setPaired(["a": "Alpha", "b": "Zebra", "c": "Beta"])
     c.applyPresence([
         RemotePresence(deviceID: "b", name: "Zebra", online: false),
         RemotePresence(deviceID: "a", name: "Alpha", online: true),
@@ -127,6 +130,7 @@ private func iso(secondsAgo: TimeInterval) -> String {
 
 @Test func aPaletteRowShortensTheHomeDirectory() {
     var c = RemoteCatalogue()
+    c.setPaired(["d1": "iMac"])
     c.applyPresence([RemotePresence(deviceID: "d1", name: "iMac", online: true)])
     c.applyCatalogue(deviceID: "d1", sessions: [session(cwd: "/Users/nik/projects/nyx")])
     #expect(c.paletteItems(now: now, home: "/Users/nik")[0].detail.hasPrefix("~/projects/nyx"))
@@ -141,6 +145,7 @@ private func iso(secondsAgo: TimeInterval) -> String {
 @Test func theThreeNonActionableRowsAreDisabled() {
     var c = RemoteCatalogue()
     c.relayStatusText = "Relay unreachable (nyx.agentforge.cc)"
+    c.setPaired(["d1": "iMac", "d2": "Mac mini"])
     c.applyPresence([
         RemotePresence(deviceID: "d1", name: "iMac", online: true),
         RemotePresence(deviceID: "d2", name: "Mac mini", online: false),
@@ -151,6 +156,7 @@ private func iso(secondsAgo: TimeInterval) -> String {
 
 @Test func aSessionRowIsActionable() {
     var c = RemoteCatalogue()
+    c.setPaired(["d1": "iMac"])
     c.applyPresence([RemotePresence(deviceID: "d1", name: "iMac", online: true)])
     c.applyCatalogue(deviceID: "d1", sessions: [session()])
     #expect(c.paletteItems(now: now)[0].isEnabled)
@@ -167,6 +173,7 @@ private func iso(secondsAgo: TimeInterval) -> String {
 @Test func aStateIsSaidOnceNotTwice() {
     var c = RemoteCatalogue()
     c.relayStatusText = "Relay unreachable (nyx.agentforge.cc)"
+    c.setPaired(["d1": "iMac", "d2": "Mac mini"])
     c.applyPresence([
         RemotePresence(deviceID: "d1", name: "iMac", online: true),
         RemotePresence(deviceID: "d2", name: "Mac mini", online: false),
@@ -179,4 +186,41 @@ private func iso(secondsAgo: TimeInterval) -> String {
     #expect(items[1].detail == "no sessions")
     #expect(items[2].title == "Mac mini")
     #expect(items[2].detail == "offline")
+}
+
+// MARK: - Only paired devices
+
+/// The relay decides what `presence` and `catalogue` say, and it is the one participant this
+/// design does not trust (§7.1: it routes, it does not vouch). A relay that named a device this
+/// Mac has never paired with would otherwise put a row in ⌘⇧P -- with a machine name and a
+/// directory of its choosing -- that looks exactly like a Mac the user owns. Attaching to it would
+/// fail at the signature check, but the row should never have been offered.
+@Test func anUnpairedDeviceNeverYieldsARow() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "iMac"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "iMac", online: true),
+                     RemotePresence(deviceID: "evil", name: "iMac", online: true)])
+    c.applyCatalogue(deviceID: "evil", sessions: [session(title: "zsh")])
+
+    let items = c.paletteItems(now: now)
+    #expect(items.count == 1)
+    #expect(items[0].kind == .remoteSession(deviceID: "d1", sessionID: ""))
+    #expect(c.devices.map(\.id) == ["d1"])
+}
+
+/// Remove in the settings page takes the Mac out of the palette, not just out of `paired.json`.
+/// Before this, `setPaired` only ever added: an unpaired device kept its rows -- with live
+/// sessions on them -- until Nyx was restarted.
+@Test func unpairingTakesTheDeviceOutOfTheCatalogue() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "iMac", "d2": "Mac mini"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "iMac", online: true),
+                     RemotePresence(deviceID: "d2", name: "Mac mini", online: true)])
+    c.applyCatalogue(deviceID: "d2", sessions: [session(title: "zsh")])
+    #expect(c.paletteItems(now: now).count == 2)
+
+    c.setPaired(["d1": "iMac"])
+    let items = c.paletteItems(now: now)
+    #expect(items.count == 1)
+    #expect(items[0].kind == .remoteSession(deviceID: "d1", sessionID: ""))
 }

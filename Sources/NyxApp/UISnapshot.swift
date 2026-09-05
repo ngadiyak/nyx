@@ -537,6 +537,10 @@ enum UISnapshot {
         let now = Date()
         let iso = ISO8601DateFormatter()
         var catalogue = RemoteCatalogue()
+        // In the order the coordinator does it: the paired list first, because the catalogue takes
+        // presence and sessions only for devices this Mac has paired with.
+        catalogue.setPaired(["d1": "Mac mini (office)", "d2": "Nik's MacBook Pro",
+                             "d3": "iMac (studio)"])
         catalogue.applyPresence([
             RemotePresence(deviceID: "d1", name: "Mac mini (office)", online: true),
             RemotePresence(deviceID: "d2", name: "Nik's MacBook Pro", online: true),

@@ -115,7 +115,17 @@ run and how long ago. Choose one and it opens as a tab titled `⟵ machine · ti
 blocks, folds, `⌘↑`, the status gutter and the sticky prompt all work in it: the snapshot carries
 the host shell's own OSC 133 marks, not flattened text, so a remote tab is a Nyx tab rather than a
 picture of one. The grid is the host's — the person sitting in front of it owns that window size —
-so a larger window leaves space around it and a smaller one clips the right and the bottom.
+so a larger window leaves space around it and a smaller one clips the right and the bottom, and says
+so on the strip: "Host's screen is 160×74 — showing 96×30".
+
+**When something goes.** A dropped connection says "Reconnecting…" and re-attaches by itself with a
+fresh snapshot; the relay answers an attach that beats the host back with "no such session", so the
+re-attach keeps asking for a minute before giving up. A *host* that goes — a closed lid, a network
+that dropped — is not a session that ended: the tab says "<machine> is offline — will reattach",
+keeps everything it has, refuses input, and re-attaches the moment that Mac publishes the session
+again. Only a host that comes back without it ends the tab. A tab that has ended, failed or is
+waiting stays where it is with its transcript intact — scroll it, search it, copy out of it — until
+you close it with ⌘W or the Close button on its strip.
 
 **Writer and observer.** The first Mac to attach is the writer and types into the session; every
 one after is an observer, with a strip over the top row saying so and a "Take control" button that

@@ -98,7 +98,21 @@ action `remote_take_control`). Taking control demotes the previous writer to obs
 strip. The host's own user is never blocked: local input on machine 2 always works.
 
 Closing the tab detaches. Detaching never affects the host session. A dropped connection shows
-"Reconnecting…" in the strip and reattaches automatically with a fresh snapshot.
+"Reconnecting…" in the strip and reattaches automatically with a fresh snapshot; because a re-attach
+races the host's own reconnect, `no_such_session` and `host_offline` during one are retried with
+backoff for a minute before the tab gives up.
+
+A *host* going offline is not a session ending. The relay sends `session_suspended` to everyone
+attached (`session_ended` stays host-originated), and the tab shows "<machine> is offline — will
+reattach": the transcript is kept, input is refused, and the client re-attaches as soon as that
+host's catalogue lists the session again. A catalogue from that host *without* it — which can only
+arrive once presence says the host is back — ends the tab.
+
+Choosing a session that is already open in this window selects that tab rather than attaching twice:
+there is one attachment per session id, so a second attach would be the same stream in two tabs.
+
+If the host's grid is larger than the pane, the strip says so ("Host's screen is 160×74 — showing
+96×30") rather than clipping in silence.
 
 ### 5.5 On the host
 
@@ -112,7 +126,13 @@ Settings → Remote shows the last 20 lines.
   retrying with backoff; nothing else in Nyx is affected.
 - Wrong relay token: "Relay rejected this device's token" in the section and in the settings page.
 - Host offline: the row says so; attach is disabled.
-- Session ended on the host: the tab shows "Session ended on <machine>" and closes on the next key.
+- Session ended on the host: the tab shows "Session ended on <machine> — ⌘W to close" and stays,
+  with a Close button on the strip. Ended, failed and suspended tabs all keep their transcript --
+  scrolling, selection, search and copy go on working -- and keystrokes are refused with a beep
+  rather than closing the window. (Until 2026-09-06 the next key closed the tab, which threw the
+  transcript away at exactly the moment somebody wanted to read it.)
+- Remote sessions on with no relay token: "Paste the relay token to connect", and the two remote
+  menu actions open Settings → Remote instead of being greyed out.
 - Pairing code wrong or expired: said in the sheet.
 - A device with `remote = off` is invisible to everyone and connects to nothing.
 
@@ -284,12 +304,14 @@ new target and module rows; `docs/status.md`; nyx-server README for operations.
 Gathered from the task reports and the rung-6 run of two instances against the deployed relay.
 None of these stops the feature being used; each is a thing a person will notice second.
 
-- **A larger host grid is neither letterboxed nor scrolled.** A remote pane takes the host's
+- **A larger host grid is still neither letterboxed nor scrolled.** A remote pane takes the host's
   `cols`/`rows` (§5.4: the person in front of the host owns that window size) and `resize` is a
-  no-op, so a client on a smaller screen clips the right and bottom of the host's screen with no
-  indication that it is doing so, and one on a larger screen leaves the rest of the pane in the
-  background colour. A frame around the host's grid, or a scrollable viewport over it, is the fix;
-  either changes what `Pane` believes its own size means.
+  no-op, so a client on a smaller screen clips the right and bottom of the host's screen, and one on
+  a larger screen leaves the rest of the pane in the background colour. Since 2026-09-06 the strip
+  at least *says* it is clipping ("Host's screen is 160×74 — showing 96×30"); a frame around the
+  host's grid, or a scrollable viewport over it, is still the fix, and either changes what `Pane`
+  believes its own size means. The note also appears for a difference of a row or two, which is
+  honest but noisier than it needs to be -- a threshold is a product decision.
 - **The palette's Remote rows are a snapshot of the catalogue as it opened.** §5.3 says they
   "update live while the palette is open"; they do not, because re-ranking the list under the
   cursor would move the row the user is about to press. Needs a product decision — probably
@@ -299,6 +321,11 @@ None of these stops the feature being used; each is a thing a person will notice
   into the client's *primary* buffer: what is a full-screen program on the host becomes ordinary
   scrollback on the client, and the `DECRST 1049` that follows when the program exits has nothing
   to restore there. Neither the wire nor `Transcript` has a way to say "the alt screen is up".
+- **A suspended tab whose host never comes back waits for ever.** `.suspended` is cleared by a
+  `presence` saying the host is online followed by a catalogue; a host that is switched off for a
+  week leaves the tab saying "will reattach" until the user closes it. That is the honest reading of
+  the state and the strip offers a Close button, but a tab that said "gave up after an hour" would
+  be better.
 - **`.failed` does not clear the catalogue.** When the relay refuses this device for good
   (`bad_token`, `bad_signature`, `replaced`), open attachments are ended with a reason, but the
   catalogue keeps the rows it last heard about; the palette then lists sessions on Macs this device

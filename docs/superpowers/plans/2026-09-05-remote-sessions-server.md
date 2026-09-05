@@ -53,6 +53,7 @@ WebSocket at `wss://<host>/v1/ws`. Text frames are JSON control messages; binary
 | `role` | host → relay → client | `to`, `session_id`, `device_id`, `role` | forwarded (the host sends one per attached client) |
 | `detach` | client → relay → host | `to`, `session_id` | forwarded; relay removes the client from the attachment |
 | `session_ended` | host → relay → client | `to`, `session_id` | forwarded; relay removes the client from the attachment |
+| `session_suspended` | relay → client | `session_id`, `from` (the host) | sent to every attached client when the *host* disconnects (instead of `session_ended`, which only a host sends); the attachment is dropped at the relay; the client keeps the tab and re-attaches when the host's catalogue lists the session again |
 
 `Session` = `{session_id, title, cwd, repo, branch, process, last_command, last_activity (RFC 3339), cols, rows}`; string fields may be empty.
 

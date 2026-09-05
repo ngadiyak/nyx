@@ -75,3 +75,12 @@ private func changes(_ raw: [(deviceID: String, role: AttachState.Role)]) -> [Ch
     let a = WriterArbiter()
     #expect(a.role(of: "ghost") == nil)
 }
+
+@Test func takingControlByAStrangerChangesNothing() {
+    var a = WriterArbiter()
+    _ = a.attached("d1")
+    let result = a.takeControl("stranger")
+    #expect(changes(result) == [])
+    #expect(a.writer == "d1")
+    #expect(a.role(of: "stranger") == nil)
+}

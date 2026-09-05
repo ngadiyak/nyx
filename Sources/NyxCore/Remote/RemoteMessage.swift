@@ -176,12 +176,6 @@ public struct RemoteMessage: Codable, Equatable {
         RemoteMessage(t: "pair_open", code: code)
     }
 
-    /// The relay's acknowledgement of `pair_open`. Nyx never sends this; it exists here only so
-    /// `PairingFlowTests` can construct the event without a live relay.
-    public static func pairOpened(code: String) -> RemoteMessage {
-        RemoteMessage(t: "pair_opened", code: code)
-    }
-
     public static func pairJoin(code: String) -> RemoteMessage {
         RemoteMessage(t: "pair_join", code: code)
     }

@@ -40,9 +40,11 @@ public struct WriterArbiter: Equatable {
 
     /// `deviceID` presses "Take control": it becomes the writer, and whoever held the role is
     /// demoted to observer. A device already the writer taking control again is a no-op -- nothing
-    /// changed, so nothing to report.
+    /// changed, so nothing to report. A device that never attached is also a no-op: without this
+    /// guard it would become writer while absent from `order`, so `detached` could never promote
+    /// anyone once it left and a re-attach of the same id would silently duplicate it.
     public mutating func takeControl(_ deviceID: String) -> [(deviceID: String, role: AttachState.Role)] {
-        guard deviceID != writerID else { return [] }
+        guard order.contains(deviceID), deviceID != writerID else { return [] }
         var changes: [(deviceID: String, role: AttachState.Role)] = []
         if let previous = writerID { changes.append((previous, .observer)) }
         writerID = deviceID

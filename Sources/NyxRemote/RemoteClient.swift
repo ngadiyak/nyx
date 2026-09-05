@@ -127,6 +127,17 @@ public final class RemoteClient {
         /// 1, 2, 4, 8, 15, 15 … -- the same shape `RelayConnection` reconnects with, capped lower
         /// because the whole run is over in a minute.
         private var reattachBackoff = Backoff(initial: 1, maximum: 15)
+        /// Set the moment this attachment is suspended, and cleared only by a `presence` saying the
+        /// host is back.
+        ///
+        /// It exists because of the order the relay actually sends things in. A host going offline
+        /// produces `session_suspended`, then that host's now-*empty* `catalogue`, and only then the
+        /// `presence` saying it is gone -- so a suspended tab that believed the first catalogue it
+        /// saw ended itself half a second later with "Session ended", which is the very sentence
+        /// this whole state exists to stop being told. An empty catalogue from a host that is gone
+        /// and one from a host that came back with nothing open are the same message; the presence
+        /// in between is the only thing that tells them apart.
+        private var awaitingHostReturn = false
 
         static let reattachWindow: TimeInterval = 60
 
@@ -382,12 +393,25 @@ public final class RemoteClient {
                 e2e = nil
                 awaiting = nil
                 reattachDeadline = nil
+                awaitingHostReturn = true
                 // Any round still outstanding is answered by this; its timeout must not fire.
                 round += 1
             }
             lock.unlock()
             guard !ignore else { return }
             report { $0.phase = .suspended(self.hostName) }
+        }
+
+        /// The relay's word on whether this attachment's host is connected. The only thing that
+        /// makes a suspended tab start believing catalogues again -- see `awaitingHostReturn`.
+        func handlePresence(online: Bool) {
+            lock.lock()
+            if online {
+                awaitingHostReturn = false
+            } else if isSuspended(_state.phase) {
+                awaitingHostReturn = true
+            }
+            lock.unlock()
         }
 
         /// A `catalogue` from this attachment's host, while this tab is suspended: either the
@@ -398,7 +422,7 @@ public final class RemoteClient {
         /// Returns whether the attachment is finished with, so the client can stop routing to it.
         func handleCatalogue(sessionIDs: Set<String>) -> Bool {
             lock.lock()
-            let suspended = !finished && isSuspended(_state.phase)
+            let suspended = !finished && isSuspended(_state.phase) && !awaitingHostReturn
             lock.unlock()
             guard suspended else { return false }
             guard sessionIDs.contains(key) else {
@@ -593,6 +617,17 @@ public final class RemoteClient {
             handleCatalogue(from: deviceID, sessions: m.sessions ?? [])
             return
         }
+        // Presence is what makes a suspended tab believe a catalogue again: without it the empty
+        // catalogue the relay sends *as* a host goes offline would end the tab a moment after
+        // suspending it.
+        if m.t == "presence" {
+            for device in m.devices ?? [] {
+                for attachment in attachments(on: device.deviceID) {
+                    attachment.handlePresence(online: device.online)
+                }
+            }
+            return
+        }
         // `session_suspended` comes from the relay on the host's behalf. The deployed relay stamps
         // the host's id in `from`; the wire table promises only `session_id` and `to`, so an
         // absent `from` is accepted here rather than dropped -- there is exactly one attachment per
@@ -629,14 +664,18 @@ public final class RemoteClient {
     /// One host's published sessions. Only suspended attachments care: a live one is already
     /// getting frames, and an ended one has nothing to come back to.
     private func handleCatalogue(from hostID: String, sessions: [RemoteSessionInfo]) {
-        lock.lock()
-        let mine = attachments.values.filter { $0.hostID == hostID }
-        lock.unlock()
+        let mine = attachments(on: hostID)
         guard !mine.isEmpty else { return }
         let ids = Set(sessions.map(\.sessionID))
         for attachment in mine where attachment.handleCatalogue(sessionIDs: ids) {
             forget(attachment.key)
         }
+    }
+
+    private func attachments(on hostID: String) -> [Attachment] {
+        lock.lock()
+        defer { lock.unlock() }
+        return attachments.values.filter { $0.hostID == hostID }
     }
 
     public func handle(_ f: BinaryFrame) {

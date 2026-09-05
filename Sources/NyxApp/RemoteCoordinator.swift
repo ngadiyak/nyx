@@ -564,6 +564,9 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
             // The host needs this one too: it is the relay's only word about a client that went
             // away, and without it the writer token is stranded on a Mac that is not there.
             host?.handle(message)
+            // And the client: a suspended tab only starts believing that host's catalogues again
+            // once presence says the host is back.
+            client?.handle(message)
             onChange?()
         case "catalogue":
             guard let deviceID = message.deviceID else { return }

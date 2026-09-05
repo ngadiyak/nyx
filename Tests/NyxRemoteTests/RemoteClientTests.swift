@@ -48,6 +48,13 @@ private final class ClientFixture {
         return m
     }
 
+    /// A `presence` naming this fixture's host, the way the relay sends one.
+    func presence(hostOnline: Bool) -> RemoteMessage {
+        RemoteMessage(t: "presence",
+                      devices: [RemotePresence(deviceID: host.deviceID, name: "studio",
+                                               online: hostOnline)])
+    }
+
     /// The relay's refusal of an attach, carrying the session id it answers.
     func error(_ code: String) -> RemoteMessage {
         RemoteMessage(t: "error", to: host.deviceID, code: code, sessionID: key)
@@ -846,6 +853,7 @@ private final class Recorder {
     let recorder = Recorder()
     recorder.watch(attachment)
 
+    f.client.handle(f.presence(hostOnline: true))
     f.client.handle(f.catalogue([f.sessionID]))
 
     let sent = try #require(f.link.messages(ofType: "attach").last)
@@ -873,6 +881,7 @@ private final class Recorder {
     f.client.handle(f.suspended())
     f.link.reset()
 
+    f.client.handle(f.presence(hostOnline: true))
     f.client.handle(f.catalogue([testSessionID(7)]))
 
     #expect(attachment.state.phase == .ended("studio"))
@@ -999,6 +1008,7 @@ private final class Recorder {
     let attachment = f.attach()
     try f.acceptAttach(role: "writer")
     f.client.handle(f.suspended())
+    f.client.handle(f.presence(hostOnline: true))
     f.client.handle(f.catalogue([f.sessionID]))
 
     f.client.handle(f.error("no_such_session"))
@@ -1041,4 +1051,27 @@ private final class Recorder {
 
     #expect(second !== first)
     #expect(second.state.phase == .attaching)
+}
+
+/// The exact order the deployed relay sends when a host's socket goes: `session_suspended`, then
+/// that host's now-*empty* `catalogue`, and only then the `presence` saying it is gone. Believing
+/// the first catalogue ended the tab half a second after suspending it with the very sentence the
+/// suspended state exists to stop being told, which is what a real run against the relay showed.
+@Test func theEmptyCatalogueAHostLeavesBehindDoesNotEndTheTab() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+
+    f.client.handle(f.suspended())
+    f.client.handle(f.catalogue([]))
+    f.client.handle(f.presence(hostOnline: false))
+
+    #expect(attachment.state.phase == .suspended("studio"))
+
+    // And when the host really does come back with nothing open, the tab does end: presence first,
+    // then the catalogue, which is the order a reconnecting host produces.
+    f.client.handle(f.presence(hostOnline: true))
+    f.client.handle(f.catalogue([]))
+    #expect(attachment.state.phase == .ended("studio"))
 }

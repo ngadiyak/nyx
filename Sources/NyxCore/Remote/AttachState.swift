@@ -141,10 +141,24 @@ public enum AttachFailure {
         }
     }
 
-    /// The user switched remote sessions off, or changed the relay this Mac talks to, while a tab
-    /// was attached. The session on the host is untouched; it is this side that stopped, and the
-    /// tab must say so rather than sitting on a screen that has quietly stopped moving.
+    /// The user switched remote sessions off while a tab was attached. The session on the host is
+    /// untouched; it is this side that stopped, and the tab must say so rather than sitting on a
+    /// screen that has quietly stopped moving.
     public static let remoteTurnedOff = "Remote sessions turned off"
+
+    /// A remote setting changed under a live connection -- the relay address, the token, the name
+    /// this Mac announces -- so the socket is rebuilt and every attachment on the old one is gone.
+    /// Distinct from `remoteTurnedOff`, which would be a lie the user could check: the feature is
+    /// still on, and the next attach will work.
+    public static let remoteSettingsChanged = "Remote settings changed"
+
+    /// The relay let go of this device for a reason reconnecting cannot fix: `bad_token`,
+    /// `bad_signature`, or `replaced`. The code is carried through because it is the one word that
+    /// separates "fix your token" from "two copies of Nyx are sharing an identity file", and the
+    /// settings page shows the same wording.
+    public static func relayRefused(_ code: String) -> String {
+        "Relay refused this device (\(code))"
+    }
 
     /// An attach the relay never answered at all -- neither `attached` nor `error`. Distinct from
     /// every code above because nothing on the far end has admitted to anything: the message may

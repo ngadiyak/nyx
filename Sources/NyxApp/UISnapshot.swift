@@ -561,7 +561,9 @@ enum UISnapshot {
             // What ⌘⇧P actually opens on: the window's own verbs, a theme, a tab, and the Remote
             // section after them, in the order `PaletteSource.items` builds.
             let bindings = KeyBindingTable(user: [])
-            items = PaletteSource.items(actions: Array(ActionCatalog.allMenuActions.prefix(5)),
+            // Four actions, not five: the panel shows ten rows, and the eleventh -- the offline
+            // Mac, the row this picture exists to show greyed -- fell off the bottom.
+            items = PaletteSource.items(actions: Array(ActionCatalog.allMenuActions.prefix(4)),
                                         chord: { bindings.binding(for: $0).map(chordText) },
                                         themes: ["dracula"], tabTitles: ["nyx — zsh"],
                                         remote: catalogue.paletteItems(now: now, home: NSHomeDirectory()))

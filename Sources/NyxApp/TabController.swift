@@ -873,6 +873,13 @@ final class TabController: NSViewController, NSMenuItemValidation {
     /// Runs a row. The panel closes first in every case: an action that opens a sheet, or one that
     /// closes this very pane, must not run underneath a panel that is still on screen.
     private func run(_ item: PaletteItem) {
+        // A row that cannot act does not close the panel either: the palette is open because the
+        // user is looking for something, and closing it under them for a row that does nothing
+        // makes them open it again to carry on.
+        guard item.isEnabled else {
+            NSSound.beep()
+            return
+        }
         closeCommandPalette()
         switch item.kind {
         case .action(let action):

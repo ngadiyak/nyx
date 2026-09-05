@@ -344,15 +344,15 @@ final class SettingsWindowController: NSWindowController {
     private func refreshRemoteEnabled() {
         let on = config.remote == .on
         for control in remoteBodyControls { control.isEnabled = on }
-        // A stepper is a second control beside its field, and neither is in `controls`.
-        for stepper in (controls["remote-snapshot-lines"]?.superview?.subviews
-            .compactMap { $0 as? NSStepper } ?? []) {
-            stepper.isEnabled = on
-        }
+        // The stepper is a second control beside its field, registered under its own key by
+        // `stepperField`; a subview scan would break the first time the row's layout changed.
+        controls["remote-snapshot-lines.stepper"]?.isEnabled = on
         pairedTable.isEnabled = on
         pairedTable.reloadData()   // the cells carry the enabled colour; see `pairedDeviceCell`
         activityView.isSelectable = on
-        activityView.textColor = on ? activityView.textColor : .tertiaryLabelColor
+        // Explicitly both ways round. Reading the view's current colour to write it back left the
+        // log stuck at whatever it happened to be the first time this ran.
+        activityView.textColor = on ? .labelColor : .tertiaryLabelColor
     }
 
     private func refreshRemoteStatus() {

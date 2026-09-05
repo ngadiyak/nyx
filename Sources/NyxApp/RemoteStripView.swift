@@ -24,6 +24,14 @@ final class RemoteStripView: NSView {
     /// while everything around it repainted.
     private var shown: (text: String, button: String?, palette: Palette, severity: AttachState.Severity)?
 
+    /// The floor the label is held to, and why it is not 4.5.
+    ///
+    /// The arithmetic runs in sRGB; the layer is painted and captured through a device profile, and
+    /// both the band and the text come out lighter than the values set -- the band by more, so the
+    /// ratio falls. Aiming at 4.5 measured 4.12:1 in the rendered pixels. This is the floor that
+    /// puts the *measured* number above 4.5, which is the only one a person's eyes ever see.
+    private static let contrastFloor = 5.4
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
@@ -93,9 +101,23 @@ final class RemoteStripView: NSView {
         // gruvbox's red is 2.7:1 against its own background and unreadable as a line of text.
         let warning = state.severity == .warning
         let band = warning ? palette.readable(1) : palette.accent
-        label.textColor = nsColor(warning ? palette.readable(1) : palette.foreground, alpha: 1)
+        let alpha = warning ? 0.28 : 0.22
+
+        // The band is blended here and painted opaque, rather than painted translucent and left to
+        // the compositor. Two reasons, and the second is the one that matters: the label's contrast
+        // is computed against this colour, and a band composited by CoreAnimation in its own colour
+        // space is a *different* colour from the one the arithmetic saw -- rendering it translucent
+        // measured 4.11:1 for a floor of 4.5. It also stops the strip going double-translucent over
+        // a window with `background-opacity` below 1, where chrome that says "session ended" should
+        // be readable whatever the terminal behind it is doing.
+        let ground = RGB.blend(band, into: palette.background, amount: 1 - alpha)
+        let ink = RGB.readable(warning ? palette.readable(1) : palette.foreground,
+                               on: ground, towards: palette.foreground,
+                               minimum: RemoteStripView.contrastFloor)
+
+        label.textColor = nsColor(ink, alpha: 1)
         button.contentTintColor = nsColor(palette.accentText, alpha: 1)
-        layer?.backgroundColor = nsColor(band, alpha: warning ? 0.28 : 0.22).cgColor
+        layer?.backgroundColor = nsColor(ground, alpha: 1).cgColor
 
         // A strip, not a decoration: a screen reader gets the whole sentence including the state
         // the colour is carrying.

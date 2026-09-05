@@ -72,12 +72,14 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         let changed = RemoteCoordinator.settingsDiffer(config, newConfig)
         config = newConfig
         guard shouldRun else {
-            stop()
+            stop(reason: AttachFailure.remoteTurnedOff)
             onChange?()
             return
         }
         guard !wasRunning || changed else { return }
-        stop()
+        // Not "turned off": the feature is still on, one of its settings moved, and the next attach
+        // will work. Saying the wrong one of those is a lie a user can check.
+        stop(reason: AttachFailure.remoteSettingsChanged)
         start()
         onChange?()
     }
@@ -141,14 +143,15 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         connection.connect()
     }
 
-    private func stop() {
+    /// `reason` is what every open remote tab is told. There is always one: a tab whose attachment
+    /// is simply dropped sits on a screen that has quietly stopped moving, with nothing saying why.
+    /// Nothing on the host ended -- this side did -- so it is the whole sentence rather than a
+    /// machine name.
+    private func stop(reason: String) {
         pairingTimer?.invalidate()
         pairingTimer = nil
         pairing = nil
-        // Before the client goes: a tab whose attachment is simply dropped sits on a screen that
-        // has quietly stopped moving, with nothing saying why. Nothing on the host ended -- this
-        // side did -- so the reason is the whole sentence.
-        client?.endAll(reason: AttachFailure.remoteTurnedOff)
+        client?.endAll(reason: reason)
         connection?.delegate = nil
         connection?.disconnect()
         connection = nil
@@ -462,6 +465,15 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
             // Mac's sessions and re-declares the pairings for the first connection of all.
             host?.linkDidReconnect()
             client?.linkDidReconnect()
+        }
+        // The relay let go of this device for good: a bad token, a bad signature, or another
+        // connection presenting the same device id. `RelayConnection` goes straight here without
+        // passing `.offline`, so nothing else would ever tell the attachments -- they would stay
+        // `live` for the rest of the session, taking keystrokes into an outbox that will never be
+        // flushed. The socket is not coming back without a `connect()`, so they end rather than
+        // reconnect.
+        if case .failed(let code) = status {
+            client?.endAll(reason: AttachFailure.relayRefused(code))
         }
         if case .offline = status {
             // Everything the other Macs told us is now a guess. Emptying it is the honest answer,

@@ -656,3 +656,30 @@ private final class Recorder {
     #expect(!attachment.state.acceptsInput)
     #expect(recorder.phases == [.failed(AttachFailure.remoteTurnedOff)])
 }
+
+/// The relay refusing this device is not an outage: `RelayConnection` goes straight to `.failed`
+/// without ever passing `.offline`, so nothing else tells the attachments anything. Left alone they
+/// stay `live` for ever, taking keystrokes into an outbox that will never be flushed.
+@Test func aRelayThatRefusesThisDeviceEndsEveryTabWithTheCode() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    #expect(attachment.state.acceptsInput)
+
+    f.client.endAll(reason: AttachFailure.relayRefused("bad_token"))
+
+    #expect(attachment.state.stripText == "Relay refused this device (bad_token)")
+    #expect(!attachment.state.acceptsInput)
+    #expect(attachment.state.closesOnNextKey)
+}
+
+/// A setting changed under a live connection is not the switch being turned off, and the tab says
+/// which of the two happened.
+@Test func aSettingsChangeEndsATabWithItsOwnReason() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach()
+    f.client.endAll(reason: AttachFailure.remoteSettingsChanged)
+    #expect(attachment.state.stripText == "Remote settings changed")
+}

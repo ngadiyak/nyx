@@ -155,3 +155,18 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
 @Test func turningRemoteSessionsOffEndsATabWithWordsOfItsOwn() {
     #expect(AttachFailure.remoteTurnedOff == "Remote sessions turned off")
 }
+
+@Test func aRelayThatRefusesThisDeviceSaysWhichRefusal() {
+    #expect(AttachFailure.relayRefused("bad_token") == "Relay refused this device (bad_token)")
+    #expect(AttachFailure.relayRefused("replaced") == "Relay refused this device (replaced)")
+}
+
+/// Three reasons a remote tab ends from this side, and they are three different sentences: the
+/// switch went off, a setting changed under it, or the relay stopped accepting this device. Saying
+/// "turned off" for a device-name edit would be a lie the user could check.
+@Test func theThreeReasonsThisSideEndsATabAreDistinct() {
+    let reasons = [AttachFailure.remoteTurnedOff, AttachFailure.remoteSettingsChanged,
+                   AttachFailure.relayRefused("bad_token")]
+    #expect(Set(reasons).count == 3)
+    #expect(AttachFailure.remoteSettingsChanged == "Remote settings changed")
+}

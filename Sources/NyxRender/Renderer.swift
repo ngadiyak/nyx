@@ -36,6 +36,10 @@ public struct RenderFrame {
     /// A block's summary -- `exit 1 · 8.8s` -- pinned to the right of its command row. Same
     /// treatment as `rowNotes`, in the block's own colour so the status reads without being read.
     public var blockSummaries: [(row: Int, text: String, color: RGB)]
+    /// The visible rows of the block under the pointer, tinted as one. nil when nothing is hovered,
+    /// which is the state of every frame the mouse is not moving through. Chrome, not a row input:
+    /// drawn in `buildChrome`, outside the row cache.
+    public var highlightedRows: Range<Int>?
     /// Which visible rows changed since the frame before, indexed like `lines`; this is `Row.dirty`
     /// carried across the module boundary.
     ///
@@ -52,6 +56,7 @@ public struct RenderFrame {
                 rowNotes: [String?] = [],
                 blockSpines: [(rows: Range<Int>, color: RGB)] = [],
                 blockSummaries: [(row: Int, text: String, color: RGB)] = [],
+                highlightedRows: Range<Int>? = nil,
                 dirtyRows: [Bool] = []) {
         self.cols = cols; self.rows = rows; self.lines = lines; self.graphemes = graphemes; self.palette = palette
         self.cursor = cursor; self.cursorShape = cursorShape; self.focused = focused; self.preedit = preedit
@@ -61,6 +66,7 @@ public struct RenderFrame {
         self.rowNotes = rowNotes
         self.blockSpines = blockSpines
         self.blockSummaries = blockSummaries
+        self.highlightedRows = highlightedRows
         self.hoveredLink = hoveredLink
         self.dirtyRows = dirtyRows
     }
@@ -473,6 +479,17 @@ public final class Renderer {
     private func buildChrome(_ f: RenderFrame, padding: Int, colors: FrameColors) {
         let m = fonts.metrics
         let cw = Float(m.width), ch = Float(m.height)
+        // The hovered block's tint: one translucent rect across the grid's width, under the glyphs
+        // (the background bucket draws first) and outside the row cache (nothing per row changed).
+        if let rows = f.highlightedRows, !rows.isEmpty {
+            let top = Float(padding + max(0, rows.lowerBound) * m.height)
+            let height = Float(min(rows.count, f.rows - max(0, rows.lowerBound)) * m.height)
+            let width = Float(f.cols * m.width)
+            var tint = rect(Float(padding), top, width, height, f.palette.blockHoverBackground)
+            tint.color.w = 1
+            instances.append(tint)
+        }
+
         // A command's spine, drawn in the left padding: it says "these rows belong together"
         // without taking a column of text or touching a cell. Nothing about the grid changes,
         // which is what lets vim and htop keep behaving exactly as they did.

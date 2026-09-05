@@ -214,6 +214,12 @@ import Foundation
                 "\(name): text on the selected row is \(RGB.contrast(p.foreground, p.panelSelectionBackground)):1")
         #expect(RGB.contrast(p.noteForeground, p.background) >= 2.8,
                 "\(name): a duration note is \(RGB.contrast(p.noteForeground, p.background)):1")
+        #expect(RGB.distance(p.blockHoverBackground, p.background) >= 4,
+                "\(name): the hover tint is invisible")
+        #expect(RGB.distance(p.blockHoverBackground, p.selectionBackground) >= 8,
+                "\(name): the hover tint looks like a selection")
+        #expect(RGB.contrast(p.foreground, p.blockHoverBackground) >= 4.5,
+                "\(name): text on a hovered block is \(RGB.contrast(p.foreground, p.blockHoverBackground)):1")
     }
 }
 

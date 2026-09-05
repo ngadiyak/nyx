@@ -20,14 +20,16 @@ private func blockPalette() -> Palette {
 private func render(cols: Int = 8, rows: Int = 3, padding: Int,
                     spines: [(rows: Range<Int>, color: RGB)] = [],
                     summaries: [(row: Int, text: String, color: RGB)] = [],
-                    notes: [String?] = []) throws -> (FontSet, Int, (Int, Int) -> Pixel) {
+                    notes: [String?] = [],
+                    highlighted: Range<Int>? = nil) throws -> (FontSet, Int, (Int, Int) -> Pixel) {
     let device = try #require(MTLCreateSystemDefaultDevice())
     let fonts = FontSet(family: "Menlo", pointSize: 12, scale: 1)
     let r = try Renderer(device: device, fonts: fonts)
     let lines = Array(repeating: Row(cols: cols), count: rows)
     let frame = RenderFrame(cols: cols, rows: rows, lines: lines, graphemes: [], palette: blockPalette(),
                             cursor: nil, cursorShape: .block, focused: true, preedit: nil,
-                            rowNotes: notes, blockSpines: spines, blockSummaries: summaries)
+                            rowNotes: notes, blockSpines: spines, blockSummaries: summaries,
+                            highlightedRows: highlighted)
     let w = fonts.metrics.width * cols + padding * 2, h = fonts.metrics.height * rows + padding * 2
     let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: w, height: h,
                                                         mipmapped: false)
@@ -76,4 +78,24 @@ private let spineColor = RGB(0, 255, 0)
     let y = fonts.metrics.height / 2
     #expect(px(1, y) != Pixel(r: 0, g: 255, b: 0))
     #expect(px(2, y) != Pixel(r: 0, g: 255, b: 0))
+}
+
+/// The tint sits under the glyphs across the block's rows and nowhere else.
+@Test func hoveredRowsAreTintedAndOthersAreNot() throws {
+    let (fonts, w, px) = try render(padding: 0, highlighted: 0..<2)
+    let mid = w / 2
+    let tinted = px(mid, fonts.metrics.height / 2)
+    let plain = px(mid, fonts.metrics.height * 2 + fonts.metrics.height / 2)
+    #expect(tinted != Pixel(r: 0, g: 0, b: 0))
+    #expect(plain == Pixel(r: 0, g: 0, b: 0))
+}
+
+/// The chevron is a real glyph at the end of the summary, in the summary's colour.
+@Test func theSummaryEndsInAChevron() throws {
+    let (fonts, w, px) = try render(cols: 12, padding: 0,
+                                    summaries: [(row: 0, text: "8.8s \u{25BE}", color: RGB(0, 255, 0))])
+    let lastCell = (w - fonts.metrics.width)..<w
+    var ink = 0
+    for x in lastCell { for y in 0..<fonts.metrics.height where px(x, y).g > 100 { ink += 1 } }
+    #expect(ink > 4)
 }

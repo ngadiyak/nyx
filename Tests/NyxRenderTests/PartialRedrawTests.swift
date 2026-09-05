@@ -254,6 +254,34 @@ func renderCostPerFrame() throws {
     }
 }
 
+private extension RenderFrame {
+    func with(highlighted: Range<Int>?) -> RenderFrame { var f = self; f.highlightedRows = highlighted; return f }
+}
+
+/// Hover on, hover off: the tint is chrome outside the row cache, so both renderers agree and no
+/// row is rebuilt for it.
+@Test func hoverTintNeverStalesTheCache() throws {
+    let device = try #require(MTLCreateSystemDefaultDevice())
+    let fonts = makeFonts()
+    let t = Terminal(cols: 10, rows: 4, scrollbackLimit: 10)
+    t.feed("one\r\ntwo\r\nthree\r\n")
+    let cached = try Renderer(device: device, fonts: fonts)
+    let fresh = try Renderer(device: device, fonts: fonts)
+    let tex1 = try makeTexture(device, cols: 10, rows: 4, fonts: fonts)
+    let tex2 = try makeTexture(device, cols: 10, rows: 4, fonts: fonts)
+    var f = frame(of: t)
+    _ = try pixels(cached, f, to: tex1)
+    t.clearDirty()
+    f = frame(of: t); f.highlightedRows = 0..<2
+    let a = try pixels(cached, f, to: tex1)
+    let b = try pixels(fresh, frame(of: t, trackDirty: false).with(highlighted: 0..<2), to: tex2)
+    #expect(firstDifference(a, b, width: tex1.width) == nil)
+    f.highlightedRows = nil
+    let c = try pixels(cached, f, to: tex1)
+    let d = try pixels(fresh, frame(of: t, trackDirty: false), to: tex2)
+    #expect(firstDifference(c, d, width: tex1.width) == nil)
+}
+
 @Test func flagsSurviveAFrameThatNeverReachedTheScreen() {
     // The other half of the same promise, and the reason the view clears the flags after the frame
     // rather than before it: a frame can be dropped (no drawable) or withheld (synchronised

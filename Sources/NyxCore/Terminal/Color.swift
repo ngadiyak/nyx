@@ -343,6 +343,33 @@ public struct Palette: Equatable {
         return RGB.blend(foreground, into: background, amount: amount)
     }
 
+    /// The tint behind every row of the block under the pointer: says "these rows are one thing"
+    /// without competing with the selection colour, which is chosen to be seen. Background is the
+    /// dominant colour, blended toward the cursor a little and pushed further only in themes where
+    /// a little is invisible or too close to the selection.
+    ///
+    /// Two mistakes this shape prevents:
+    ///
+    /// - `RGB.blend(a, into: b, amount:)` keeps mostly `a` at a small amount. `noteForeground`
+    ///   above wants *text*, so it puts `foreground` first; a fill wants the opposite -- putting
+    ///   `foreground` first here made the result read as foreground-on-foreground, 1.1:1, because
+    ///   the "little" that bled in was the background, not the foreground.
+    /// - Blending toward `foreground` (correctly, as the minority colour this time) still fails
+    ///   one-dark: its selection is a step of grey on the very foreground/background axis this
+    ///   blend walks, so every amount is either too close to the background or too close to the
+    ///   selection -- there is no point on that line that clears both. The cursor is the foreground
+    ///   itself in most built-ins (no behaviour change there) but is free to carry its own hue, and
+    ///   that hue is what carries one-dark's tint off the selection's axis.
+    public var blockHoverBackground: RGB {
+        var amount = 0.06
+        while amount < 0.30 {
+            let candidate = RGB.blend(background, into: cursor, amount: amount)
+            if RGB.distance(candidate, background) >= 4, RGB.distance(candidate, selectionBackground) >= 8 { break }
+            amount += 0.02
+        }
+        return RGB.blend(background, into: cursor, amount: amount)
+    }
+
     public func resolve(_ c: Color, isForeground: Bool) -> RGB {
         switch c.kind {
         case .default: return isForeground ? foreground : background

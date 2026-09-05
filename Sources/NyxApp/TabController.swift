@@ -203,6 +203,17 @@ final class TabController: NSViewController, NSMenuItemValidation {
         }
     }
 
+    /// Every tab in this window holding a remote pane, in strip order. A tab can hold at most one
+    /// (a split beside it is an ordinary local shell), which is why the first one found is the tab.
+    private var openRemoteTabs: [RemoteTabs.Open] {
+        tabs.enumerated().compactMap { index, tab in
+            guard let attachment = tab.panes.allPanes.compactMap({ $0.remote?.attachment }).first
+            else { return nil }
+            return RemoteTabs.Open(index: index, hostID: attachment.hostID,
+                                   sessionID: RemoteID.base64url(attachment.sessionID))
+        }
+    }
+
     /// Wiring every pane in this window gets, local or remote. Splits come through the factory
     /// above and the one remote pane a remote tab starts with is made directly, so this is the one
     /// place a failed "Save Output…" needs wiring to reach the alert.
@@ -221,6 +232,15 @@ final class TabController: NSViewController, NSMenuItemValidation {
     /// an ordinary local shell beside it, because a split is a new session and there is only ever
     /// one attachment per row of the palette.
     func openRemote(deviceID: String, sessionID: String, hostName: String, title: String) {
+        // Already open somewhere in this window: go to it. A second attach to one session id is not
+        // a second view of it -- the client hands back the attachment that is already there -- so
+        // opening a second tab would be two tabs fed by one stream, and the first one would have
+        // looked like it died.
+        if let index = RemoteTabs.existing(sessionID: sessionID, hostID: deviceID,
+                                           among: openRemoteTabs) {
+            selectTab(at: index)
+            return
+        }
         guard let coordinator = appDelegate?.remote,
               let attachment = coordinator.attach(deviceID: deviceID, sessionID: sessionID,
                                                   hostName: hostName, title: title) else {

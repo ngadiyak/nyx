@@ -163,6 +163,11 @@ public extension Terminal {
     /// screen are not output, they are the rest of the screen), or after `outputScanLimit` rows.
     func commandHasOutput(atAbsoluteRow row: Int) -> Bool {
         guard let start = outputStartRow(ofCommandAt: row) else { return false }
+        return hasContent(fromOutputRow: start)
+    }
+
+    /// Whether anything has been written on the output rows beginning at `start`.
+    private func hasContent(fromOutputRow start: Int) -> Bool {
         // Nothing below the cursor has been written yet; for a command still running that is most of
         // the screen, and counting it as output is what made a fresh `sleep 10` look foldable.
         let lastWritten = min(totalRows - 1, scrollback.count + screen.cursor.y)
@@ -201,6 +206,43 @@ public extension Terminal {
     /// that decides whether the gutter draws a running ring.
     func commandDidStart(atAbsoluteRow row: Int) -> Bool {
         outputStartRow(ofCommandAt: row) != nil
+    }
+
+    /// Both flags for one row in a single walk. The gutter needs them together on every frame, and
+    /// asking separately walks to the output start twice.
+    func commandStates(atAbsoluteRow row: Int) -> (started: Bool, hasOutput: Bool) {
+        guard let start = outputStartRow(ofCommandAt: row) else { return (false, false) }
+        return (true, hasContent(fromOutputRow: start))
+    }
+
+    /// Both flags per visible row, in one pass.
+    func commandStates(rows visibleRows: Int) -> (started: [Bool], hasOutput: [Bool]) {
+        guard visibleRows > 0 else { return ([], []) }
+        let top = max(0, viewportTopRow)
+        var started = [Bool](); started.reserveCapacity(visibleRows)
+        var output = [Bool](); output.reserveCapacity(visibleRows)
+        for row in 0..<visibleRows {
+            let state = commandStates(atAbsoluteRow: top + row)
+            started.append(state.started)
+            output.append(state.hasOutput)
+        }
+        return (started, output)
+    }
+
+    /// Both flags per display slot, in one pass.
+    func commandStates(onDisplayRows display: [DisplayRow]) -> (started: [Bool], hasOutput: [Bool]) {
+        var started = [Bool](); started.reserveCapacity(display.count)
+        var output = [Bool](); output.reserveCapacity(display.count)
+        for entry in display {
+            guard case .row(let absolute) = entry else {
+                started.append(false); output.append(false)
+                continue
+            }
+            let state = commandStates(atAbsoluteRow: absolute)
+            started.append(state.started)
+            output.append(state.hasOutput)
+        }
+        return (started, output)
     }
 
     /// One flag per visible row, beside `gutterMarks(rows:)`.

@@ -825,8 +825,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             if self.foldRowsOnScreen.isEmpty {
                 gutterMarks = t.gutterMarks(rows: t.rows)
                 gutterFolded = t.foldStates(rows: t.rows, folding: self.folding)
-                gutterHasOutput = t.outputStates(rows: t.rows)
-                gutterHasStarted = t.startStates(rows: t.rows)
+                let states = t.commandStates(rows: t.rows)
+                gutterHasStarted = states.started
+                gutterHasOutput = states.hasOutput
                 notes = t.durationNotes(rows: t.rows)
             } else {
                 let pad = max(0, t.rows - self.foldRowsOnScreen.count)
@@ -834,10 +835,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     + Array(repeating: nil, count: pad)
                 gutterFolded = t.foldStates(onDisplayRows: self.foldRowsOnScreen, folding: self.folding)
                     + Array(repeating: false, count: pad)
-                gutterHasOutput = t.outputStates(onDisplayRows: self.foldRowsOnScreen)
-                    + Array(repeating: false, count: pad)
-                gutterHasStarted = t.startStates(onDisplayRows: self.foldRowsOnScreen)
-                    + Array(repeating: false, count: pad)
+                let states = t.commandStates(onDisplayRows: self.foldRowsOnScreen)
+                gutterHasStarted = states.started + Array(repeating: false, count: pad)
+                gutterHasOutput = states.hasOutput + Array(repeating: false, count: pad)
                 notes = t.durationNotes(onDisplayRows: self.foldRowsOnScreen)
                     + Array(repeating: nil, count: pad)
             }

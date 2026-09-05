@@ -27,14 +27,23 @@ final class PromptGutterView: NSView {
 
     override var isFlipped: Bool { true }
 
-    /// The gutter is decoration over the terminal; a click that misses a mark belongs to the pane
-    /// underneath, so this view claims only the marks themselves.
+    /// The gutter is decoration over the terminal; a point that misses a mark belongs to the pane
+    /// underneath, so this view claims only the marks themselves -- every *drawn* mark, not only the
+    /// pressable ones.
+    ///
+    /// Drawn rather than pressable because AppKit resolves a tooltip's owner by hit-testing, and a
+    /// view that disowns a point cannot be asked about it. A `cd ..` mark has a tooltip saying a
+    /// command ran and succeeded, and claiming the point is the only way to be sure it is offered.
+    /// Whether AppKit would have found it anyway could not be shown either way here: a probe with a
+    /// real cursor warp saw no tooltip window even for a control view that *does* own its point, so
+    /// the deterministic route is the one with evidence behind it. What the click means is unchanged
+    /// -- `mouseDown` hands a press on a mark with nothing to fold straight back to the pane.
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         guard bounds.contains(local),
               let row = PromptGutter.row(atY: Double(local.y), cellHeight: Double(cellHeight),
                                          padding: Double(topPadding), rows: marks.count),
-              isActionable(row)
+              mark(at: row) != nil
         else { return nil }
         return self
     }
@@ -44,6 +53,9 @@ final class PromptGutterView: NSView {
     /// added, resized or explicitly invalidated, and this view is none of those between frames --
     /// so after `ls` finished, its new green dot had no pointing hand until the next resize, and
     /// after a resize a hand could sit over a `cd ..` mark that no longer had one.
+    ///
+    /// A rect is a row index *and* a geometry, so the cell height and the top padding count too:
+    /// after ⌘+ with the same commands on the same rows, the hands stayed the old size.
     @discardableResult
     func update(marks: [GutterMark?], folded: [Bool], hasStarted: [Bool], hasOutput: [Bool],
                 palette: Palette, cellHeight: CGFloat, topPadding: CGFloat) -> Bool {
@@ -53,6 +65,7 @@ final class PromptGutterView: NSView {
             || cellHeight != self.cellHeight || topPadding != self.topPadding
         guard changed else { return false }
         let previousRects = actionableRows()
+        let geometryMoved = cellHeight != self.cellHeight || topPadding != self.topPadding
         self.marks = marks
         self.folded = folded
         self.hasStarted = hasStarted
@@ -73,7 +86,7 @@ final class PromptGutterView: NSView {
             addToolTip(NSRect(x: 0, y: y, width: max(1, bounds.width), height: cellHeight),
                        owner: label(for: mark, row: row) as NSString, userData: nil)
         }
-        return actionableRows() != previousRects
+        return actionableRows() != previousRects || geometryMoved
     }
 
     /// The rows a pointing hand belongs on. Compared between frames rather than recomputed by
@@ -153,14 +166,45 @@ final class PromptGutterView: NSView {
         }
     }
 
+    /// Set while a click that landed on a mark with nothing to fold is being handed to the pane.
+    /// The drag and the release have to follow the same way: the pane starts a selection on the
+    /// press and extends it from `mouseDragged`, so forwarding only the press would leave a
+    /// selection nothing could grow or finish.
+    private var forwardingToPane = false
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         guard let row = PromptGutter.row(atY: Double(point.y), cellHeight: Double(cellHeight),
                                          padding: Double(topPadding), rows: marks.count),
               isActionable(row)
-        else { return }
+        else {
+            // A mark with nothing to fold is a record, not a button. The click means what it would
+            // have meant on the padding beside it: the start of a selection.
+            forwardingToPane = true
+            superview?.mouseDown(with: event)
+            return
+        }
+        forwardingToPane = false
         onSelectRow?(row, event.modifierFlags.contains(.option))
     }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard forwardingToPane else { return }
+        superview?.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard forwardingToPane else { return }
+        forwardingToPane = false
+        superview?.mouseUp(with: event)
+    }
+
+    // The gutter answers to a left click and nothing else. Now that it claims every drawn mark --
+    // including ones it does nothing with -- a right or middle click landing on one would otherwise
+    // stop here, taking away the block context menu and the middle-click paste over those few
+    // points. Both go straight back to the pane.
+    override func rightMouseDown(with event: NSEvent) { superview?.rightMouseDown(with: event) }
+    override func otherMouseDown(with event: NSEvent) { superview?.otherMouseDown(with: event) }
 
     // MARK: - Accessibility
     //

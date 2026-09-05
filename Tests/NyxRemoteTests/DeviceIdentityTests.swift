@@ -15,13 +15,18 @@ private func scratchDirectory() -> URL {
 @Test func identityIsCreatedOnFirstLoadWithMode0600() throws {
     let dir = scratchDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
-    let url = dir.appendingPathComponent("identity")
+    let remoteDir = dir.appendingPathComponent("remote")
+    let url = remoteDir.appendingPathComponent("identity")
 
     _ = try DeviceIdentity.load(from: url)
 
-    let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
-    let mode = (attrs[.posixPermissions] as? NSNumber)?.uint16Value ?? 0
-    #expect(mode & 0o777 == 0o600)
+    let fileAttrs = try FileManager.default.attributesOfItem(atPath: url.path)
+    let fileMode = (fileAttrs[.posixPermissions] as? NSNumber)?.uint16Value ?? 0
+    #expect(fileMode & 0o777 == 0o600)
+
+    let dirAttrs = try FileManager.default.attributesOfItem(atPath: remoteDir.path)
+    let dirMode = (dirAttrs[.posixPermissions] as? NSNumber)?.uint16Value ?? 0
+    #expect(dirMode & 0o777 == 0o700)
 }
 
 @Test func theSecondLoadReturnsTheSameKey() throws {
@@ -46,6 +51,22 @@ private func scratchDirectory() -> URL {
     #expect(throws: DeviceIdentity.LoadError.self) {
         try DeviceIdentity.load(from: url)
     }
+}
+
+@Test func aCorruptIdentityFileThrowsUnreadableAndIsNotRegenerated() throws {
+    let dir = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("identity")
+    let garbage = Data([1, 2, 3]) // too short to be a 32-byte Ed25519 private key
+    try garbage.write(to: url)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+
+    #expect(throws: DeviceIdentity.LoadError.unreadable(path: url.path)) {
+        try DeviceIdentity.load(from: url)
+    }
+
+    // Not regenerated: the bytes on disk are exactly what was there before the failed load.
+    #expect((try? Data(contentsOf: url)) == garbage)
 }
 
 @Test func signAndVerifyRoundTrip() throws {
@@ -80,12 +101,21 @@ private func scratchDirectory() -> URL {
     #expect(RemoteFiles.auditLog(in: dir).path == "/Users/x/.config/nyx/remote/audit.log")
 }
 
-@Test func challengeMessageLayout() {
+@Test func challengeMessageLayout() throws {
     let nonce: [UInt8] = [1, 2, 3, 4]
     let deviceIDBytes: [UInt8] = Array(repeating: 9, count: 32)
     let deviceID = RemoteID.base64url(deviceIDBytes)
 
-    let message = DeviceIdentity.challengeMessage(nonce: nonce, deviceID: deviceID)
+    let message = try #require(DeviceIdentity.challengeMessage(nonce: nonce, deviceID: deviceID))
 
     #expect(message == Array("nyx-relay-v1".utf8) + nonce + deviceIDBytes)
+}
+
+@Test func challengeMessageIsNilForAnUndecodableDeviceID() {
+    #expect(DeviceIdentity.challengeMessage(nonce: [1, 2, 3], deviceID: "not base64url!!") == nil)
+}
+
+@Test func theInsecurePermissionsErrorNamesTheProblem() {
+    let error = DeviceIdentity.LoadError.insecurePermissions(path: "/tmp/identity", mode: 0o644)
+    #expect(error.description.contains("must not be readable by group or other"))
 }

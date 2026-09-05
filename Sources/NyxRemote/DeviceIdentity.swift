@@ -27,17 +27,22 @@ public struct DeviceIdentity {
         public var description: String {
             switch self {
             case .insecurePermissions(let path, let mode):
-                return "refusing identity file \(path): mode is 0\(String(mode, radix: 8)), must be 0600"
+                return "refusing identity file \(path): mode is 0\(String(mode, radix: 8)), " +
+                    "must not be readable by group or other"
             case .unreadable(let path):
                 return "identity file \(path) could not be read"
             }
         }
     }
 
-    /// Loads the identity at `url`, creating it (mode 0600) the first time this device runs. A file
-    /// that already exists but is group- or other-readable is refused rather than used, because by
-    /// the time this can be checked the key may already have been readable by another local
-    /// account for as long as the file existed.
+    /// Loads the identity at `url`, creating it (directory 0700, file 0600) the first time this
+    /// device runs. A file that already exists but is group- or other-readable is refused rather
+    /// than used, because by the time this can be checked the key may already have been readable by
+    /// another local account for as long as the file existed. A file that exists, is 0600, but does
+    /// not decode as a private key (truncated, corrupted) is likewise refused rather than silently
+    /// replaced -- regenerating a new identity here would change this device's id out from under
+    /// every peer it has already paired with, without them ever being told why attach signatures
+    /// stopped verifying.
     public static func load(from url: URL) throws -> DeviceIdentity {
         let fm = FileManager.default
         if fm.fileExists(atPath: url.path) {
@@ -49,17 +54,26 @@ public struct DeviceIdentity {
             guard mode & 0o077 == 0 else {
                 throw LoadError.insecurePermissions(path: url.path, mode: mode)
             }
-            guard let data = try? Data(contentsOf: url) else {
+            guard let data = try? Data(contentsOf: url),
+                  let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: data) else {
                 throw LoadError.unreadable(path: url.path)
             }
-            let key = try Curve25519.Signing.PrivateKey(rawRepresentation: data)
             return DeviceIdentity(signing: key)
         }
 
+        // Created in three steps, in this order, so the private key bytes never exist on disk at a
+        // mode looser than 0600: the directory is 0700 before anything is written into it, the file
+        // is created empty already at 0600 (not written-then-chmod'd, which would leave a window at
+        // the process umask's default mode), and only then are the key bytes appended to it.
         let key = Curve25519.Signing.PrivateKey()
-        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try key.rawRepresentation.write(to: url, options: .atomic)
-        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        let dir = url.deletingLastPathComponent()
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        guard fm.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+            throw LoadError.unreadable(path: url.path)
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.write(contentsOf: key.rawRepresentation)
+        try handle.close()
         return DeviceIdentity(signing: key)
     }
 
@@ -79,8 +93,11 @@ public struct DeviceIdentity {
     /// signature to this exact use (so it can never be replayed as, say, an e2e attach signature),
     /// the nonce stops a captured signature being replayed on a later connection, and the device id
     /// bytes stop the relay -- or a man in the middle -- from replaying one device's signature as
-    /// proof of a different device's identity.
-    public static func challengeMessage(nonce: [UInt8], deviceID: String) -> [UInt8] {
-        Array("nyx-relay-v1".utf8) + nonce + (RemoteID.bytes(base64url: deviceID) ?? [])
+    /// proof of a different device's identity. Returns `nil` for a `deviceID` that does not decode
+    /// rather than silently signing over an empty id -- a caller that ignores the failure gets no
+    /// message at all instead of one whose id half is quietly wrong.
+    public static func challengeMessage(nonce: [UInt8], deviceID: String) -> [UInt8]? {
+        guard let idBytes = RemoteID.bytes(base64url: deviceID) else { return nil }
+        return Array("nyx-relay-v1".utf8) + nonce + idBytes
     }
 }

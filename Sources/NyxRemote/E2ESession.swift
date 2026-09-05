@@ -6,11 +6,19 @@ import NyxCore
 /// needs CryptoKit, which `NyxCore` may not import, so this is the only place the digest bytes are
 /// produced.
 public enum FingerprintHash {
+    /// Thrown instead of hashing an empty stand-in for an id that would not decode -- a fingerprint
+    /// computed from a silently-substituted empty id can still produce four ordinary-looking words,
+    /// which is exactly the failure mode a fingerprint exists to catch: a person reading them aloud
+    /// with no reason to suspect the comparison never included one side's real key.
+    public enum Errors: Error, Equatable {
+        case malformedDeviceID(String)
+    }
+
     /// 32 bytes, the same from either side of a pairing regardless of which id is "mine" --
     /// `Fingerprint.input` orders the two ids before hashing, so both devices land on one digest.
-    public static func digest(myID: String, peerID: String) -> [UInt8] {
-        let a = RemoteID.bytes(base64url: myID) ?? []
-        let b = RemoteID.bytes(base64url: peerID) ?? []
+    public static func digest(myID: String, peerID: String) throws -> [UInt8] {
+        guard let a = RemoteID.bytes(base64url: myID) else { throw Errors.malformedDeviceID(myID) }
+        guard let b = RemoteID.bytes(base64url: peerID) else { throw Errors.malformedDeviceID(peerID) }
         return [UInt8](SHA256.hash(data: Data(Fingerprint.input(a: a, b: b))))
     }
 }
@@ -28,6 +36,14 @@ public final class E2ESession {
         case replayOrReorder(counter: UInt64)
         case malformedPeerKey
         case frameTooShort
+        /// `sessionID` at construction was not 16 bytes -- every session id on the wire is 16
+        /// random bytes (`RemoteID.isSessionID`); anything else cannot be a real one.
+        case invalidSessionIDLength(Int)
+        /// `open` saw a frame stamped with a different session id than this instance was built
+        /// for -- one `E2ESession` exists per attachment, so a frame for another session here means
+        /// either frames were routed to the wrong instance, or the relay (or an attacker) is trying
+        /// to feed one attachment's ciphertext into another's counter window.
+        case sessionMismatch
     }
 
     private static let tagLength = 16
@@ -57,7 +73,8 @@ public final class E2ESession {
     }
 
     public static func verifyPeer(pubkey: String, sig: String, sessionID: [UInt8], deviceID: String) -> Bool {
-        guard let pubBytes = RemoteID.bytes(base64url: pubkey), let sigBytes = RemoteID.bytes(base64url: sig) else {
+        guard let pubBytes = RemoteID.bytes(base64url: pubkey), pubBytes.count == 32,
+              let sigBytes = RemoteID.bytes(base64url: sig) else {
             return false
         }
         let message = Array("nyx-e2e-v1".utf8) + sessionID + pubBytes
@@ -70,6 +87,7 @@ public final class E2ESession {
     /// this side sealed can never be the one it also accepts back (caught by `open` failing
     /// authentication, not by trusting the caller never to try).
     public init(mine: Curve25519.KeyAgreement.PrivateKey, peer pubkey: String, sessionID: [UInt8], isHost: Bool) throws {
+        guard sessionID.count == 16 else { throw Errors.invalidSessionIDLength(sessionID.count) }
         guard let peerBytes = RemoteID.bytes(base64url: pubkey), peerBytes.count == 32 else {
             throw Errors.malformedPeerKey
         }
@@ -118,6 +136,7 @@ public final class E2ESession {
     /// a replay should not even reach the (comparatively expensive, and side-channel-sensitive)
     /// authenticated decryption.
     public func open(_ frame: BinaryFrame) throws -> [UInt8] {
+        guard frame.sessionID == sessionID else { throw Errors.sessionMismatch }
         if let last = lastAcceptedCounter, frame.counter <= last {
             throw Errors.replayOrReorder(counter: frame.counter)
         }

@@ -52,6 +52,42 @@ private func scratchDirectory() -> URL {
     #expect(devices.namesByID["d1"] == "new name")
 }
 
+@Test func duplicateIDsInTheFileCollapseToOneDeviceLastWins() throws {
+    let dir = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("paired.json")
+    let json = """
+    {"devices":[
+        {"id":"d1","name":"old name","pairedAt":"2026-01-01T00:00:00Z"},
+        {"id":"d1","name":"new name","pairedAt":"2026-01-02T00:00:00Z"}
+    ]}
+    """
+    try Data(json.utf8).write(to: url)
+
+    let loaded = PairedDevices.load(from: url)
+
+    #expect(loaded.devices.count == 1)
+    #expect(loaded.namesByID["d1"] == "new name")
+    #expect(loaded.ids == ["d1"])
+    #expect(loaded.contains("d1"))
+}
+
+@Test func saveWritesTheFileAndDirectoryAtSecureModes() throws {
+    let dir = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let remoteDir = dir.appendingPathComponent("remote")
+    let url = remoteDir.appendingPathComponent("paired.json")
+    var devices = PairedDevices()
+    devices.add(PairedDevice(id: "d1", name: "a", pairedAt: Date()))
+
+    try devices.save(to: url)
+
+    let fileAttrs = try FileManager.default.attributesOfItem(atPath: url.path)
+    #expect(((fileAttrs[.posixPermissions] as? NSNumber)?.uint16Value ?? 0) & 0o777 == 0o600)
+    let dirAttrs = try FileManager.default.attributesOfItem(atPath: remoteDir.path)
+    #expect(((dirAttrs[.posixPermissions] as? NSNumber)?.uint16Value ?? 0) & 0o777 == 0o700)
+}
+
 @Test func removeDropsTheDevice() {
     var devices = PairedDevices()
     devices.add(PairedDevice(id: "d1", name: "a", pairedAt: Date()))

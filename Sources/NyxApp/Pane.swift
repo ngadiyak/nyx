@@ -40,7 +40,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return PaneID(nextID)
     }
 
-    private let session: TerminalSession
+    /// What this pane is a view of. `any PaneSession` rather than `TerminalSession` so a session
+    /// running on another Mac can stand in for a local shell without a second copy of this class;
+    /// see `PaneSession` for what a remote conformer answers for `pid` and
+    /// `foregroundProcessGroup`.
+    let session: any PaneSession
     private let renderer: Renderer
     private var fonts: FontSet
     /// The full configuration currently in force. Kept apart from the actual font size in use

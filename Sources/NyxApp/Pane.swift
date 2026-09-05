@@ -521,7 +521,60 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if dirty.takeAndClear() { render() } else { displayLink?.isPaused = true }
     }
 
+    /// The viewport mapping of the frame before this one. See `dirtyRows(of:top:)`.
+    private var lastFrameLayout: FrameLayout?
+    private struct FrameLayout: Equatable {
+        var top: Int
+        var cols: Int
+        var rows: Int
+        var scrollbackGeneration: UInt64
+        var evictedRows: Int
+        var folded: Bool
+    }
+
+    /// Which visible rows changed since the last presented frame, or `[]` meaning "all of them".
+    ///
+    /// `Row.dirty` describes a row of the *screen*, and it answers for a viewport slot only while
+    /// that slot keeps holding the same row. Scrolled back into the scrollback, with a fold open, or
+    /// after a `clear` renumbered every absolute row, slot *y* is filled from somewhere else, and a
+    /// row nothing has touched can be showing text it was not showing last frame. So whenever the
+    /// mapping itself moved the answer is "everything": one full frame, which cannot go stale, at
+    /// the moments where every row was going to change anyway.
+    private func dirtyRows(of t: Terminal, top: Int) -> [Bool] {
+        let layout = FrameLayout(top: top, cols: t.cols, rows: t.rows,
+                                 scrollbackGeneration: t.scrollbackGeneration,
+                                 evictedRows: t.evictedRows, folded: !folding.isEmpty)
+        let unmoved = lastFrameLayout == layout
+        lastFrameLayout = layout
+        guard unmoved, folding.isEmpty, t.viewportOffset == 0 else { return [] }
+        return (0..<t.rows).map { t.screen.rows[$0].dirty }
+    }
+
+    /// `NYX_RENDER_STATS=1` reports how much of each frame the renderer actually rebuilds. The
+    /// per-row cache is invisible by construction -- the picture is identical either way -- so
+    /// without a counter there is no way to tell a working cache from a broken one in the real app.
+    private static let renderStatsEnabled = ProcessInfo.processInfo.environment["NYX_RENDER_STATS"] != nil
+    private func reportRenderStats() {
+        let s = renderer.stats
+        guard s.frames >= 120 else { return }
+        let share = s.rowsSeen == 0 ? 0 : (s.rowsRebuilt * 100) / s.rowsSeen
+        let line = "nyx render: \(s.frames) frames, \(s.rowsRebuilt)/\(s.rowsSeen) rows rebuilt (\(share)%), "
+            + "\(s.fullInvalidations) full invalidations\n"
+        FileHandle.standardError.write(Data(line.utf8))
+        renderer.resetStats()
+    }
+
     private func render() {
+        // Asked before the frame is built, not after: while an application is inside a synchronised
+        // update (DECSET 2026) the frame would be thrown away, and building one walks the grid, the
+        // blocks and the prompt marks under the session lock the PTY reader is waiting for.
+        let syncOutput = session.withTerminal { $0.modes.syncOutput }
+        guard renderer.canPresent(syncOutput: syncOutput) else {
+            // Still stale, and the link stays awake: the hold has to end on the mode being cleared
+            // or on the gate's timeout, and both are noticed by ticking.
+            dirty.set()
+            return
+        }
         let focused = (window?.isKeyWindow ?? false) && window?.firstResponder === self
         let preedit = markedText.isEmpty ? nil : markedText
         var gutterMarks: [GutterMark?] = []
@@ -529,6 +582,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         var spines: [(rows: Range<Int>, color: RGB)] = []
         var summaries: [(row: Int, text: String, color: RGB)] = []
         var sticky: (text: String, failed: Bool, row: Int)?
+        // What the buffer looked like when the frame was built. The dirty flags are cleared against
+        // it once the frame is on screen, so a write that lands in between keeps its flags.
+        var builtAtContentVersion: UInt64 = 0
         let frame: RenderFrame = session.withTerminal { t in
             // Before anything reads the selection: a cleared scrollback, a reset or an
             // alternate-screen swap leaves it pointing at rows that now hold other content.
@@ -671,14 +727,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                  exitStatus: pinned.exitStatus, columns: t.cols),
                           pinned.failed, pinned.row)
             }
-            // A missing drawable is transient. On failure, re-setting dirty will repaint rows
-            // already marked clean; once per-row partial redraw lands, fix both here and there.
-            t.clearDirty()
+            builtAtContentVersion = t.contentVersion
             return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
                                cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit,
                                selection: selected, searchMatches: matches, currentSearchMatch: current,
                                hoveredLink: hovered, rowNotes: notes, blockSpines: spines,
-                               blockSummaries: summaries)
+                               blockSummaries: summaries, dirtyRows: self.dirtyRows(of: t, top: top))
         }
         gutter.update(marks: gutterMarks, palette: frame.palette,
                       cellHeight: cellSizePoints.height, topPadding: padding)
@@ -689,9 +743,19 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // The strip claims the pointer only while it is up, so appearing or disappearing changes
         // which view the cursor over the top row belongs to.
         if wasHidden != stickyStrip.isHidden { window?.invalidateCursorRects(for: stickyStrip) }
-        // A missing drawable is transient; keep the frame stale so the next tick retries rather
-        // than pausing the link on top of stale pixels.
-        if !renderer.draw(frame, in: metalLayer, padding: Int(padding * metalLayer.contentsScale)) { dirty.set() }
+        switch renderer.draw(frame, in: metalLayer, padding: Int(padding * metalLayer.contentsScale),
+                             syncOutput: syncOutput) {
+        case .presented:
+            // Only now, and only if nothing was written in between: the flags say "this row has not
+            // been drawn since it changed", and the renderer skips the rows they do not name.
+            // Clearing them for a frame that was never presented is how a row goes stale forever.
+            session.withTerminal { _ = $0.clearDirty(ifContentVersionIs: builtAtContentVersion) }
+        case .noDrawable, .held:
+            // Nothing reached the screen. Keep the frame stale so the next tick retries rather than
+            // pausing the link on top of stale pixels, and leave every dirty flag standing.
+            dirty.set()
+        }
+        if Pane.renderStatsEnabled { reportRenderStats() }
     }
 
     // MARK: - Events from the terminal
@@ -793,7 +857,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             guard let chars = e.charactersIgnoringModifiers, let s = chars.unicodeScalars.first else { return nil }
             key = .char(s)
         }
-        return KeyEvent(key: key, modifiers: mods, text: e.characters)
+        // `isKeypad` comes from the key code, not from `NSEvent.numericPad`: macOS sets that flag
+        // on the arrow keys too, so trusting it would send SS3 for arrows in application-keypad
+        // mode and break every full-screen program the moment one turned the mode on.
+        return KeyEvent(key: key, modifiers: mods, text: e.characters,
+                        isKeypad: MacKeyCodes.isKeypad(e.keyCode))
     }
 
     /// `KeyEncoderOptions.optionAsMeta` is a plain bool -- it doesn't distinguish which side of the
@@ -801,10 +869,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// doing nothing; only `.none` turns it off.
     private var optionActsAsMeta: Bool { config.optionAsMeta != .none }
 
+
     private func sendKey(_ e: NSEvent) {
         guard let ke = keyEvent(from: e) else { return }
+        // Every mode the encoder needs, read under the one lock: `cursorKeysApp` and `keypadApp`
+        // are what DECCKM/DECKPAM asked for, and `modifyOtherKeys` is what an application turned on
+        // to be able to tell ctrl+Enter from Enter at all.
         let opts = session.withTerminal {
-            KeyEncoderOptions(cursorKeysApp: $0.modes.cursorKeysApp, optionAsMeta: optionActsAsMeta)
+            KeyEncoderOptions(cursorKeysApp: $0.modes.cursorKeysApp, optionAsMeta: optionActsAsMeta,
+                              keypadApp: $0.modes.keypadApp,
+                              modifyOtherKeys: $0.modes.modifyOtherKeys)
         }
         if let bytes = KeyEncoder.encode(ke, options: opts) { send(bytes) }
     }

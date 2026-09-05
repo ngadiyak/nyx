@@ -19,25 +19,224 @@ public struct KeyEvent: Equatable {
     public var modifiers: KeyModifiers
     /// The text macOS composed for this key (dead keys, Option-symbols, IME). Used for plain character input.
     public var text: String?
-    public init(key: Key, modifiers: KeyModifiers, text: String?) {
-        self.key = key; self.modifiers = modifiers; self.text = text
+    /// Whether the key was pressed on the numeric keypad rather than on the main block.
+    ///
+    /// A property of the event, not of the key: `.char("1")` and `.enter` are the same logical keys
+    /// wherever they were pressed, and only application-keypad mode (DECKPAM) cares which physical
+    /// key it was. Defaulted so every existing construction keeps its meaning.
+    public var isKeypad: Bool
+    public init(key: Key, modifiers: KeyModifiers, text: String?, isKeypad: Bool = false) {
+        self.key = key; self.modifiers = modifiers; self.text = text; self.isKeypad = isKeypad
     }
+}
+
+/// xterm's `modifyOtherKeys` resource, set by the application with XTMODKEYS `CSI > 4 ; Pv m`.
+///
+/// The point of the mode is that a terminal's legacy encoding is lossy: ctrl+Tab and Tab both
+/// arrive as 0x09, ctrl+Enter and Enter both as 0x0D, ctrl+shift+a and ctrl+a both as 0x01. An
+/// application that wants to bind those has no way to tell them apart until it turns this on.
+///
+/// **Why xterm's protocol and not kitty's.** Both were on the table; kitty's is the more capable
+/// one and is on the roadmap (spec §11, stage 3). Two things decided it for now. `TERM` is
+/// `xterm-256color` (`TerminalSession`), and applications pick their key protocol from `TERM`:
+/// Vim's built-in default is `keyprotocol=xterm:mok2`, so on this `TERM` Vim asks for
+/// modifyOtherKeys level 2 and parses what xterm sends back -- it would never send the kitty
+/// query. And kitty's protocol is not a mode but a stack of five progressive-enhancement flags
+/// with push/pop/query, per screen; supporting only its first flag would answer the query with a
+/// half-truth, which is worse than answering the xterm query with the whole one.
+public enum ModifyOtherKeys: Int, Equatable {
+    /// Legacy encoding for everything. Byte-for-byte what the terminal sent before this mode existed.
+    case off = 0
+    /// `CSI > 4 ; 1 m`. Rewrite only combinations whose legacy bytes are already taken by another
+    /// combination of the same key, and only for character keys: xterm exempts the keys with
+    /// "well-known behavior" -- Tab, Backspace, Return, Escape and ctrl+space -- at this level.
+    case ambiguousOnly = 1
+    /// `CSI > 4 ; 2 m`. Rewrite every modified key the protocol covers, including the well-known
+    /// ones. This is the level applications actually ask for (Vim's `mok2`), and the level that
+    /// makes ctrl+Tab and ctrl+Enter distinguishable.
+    ///
+    /// It also takes ctrl+c away from the tty line discipline -- the shell would never see 0x03 --
+    /// which is why no terminal turns it on by itself and why applications send `CSI > 4 ; 0 m`
+    /// when they exit.
+    case allOtherKeys = 2
 }
 
 public struct KeyEncoderOptions: Equatable {
     public var cursorKeysApp: Bool
     public var optionAsMeta: Bool
-    public init(cursorKeysApp: Bool, optionAsMeta: Bool) {
-        self.cursorKeysApp = cursorKeysApp; self.optionAsMeta = optionAsMeta
+    /// DECKPAM/DECKPNM. In vim, `htop` and anything else built on terminfo's `smkx`, the keypad
+    /// must send SS3 sequences rather than digits, or the keys are indistinguishable from typing.
+    public var keypadApp: Bool
+    public var modifyOtherKeys: ModifyOtherKeys
+    public init(cursorKeysApp: Bool, optionAsMeta: Bool,
+                keypadApp: Bool = false, modifyOtherKeys: ModifyOtherKeys = .off) {
+        self.cursorKeysApp = cursorKeysApp
+        self.optionAsMeta = optionAsMeta
+        self.keypadApp = keypadApp
+        self.modifyOtherKeys = modifyOtherKeys
     }
 }
 
 /// xterm-compatible key encoding.
 public enum KeyEncoder {
     public static func encode(_ e: KeyEvent, options: KeyEncoderOptions) -> [UInt8]? {
+        if e.modifiers.contains(.cmd) { return nil }
+        // Application keypad first: xterm's `modifyKeypadKeys` defaults to leaving keypad keys
+        // unmodified, so modifyOtherKeys never sees them however many modifiers are held.
+        if let bytes = applicationKeypad(e, options: options) { return bytes }
+        if let bytes = modifiedOtherKey(e, options: options) { return bytes }
+        return legacy(e, options: options)
+    }
+
+    // MARK: - Application keypad (DECKPAM)
+
+    /// The SS3 sequence for a keypad key, or nil when this is not a keypad key in keypad mode.
+    ///
+    /// Terminfo calls these `ka1`/`kb2`/`kc1`... ; xterm sends `ESC O p` through `ESC O y` for the
+    /// digits and `ESC O M` for keypad Enter. vim reads them to tell keypad `1` from the `1` on the
+    /// main row -- with `:map <k1>` bound and the keypad sending plain digits, the map can never
+    /// fire, which is the bug this closes.
+    ///
+    /// Modifiers are dropped rather than encoded, which is xterm with its default
+    /// `modifyKeypadKeys` (report the value 0 to XTQMODKEYS: keypad keys are not modified). alt
+    /// still prefixes ESC, because that is metaSendsEscape and orthogonal to the keypad.
+    private static func applicationKeypad(_ e: KeyEvent, options: KeyEncoderOptions) -> [UInt8]? {
+        guard e.isKeypad, options.keypadApp else { return nil }
+        let final: String
+        switch e.key {
+        case .enter: final = "M"
+        case .char(let s):
+            switch s {
+            case "0": final = "p"
+            case "1": final = "q"
+            case "2": final = "r"
+            case "3": final = "s"
+            case "4": final = "t"
+            case "5": final = "u"
+            case "6": final = "v"
+            case "7": final = "w"
+            case "8": final = "x"
+            case "9": final = "y"
+            case ".": final = "n"
+            case ",": final = "l"
+            case "+": final = "k"
+            case "-": final = "m"
+            case "*": final = "j"
+            case "/": final = "o"
+            case "=": final = "X"
+            // Keypad Clear and anything else a non-US layout puts here has no SS3 form; falling
+            // through sends the character, which is what it did before keypad mode existed.
+            default: return nil
+            }
+        default: return nil
+        }
+        let ss3 = Array("\u{1B}O\(final)".utf8)
+        return e.modifiers.contains(.alt) ? [0x1B] + ss3 : ss3
+    }
+
+    // MARK: - modifyOtherKeys
+
+    /// The keys this protocol covers, as the code the sequence reports for them.
+    ///
+    /// The rule is one line: the code is what the *unmodified* key sends -- its code point for a
+    /// character, the control byte for the rest. So an application can map the code back onto the
+    /// same key it would have got from legacy input, with no table of its own. Backspace is 127
+    /// rather than 8 for exactly that reason: 127 is what we send when nothing is held.
+    ///
+    /// Cursor, editing and function keys are absent on purpose: they already carry the modifier in
+    /// their own parameter (`CSI 1;5D`), so they were never ambiguous, and xterm modifies them
+    /// through the separate `modifyCursorKeys` / `modifyFunctionKeys` resources.
+    private static func otherKeyCode(_ key: Key) -> UInt32? {
+        switch key {
+        case .char(let s): return s.value
+        case .tab: return 9
+        case .enter: return 13
+        case .backspace: return 127
+        case .escape: return 27
+        default: return nil
+        }
+    }
+
+    /// `CSI 27 ; modifier ; code ~`, or nil when this combination stays on the legacy encoding.
+    ///
+    /// The wire format is xterm's default (`formatOtherKeys` 0), not the `CSI code ; modifier u`
+    /// spelling the protocol is colloquially named after. An application that asked for
+    /// modifyOtherKeys asked xterm's question and must get xterm's answer: on `TERM=xterm-256color`
+    /// Vim's `mok2` parser expects exactly this shape. (Vim happens to accept both forms; a
+    /// hand-rolled parser that reads `27;mod;code~` because that is what xterm sends does not.)
+    private static func modifiedOtherKey(_ e: KeyEvent, options: KeyEncoderOptions) -> [UInt8]? {
+        let level = options.modifyOtherKeys
+        guard level != .off else { return nil }
+        guard let code = otherKeyCode(e.key) else { return nil }
         let m = e.modifiers
-        if m.contains(.cmd) { return nil }
-        let param = 1 + (m.contains(.shift) ? 1 : 0) + (m.contains(.alt) ? 2 : 0) + (m.contains(.ctrl) ? 4 : 0)
+        var isChar = false
+        if case .char = e.key { isChar = true }
+
+        // Option is only a modifier when the user asked for it to be Meta; otherwise it composes
+        // characters (alt+o is "ø"), and reporting it would turn every composed character into an
+        // escape sequence. Tab, Enter, Backspace and Escape compose nothing, so option always
+        // modifies them -- which is also what the legacy encoding here already assumes.
+        let altModifies = m.contains(.alt) && (isChar ? options.optionAsMeta : true)
+        // Shift is not a modifier of a character key: it is already inside the character, and
+        // `.char("A")` is a different key from `.char("a")`.
+        let shiftModifies = m.contains(.shift) && !isChar
+
+        guard m.contains(.ctrl) || altModifies || shiftModifies else { return nil }
+
+        // shift+Tab keeps CSI Z at every level. On X11 that combination is its own keysym
+        // (ISO_Left_Tab), so it never reaches xterm's other-keys path, and every application that
+        // reads back-tab reads CSI Z.
+        if case .tab = e.key, m.contains(.shift), !m.contains(.ctrl), !m.contains(.alt) { return nil }
+
+        if level == .ambiguousOnly {
+            // Level 1 is "except keys with well-known behavior": Tab, Backspace, Return, Escape and
+            // ctrl+space stay legacy however ambiguous they are. That exemption is why applications
+            // that want ctrl+Tab ask for level 2 instead.
+            guard isChar else { return nil }
+            guard !(m.contains(.ctrl) && code == 0x20) else { return nil }
+            guard isAmbiguous(code, m) else { return nil }
+        }
+
+        let param = modifierParameter(m)
+        return Array("\u{1B}[27;\(param);\(code)~".utf8)
+    }
+
+    /// Whether the legacy bytes for this character key are already spoken for by another
+    /// combination the user can type, so an application receiving them cannot tell which was meant.
+    ///
+    /// Only two cases produce a collision, and both come straight out of `legacy` below:
+    /// ctrl on a key with no control-character mapping falls through to the bare character
+    /// (ctrl+1 arrives as "1"), and shift is dropped on a key that does have one (ctrl+shift+a and
+    /// ctrl+a both arrive as 0x01).
+    private static func isAmbiguous(_ code: UInt32, _ m: KeyModifiers) -> Bool {
+        guard m.contains(.ctrl) else { return false }
+        guard let scalar = Unicode.Scalar(code) else { return true }
+        if controlByte(for: scalar) == nil { return true }
+        return m.contains(.shift)
+    }
+
+    private static func modifierParameter(_ m: KeyModifiers) -> Int {
+        1 + (m.contains(.shift) ? 1 : 0) + (m.contains(.alt) ? 2 : 0) + (m.contains(.ctrl) ? 4 : 0)
+    }
+
+    /// The control character a key produces when ctrl is held, or nil when it produces none.
+    private static func controlByte(for s: Unicode.Scalar) -> UInt8? {
+        switch s.value {
+        case 0x61...0x7A: return UInt8(s.value - 0x60)          // a-z
+        case 0x41...0x5A: return UInt8(s.value - 0x40)          // A-Z
+        case 0x40, 0x20: return 0x00                            // @ space
+        case 0x5B...0x5F: return UInt8(s.value - 0x40)          // [ \ ] ^ _
+        case 0x2F: return 0x1F                                  // /
+        case 0x3F: return 0x7F                                  // ?
+        default: return nil
+        }
+    }
+
+    // MARK: - Legacy encoding
+
+    private static func legacy(_ e: KeyEvent, options: KeyEncoderOptions) -> [UInt8]? {
+        let m = e.modifiers
+        let param = modifierParameter(m)
         let esc: UInt8 = 0x1B
 
         func cursor(_ final: String) -> [UInt8] {
@@ -81,18 +280,7 @@ public enum KeyEncoder {
             }
         case .char(let s):
             if m.contains(.ctrl) {
-                let v = s.value
-                var byte: UInt8?
-                switch v {
-                case 0x61...0x7A: byte = UInt8(v - 0x60)          // a-z
-                case 0x41...0x5A: byte = UInt8(v - 0x40)          // A-Z
-                case 0x40, 0x20: byte = 0x00                      // @ space
-                case 0x5B...0x5F: byte = UInt8(v - 0x40)          // [ \ ] ^ _
-                case 0x2F: byte = 0x1F                            // /
-                case 0x3F: byte = 0x7F                            // ?
-                default: byte = nil
-                }
-                if let b = byte { return withAlt([b]) }
+                if let b = controlByte(for: s) { return withAlt([b]) }
                 return withAlt(Array(String(s).utf8))
             }
             if m.contains(.alt) && options.optionAsMeta {

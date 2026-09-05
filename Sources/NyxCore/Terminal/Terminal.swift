@@ -14,8 +14,15 @@ public enum CursorShape: Equatable { case block, underline, bar }
 
 public struct TerminalModes: Equatable {
     public var cursorKeysApp = false     // DECCKM ?1
-    /// Tracked (DECKPAM/DECKPNM) but not implemented: numeric keypad encoding (phase 2, spec §11).
     public var keypadApp = false         // DECKPAM / DECKPNM
+    /// xterm's modifyOtherKeys, set with XTMODKEYS `CSI > 4 ; Pv m`. See `ModifyOtherKeys`.
+    ///
+    /// Reset by RIS -- this struct is replaced wholesale there -- and by nothing else. In
+    /// particular *not* by leaving the alternate screen: xterm has no such rule, and inventing one
+    /// would break the applications that set the mode on the main screen and visit the alternate
+    /// one in passing (tmux, less). vim, which is on the alternate screen the whole time it runs,
+    /// turns the mode off itself from its `t_TE` string on the way out.
+    public var modifyOtherKeys: ModifyOtherKeys = .off
     public var originMode = false        // DECOM ?6
     public var autoWrap = true           // DECAWM ?7
     public var cursorBlink = true        // ?12
@@ -194,6 +201,23 @@ public final class Terminal: TerminalActions {
 
     public func clearDirty() {
         for y in 0..<rows { screen.rows[y].dirty = false }
+    }
+
+    /// Clears the dirty flags only if the buffer is still the one `version` described.
+    ///
+    /// The view clears the flags *after* the frame is on screen, not before it is built: a frame
+    /// can be dropped (no drawable) or withheld (synchronised output), and rows marked clean for a
+    /// frame nobody saw are rows the renderer will skip and leave stale. Between building a frame
+    /// and presenting it the session lock is not held, so the PTY reader can have written more; in
+    /// that case this clears nothing and the next frame rebuilds those rows, which costs one
+    /// rebuild and cannot lose an update.
+    ///
+    /// Returns whether the flags were cleared.
+    @discardableResult
+    public func clearDirty(ifContentVersionIs version: UInt64) -> Bool {
+        guard version == contentVersion else { return false }
+        clearDirty()
+        return true
     }
 
     func touch() { generation &+= 1 }
@@ -755,6 +779,7 @@ public final class Terminal: TerminalActions {
             case 0x72: for i in 0..<p.count { if let v = savedModes[p.get(i)] { setPrivateMode(p.get(i), v) } }
             case 0x4A: eraseDisplay(p.get(0))
             case 0x4B: eraseLine(p.get(0))
+            case 0x6D: reportKeyModifierOption(p.get(0, 0))   // ? Pp m  XTQMODKEYS
             default: break
             }
         case [0x3F, 0x24]:                             // ? $ p  DECRQM (private)
@@ -766,6 +791,7 @@ public final class Terminal: TerminalActions {
         case [0x3E]:                                   // >
             if final == 0x63 { respond("\u{1B}[>1;10;0c") }                                  // DA2
             else if final == 0x71 { respond("\u{1B}P>|Nyx \(Terminal.version)\u{1B}\\") }   // XTVERSION
+            else if final == 0x6D { setKeyModifierOptions(p) }                               // XTMODKEYS
         case [0x3D]:                                   // =
             if final == 0x63 { respond("\u{1B}P!|00000000\u{1B}\\") }                        // DA3
         default: break
@@ -851,6 +877,47 @@ public final class Terminal: TerminalActions {
             }
         }
         respond("\u{1B}[\(isPrivate ? "?" : "")\(m);\(state)$y")
+    }
+
+    /// XTMODKEYS, `CSI > Pp ; Pv m`: how much of the modifier state a key is allowed to carry.
+    ///
+    /// Only `Pp = 4` (modifyOtherKeys) is settable, because it is the only one of the five whose
+    /// value we do not already hold fixed -- see `reportKeyModifierOption` for what the other four
+    /// are pinned to. An omitted `Pv`, and the bare `CSI > m`, mean "back to the initial value",
+    /// which for us is off; a `Pv` outside 0...2 is not a value this resource has, so it is
+    /// ignored rather than guessed at.
+    private func setKeyModifierOptions(_ p: CSIParams) {
+        guard p.count > 0 else {
+            modes.modifyOtherKeys = .off
+            return
+        }
+        guard p.get(0, 0) == 4 else { return }
+        guard p.count > 1 else {
+            modes.modifyOtherKeys = .off
+            return
+        }
+        if let level = ModifyOtherKeys(rawValue: p.get(1, 0)) { modes.modifyOtherKeys = level }
+    }
+
+    /// XTQMODKEYS, `CSI ? Pp m` -> `CSI > Pp ; Pv m`.
+    ///
+    /// Every resource answers, and answers with what this terminal actually does, so an
+    /// application can read the reply instead of assuming. Four of the five are constants because
+    /// `KeyEncoder` has one behaviour each: cursor and function keys always carry their modifier as
+    /// `CSI 1;Pm X` / `CSI Pn;Pm ~`, which is xterm's level 2; the keypad never carries one, which
+    /// is xterm's level 0; and the "modifyKeyboard" special-character rewriting we do not do at
+    /// all. An unknown `Pp` gets no reply -- an invented one would be a lie, and xterm's own
+    /// numbering may grow.
+    private func reportKeyModifierOption(_ pp: Int) {
+        let value: Int
+        switch pp {
+        case 0: value = 0                                   // modifyKeyboard
+        case 1, 2: value = 2                                // modifyCursorKeys, modifyFunctionKeys
+        case 3: value = 0                                   // modifyKeypadKeys
+        case 4: value = modes.modifyOtherKeys.rawValue      // modifyOtherKeys
+        default: return
+        }
+        respond("\u{1B}[>\(pp);\(value)m")
     }
 
     func switchScreen(alt: Bool, clear: Bool, saveCursor save: Bool) {

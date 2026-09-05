@@ -83,6 +83,28 @@ public struct RGB: Equatable, Hashable {
         return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
     }
 
+    /// A colour moved just far enough to be readable on a background, keeping as much of itself as
+    /// it can.
+    ///
+    /// `colour` is blended towards `towards` in small steps until it clears `minimum` against
+    /// `background`, and the first step that does is the answer -- so a colour that was already
+    /// readable comes back untouched, and one that was not comes back as close to the original as
+    /// the floor allows. The last resort is `towards` itself, which is the caller's guaranteed-
+    /// readable colour (a label colour, a theme foreground).
+    ///
+    /// It exists because AppKit's system colours are chosen for a system background: `systemRed` on
+    /// the pairing sheet's own grey measures about 3:1, which is below the 4.5 a line of text needs
+    /// and exactly the sort of thing nobody notices until they read the render.
+    public static func readable(_ colour: RGB, on background: RGB, towards: RGB,
+                                minimum: Double = 4.5) -> RGB {
+        guard contrast(colour, background) < minimum else { return colour }
+        for step in 1...20 {
+            let candidate = blend(colour, into: towards, amount: Double(step) / 20)
+            if contrast(candidate, background) >= minimum { return candidate }
+        }
+        return towards
+    }
+
     /// WCAG contrast ratio, 1 (identical) to 21 (black on white). Text needs about 4.5.
     public static func contrast(_ a: RGB, _ b: RGB) -> Double {
         let la = a.relativeLuminance, lb = b.relativeLuminance

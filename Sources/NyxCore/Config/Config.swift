@@ -76,6 +76,22 @@ public struct Config: Equatable {
     public var quickActions: [QuickAction] = []
     public var paletteOverrides: [Int: RGB] = [:]
 
+    /// Off by default: this Mac neither publishes its sessions to a relay nor accepts an attach
+    /// until asked. See spec §5.1.
+    public var remote: RemoteMode = .off
+    /// Stored empty, not pre-filled with the Mac's current name -- `RemoteDeviceName.resolve`
+    /// falls back to the machine's own name at the point of use, so a Mac renamed later picks that
+    /// up instead of showing whatever name was baked into the file when remote was first turned on.
+    public var remoteDeviceName: String = ""
+    public var remoteRelay: String = "wss://nyx.agentforge.cc/v1/ws"
+    /// Not comment-stripped (see `ConfigParser`): a token is an opaque secret that may itself
+    /// contain `#`, the same reasoning as `open-file-command`.
+    public var remoteRelayToken: String = ""
+    /// Lines of scrollback a host sends a client as the initial snapshot before switching to the
+    /// live stream. 2000 by default: enough to restore the block/fold state of a typical session
+    /// without shipping an entire multi-day scrollback down the wire on every attach.
+    public var remoteSnapshotLines: Int = 2000
+
     public static let defaults = Config()
 }
 
@@ -157,6 +173,15 @@ public extension Config {
         # --- Key bindings ---
         # One per line: `modifier+modifier+key=action`. See the reference for the action list.
         # keybind = cmd+t=new_tab
+
+        # --- Remote ---
+        # Publish this Mac's sessions to a relay so a paired Mac can find and attach to them, and
+        # accept attaches from paired Macs in return. Off until you turn it on and pair a device.
+        # remote = off
+        # remote-device-name =
+        # remote-relay = wss://nyx.agentforge.cc/v1/ws
+        # remote-relay-token =
+        # remote-snapshot-lines = 2000
         """#
     }
 }

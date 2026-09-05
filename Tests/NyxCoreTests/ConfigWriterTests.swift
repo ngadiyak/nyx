@@ -207,3 +207,35 @@ private func quickLines(_ text: String) -> [String] {
     #expect(parsed.diagnostics.isEmpty)
     #expect(parsed.config.quickActions == actions)
 }
+
+// MARK: - Comment-exempt keys
+
+/// The bug: `ConfigWriter.replacingValue` used to look for a `#` in the *old* line's tail and keep
+/// everything from there on as "the human's trailing comment" -- which is right for an ordinary
+/// key, but for a comment-exempt key (`ConfigGrammar.commentExemptKeys`) the `#` was never a
+/// comment, it was part of the value `ConfigParser` never stripped. Writing a new value over an old
+/// one that happened to contain `#` kept a fragment of the *old* value stuck onto the new one.
+@Test func writingOverACommentExemptValueContainingHashReplacesItWhole() {
+    for key in ["remote-relay-token", "open-file-command", "quick"] {
+        let old = key == "quick" ? "Note | send | echo '#1'" : "abc#123"
+        let new = key == "quick" ? "Note | send | echo new #2 value" : "xyz#456 with spaces"
+        let out = write(key, new, into: "\(key) = \(old)")
+        #expect(out == "\(key) = \(new)", "\(key): got \(out)")
+    }
+}
+
+/// The same replacement, read back: the parser must see exactly the new value, not the new value
+/// plus a leftover piece of the old one.
+@Test func aCommentExemptValueContainingHashRoundTripsAfterBeingOverwritten() {
+    let out = write("remote-relay-token", "xyz#456 with spaces",
+                    into: "remote-relay-token = abc#123")
+    #expect(ConfigParser.parse(out).config.remoteRelayToken == "xyz#456 with spaces")
+}
+
+/// A non-exempt key is unaffected: it still keeps its trailing comment, `#` and all. (The writer
+/// always puts exactly one space before a kept comment, regardless of how many separated it from
+/// the old value -- `replacingValue`'s existing behaviour, not something this fix changes.)
+@Test func aNonExemptKeyStillKeepsItsTrailingComment() {
+    let out = write("font-size", "18", into: "font-size = 13  # bumped for the big monitor")
+    #expect(out == "font-size = 18 # bumped for the big monitor")
+}

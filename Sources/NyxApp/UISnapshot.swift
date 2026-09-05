@@ -1,5 +1,6 @@
 import AppKit
 import NyxCore
+import NyxRemote
 
 /// Renders the window chrome to PNG files, offscreen, and exits.
 ///
@@ -79,8 +80,41 @@ enum UISnapshot {
             write(commandEditorSheet(palette: palette, appearance),
                   named: "sheet-command-editor-\(name)", into: directory,
                   background: windowGround(appearance))
+            for (stateName, state) in pairingStates() {
+                write(pairingSheetView(state: state, appearance),
+                      named: "pairing-\(stateName)-\(name)", into: directory,
+                      background: windowGround(appearance))
+            }
+            write(clientIdlePairingSheetView(appearance), named: "pairing-client-idle-\(name)",
+                  into: directory, background: windowGround(appearance))
+            write(invalidCodePairingSheetView(appearance), named: "pairing-code-invalid-\(name)",
+                  into: directory, background: windowGround(appearance))
             writeSettings(into: directory, appearance: appearance, suffix: "-\(name)")
+            // The same page with the switch off: every field, the table, Remove and both pairing
+            // buttons greyed, and the status line saying why.
+            writeSettings(into: directory, appearance: appearance, suffix: "-off-\(name)",
+                          remoteOn: false, remotePageOnly: true)
         }
+        // The remote strip is an `NSButton` on a theme-coloured band, so unlike the block header it
+        // is *not* the same picture in both appearances: the button's bezel follows the system.
+        for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
+            for (stateName, state) in remoteStripStates() {
+                write(remoteStrip(state: state, palette: palette, appearance),
+                      named: "remote-strip-\(stateName)-\(name)", into: directory,
+                      background: palette.background)
+            }
+        }
+        write(tabBar(palette: palette, config: config, tabs: 3, quickActions: quickActions(),
+                     remoteBadgeAt: 1),
+              named: "tabbar-remote-badge", into: directory, background: palette.background)
+        // Two pictures, each a catalogue that could actually exist. The first is the everyday one:
+        // the palette as it opens, ordinary rows and the Remote section together. The second is the
+        // relay being down, which is the only state that puts a status row in the list -- and when
+        // it is there, there are no live sessions to list beside it.
+        write(remotePalettePanel(palette: palette, mixed: true),
+              named: "command-palette-mixed-remote", into: directory, background: palette.background)
+        write(remotePalettePanel(palette: palette, mixed: false), named: "command-palette-remote",
+              into: directory, background: palette.background)
         write(stickyPrompt(palette: palette, failed: false), named: "sticky-prompt", into: directory,
               background: palette.background)
         write(stickyPrompt(palette: palette, failed: true), named: "sticky-prompt-failed",
@@ -217,7 +251,8 @@ enum UISnapshot {
     private static func tabBar(palette: Palette, config: Config, tabs: Int,
                                quickActions: [QuickAction], grouped: Bool = false,
                                collapsed: Bool = false, twoGroups: Bool = false,
-                               runningToggle: Bool = false, width: CGFloat = 900) -> NSView {
+                               runningToggle: Bool = false, width: CGFloat = 900,
+                               remoteBadgeAt: Int? = nil) -> NSView {
         let bar = TabBarView()
         bar.setColors(palette: palette)
         if runningToggle {
@@ -241,9 +276,20 @@ enum UISnapshot {
 
         let titles = ["nyx — zsh", "vim Pane.swift", "make test", "tail -f system.log",
                       "ssh prod-web-01", "docker compose"]
-        let items = (0..<tabs).map { index in
-            TabBarItem(title: titles[index % titles.count],
-                       indicator: index == 2 ? .activity : (index == 3 ? .bell : TabIndicator.none))
+        let items = (0..<tabs).map { index -> TabBarItem in
+            // The two badges together in one picture: a tab this Mac is observing beside one it is
+            // writing to, so the pair can be told apart at a glance rather than one at a time.
+            let badge: String?
+            switch remoteBadgeAt {
+            case index: badge = "observer"
+            case .some(let first) where index == first + 1: badge = "writer"
+            default: badge = nil
+            }
+            let title = badge == nil ? titles[index % titles.count]
+                                     : "\u{27f5} Mac mini · \(titles[index % titles.count])"
+            return TabBarItem(title: title,
+                              indicator: index == 2 ? .activity : (index == 3 ? .bell : TabIndicator.none),
+                              label: badge)
         }
         bar.setTabs(items, selected: 0, grouping: grouping)
         bar.frame = NSRect(x: 0, y: 0, width: width, height: bar.preferredHeight)
@@ -329,11 +375,91 @@ enum UISnapshot {
         return view
     }
 
+    /// One `PairingFlow.State` per named picture -- constructed directly, not run through a real
+    /// flow, because a still picture only needs the state a real pairing would eventually reach,
+    /// not the events that got it there.
+    private static func pairingStates() -> [(String, PairingFlow.State)] {
+        [
+            ("code", .showingCode("K7M4QZ", expires: Date().addingTimeInterval(300))),
+            ("requested", .requested(peerID: "peer-device-id", peerName: "Nik's MacBook Pro")),
+            ("confirming", .confirming(peerID: "peer-device-id", peerName: "Nik's MacBook Pro",
+                                       fingerprint: "apple-river-stone-zero", mine: false, theirs: false)),
+            // The same state after this side has pressed Confirm: no button, and a body that says
+            // what is being waited for. It used to be the "confirming" picture with the button
+            // simply gone, which reads as a sheet that has stopped responding.
+            ("waiting", .confirming(peerID: "peer-device-id", peerName: "Nik's MacBook Pro",
+                                    fingerprint: "apple-river-stone-zero", mine: true, theirs: false)),
+            ("paired", .paired(peerID: "peer-device-id", peerName: "Nik's MacBook Pro")),
+            // The relay's wording, not the local five-minute timeout's: a mistyped code and an
+            // expired one are indistinguishable once the relay has forgotten it, and this is the
+            // sentence most people who fail a pairing actually read -- and the longer of the two,
+            // so it is the one that shows whether the sheet's body wraps.
+            ("failed", .failed("That code is wrong or has expired")),
+        ]
+    }
+
+    private static func pairingSheetView(state: PairingFlow.State, _ appearance: NSAppearance.Name) -> NSView {
+        let sheet = PairingSheet(side: .host)
+        sheet.update(state: state)
+        let view = sheet.panel.contentView ?? NSView()
+        view.appearance = NSAppearance(named: appearance)
+        view.layoutSubtreeIfNeeded()
+        return view
+    }
+
+    /// Client side, `.idle`: the sheet somebody actually looks at when they choose "Enter a code…",
+    /// with the field and the default "Pair" button that submits it. It opened without one, so the
+    /// only way forward was a Return key nothing on the sheet mentioned.
+    private static func clientIdlePairingSheetView(_ appearance: NSAppearance.Name) -> NSView {
+        let sheet = PairingSheet(side: .client)
+        sheet.update(state: .idle)
+        let view = sheet.panel.contentView ?? NSView()
+        view.appearance = NSAppearance(named: appearance)
+        view.layoutSubtreeIfNeeded()
+        return view
+    }
+
+    /// Client side, mid-`.idle`, having just submitted something that doesn't normalise to a code
+    /// -- the one pairing-sheet state that lives in the sheet itself rather than in
+    /// `PairingFlow.State`, so it is driven through the real submit path instead of constructed.
+    private static func invalidCodePairingSheetView(_ appearance: NSAppearance.Name) -> NSView {
+        let sheet = PairingSheet(side: .client)
+        sheet.simulateInvalidCodeSubmission("not a code")
+        let view = sheet.panel.contentView ?? NSView()
+        view.appearance = NSAppearance(named: appearance)
+        view.layoutSubtreeIfNeeded()
+        return view
+    }
+
     /// One PNG per settings page: an `NSTabView` shows one at a time, so a single render of the
     /// window would leave three of the four pages unlooked-at, which is the whole problem.
     private static func writeSettings(into directory: URL, appearance: NSAppearance.Name,
-                                      suffix: String) {
-        let controller = SettingsWindowController(store: ConfigStore())
+                                      suffix: String, remoteOn: Bool = true,
+                                      remotePageOnly: Bool = false) {
+        let store = ConfigStore()
+        let controller = SettingsWindowController(store: store)
+        // The Remote page's controls follow its checkbox, so the page has to be pictured in both
+        // states: switched on (every field live) and switched off (the whole body greyed out, which
+        // is the state a Mac that has never set this up is actually in).
+        var config = store.config
+        config.remote = remoteOn ? .on : .off
+        controller.configChanged(config, diagnostics: [])
+        // Two fake paired devices and three audit lines -- pictured this way rather than by
+        // writing them into a real person's `~/.config/nyx/remote/`, which is what reading the
+        // real files at their real path (the settings page's normal, reachable behaviour) would
+        // otherwise mean here. After `configChanged`, which re-reads the real files.
+        controller.setRemoteDemoData(
+            paired: [
+                PairedDevice(id: "N1a2B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ01AB", name: "Nik's MacBook Pro",
+                            pairedAt: Date(timeIntervalSince1970: 1_762_000_000)),
+                PairedDevice(id: "Q9w8E7r6T5y4U3i2O1p0AsDfGhJkLzXcVbNm7654Z", name: "Mac mini (office)",
+                            pairedAt: Date(timeIntervalSince1970: 1_762_400_000)),
+            ],
+            auditLines: [
+                "2026-09-01T10:00:00Z  paired  Nik's MacBook Pro",
+                "2026-09-05T09:12:03Z  attached  Nik's MacBook Pro → nyx — zsh",
+                "2026-09-05T09:14:47Z  detached  Nik's MacBook Pro → nyx — zsh",
+            ])
         guard let content = controller.window?.contentView,
               let tabs = content.subviews.compactMap({ $0 as? NSTabView }).first else { return }
         // On the *window*, not the content view. An `NSTabView`'s strip resolves its appearance
@@ -352,7 +478,13 @@ enum UISnapshot {
             // empty white pill above every settings page and made the tool look broken. It is also
             // the one part of this window nobody needs to review: it is Apple's, not ours.
             guard let page = item.view else { continue }
+            if remotePageOnly, label != "remote" { continue }
             page.layoutSubtreeIfNeeded()
+            // Same lazy-glyph-generation trap as `commandEditorSheet`: the Remote page's activity
+            // log is an `NSTextView`, and without this it caches to an empty box.
+            for textView in descendants(of: page).compactMap({ $0 as? NSTextView }) {
+                textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+            }
             write(page, named: "settings-\(label)\(suffix)", into: directory,
                   background: windowGround(appearance))
         }
@@ -386,6 +518,125 @@ enum UISnapshot {
             ("folded", BlockHeader(id: 4, state: .finished, folded: true, hasOutput: true, anyFolds: true, notifyArmed: false, summary: "8.8s")),
             ("no-output", BlockHeader(id: 5, state: .finished, folded: false, hasOutput: false, anyFolds: false, notifyArmed: false, summary: "")),
         ]
+    }
+
+    /// One picture per state the remote strip can be in. The live *writer* is deliberately not
+    /// here: that state has no strip at all, which is the point of it -- from the writer's side an
+    /// attached session looks exactly like a local one.
+    private static func remoteStripStates() -> [(String, AttachState)] {
+        func state(_ phase: AttachState.Phase, _ role: AttachState.Role) -> AttachState {
+            var s = AttachState(hostName: "Mac mini (office)", title: "swift test")
+            s.phase = phase
+            s.role = role
+            return s
+        }
+        // The live *writer* with a geometry note is the one picture of that state there can be: it
+        // is the only thing that puts a strip on a tab which otherwise has none.
+        var clipped = state(.live, .writer)
+        clipped.geometryNote = AttachState.geometryNote(host: GridSize(cols: 132, rows: 40),
+                                                        pane: GridSize(cols: 96, rows: 30))
+        // A fixed clock, so the picture is the same every run rather than "since <now>".
+        let offlineAt = Date(timeIntervalSince1970: 1_757_082_720)
+        var suspended = state(.suspended("Mac mini (office)", since: offlineAt), .writer)
+        suspended.timeZone = TimeZone(identifier: "UTC")!
+        suspended.today = AttachState.startOfDay(offlineAt, in: suspended.timeZone)
+        // The same tab left open overnight, and one left open for a week: the sentence has to say
+        // which, because "since 14:32" is the same four characters either way.
+        var suspendedYesterday = suspended
+        suspendedYesterday.today = AttachState.startOfDay(offlineAt + 86_400, in: suspended.timeZone)
+        var suspendedDated = suspended
+        suspendedDated.today = AttachState.startOfDay(offlineAt + 6 * 86_400, in: suspended.timeZone)
+        // The same state in a split tab: no "⌘W to close" -- ⌘W would take the other pane's tab
+        // with it -- and the Close button carries the whole offer.
+        var suspendedSplit = suspended
+        suspendedSplit.closesWholeTab = false
+        // Both clauses at once, which is the case the strip has to choose between when it is narrow.
+        var suspendedClipped = suspended
+        suspendedClipped.geometryNote = clipped.geometryNote
+        return [
+            ("attaching", state(.attaching, .observer)),
+            ("observer", state(.live, .observer)),
+            ("reconnecting", state(.reconnecting, .writer)),
+            ("suspended", suspended),
+            ("suspended-yesterday", suspendedYesterday),
+            ("suspended-dated", suspendedDated),
+            ("suspended-split", suspendedSplit),
+            ("suspended-clipped", suspendedClipped),
+            ("ended", state(.ended("Mac mini (office)"), .writer)),
+            ("failed", state(.failed(AttachFailure.text(code: "host_offline")), .observer)),
+            ("clipped", clipped),
+        ]
+    }
+
+    private static func remoteStrip(state: AttachState, palette: Palette,
+                                    _ appearance: NSAppearance.Name) -> NSView {
+        let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let height = ceil(font.ascender - font.descender + font.leading)
+        let view = RemoteStripView(frame: NSRect(x: 0, y: 0, width: 900, height: height))
+        view.appearance = NSAppearance(named: appearance)
+        view.update(state: state, palette: palette,
+                    font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+        view.layoutSubtreeIfNeeded()
+        return view
+    }
+
+    /// The palette showing what the Remote section actually looks like: an online Mac with two
+    /// sessions, a Mac that is awake with nothing open, one that is asleep, and the relay status
+    /// row that appears in place of everything when the socket is down. Built through
+    /// `RemoteCatalogue` rather than by hand, so the rows are the ones a real presence and
+    /// catalogue message would produce.
+    private static func remotePalettePanel(palette: Palette, mixed: Bool) -> NSView {
+        let now = Date()
+        let iso = ISO8601DateFormatter()
+        var catalogue = RemoteCatalogue()
+        // In the order the coordinator does it: the paired list first, because the catalogue takes
+        // presence and sessions only for devices this Mac has paired with.
+        catalogue.setPaired(["d1": "Mac mini (office)", "d2": "Nik's MacBook Pro",
+                             "d3": "iMac (studio)"])
+        catalogue.applyPresence([
+            RemotePresence(deviceID: "d1", name: "Mac mini (office)", online: true),
+            RemotePresence(deviceID: "d2", name: "Nik's MacBook Pro", online: true),
+            RemotePresence(deviceID: "d3", name: "iMac (studio)", online: false),
+        ])
+        catalogue.applyCatalogue(deviceID: "d1", sessions: [
+            RemoteSessionInfo(sessionID: "s1", title: "zsh", cwd: NSHomeDirectory() + "/projects/nyx",
+                              repo: "nyx", branch: "feat/remote-sessions", process: "swift test",
+                              lastCommand: "make test",
+                              lastActivity: iso.string(from: now.addingTimeInterval(-120)),
+                              cols: 120, rows: 40),
+            RemoteSessionInfo(sessionID: "s2", title: "vim Pane.swift",
+                              cwd: NSHomeDirectory() + "/projects/nyx", repo: "nyx", branch: "main",
+                              process: "vim", lastCommand: "git status",
+                              lastActivity: iso.string(from: now.addingTimeInterval(-3600)),
+                              cols: 120, rows: 40),
+        ])
+        catalogue.applyCatalogue(deviceID: "d2", sessions: [])
+
+        var items: [PaletteItem] = []
+        if mixed {
+            // What ⌘⇧P actually opens on: the window's own verbs, a theme, a tab, and the Remote
+            // section after them, in the order `PaletteSource.items` builds.
+            let bindings = KeyBindingTable(user: [])
+            // Four actions, not five: the panel shows ten rows, and the eleventh -- the offline
+            // Mac, the row this picture exists to show greyed -- fell off the bottom.
+            items = PaletteSource.items(actions: Array(ActionCatalog.allMenuActions.prefix(4)),
+                                        chord: { bindings.binding(for: $0).map(chordText) },
+                                        themes: ["dracula"], tabTitles: ["nyx — zsh"],
+                                        remote: catalogue.paletteItems(now: now, home: NSHomeDirectory()))
+        } else {
+            // The relay is down. Its own row is what the section becomes: a host whose sessions
+            // this Mac cannot see has nothing to list, so showing live rows beside "unreachable"
+            // would be a picture of a state that cannot happen.
+            var offline = RemoteCatalogue()
+            offline.setPaired(["d1": "Mac mini (office)", "d3": "iMac (studio)"])
+            offline.relayStatusText = "Relay unreachable (nyx.agentforge.cc)"
+            items = offline.paletteItems(now: now, home: NSHomeDirectory())
+        }
+
+        let view = CommandPaletteView(palette: palette, items: items)
+        view.frame = NSRect(x: 0, y: 0, width: CommandPaletteView.width, height: view.preferredHeight)
+        view.layoutSubtreeIfNeeded()
+        return view
     }
 
     private static func stickyPrompt(palette: Palette, failed: Bool, summary: String = "") -> NSView {

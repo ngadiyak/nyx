@@ -25,6 +25,9 @@ public enum TerminalAction: String, Equatable, CaseIterable {
     case copyBlockMarkdown = "copy_block_markdown", saveCommandOutput = "save_command_output"
     case notifyWhenDone = "notify_when_done"
     case saveScrollback = "save_scrollback"
+    case remoteSessions = "remote_sessions"
+    case remotePair = "remote_pair"
+    case remoteTakeControl = "remote_take_control"
 }
 
 /// A parsed `modifier+modifier+key=action` line from the config's `keybind` setting.

@@ -21,11 +21,11 @@ public enum ConfigWriter {
         var lines = ConfigGrammar.lines(text).map(String.init)
 
         if let index = lastActiveLine(for: key, in: lines) {
-            lines[index] = replacingValue(in: lines[index], with: value)
+            lines[index] = replacingValue(in: lines[index], with: value, key: key)
             return lines.joined(separator: "\n")
         }
         if let index = commentedLine(for: key, in: lines) {
-            lines[index] = replacingValue(in: uncommented(lines[index]), with: value)
+            lines[index] = replacingValue(in: uncommented(lines[index]), with: value, key: key)
             return lines.joined(separator: "\n")
         }
         if lines.last?.isEmpty == false { lines.append("") }
@@ -63,7 +63,7 @@ public enum ConfigWriter {
 
         // Rewrite in place for as many as there are lines for.
         for (offset, index) in existing.enumerated() where offset < values.count {
-            lines[index] = replacingValue(in: lines[index], with: values[offset])
+            lines[index] = replacingValue(in: lines[index], with: values[offset], key: key)
         }
 
         if values.count > existing.count {
@@ -126,15 +126,23 @@ public enum ConfigWriter {
     }
 
     /// Keeps the indentation and the spacing around `=` that the line already had, and keeps any
-    /// trailing comment on it.
-    private static func replacingValue(in line: String, with value: String) -> String {
+    /// trailing comment on it -- unless `key` is one of `ConfigGrammar.commentExemptKeys`, whose
+    /// whole tail *is* the value and is never comment-stripped on parse either. Treating a `#`
+    /// inside one of those as a trailing human comment silently corrupted the value: replacing
+    /// `remote-relay-token = abc#123` with `xyz#456` kept `#123` as a "comment" and wrote back
+    /// `xyz#456 #123`, a token nobody asked for and the settings window never showed.
+    private static func replacingValue(in line: String, with value: String, key: String) -> String {
         guard let eq = line.firstIndex(of: "=") else { return line }
         let head = line[line.startIndex...eq]
         let tail = line[line.index(after: eq)...]
+        let spacer = tail.hasPrefix(" ") ? " " : ""
+
+        guard !ConfigGrammar.commentExemptKeys.contains(key) else {
+            return String(head) + spacer + value
+        }
 
         // A `#` after the value is a trailing comment and belongs to the human, so it stays.
         let comment = tail.firstIndex(of: "#").map { String(tail[$0...]) } ?? ""
-        let spacer = tail.hasPrefix(" ") ? " " : ""
         return String(head) + spacer + value + (comment.isEmpty ? "" : " " + comment)
     }
 }

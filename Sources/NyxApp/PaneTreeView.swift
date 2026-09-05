@@ -198,6 +198,10 @@ final class PaneTreeView: NSView {
         // whether or not the pane that exited was the focused one.
         pane.onExit = { [weak self, id = pane.id] _ in self?.close(id) }
         pane.onFocusRequested = { [weak self, id = pane.id] in self?.setFocus(id) }
+        // The remote strip offers "⌘W to close", which closes the whole tab -- true only while this
+        // pane is the tab's only one. Read through a closure rather than cached: a split can happen
+        // under a remote pane at any moment.
+        pane.isSolePaneInTab = { [weak self] in (self?.paneCount ?? 1) <= 1 }
         pane.onOutput = { [weak self] in self?.onAnyPaneOutput?() }
         pane.onBell = { [weak self] in self?.onAnyPaneBell?() }
         pane.onWorkingDirectoryChange = { [weak self, id = pane.id] directory in
@@ -501,4 +505,14 @@ final class PaneTreeView: NSView {
 /// A theme colour as AppKit wants it. Shared with `TabBarView`, which draws in the same palette.
 func nsColor(_ rgb: RGB, alpha: CGFloat) -> NSColor {
     NSColor(srgbRed: CGFloat(rgb.r) / 255, green: CGFloat(rgb.g) / 255, blue: CGFloat(rgb.b) / 255, alpha: alpha)
+}
+
+/// An AppKit colour as `NyxCore`'s contrast arithmetic wants it, resolved in whatever appearance is
+/// current. Dynamic system colours have no components until they are resolved, so a caller has to
+/// be inside `performAsCurrentDrawingAppearance` (or on screen) for this to mean anything.
+func rgb(of color: NSColor) -> RGB {
+    guard let resolved = color.usingColorSpace(.sRGB) else { return RGB(0, 0, 0) }
+    return RGB(UInt8(max(0, min(255, resolved.redComponent * 255))),
+               UInt8(max(0, min(255, resolved.greenComponent * 255))),
+               UInt8(max(0, min(255, resolved.blueComponent * 255))))
 }

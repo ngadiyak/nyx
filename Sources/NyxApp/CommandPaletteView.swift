@@ -13,6 +13,23 @@ private final class PaletteListView: NSView {
     private var selection = 0
     private var palette: Palette
 
+    /// One line, cut off with an ellipsis rather than wrapped: the rows are a fixed height, and a
+    /// string that wrapped would draw over the row beneath it.
+    private static let truncating: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingTail
+        return style
+    }()
+
+    /// The same, right-aligned: the detail sits against the row's right edge, so what is cut is
+    /// its tail and what survives is the directory and branch a remote row leads with.
+    private static let truncatingRight: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingTail
+        style.alignment = .right
+        return style
+    }()
+
     init(palette: Palette) {
         self.palette = palette
         super.init(frame: .zero)
@@ -68,9 +85,13 @@ private final class PaletteListView: NSView {
                 rowSelection.setFill()
                 NSBezierPath(roundedRect: rect.insetBy(dx: 5, dy: 1), xRadius: 5, yRadius: 5).fill()
             }
+            // A row nothing can be done with is drawn at the detail's weight: a paired Mac that is
+            // asleep, one with nothing open, and the line saying the relay cannot be reached all
+            // belong in the list, but drawn like the rest they are rows people press (spec §5.3).
             let title = NSMutableAttributedString(
                 string: result.item.title,
-                attributes: [.font: titleFont, .foregroundColor: titleColor])
+                attributes: [.font: titleFont,
+                             .foregroundColor: result.item.isEnabled ? titleColor : detailColor])
             // Bold and in the theme's accent: the characters the query actually matched, which is
             // what tells a user why this row is in the list at all. Not `colors[12]` -- Solarized's
             // bright blue is a grey identical to its foreground, so there the matched characters
@@ -79,14 +100,25 @@ private final class PaletteListView: NSView {
                 title.setAttributes([.font: matchFont, .foregroundColor: matchColor],
                                     range: NSRange(location: position, length: 1))
             }
-            title.draw(at: NSPoint(x: rect.minX + 12, y: rect.minY + 5))
-
-            guard !result.item.detail.isEmpty else { continue }
-            let detail = NSAttributedString(
+            let detail = NSMutableAttributedString(
                 string: result.item.detail,
                 attributes: [.font: detailFont, .foregroundColor: detailColor])
-            let size = detail.size()
-            detail.draw(at: NSPoint(x: rect.maxX - 12 - size.width, y: rect.minY + 7))
+            // How much of the row each half may have. Until the Remote section existed every detail
+            // was a chord or one word and the two could never collide; a remote session's detail is
+            // a sentence, and drawn at its natural width it ran straight through the title.
+            let widths = PaletteRowLayout.widths(rowWidth: Double(rect.width) - 24,
+                                                 titleWidth: Double(title.size().width),
+                                                 detailWidth: Double(detail.size().width))
+            title.addAttribute(.paragraphStyle, value: PaletteListView.truncating,
+                               range: NSRange(location: 0, length: title.length))
+            title.draw(in: NSRect(x: rect.minX + 12, y: rect.minY + 5,
+                                  width: CGFloat(widths.title), height: rect.height - 5))
+
+            guard !result.item.detail.isEmpty, widths.detail > 0 else { continue }
+            detail.addAttribute(.paragraphStyle, value: PaletteListView.truncatingRight,
+                                range: NSRange(location: 0, length: detail.length))
+            detail.draw(in: NSRect(x: rect.maxX - 12 - CGFloat(widths.detail), y: rect.minY + 7,
+                                   width: CGFloat(widths.detail), height: rect.height - 7))
         }
     }
 
@@ -113,11 +145,13 @@ private final class PaletteListView: NSView {
             // The detail is the half that says what a row *is* -- a shortcut, "Theme", "Quick
             // action" -- and reading the title alone leaves three kinds of row sounding identical.
             let detail = result.item.detail.isEmpty ? "" : ", \(result.item.detail)"
+            // A disabled row gets no press: `DrawnControlElement` reports itself as not enabled
+            // when there is none, which is how the greying reaches somebody who cannot see it.
             return DrawnControlElement.make(
                 label: "\(result.item.title)\(detail), \(index + 1) of \(results.count)",
                 role: .row, frame: rowRect(index), in: self,
                 value: index == selection ? 1 : 0,
-                press: { [weak self] in self?.onChoose?(index) })
+                press: result.item.isEnabled ? { [weak self] in self?.onChoose?(index) } : nil)
         }
     }
 
@@ -208,6 +242,18 @@ final class CommandPaletteView: NSView, NSTextFieldDelegate {
 
     func focusField() {
         window?.makeFirstResponder(field)
+    }
+
+    /// Opens the panel with something already typed -- `remote_sessions` opens it filtered to the
+    /// Remote section. The text goes into the field as well as into the model, so backspacing works
+    /// from there rather than from an empty field showing a filtered list.
+    func setQuery(_ query: String) {
+        field.stringValue = query
+        model.setQuery(query)
+        refresh()
+        // The caret goes after what was typed for us, so the next keystroke narrows the list
+        // instead of replacing the word.
+        field.currentEditor()?.selectedRange = NSRange(location: query.count, length: 0)
     }
 
     override func layout() {

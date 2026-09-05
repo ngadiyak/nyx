@@ -1,0 +1,347 @@
+import Foundation
+
+/// The six-character rendezvous code one Mac shows so another can find it at the relay. The
+/// alphabet drops `0`/`O` and `1`/`I` -- the two pairs a person reading a code aloud, or typing it
+/// on a phone keyboard, confuses most often.
+public enum PairCode {
+    public static let alphabet: [Character] = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+
+    /// `random(n)` must return a value in `0..<n`; production passes a real RNG, tests a fixed
+    /// sequence, so the code itself never depends on `Int.random` and is reproducible.
+    public static func make(random: (Int) -> Int) -> String {
+        String((0..<6).map { _ in alphabet[random(alphabet.count)] })
+    }
+
+    /// What a person typed, forgiving spaces, dashes and case -- `display` puts the dash back in
+    /// for reading, but nothing requires it to be typed back exactly the way it was shown.
+    public static func normalise(_ typed: String) -> String? {
+        let cleaned = typed.uppercased().filter { $0 != " " && $0 != "-" }
+        guard cleaned.count == 6, cleaned.allSatisfy(alphabet.contains) else { return nil }
+        return cleaned
+    }
+
+    /// `"K7M4QZ"` -> `"K7M-4QZ"`: the shape the pairing sheet shows on screen.
+    public static func display(_ code: String) -> String {
+        guard code.count == 6 else { return code }
+        let mid = code.index(code.startIndex, offsetBy: 3)
+        return "\(code[..<mid])-\(code[mid...])"
+    }
+}
+
+/// A short, spoken-out-loud proof that both sides of a pairing derived the same secret -- what
+/// defeats a relay that quietly swapped in its own key during the handshake, since the relay never
+/// sees the shared secret itself, only routes messages about it. Only digest bytes are handled
+/// here: hashing needs CryptoKit, which `NyxCore` may not import, so `NyxRemote` hashes and hands
+/// the bytes over.
+public enum Fingerprint {
+    /// 256 short, distinct, common English nouns -- enough that four of them chosen by digest
+    /// bytes give a fingerprint two people can read to each other and be confident of a mismatch,
+    /// with no entry easily misheard for another.
+    public static let words: [String] = [
+        "apple", "river", "stone", "zero", "table", "chair", "window", "door",
+        "garden", "forest", "mountain", "valley", "ocean", "island", "desert", "canyon",
+        "meadow", "harbor", "bridge", "tunnel", "castle", "tower", "village", "market",
+        "street", "corner", "alley", "plaza", "fountain", "statue", "museum", "library",
+        "theater", "stadium", "airport", "station", "platform", "ladder", "anchor", "compass",
+        "lantern", "candle", "mirror", "pillow", "blanket", "carpet", "curtain", "kettle",
+        "basket", "bottle", "bucket", "hammer", "wrench", "chisel", "needle", "thread",
+        "button", "zipper", "ribbon", "fabric", "leather", "velvet", "cotton", "wool",
+        "silk", "pepper", "salt", "sugar", "honey", "butter", "cheese", "bread",
+        "grain", "wheat", "barley", "corn", "rice", "potato", "carrot", "onion",
+        "garlic", "ginger", "lemon", "orange", "grape", "melon", "peach", "plum",
+        "cherry", "banana", "coconut", "walnut", "almond", "hazel", "maple", "willow",
+        "birch", "cedar", "pine", "spruce", "fern", "moss", "ivy", "clover",
+        "thistle", "daisy", "tulip", "rose", "lily", "violet", "lotus", "orchid",
+        "cactus", "bamboo", "palm", "olive", "fig", "date", "apricot", "raisin",
+        "pumpkin", "squash", "cabbage", "lettuce", "spinach", "parsley", "basil", "mint",
+        "sage", "thyme", "cinnamon", "vanilla", "cocoa", "coffee", "copper", "bronze",
+        "silver", "gold", "iron", "steel", "nickel", "zinc", "marble", "granite",
+        "quartz", "crystal", "diamond", "pearl", "amber", "coral", "shell", "pebble",
+        "boulder", "cliff", "ridge", "slope", "summit", "glacier", "tundra", "prairie",
+        "savanna", "jungle", "swamp", "marsh", "lagoon", "reef", "current", "tide",
+        "wave", "breeze", "storm", "thunder", "lightning", "cloud", "rainbow", "horizon",
+        "sunrise", "sunset", "comet", "meteor", "planet", "nebula", "galaxy", "orbit",
+        "rocket", "satellite", "telescope", "map", "globe", "sail", "rudder", "mast",
+        "oar", "canoe", "kayak", "yacht", "ferry", "tractor", "wagon", "carriage",
+        "bicycle", "scooter", "engine", "wheel", "gear", "piston", "lever", "pulley",
+        "spring", "hinge", "bolt", "screw", "nail", "plank", "beam", "brick",
+        "cement", "plaster", "tile", "shingle", "chimney", "fireplace", "hearth", "mantle",
+        "attic", "cellar", "hallway", "staircase", "balcony", "terrace", "patio", "fence",
+        "gate", "hedge", "lawn", "orchard", "vineyard", "barn", "silo", "windmill",
+        "lighthouse", "pier", "dock", "wharf", "quarry", "mine", "cavern", "grotto",
+        "oasis", "dune", "plateau", "fjord", "delta", "estuary", "channel", "strait",
+    ]
+
+    /// The first four digest bytes, each indexing `words` -- one byte per word keeps the mapping a
+    /// direct lookup, and four words is what a person can read aloud and compare in one breath.
+    public static func words(digest: [UInt8]) -> [String] {
+        digest.prefix(4).map { words[Int($0)] }
+    }
+
+    public static func text(digest: [UInt8]) -> String {
+        words(digest: digest).joined(separator: "-")
+    }
+
+    /// The bytes `NyxRemote` hashes to get the fingerprint digest: both devices' public keys,
+    /// concatenated smaller-first so it does not matter which side computes it -- host and client
+    /// must land on the same digest from either direction, and byte order is the only order two
+    /// unrelated public keys naturally agree on.
+    public static func input(a: [UInt8], b: [UInt8]) -> [UInt8] {
+        a.lexicographicallyPrecedes(b) ? a + b : b + a
+    }
+}
+
+/// The pairing state machine, run identically on both sides of a pairing with only `side` and the
+/// events fed to it differing. Kept as one type rather than two so the rules that must agree
+/// between host and client -- what "confirmed by both" means, what expiry does -- cannot drift
+/// apart by being edited in only one place.
+public struct PairingFlow: Equatable {
+    public enum Side: Equatable { case host, client }
+
+    public enum State: Equatable {
+        case idle
+        /// Host: `pair_open` sent, waiting for the relay's `pair_opened` before the code is shown --
+        /// a client cannot join before the relay actually knows the code, so showing it any earlier
+        /// would let someone type a code the relay would reject.
+        case opening(String, expires: Date)
+        case showingCode(String, expires: Date)                       // host
+        case joining(code: String)                                     // client, waiting for pair_accept
+        case requested(peerID: String, peerName: String)               // host, waiting for the user to accept
+        case confirming(peerID: String, peerName: String, fingerprint: String, mine: Bool, theirs: Bool)
+        case paired(peerID: String, peerName: String)
+        case failed(String)                                            // "Code expired", "No such code", "That code is in use"
+    }
+
+    public enum Event: Equatable {
+        case open(code: String, now: Date)                       // host pressed Pair…
+        case opened(code: String)                                // relay's pair_opened: the code is live
+        case join(code: String, now: Date)                       // client typed a code
+        case request(peerID: String, peerName: String)           // host got pair_request
+        case accept                                              // host pressed Accept
+        case accepted(peerID: String, peerName: String)          // client got pair_accept
+        case fingerprint(String)                                 // both: NyxRemote computed it
+        case confirmMine                                         // user pressed Confirm
+        case confirmTheirs                                       // got pair_confirm
+        case error(code: String)                                 // pair_expired / pair_taken
+        case tick(now: Date)                                     // expiry
+        case cancel
+    }
+
+    public enum Effect: Equatable {
+        case send(RemoteMessage)
+        case computeFingerprint(peerID: String)
+        case store(peerID: String, peerName: String)
+    }
+
+    /// How long a code stays valid at the relay -- matches the design spec's "valid for five
+    /// minutes", and is the same value `tick` checks against on both the opening and shown code.
+    private static let codeLifetime: TimeInterval = 300
+
+    public let side: Side
+    public private(set) var state: State
+    /// Five minutes from the `open` or the `join` that started this pairing, and the deadline for
+    /// every state after it -- not only the code.
+    ///
+    /// Held on the flow rather than threaded through each state because it is not something any
+    /// sheet draws: `.showingCode` shows a code, `.confirming` shows a fingerprint, and neither is
+    /// rendered from the deadline. The states that show a code carry their own `expires` as well,
+    /// because "Code expired" is a different sentence from "Pairing timed out" and a caller
+    /// building a `.showingCode` directly (`UISnapshot` does) has to be able to say when it dies.
+    private var deadline: Date?
+
+    public init(side: Side) {
+        self.side = side
+        self.state = .idle
+    }
+
+    public mutating func handle(_ e: Event, selfID: String) -> [Effect] {
+        if case .cancel = e {
+            state = .idle
+            deadline = nil
+            return []
+        }
+
+        switch (state, e) {
+        case (.idle, .open(let code, let now)):
+            let expires = now.addingTimeInterval(Self.codeLifetime)
+            deadline = expires
+            state = .opening(code, expires: expires)
+            return [.send(.pairOpen(code: code))]
+
+        case (.idle, .join(let code, let now)):
+            deadline = now.addingTimeInterval(Self.codeLifetime)
+            state = .joining(code: code)
+            return [.send(.pairJoin(code: code))]
+
+        case (.opening(let code, let expires), .opened(let acked)) where acked == code:
+            state = .showingCode(code, expires: expires)
+            return []
+
+        case (.opening(_, let expires), .tick(let now)):
+            if now >= expires { state = .failed("Code expired") }
+            return []
+
+        case (.showingCode(_, let expires), .tick(let now)):
+            if now >= expires { state = .failed("Code expired") }
+            return []
+
+        // The three states with nothing on the wire left to expire them. A client waiting for an
+        // accept, a host waiting for its user to press Accept, and either side waiting for a
+        // fingerprint to be confirmed all used to wait for ever: the relay forgets the code after
+        // five minutes and says nothing, so the sheet was the only thing left holding the pairing
+        // open, and it held it until somebody pressed Cancel.
+        case (.joining, .tick(let now)), (.requested, .tick(let now)), (.confirming, .tick(let now)):
+            if let deadline, now >= deadline { state = .failed("Pairing timed out") }
+            return []
+
+        case (.opening, .error(let code)):
+            state = .failed(Self.failureText(for: code))
+            return []
+
+        case (.showingCode, .request(let peerID, let peerName)) where peerID != selfID:
+            state = .requested(peerID: peerID, peerName: peerName)
+            return []
+
+        case (.showingCode, .error(let code)):
+            state = .failed(Self.failureText(for: code))
+            return []
+
+        case (.requested(let peerID, let peerName), .accept):
+            state = .confirming(peerID: peerID, peerName: peerName, fingerprint: "", mine: false, theirs: false)
+            return [.send(.pairAccept(to: peerID)), .computeFingerprint(peerID: peerID)]
+
+        case (.joining, .accepted(let peerID, let peerName)) where peerID != selfID:
+            state = .confirming(peerID: peerID, peerName: peerName, fingerprint: "", mine: false, theirs: false)
+            return [.computeFingerprint(peerID: peerID)]
+
+        case (.joining, .error(let code)):
+            state = .failed(Self.failureText(for: code))
+            return []
+
+        case (.confirming(let peerID, let peerName, _, let mine, let theirs), .fingerprint(let fp)):
+            state = .confirming(peerID: peerID, peerName: peerName, fingerprint: fp, mine: mine, theirs: theirs)
+            return []
+
+        case (.confirming(let peerID, let peerName, let fp, _, let theirs), .confirmMine):
+            if theirs {
+                state = .paired(peerID: peerID, peerName: peerName)
+                return [.send(.pairConfirm(to: peerID)), .store(peerID: peerID, peerName: peerName)]
+            }
+            state = .confirming(peerID: peerID, peerName: peerName, fingerprint: fp, mine: true, theirs: false)
+            return [.send(.pairConfirm(to: peerID))]
+
+        case (.confirming(let peerID, let peerName, let fp, let mine, _), .confirmTheirs):
+            if mine {
+                state = .paired(peerID: peerID, peerName: peerName)
+                return [.store(peerID: peerID, peerName: peerName)]
+            }
+            state = .confirming(peerID: peerID, peerName: peerName, fingerprint: fp, mine: false, theirs: true)
+            return []
+
+        case (.confirming, .error(let code)):
+            state = .failed(Self.failureText(for: code))
+            return []
+
+        default:
+            return [] // not valid from this state -- e.g. an event that arrived twice, or out of order
+        }
+    }
+
+    /// Runs `event` and every event its own effects feed straight back in, and returns only the
+    /// effects the caller still has to perform. Afterwards `state` is the state to *show*.
+    ///
+    /// `.computeFingerprint` is the one effect whose result is another event, and it is the only
+    /// thing on the confirming sheet a person is asked to compare aloud. A caller that ran the
+    /// effects itself had to feed `.fingerprint` back in re-entrantly, and then showed the state it
+    /// had captured before doing so -- so the sheet rendered `.confirming` with an empty
+    /// fingerprint on both Macs, and stayed blank until some later message happened to re-render
+    /// it. Two instances against the live relay showed exactly that; this exists so the order
+    /// cannot be got wrong again.
+    ///
+    /// `fingerprint` returns the words for a peer id, or nil when they cannot be computed (a peer
+    /// id that is not a device id). Nil leaves the flow in `.confirming` with an empty fingerprint
+    /// rather than skipping the confirmation: a pairing nobody can check must not complete quietly.
+    public mutating func handleResolvingFingerprint(_ e: Event, selfID: String,
+                                                    fingerprint: (String) -> String?) -> [Effect] {
+        var pending = handle(e, selfID: selfID)
+        var remaining: [Effect] = []
+        while !pending.isEmpty {
+            let effect = pending.removeFirst()
+            guard case .computeFingerprint(let peerID) = effect else {
+                remaining.append(effect)
+                continue
+            }
+            guard let words = fingerprint(peerID) else { continue }
+            pending += handle(.fingerprint(words), selfID: selfID)
+        }
+        return remaining
+    }
+
+    /// What the relay's `error.code` means to the person waiting on this pairing.
+    ///
+    /// `pair_expired` covers a code that timed out *and* a code the relay never heard of -- once a
+    /// code is gone the relay cannot tell those apart -- so the sentence has to cover both. Saying
+    /// only "Code expired" told somebody who had mistyped one character to go back to a Mac whose
+    /// code was perfectly good and ask for another.
+    private static func failureText(for errorCode: String) -> String {
+        switch errorCode {
+        case "pair_expired": return "That code is wrong or has expired"
+        case "pair_taken": return "That code is in use"
+        default: return "No such code"
+        }
+    }
+
+    /// What the pairing sheet shows for the current state: title, body, and the primary button's
+    /// label (nil hides the button -- there is nothing to do yet but wait).
+    public var sheetText: (title: String, body: String, primary: String?) {
+        Self.sheetText(for: state, side: side)
+    }
+
+    /// The state-only half of `sheetText`, so `PairingSheet.update(state:)` can render a state it
+    /// was just handed -- e.g. by `UISnapshot`, which pictures every state directly and never runs
+    /// a real flow -- without needing a live `PairingFlow` instance to read it off of.
+    ///
+    /// `side` matters for exactly one state. `.idle` on the host is a sheet nobody is looking at
+    /// (the host's sheet only opens once a code has been requested), but `.idle` on the client *is*
+    /// the sheet: the code field, waiting to be typed into. With no title and no body it opened as
+    /// a blank box with a text field in the middle of it and no word about what to put there.
+    public static func sheetText(for state: State,
+                                 side: Side = .host) -> (title: String, body: String, primary: String?) {
+        switch state {
+        case .idle:
+            guard side == .client else { return ("", "", nil) }
+            // A default button, not only the field's own Return: the sheet opened with a text field
+            // and two buttons neither of which submitted it, so the only way forward was a key
+            // nothing on screen mentioned.
+            return ("Enter the code shown on the other Mac",
+                    "Settings → Remote → Pair with another device… shows it", "Pair")
+        case .opening:
+            return ("Pairing…", "Requesting a code from the relay", nil)
+        case .showingCode:
+            // The code itself is not here. The sheet shows it once, in the 28-point label under
+            // this text -- the size it has to be for somebody to read it across a room -- and
+            // putting it in the body as well printed it twice, three lines apart, which reads as
+            // two codes until you compare them. The body's job is to say where to type it, and it
+            // names the *other* Mac's button ("Enter a code…"), not this one's.
+            return ("Pair with another device",
+                    "On the other Mac, open Settings → Remote → Enter a code… and type:", nil)
+        case .joining:
+            return ("Pairing…", "Waiting for the other Mac", nil)
+        case .requested(_, let peerName):
+            return ("\(peerName) wants to pair", "Accept to continue", "Accept")
+        case .confirming(_, _, _, let mine, _):
+            // Just the lead-in: the fingerprint itself is shown once, by the sheet's own bold
+            // label -- repeating it here as well as in the body read as the same word twice.
+            //
+            // Once this side has pressed Confirm there is nothing left to do here, and the body
+            // stops asking. It said "Both Macs must show:" over a fingerprint and no button, which
+            // reads as a sheet that has stopped responding rather than as one that is waiting.
+            guard mine else { return ("Confirm the fingerprint", "Both Macs must show:", "Confirm") }
+            return ("Confirm the fingerprint", "Waiting for the other Mac…", nil)
+        case .paired(_, let peerName):
+            return ("Paired with \(peerName)", "", "Done")
+        case .failed(let message):
+            return ("Pairing failed", message, "Close")
+        }
+    }
+}

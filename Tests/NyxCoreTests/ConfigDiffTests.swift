@@ -124,3 +124,21 @@ import Testing
     #expect(!diff.isEmpty)
     #expect(diff.deferredNotes.isEmpty)
 }
+
+@Test func remoteSettingsSetOnlyRemoteChanged() {
+    for mutate: (inout Config) -> Void in [
+        { $0.remote = .on },
+        { $0.remoteDeviceName = "MacBook" },
+        { $0.remoteRelay = "wss://example.com/v1/ws" },
+        { $0.remoteRelayToken = "secret" },
+        { $0.remoteSnapshotLines = 500 },
+    ] {
+        var c = Config.defaults
+        mutate(&c)
+        let diff = ConfigDiff(from: .defaults, to: c)
+        #expect(diff.remoteChanged)
+        #expect(!diff.fontChanged && !diff.paletteChanged && !diff.cursorChanged)
+        #expect(!diff.isEmpty)
+        #expect(diff.deferredNotes.isEmpty)
+    }
+}

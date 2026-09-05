@@ -13,15 +13,27 @@ public struct TabBarMetrics: Equatable {
     /// The strip above an expanded group's tabs carrying its colour and its name, shown once.
     public let groupHeaderHeight: Double
 
+    /// The pill a tab can carry beside its title -- "observer"/"writer" on a remote tab. Its width
+    /// is measured from the text by the view (fonts live there); only its height is fixed.
+    public let badgeHeight: Double
+
+    /// How much of the title has to survive for a badge to be worth drawing. Roughly four
+    /// characters at the bar's 11pt system font: below that the tab says which *kind* of tab it is
+    /// and nothing about *which* tab it is, which is the wrong half to keep.
+    public let minimumTitleWidthForBadge: Double
+
     public init(maxTabWidth: Double = 220, closeButtonSize: Double = 14,
                 indicatorSize: Double = 9, horizontalInset: Double = 7, gap: Double = 4,
-                groupHeaderHeight: Double = 14) {
+                groupHeaderHeight: Double = 14, badgeHeight: Double = 14,
+                minimumTitleWidthForBadge: Double = 46) {
         self.maxTabWidth = maxTabWidth
         self.closeButtonSize = closeButtonSize
         self.indicatorSize = indicatorSize
         self.horizontalInset = horizontalInset
         self.gap = gap
         self.groupHeaderHeight = groupHeaderHeight
+        self.badgeHeight = badgeHeight
+        self.minimumTitleWidthForBadge = minimumTitleWidthForBadge
     }
 
     public static let standard = TabBarMetrics()
@@ -79,13 +91,34 @@ public enum TabBarGeometry {
                         width: size, height: size)
     }
 
-    /// What is left for the title once the indicator and the close button have taken their corners.
-    /// Never negative, and empty when there is no room at all.
-    public static func titleRect(in tab: PaneRect, hasIndicator: Bool,
+    /// The badge a tab can carry between its title and its close button, or nil when the tab has no
+    /// room for one.
+    ///
+    /// `width` is measured by the caller, because the text's width is a property of the font and
+    /// fonts are not in this module. nil is returned for a zero width too, so "no badge" and "a
+    /// badge with nothing in it" are the same answer and the caller has one case to handle.
+    public static func badgeRect(in tab: PaneRect, width: Double,
+                                 metrics: TabBarMetrics = .standard) -> PaneRect? {
+        guard width > 0 else { return nil }
+        let right = closeRect(in: tab, metrics: metrics).map { $0.x - metrics.gap }
+            ?? (tab.x + tab.width - metrics.horizontalInset)
+        let left = right - width
+        // Measured against the title at its *narrowest* -- with the indicator shown -- so a tab
+        // does not gain and lose its badge as an activity dot comes and goes.
+        let titleLeft = tab.x + metrics.horizontalInset + metrics.indicatorSize + metrics.gap
+        guard left - metrics.gap - titleLeft >= metrics.minimumTitleWidthForBadge else { return nil }
+        let height = min(metrics.badgeHeight, tab.height)
+        return PaneRect(x: left, y: tab.y + (tab.height - height) / 2, width: width, height: height)
+    }
+
+    /// What is left for the title once the indicator, the badge and the close button have taken
+    /// their corners. Never negative, and empty when there is no room at all.
+    public static func titleRect(in tab: PaneRect, hasIndicator: Bool, badge: PaneRect? = nil,
                                  metrics: TabBarMetrics = .standard) -> PaneRect {
         let left = tab.x + metrics.horizontalInset
             + (hasIndicator ? metrics.indicatorSize + metrics.gap : 0)
-        let right = closeRect(in: tab, metrics: metrics).map { $0.x - metrics.gap }
+        let right = badge.map { $0.x - metrics.gap }
+            ?? closeRect(in: tab, metrics: metrics).map { $0.x - metrics.gap }
             ?? (tab.x + tab.width - metrics.horizontalInset)
         return PaneRect(x: left, y: tab.y, width: max(0, right - left), height: tab.height)
     }

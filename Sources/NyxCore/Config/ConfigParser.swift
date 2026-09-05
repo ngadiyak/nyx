@@ -36,7 +36,7 @@ public enum ConfigParser {
             let key = trimmedLine[trimmedLine.startIndex..<eq].trimmingCharacters(in: .whitespaces)
             // A key whose value is a command line keeps its `#`: `quick = Note | send | echo '#1'`
             // is a command, not a comment, and silently truncating it would be a puzzling failure.
-            let carriesACommand = key == "quick" || key == "open-file-command"
+            let carriesACommand = ConfigGrammar.commentExemptKeys.contains(key)
             let value = ConfigGrammar.value(after: trimmedLine[trimmedLine.index(after: eq)...],
                                             stripComments: !carriesACommand)
 
@@ -132,6 +132,16 @@ public enum ConfigParser {
                 } else {
                     badValue()
                 }
+            case "remote":
+                if let mode = RemoteMode(rawValue: value.lowercased()) { config.remote = mode } else { badValue() }
+            case "remote-device-name":
+                config.remoteDeviceName = value
+            case "remote-relay":
+                config.remoteRelay = value
+            case "remote-relay-token":
+                config.remoteRelayToken = value
+            case "remote-snapshot-lines":
+                if let i = Int(value) { config.remoteSnapshotLines = min(max(i, 100), 20_000) } else { badValue() }
             default:
                 diagnostics.append(ConfigDiagnostic(line: lineNumber, message: "unknown setting '\(key)'"))
             }

@@ -60,6 +60,9 @@ public extension TerminalAction {
         case .saveCommandOutput: return "Save Last Command Output\u{2026}"
         case .notifyWhenDone: return "Notify When the Running Command Finishes"
         case .saveScrollback: return "Save Scrollback\u{2026}"
+        case .remoteSessions: return "Remote Sessions\u{2026}"
+        case .remotePair: return "Pair with Another Device\u{2026}"
+        case .remoteTakeControl: return "Take Control of This Session"
         }
     }
 
@@ -94,6 +97,7 @@ public enum ActionCatalog {
             Group([.newWindow, .newTab]),
             Group([.splitRight, .splitDown]),
             Group([.saveScrollback]),
+            Group([.remoteSessions, .remotePair]),
             Group([.closePane]),
         ]),
         Section(title: "Edit", groups: [
@@ -108,6 +112,7 @@ public enum ActionCatalog {
             Group([.editAndRunCommand]),
             Group([.foldCommand, .foldAllLongOutput]),
             Group([.notifyWhenDone]),
+            Group([.remoteTakeControl]),
         ]),
         Section(title: "View", groups: [
             Group([.fontBigger, .fontSmaller, .fontReset]),

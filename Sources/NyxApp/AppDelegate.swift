@@ -5,6 +5,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controllers: [TerminalWindowController] = []
     private let configStore = ConfigStore()
     private var settings: SettingsWindowController?
+    /// Remote sessions, or nil in a snapshot run. One per application: the socket, the paired list,
+    /// the catalogue behind the palette's Remote section and the host that publishes this Mac's
+    /// sessions all outlive any one window, and two of any of them would be two answers to the same
+    /// question. Windows reach it through `NSApp.delegate`, the way they already reach everything
+    /// else that is the application's rather than a window's.
+    private(set) var remote: RemoteCoordinator?
     /// The session file, beside the config. See `SessionStore`.
     private let sessionStore = SessionStore.standard()
     /// A save is already queued; see `sessionChanged`.
@@ -20,6 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configStore.createIfMissing()
         Pane.themes = configStore.themes
         configStore.onChange = { [weak self] config, diagnostics in
+            // Before the windows: a reload that turns remote sessions off has to stop publishing
+            // this Mac's sessions before anything else redraws from the new configuration.
+            self?.remote?.apply(config)
             // Before the windows are told: they will resolve palettes as they apply the config, and
             // a `theme =` line and the file it names arrive in the same reload.
             Pane.themes = self?.configStore.themes ?? .builtinOnly
@@ -38,6 +47,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+        // After the snapshot check above: a snapshot run must not open a socket, publish this Mac's
+        // sessions or write an audit line -- it renders chrome to PNGs and exits.
+        let coordinator = RemoteCoordinator(config: configStore.config)
+        coordinator.onChange = { [weak self] in self?.remoteChanged() }
+        remote = coordinator
         configStore.startWatching()
         openInitialWindows()
         NSApp.activate(ignoringOtherApps: true)
@@ -54,6 +68,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// Every remote tab in every window of this application, numbered by window.
+    ///
+    /// One attachment has one owner, so "is this session already open?" is a question about the
+    /// whole application and not about the window doing the asking. Asking only the current window
+    /// is what let a second window wire itself into a live attachment and freeze the first one's
+    /// tab -- drawn, taking keystrokes, and never showing another byte again.
+    var openRemoteTabs: [RemoteTabs.Open] {
+        controllers.enumerated().flatMap { index, controller in
+            controller.remoteTabs(inWindow: index)
+        }
+    }
+
+    /// Brings the window holding an already-open remote session forward, on the tab it is in.
+    /// `window` is an index into the same list `openRemoteTabs` numbered.
+    func revealRemoteTab(_ match: RemoteTabs.Match) {
+        guard controllers.indices.contains(match.window) else { return }
+        let controller = controllers[match.window]
+        controller.selectTab(at: match.tab)
+        // `makeKeyAndOrderFront` on a minimised window puts it in front of the other windows in the
+        // Dock's sense and leaves it in the Dock: the palette row would answer by doing nothing
+        // visible at all, which is the same symptom as the row being broken.
+        if let window = controller.window {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
 
     private func rebuildMenu(for config: Config) {
         NSApp.mainMenu = MainMenu.build(bindings: KeyBindingTable(user: config.keybinds))
@@ -140,6 +182,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let write: () -> Void = { _ = store.save(snapshot) }
         if waitForWrite { AppDelegate.sessionQueue.sync(execute: write) }
         else { AppDelegate.sessionQueue.async(execute: write) }
+    }
+
+    /// The catalogue, the connection status or the paired list moved. Only the settings window
+    /// draws any of them continuously; an open command palette is a snapshot of the list at the
+    /// moment it opened, and re-ranking it under the user's cursor would move the row they are
+    /// about to press.
+    private func remoteChanged() {
+        settings?.remoteChanged()
+    }
+
+    /// Opens Settings → Remote and starts a pairing there, which is the `remote_pair` action and
+    /// the one place a pairing has ever been shown. Reached from the menu, the palette and a
+    /// `keybind` line, so that a user who has never opened the settings window can still pair.
+    @objc func pairRemoteDevice(_ sender: Any?) {
+        openConfig(nil)
+        settings?.beginHostPairing()
+    }
+
+    /// Settings → Remote, with nothing started on it. Where `remote_sessions` and `remote_pair` go
+    /// when remote sessions are on but no relay token has been pasted in: the one field standing
+    /// between the user and both of those actions is on this page.
+    @objc func openRemoteSettings(_ sender: Any?) {
+        openConfig(nil)
+        settings?.showRemotePage()
     }
 
     /// `⌘,`: the settings window. It edits the config file rather than holding its own copy, so

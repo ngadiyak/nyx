@@ -47,8 +47,19 @@ so that template and this page are the two places a new key must be added.
 | `fold-long-output` | `0` | Fold a command's output automatically once the next command starts, when it is longer than this many rows. `0` turns it off. A block you unfolded by hand is never re-folded |
 | `quick` | — | A button on the tab bar; see below. Additive |
 | `keybind` | — | A binding; see below. Additive |
+| `remote` | `off` | `off`, `on`. Publishes this Mac's sessions to the relay and accepts attaches from paired devices |
+| `remote-device-name` | — | Shown to a paired Mac in place of a name. Empty resolves to the Mac's own name (System Settings → Sharing) at the point of use |
+| `remote-relay` | `wss://nyx.agentforge.cc/v1/ws` | The relay's WebSocket URL |
+| `remote-relay-token` | — | The relay's shared secret, checked before pairing is even possible. Not comment-stripped, so `#` is allowed |
+| `remote-snapshot-lines` | `2000` | Lines of scrollback a host sends a client as the initial snapshot before switching to the live stream. Clamped to 100–20000 |
 
 Booleans accept `true`/`false`, `yes`/`no`, `1`/`0`.
+
+Remote sessions need both `remote = on` and a non-empty `remote-relay-token`: without the token the
+relay closes the socket before the handshake, so connecting would be a guaranteed failure reported
+as an outage. Changing any of the five keys rebuilds the connection and ends every open remote tab
+with a reason. The device identity, the paired list and the audit log live in `remote/` beside the
+config file; see the README's "Remote sessions".
 
 ## Themes
 
@@ -125,6 +136,9 @@ A user binding beats a default for the same chord; the last line in the file win
 | `save_command_output` | — | Writes the last command's output to a file the user chooses |
 | `notify_when_done` | — | Arm a notification for the command running now, however short it turns out |
 | `save_scrollback` | — | Writes the transcript to a file the user chooses |
+| `remote_sessions` | — | Opens the command palette's Remote section. Settings → Remote also gets you there |
+| `remote_pair` | — | Opens the pairing sheet, either side |
+| `remote_take_control` | — | On an observed remote tab, takes over as writer |
 
 The menu is generated from `ActionCatalog.sections`, so every action is discoverable there with
 its current chord, and the settings window's Keys page lists them all.
@@ -156,7 +170,8 @@ never put a command behind a button on its own.
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `NYX_CONFIG` | app, tests | Path of the config file; the themes directory and `session.json` sit beside it |
+| `NYX_CONFIG` | app, tests | Path of the config file; the themes directory, `session.json` and `remote/` sit beside it. Two config directories is how two Nyx instances on one Mac get two identities |
+| `NYX_RELAY_BIN` | tests | Path of the `nyx-relay` binary; the relay integration tests launch it locally and skip without it |
 | `NYX_SESSION` | app | Path of the session file, overriding the one beside the config |
 | `NYX_UI_SNAPSHOT=<dir>` | app | Render every piece of chrome to PNGs in `<dir>` and exit. See `docs/testing.md` |
 | `NYX_RENDER_STATS=1` | app | Print row-cache statistics per pane |

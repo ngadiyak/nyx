@@ -110,9 +110,15 @@ public enum FuzzySearch {
             guard let m = match(query, candidate) else { continue }
             scored.append((offset: offset, length: candidate.count, item: item, match: m))
         }
+        // With nothing typed every candidate scores the same, so the tie-break *is* the order --
+        // and "shortest first" shuffled the caller's sections into an arbitrary list the moment the
+        // palette opened. An empty query keeps the order it was given; length still breaks ties
+        // once something is typed, which is where it does what it is for: preferring the shorter of
+        // two equally good matches.
+        let untyped = query.isEmpty
         scored.sort { a, b in
             if a.match.score != b.match.score { return a.match.score > b.match.score }
-            if a.length != b.length { return a.length < b.length }
+            if !untyped, a.length != b.length { return a.length < b.length }
             return a.offset < b.offset
         }
         return scored.map { (item: $0.item, match: $0.match) }

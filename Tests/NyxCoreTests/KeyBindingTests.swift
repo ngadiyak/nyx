@@ -139,6 +139,8 @@ private func p(_ s: String) -> KeyBinding? { KeyBinding.parse(s) }
         // Reachable from the menu, the palette and a `keybind =` line, but not worth a default
         // chord: they act on a tab's grouping, which is not something anybody does hourly.
         .ungroupTab, .toggleTabGroup,
+        // Remote actions ship with no default chord (spec §5.3/§5.4): menu and palette only.
+        .remoteSessions, .remotePair, .remoteTakeControl,
     ]
     for action in ActionCatalog.allMenuActions where !expectedUnbound.contains(action) {
         #expect(table.binding(for: action) != nil, "\(action.configName) lost its shortcut")
@@ -154,4 +156,19 @@ private func p(_ s: String) -> KeyBinding? { KeyBinding.parse(s) }
     #expect(p("cmd+shift+m=copy_block_markdown")?.action == .copyBlockMarkdown)
     #expect(p("cmd+shift+s=save_command_output")?.action == .saveCommandOutput)
     #expect(p("cmd+shift+n=notify_when_done")?.action == .notifyWhenDone)
+}
+
+/// `remote_sessions`, `remote_pair` and `remote_take_control` are reachable only from the menu and
+/// the command palette, never a default chord (spec §5.3/§5.4).
+@Test func remoteActionsHaveNoDefaultChord() {
+    let table = KeyBindingTable(user: [])
+    #expect(table.binding(for: .remoteSessions) == nil)
+    #expect(table.binding(for: .remotePair) == nil)
+    #expect(table.binding(for: .remoteTakeControl) == nil)
+}
+
+@Test func remoteActionNamesRoundTripFromTheConfigSpelling() {
+    #expect(p("cmd+shift+m=remote_sessions")?.action == .remoteSessions)
+    #expect(p("cmd+shift+m=remote_pair")?.action == .remotePair)
+    #expect(p("cmd+shift+m=remote_take_control")?.action == .remoteTakeControl)
 }

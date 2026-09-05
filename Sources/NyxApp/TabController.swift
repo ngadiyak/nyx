@@ -48,10 +48,23 @@ final class TabController: NSViewController, NSMenuItemValidation {
         /// derived on demand because it costs two `proc_*` calls.
         var fallbackTitle = ""
         var indicator: TabIndicator = .none
+        /// Set on a tab holding a session on another Mac, and nil on every other tab. It is what
+        /// gives the tab its `⟵ machine · title` name and its observer/writer chip.
+        var remoteState: AttachState?
 
         init(panes: PaneTreeView) { self.panes = panes }
 
-        var title: String { TabTitle.resolve(custom: customTitle, osc: oscTitle, fallback: fallbackTitle) }
+        var title: String {
+            // A remote tab's own name outranks whatever the *host's* shell set with OSC 0/2 -- the
+            // host's title is in there, after the arrow and the machine, which is the one thing
+            // this tab must say before anything else. A name the user typed still wins over both.
+            if let remoteState { return remoteState.tabTitle(currentTitle: oscTitle) }
+            return TabTitle.resolve(custom: customTitle, osc: oscTitle, fallback: fallbackTitle)
+        }
+
+        /// The chip the bar draws after the title: "observer" or "writer", and nothing at all on an
+        /// ordinary tab.
+        var badge: String? { remoteState?.badge }
     }
 
     private var config: Config
@@ -181,18 +194,114 @@ final class TabController: NSViewController, NSMenuItemValidation {
             do {
                 let pane = try Pane(.zero, config: self.config, workingDirectory: seed.workingDirectory,
                                     restoringTranscript: seed.transcript)
-                // Every pane in this window is made here, splits included, so this is the one place
-                // a failed "Save Output…" needs wiring to reach the alert.
-                pane.onSaveFailed = { [weak self] error in
-                    guard let window = self?.view.window else { return }
-                    self?.reportSaveFailure(error, in: window, what: "this command\u{2019}s output")
-                }
+                self.adopt(pane)
                 return pane
             } catch {
                 self.paneCreationFailure = error
                 return nil
             }
         }
+    }
+
+    /// Every tab in this window holding a remote pane, in strip order. A tab can hold at most one
+    /// (a split beside it is an ordinary local shell), which is why the first one found is the tab.
+    ///
+    /// `isLive` comes from the pane's own state rather than the attachment's, because a tab whose
+    /// session ended keeps its transcript and stays on screen: it is a remote tab that no longer
+    /// holds a session, and treating it as the session's tab would answer the palette row with a
+    /// corpse for as long as it was left open.
+    func remoteTabs(inWindow window: Int) -> [RemoteTabs.Open] {
+        tabs.enumerated().compactMap { index, tab in
+            guard let remote = tab.panes.allPanes.compactMap({ $0.remote }).first else { return nil }
+            return RemoteTabs.Open(window: window, index: index, hostID: remote.attachment.hostID,
+                                   sessionID: RemoteID.base64url(remote.attachment.sessionID),
+                                   isLive: remote.state.isAttached)
+        }
+    }
+
+    /// Wiring every pane in this window gets, local or remote. Splits come through the factory
+    /// above and the one remote pane a remote tab starts with is made directly, so this is the one
+    /// place a failed "Save Output…" needs wiring to reach the alert.
+    private func adopt(_ pane: Pane) {
+        pane.onSaveFailed = { [weak self] error in
+            guard let window = self?.view.window else { return }
+            self?.reportSaveFailure(error, in: window, what: "this command\u{2019}s output")
+        }
+    }
+
+    // MARK: - Remote tabs
+
+    /// Opens a tab showing a session on a paired Mac.
+    ///
+    /// The tab starts with exactly one pane, which is the attachment; splitting it afterwards gives
+    /// an ordinary local shell beside it, because a split is a new session and there is only ever
+    /// one attachment per row of the palette.
+    func openRemote(deviceID: String, sessionID: String, hostName: String, title: String) {
+        // Already open *anywhere in this application*: go to it, raising its window if that is not
+        // this one. A second attach to one session id is not a second view of it -- there is one
+        // attachment and it has one owner -- so a second tab would take the stream and leave the
+        // first drawn, taking keystrokes, and never showing another byte.
+        if let match = RemoteTabs.existing(sessionID: sessionID, hostID: deviceID,
+                                           among: appDelegate?.openRemoteTabs ?? []) {
+            appDelegate?.revealRemoteTab(match)
+            return
+        }
+        guard let coordinator = appDelegate?.remote,
+              let outcome = coordinator.attach(deviceID: deviceID, sessionID: sessionID,
+                                               hostName: hostName, title: title) else {
+            NSSound.beep()
+            return
+        }
+        let attachment = outcome.attachment
+        let session = RemoteSession(attachment: attachment, alreadyOwned: outcome.wasAlreadyOpen,
+                                    config: config, palette: Pane.resolvedPalette(for: config))
+        let pane: Pane
+        do {
+            pane = try Pane(.zero, config: config, remote: session, state: session.state)
+        } catch {
+            // Nothing is on screen to show it, so the attachment is let go rather than left running
+            // and delivering bytes to nobody -- unless it is not ours to let go: an attachment
+            // another window owns would be torn down under a live tab by a pane that never drew a
+            // byte of it.
+            if !outcome.wasAlreadyOpen { attachment.detach() }
+            paneCreationFailure = error
+            NSSound.beep()
+            return
+        }
+        adopt(pane)
+        // Handed over once. A split in this tab, or a restore, goes to the ordinary factory: only
+        // the first pane is the remote one.
+        var pending: Pane? = pane
+        let local = paneFactory()
+        let tree = PaneTreeView(config: config, makePane: { seed in
+            if let first = pending {
+                pending = nil
+                return first
+            }
+            return local(seed)
+        }, startingIn: nil)
+        tree.autoresizingMask = [.width, .height]
+        guard tree.focusedPane != nil else {
+            // The pane exists whatever the tree did with it, and it has a display link, a Metal
+            // layer and an attachment behind it. Dropping the reference is not tearing it down.
+            pane.terminate()
+            return
+        }
+        let tab = Tab(panes: tree)
+        // The session's state, not the attachment's: on the refused path they differ, and seeding
+        // from the attachment would put the *owner's* live "writer" badge on a tab that is showing
+        // "Already open in another window".
+        tab.remoteState = session.state
+        pane.onRemoteStateChange = { [weak self, weak tab] state in
+            guard let self, let tab, let index = self.tabs.firstIndex(where: { $0 === tab }) else { return }
+            self.tabs[index].remoteState = state
+            self.refreshTitles()
+            self.refreshBar()
+        }
+        tabs.append(tab)
+        grouping.tabInserted(at: tabs.count - 1)
+        wire(tab)
+        show(tabs.count - 1)
     }
 
     private func wire(_ tab: Tab) {
@@ -453,7 +562,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
             tabBarHeight?.constant = 0
             return
         }
-        tabBar.setTabs(tabs.map { TabBarItem(title: $0.title, indicator: $0.indicator) },
+        tabBar.setTabs(tabs.map { TabBarItem(title: $0.title, indicator: $0.indicator, label: $0.badge) },
                        selected: selected, grouping: grouping)
         // Set after the tabs, because the bar is taller whenever a group is expanded and only it
         // knows whether one is.
@@ -759,8 +868,18 @@ final class TabController: NSViewController, NSMenuItemValidation {
                                             ($0, QuickActionRunner.shared.isRunning($0))
                                         },
                                         themes: Pane.themes.names,
-                                        tabTitles: tabs.map(\.title))
+                                        tabTitles: tabs.map(\.title),
+                                        remote: appDelegate?.remote?.paletteItems() ?? [])
         openPalette(items: items)
+    }
+
+    /// `remote_sessions`: the same palette, opened with "remote" already typed, so the section is
+    /// the whole list rather than something to scroll to. The rows carry "remote" in their search
+    /// text (`PaletteItem.remoteSession`), which is what makes one word find all of them.
+    func showRemoteSessions() {
+        closeCommandPalette()
+        toggleCommandPalette()
+        paletteOverlay?.setQuery("remote")
     }
 
     private func openPalette(items: [PaletteItem]) {
@@ -785,6 +904,13 @@ final class TabController: NSViewController, NSMenuItemValidation {
     /// Runs a row. The panel closes first in every case: an action that opens a sheet, or one that
     /// closes this very pane, must not run underneath a panel that is still on screen.
     private func run(_ item: PaletteItem) {
+        // A row that cannot act does not close the panel either: the palette is open because the
+        // user is looking for something, and closing it under them for a row that does nothing
+        // makes them open it again to carry on.
+        guard item.isEnabled else {
+            NSSound.beep()
+            return
+        }
         closeCommandPalette()
         switch item.kind {
         case .action(let action):
@@ -799,6 +925,17 @@ final class TabController: NSViewController, NSMenuItemValidation {
             selectTab(at: index)
         case .quickAction(let index):
             performQuickAction(index)
+        case .remoteSession(let deviceID, let sessionID):
+            // An empty session id is one of the rows that stands for something rather than being
+            // something: a Mac that is offline, a Mac with nothing open, the relay's status. There
+            // is nothing to attach to, and a beep says the row was pressed and could not act.
+            guard !sessionID.isEmpty, let coordinator = appDelegate?.remote else {
+                NSSound.beep()
+                return
+            }
+            let described = coordinator.describe(deviceID: deviceID, sessionID: sessionID)
+            openRemote(deviceID: deviceID, sessionID: sessionID, hostName: described.hostName,
+                       title: described.title)
         }
     }
 
@@ -1363,6 +1500,26 @@ extension TabController: ActionTarget {
         case .fontBigger: focusedPane?.zoomIn(nil)
         case .fontSmaller: focusedPane?.zoomOut(nil)
         case .fontReset: focusedPane?.zoomReset(nil)
+
+        // Both are reachable whenever remote sessions are switched on. With no token there is
+        // nothing to list and nobody to pair with, so they open the page holding the field that is
+        // missing rather than showing an empty palette or beeping.
+        case .remoteSessions:
+            if RemoteCoordinatorPolicy.menuOutcome(config: config) == .openSettings {
+                appDelegate?.openRemoteSettings(nil)
+            } else {
+                showRemoteSessions()
+            }
+        case .remotePair:
+            if RemoteCoordinatorPolicy.menuOutcome(config: config) == .openSettings {
+                appDelegate?.openRemoteSettings(nil)
+            } else {
+                appDelegate?.pairRemoteDevice(nil)
+            }
+        case .remoteTakeControl:
+            // Beeps on a local pane and on one that is already writing: there is nothing to take,
+            // and the menu item is greyed out for exactly this reason.
+            if focusedPane?.takeControl() != true { NSSound.beep() }
         }
     }
 
@@ -1375,7 +1532,10 @@ extension TabController: ActionTarget {
     func canPerform(_ action: TerminalAction) -> Bool {
         switch action {
         case .paste, .pasteWithEditor:
-            return focusedPane != nil && TabController.clipboardHasText
+            // Greyed out on a pane that will not take input -- observing a remote session, or one
+            // still attaching. A menu item that opens a paste editor for a paste that goes nowhere
+            // is worse than one that is plainly unavailable.
+            return focusedPane?.acceptsInput == true && TabController.clipboardHasText
         case .newWindow, .openConfig, .reloadConfig, .newTab:
             return true
         case .nextTab, .previousTab:
@@ -1405,6 +1565,14 @@ extension TabController: ActionTarget {
         case .focusLeft, .focusRight, .focusUp, .focusDown,
              .growLeft, .growRight, .growUp, .growDown, .toggleZoom:
             return (panes?.paneCount ?? 0) > 1
+        case .remoteSessions, .remotePair:
+            // Greyed out only when the feature is switched off. On with no token they still work:
+            // they open Settings → Remote, which is where the token goes.
+            return RemoteCoordinatorPolicy.menuOutcome(config: config) != .disabled
+        case .remoteTakeControl:
+            // Only on a remote pane that is observing. On a local pane, or one already writing,
+            // there is nothing to take.
+            return focusedPane?.remote?.state.stripAction == .takeControl
         default:
             return focusedPane != nil
         }

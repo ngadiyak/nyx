@@ -9,6 +9,9 @@ public enum PaletteItemKind: Equatable {
     case tab(Int)
     /// A configured quick action, by its index in `config.quickActions`.
     case quickAction(Int)
+    /// A session on a paired device: attach to it. `sessionID` is empty for the placeholder row an
+    /// offline device shows, which nothing can attach to.
+    case remoteSession(deviceID: String, sessionID: String)
 }
 
 /// One row of the command palette.
@@ -22,12 +25,22 @@ public struct PaletteItem: Equatable {
     /// is a list, not a search.
     public let searchText: String
     public let kind: PaletteItemKind
+    /// Whether pressing this row does anything.
+    ///
+    /// A palette is a list of verbs, and until the Remote section existed every row was one. Three
+    /// of its rows are not: a Mac that is offline, a Mac with nothing open, and the line saying the
+    /// relay cannot be reached. They belong in the list -- a paired Mac that vanished from it reads
+    /// as a broken pairing -- but drawn like the rest they are rows people press and get a beep
+    /// from. The view greys them (spec §5.3) and `TabController.run` beeps rather than acting.
+    public let isEnabled: Bool
 
-    public init(title: String, detail: String, searchText: String? = nil, kind: PaletteItemKind) {
+    public init(title: String, detail: String, searchText: String? = nil, kind: PaletteItemKind,
+                isEnabled: Bool = true) {
         self.title = title
         self.detail = detail
         self.searchText = searchText ?? title
         self.kind = kind
+        self.isEnabled = isEnabled
     }
 
     public static func action(_ action: TerminalAction, chord: String?) -> PaletteItem {
@@ -54,6 +67,25 @@ public struct PaletteItem: Equatable {
     public static func tab(_ index: Int, title: String) -> PaletteItem {
         let shown = title.isEmpty ? "Tab \(index + 1)" : title
         return PaletteItem(title: shown, detail: "Tab", searchText: "\(shown) tab", kind: .tab(index))
+    }
+
+    /// One row of `RemoteCatalogue.paletteItems`. Built there (with `title`/`detail` already
+    /// formatted) rather than from raw `RemoteSessionInfo` fields here, because the formatting --
+    /// relative time, `~` shortening -- needs `now` and the local home directory, neither of which
+    /// this module should have to thread through.
+    /// `searchable` is everything about the session that is not in its title -- its directory, its
+    /// repository and branch, what is running in it and the last command typed. A palette that
+    /// matched only the machine name and the window title made the Remote section a list you
+    /// scrolled: the thing a person actually remembers about a session on another Mac is what they
+    /// were doing in it, and "swift test" has to find the tab that ran it.
+    public static func remoteSession(deviceID: String, sessionID: String, title: String,
+                                     detail: String, searchable: [String] = [],
+                                     isEnabled: Bool = true) -> PaletteItem {
+        let extras = searchable.filter { !$0.isEmpty }.joined(separator: " ")
+        return PaletteItem(title: title, detail: detail,
+                    searchText: extras.isEmpty ? "\(title) remote" : "\(title) remote \(extras)",
+                    kind: .remoteSession(deviceID: deviceID, sessionID: sessionID),
+                    isEnabled: isEnabled)
     }
 }
 
@@ -124,7 +156,8 @@ public struct CommandPalette: Equatable {
 public enum PaletteSource {
     public static func items(actions: [TerminalAction], chord: (TerminalAction) -> String?,
                              quickActions: [(action: QuickAction, isRunning: Bool)] = [],
-                             themes: [String], tabTitles: [String]) -> [PaletteItem] {
+                             themes: [String], tabTitles: [String],
+                             remote: [PaletteItem] = []) -> [PaletteItem] {
         actions.map { PaletteItem.action($0, chord: chord($0)) }
             + quickActions.enumerated().map {
                 PaletteItem.quickAction($0.element.action, index: $0.offset,
@@ -132,5 +165,6 @@ public enum PaletteSource {
             }
             + themes.map(PaletteItem.theme)
             + tabTitles.enumerated().map { PaletteItem.tab($0.offset, title: $0.element) }
+            + remote
     }
 }

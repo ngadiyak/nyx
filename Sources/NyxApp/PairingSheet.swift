@@ -255,7 +255,9 @@ final class PairingSheet: NSObject {
             resizeToFitContent()
             return
         }
-        onEvent?(.join(code: normalised))
+        // `now` starts the five-minute deadline the flow times every later state against; the
+        // relay forgets the code at the same point, so this is when the pairing really began.
+        onEvent?(.join(code: normalised, now: Date()))
     }
 }
 

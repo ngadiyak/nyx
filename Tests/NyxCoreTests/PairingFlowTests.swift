@@ -95,7 +95,7 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
 @Test func clientHappyPath() {
     var client = PairingFlow(side: .client)
 
-    let joinEffects = client.handle(.join(code: "ABCDEF"), selfID: "client-id")
+    let joinEffects = client.handle(.join(code: "ABCDEF", now: t0), selfID: "client-id")
     #expect(joinEffects == [.send(.pairJoin(code: "ABCDEF"))])
     #expect(client.state == .joining(code: "ABCDEF"))
 
@@ -149,7 +149,7 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
 
 @Test func pairExpiredErrorFailsWithCodeExpiredText() {
     var client = PairingFlow(side: .client)
-    _ = client.handle(.join(code: "ABCDEF"), selfID: "id")
+    _ = client.handle(.join(code: "ABCDEF", now: t0), selfID: "id")
     let effects = client.handle(.error(code: "pair_expired"), selfID: "id")
     #expect(effects == [])
     #expect(client.state == .failed("Code expired"))
@@ -212,11 +212,11 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
     #expect(host.sheetText == ("Paired with MacBook", "", "Done"))
 
     var client = PairingFlow(side: .client)
-    _ = client.handle(.join(code: "ABCDEF"), selfID: "id")
+    _ = client.handle(.join(code: "ABCDEF", now: t0), selfID: "id")
     #expect(client.sheetText == ("Pairing…", "Waiting for the other Mac", nil))
 
     var failedFlow = PairingFlow(side: .client)
-    _ = failedFlow.handle(.join(code: "ABCDEF"), selfID: "id")
+    _ = failedFlow.handle(.join(code: "ABCDEF", now: t0), selfID: "id")
     _ = failedFlow.handle(.error(code: "pair_expired"), selfID: "id")
     #expect(failedFlow.sheetText == ("Pairing failed", "Code expired", "Close"))
 }
@@ -243,7 +243,7 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
 
 @Test func theClientsAcceptedAlsoArrivesWithTheFingerprintAlreadyIn() {
     var client = PairingFlow(side: .client)
-    _ = client.handle(.join(code: "ABCDEF"), selfID: "me")
+    _ = client.handle(.join(code: "ABCDEF", now: t0), selfID: "me")
 
     let effects = client.handleResolvingFingerprint(.accepted(peerID: "peer", peerName: "iMac"),
                                                     selfID: "me", fingerprint: { _ in "river-stone-zero-apple" })
@@ -257,9 +257,72 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
 /// sheet in `.confirming` with nothing to compare rather than skipping the confirmation step.
 @Test func afingerprintThatCannotBeComputedStillLeavesTheUserAtTheConfirmStep() {
     var client = PairingFlow(side: .client)
-    _ = client.handle(.join(code: "ABCDEF"), selfID: "me")
+    _ = client.handle(.join(code: "ABCDEF", now: t0), selfID: "me")
     _ = client.handleResolvingFingerprint(.accepted(peerID: "peer", peerName: "iMac"),
                                           selfID: "me", fingerprint: { _ in nil })
     #expect(client.state == .confirming(peerID: "peer", peerName: "iMac",
                                         fingerprint: "", mine: false, theirs: false))
+}
+
+// MARK: - Nothing waits for ever
+
+/// Every state between the code and the pairing has the same five-minute deadline, counted from
+/// the `open` or the `join` that started it. Before this, only the code itself expired: a client
+/// that typed a code the other Mac never accepted sat in "Pairing…" until the user pressed Cancel,
+/// and the host's own "wants to pair" sheet waited for ever with an Accept button on it.
+@Test func joiningTimesOutFiveMinutesAfterTheCodeWasTyped() {
+    var client = PairingFlow(side: .client)
+    _ = client.handle(.join(code: "ABCDEF", now: t0), selfID: "id")
+
+    let early = client.handle(.tick(now: t0.addingTimeInterval(299)), selfID: "id")
+    #expect(early.isEmpty)
+    #expect(client.state == .joining(code: "ABCDEF"))
+
+    let late = client.handle(.tick(now: t0.addingTimeInterval(301)), selfID: "id")
+    #expect(late.isEmpty)
+    #expect(client.state == .failed("Pairing timed out"))
+}
+
+@Test func aRequestNobodyAcceptsTimesOut() {
+    var host = PairingFlow(side: .host)
+    _ = host.handle(.open(code: "ABCDEF", now: t0), selfID: "id")
+    _ = host.handle(.opened(code: "ABCDEF"), selfID: "id")
+    _ = host.handle(.request(peerID: "peer", peerName: "MacBook"), selfID: "id")
+    #expect(host.state == .requested(peerID: "peer", peerName: "MacBook"))
+
+    _ = host.handle(.tick(now: t0.addingTimeInterval(301)), selfID: "id")
+    #expect(host.state == .failed("Pairing timed out"))
+}
+
+/// The deadline is counted from `open`, not from reaching this state: two people comparing a
+/// fingerprint have the same five minutes the code had, not a fresh five.
+@Test func aFingerprintNobodyConfirmsTimesOutFiveMinutesAfterOpen() {
+    var host = PairingFlow(side: .host)
+    _ = host.handle(.open(code: "ABCDEF", now: t0), selfID: "id")
+    _ = host.handle(.opened(code: "ABCDEF"), selfID: "id")
+    _ = host.handle(.request(peerID: "peer", peerName: "MacBook"), selfID: "id")
+    _ = host.handle(.accept, selfID: "id")
+    _ = host.handle(.fingerprint("apple-river-stone-zero"), selfID: "id")
+
+    _ = host.handle(.tick(now: t0.addingTimeInterval(299)), selfID: "id")
+    #expect(host.state == .confirming(peerID: "peer", peerName: "MacBook",
+                                      fingerprint: "apple-river-stone-zero", mine: false, theirs: false))
+
+    _ = host.handle(.tick(now: t0.addingTimeInterval(300)), selfID: "id")
+    #expect(host.state == .failed("Pairing timed out"))
+}
+
+/// A pairing that completed is done. The coordinator keeps ticking while the sheet is up (it says
+/// "Paired with …" until the user closes it), and a tick that turned that into a failure would
+/// undo a pairing that is already stored on both Macs.
+@Test func aFinishedPairingIsNotTimedOut() {
+    var client = PairingFlow(side: .client)
+    _ = client.handle(.join(code: "ABCDEF", now: t0), selfID: "id")
+    _ = client.handle(.accepted(peerID: "host-id", peerName: "iMac"), selfID: "id")
+    _ = client.handle(.confirmTheirs, selfID: "id")
+    _ = client.handle(.confirmMine, selfID: "id")
+    #expect(client.state == .paired(peerID: "host-id", peerName: "iMac"))
+
+    _ = client.handle(.tick(now: t0.addingTimeInterval(3600)), selfID: "id")
+    #expect(client.state == .paired(peerID: "host-id", peerName: "iMac"))
 }

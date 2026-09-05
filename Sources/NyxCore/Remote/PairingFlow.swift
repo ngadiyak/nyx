@@ -115,7 +115,7 @@ public struct PairingFlow: Equatable {
     public enum Event: Equatable {
         case open(code: String, now: Date)                       // host pressed Pair…
         case opened(code: String)                                // relay's pair_opened: the code is live
-        case join(code: String)                                  // client typed a code
+        case join(code: String, now: Date)                       // client typed a code
         case request(peerID: String, peerName: String)           // host got pair_request
         case accept                                              // host pressed Accept
         case accepted(peerID: String, peerName: String)          // client got pair_accept
@@ -139,6 +139,15 @@ public struct PairingFlow: Equatable {
 
     public let side: Side
     public private(set) var state: State
+    /// Five minutes from the `open` or the `join` that started this pairing, and the deadline for
+    /// every state after it -- not only the code.
+    ///
+    /// Held on the flow rather than threaded through each state because it is not something any
+    /// sheet draws: `.showingCode` shows a code, `.confirming` shows a fingerprint, and neither is
+    /// rendered from the deadline. The states that show a code carry their own `expires` as well,
+    /// because "Code expired" is a different sentence from "Pairing timed out" and a caller
+    /// building a `.showingCode` directly (`UISnapshot` does) has to be able to say when it dies.
+    private var deadline: Date?
 
     public init(side: Side) {
         self.side = side
@@ -148,15 +157,19 @@ public struct PairingFlow: Equatable {
     public mutating func handle(_ e: Event, selfID: String) -> [Effect] {
         if case .cancel = e {
             state = .idle
+            deadline = nil
             return []
         }
 
         switch (state, e) {
         case (.idle, .open(let code, let now)):
-            state = .opening(code, expires: now.addingTimeInterval(Self.codeLifetime))
+            let expires = now.addingTimeInterval(Self.codeLifetime)
+            deadline = expires
+            state = .opening(code, expires: expires)
             return [.send(.pairOpen(code: code))]
 
-        case (.idle, .join(let code)):
+        case (.idle, .join(let code, let now)):
+            deadline = now.addingTimeInterval(Self.codeLifetime)
             state = .joining(code: code)
             return [.send(.pairJoin(code: code))]
 
@@ -170,6 +183,15 @@ public struct PairingFlow: Equatable {
 
         case (.showingCode(_, let expires), .tick(let now)):
             if now >= expires { state = .failed("Code expired") }
+            return []
+
+        // The three states with nothing on the wire left to expire them. A client waiting for an
+        // accept, a host waiting for its user to press Accept, and either side waiting for a
+        // fingerprint to be confirmed all used to wait for ever: the relay forgets the code after
+        // five minutes and says nothing, so the sheet was the only thing left holding the pairing
+        // open, and it held it until somebody pressed Cancel.
+        case (.joining, .tick(let now)), (.requested, .tick(let now)), (.confirming, .tick(let now)):
+            if let deadline, now >= deadline { state = .failed("Pairing timed out") }
             return []
 
         case (.opening, .error(let code)):

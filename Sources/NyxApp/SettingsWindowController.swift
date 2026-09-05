@@ -266,7 +266,8 @@ final class SettingsWindowController: NSWindowController {
         activityScroll.borderType = .bezelBorder
 
         let note = NSTextField(wrappingLabelWithString:
-            "Session titles, directories and branches are visible to the relay; terminal contents are not.")
+            "Session titles, directories, branches, the running process and the last command are "
+            + "visible to the relay; terminal contents are not.")
         note.translatesAutoresizingMaskIntoConstraints = false
         note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         note.textColor = .secondaryLabelColor
@@ -428,6 +429,12 @@ final class SettingsWindowController: NSWindowController {
     func beginHostPairing() {
         selectRemotePage()
         pairAsHost(nil)
+    }
+
+    /// Brings the Remote page forward without starting anything on it, for the two remote actions
+    /// when there is no relay token yet.
+    func showRemotePage() {
+        selectRemotePage()
     }
 
     /// Shows a code for the other Mac to type. The real relay answers `pair_opened` before the code

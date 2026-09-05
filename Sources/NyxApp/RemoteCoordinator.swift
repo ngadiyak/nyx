@@ -199,8 +199,12 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
     /// number that stayed on the page until the *next* outage would be read as describing the
     /// connection that is working. The next refresh says plainly "Online as …".
     var statusText: String {
-        let connection = self.connection?.status.statusText(relayHost: relayHost)
-            ?? .unreachable(host: relayHost)
+        // Asked for before anything about the socket, because there is no socket: `start()` refuses
+        // to open one without a token, so every other sentence here would be describing a
+        // connection that was never attempted.
+        let connection: RemoteStatusText.Connection = RemoteCoordinatorPolicy.needsToken(config: config)
+            ? .needsToken
+            : self.connection?.status.statusText(relayHost: relayHost) ?? .unreachable(host: relayHost)
         let text = RemoteStatusText.text(mode: config.remote, connection: connection,
                                          deviceName: deviceName, failure: startupFailure ?? saveFailure,
                                          droppedWhileOffline: droppedWhileOffline)

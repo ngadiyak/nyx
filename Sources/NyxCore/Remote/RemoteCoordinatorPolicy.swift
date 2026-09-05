@@ -12,6 +12,30 @@ import Foundation
 /// they left empty.
 public enum RemoteCoordinatorPolicy {
     public static func shouldRun(config: Config) -> Bool {
-        config.remote == .on && !config.remoteRelayToken.trimmingCharacters(in: .whitespaces).isEmpty
+        config.remote == .on && !needsToken(config: config)
+    }
+
+    /// The switch is on and the token field is empty. The one half of `shouldRun` that has a
+    /// sentence of its own, because it is the half the user can fix in ten seconds.
+    public static func needsToken(config: Config) -> Bool {
+        config.remoteRelayToken.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// What `remote_sessions` and `remote_pair` do for a given configuration.
+    ///
+    /// Both used to be greyed out unless the whole feature was runnable, which meant a user who had
+    /// switched remote sessions on and not yet pasted a token found two dead menu items and nothing
+    /// saying why. A menu item that opens the page where the missing thing is typed is the answer;
+    /// a disabled one is only correct when the feature is genuinely off.
+    public enum MenuOutcome: Equatable {
+        case disabled
+        /// Bring Settings → Remote forward, which is where the token field is.
+        case openSettings
+        case act
+    }
+
+    public static func menuOutcome(config: Config) -> MenuOutcome {
+        guard config.remote == .on else { return .disabled }
+        return needsToken(config: config) ? .openSettings : .act
     }
 }

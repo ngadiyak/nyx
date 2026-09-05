@@ -1490,8 +1490,21 @@ extension TabController: ActionTarget {
         case .fontSmaller: focusedPane?.zoomOut(nil)
         case .fontReset: focusedPane?.zoomReset(nil)
 
-        case .remoteSessions: showRemoteSessions()
-        case .remotePair: appDelegate?.pairRemoteDevice(nil)
+        // Both are reachable whenever remote sessions are switched on. With no token there is
+        // nothing to list and nobody to pair with, so they open the page holding the field that is
+        // missing rather than showing an empty palette or beeping.
+        case .remoteSessions:
+            if RemoteCoordinatorPolicy.menuOutcome(config: config) == .openSettings {
+                appDelegate?.openRemoteSettings(nil)
+            } else {
+                showRemoteSessions()
+            }
+        case .remotePair:
+            if RemoteCoordinatorPolicy.menuOutcome(config: config) == .openSettings {
+                appDelegate?.openRemoteSettings(nil)
+            } else {
+                appDelegate?.pairRemoteDevice(nil)
+            }
         case .remoteTakeControl:
             // Beeps on a local pane and on one that is already writing: there is nothing to take,
             // and the menu item is greyed out for exactly this reason.
@@ -1542,10 +1555,9 @@ extension TabController: ActionTarget {
              .growLeft, .growRight, .growUp, .growDown, .toggleZoom:
             return (panes?.paneCount ?? 0) > 1
         case .remoteSessions, .remotePair:
-            // Greyed out until remote sessions are switched on and a relay token is set: the
-            // settings page is where that is done, and a menu item that opened an empty list would
-            // say nothing about why it was empty.
-            return appDelegate?.remote?.isRunning ?? false
+            // Greyed out only when the feature is switched off. On with no token they still work:
+            // they open Settings → Remote, which is where the token goes.
+            return RemoteCoordinatorPolicy.menuOutcome(config: config) != .disabled
         case .remoteTakeControl:
             // Only on a remote pane that is observing. On a local pane, or one already writing,
             // there is nothing to take.

@@ -172,6 +172,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings?.beginHostPairing()
     }
 
+    /// Settings → Remote, with nothing started on it. Where `remote_sessions` and `remote_pair` go
+    /// when remote sessions are on but no relay token has been pasted in: the one field standing
+    /// between the user and both of those actions is on this page.
+    @objc func openRemoteSettings(_ sender: Any?) {
+        openConfig(nil)
+        settings?.showRemotePage()
+    }
+
     /// `⌘,`: the settings window. It edits the config file rather than holding its own copy, so
     /// the "Edit Config File…" button on its Keys tab opens the same file this used to open
     /// directly -- nothing is hidden behind the window.

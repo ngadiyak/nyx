@@ -11,6 +11,12 @@ public enum RemoteStatusText {
         /// The relay's host, for "Relay unreachable (nyx.agentforge.cc)".
         case unreachable(host: String)
         case badToken
+        /// The switch is on and the token field is empty, so nothing has been tried yet.
+        ///
+        /// Not `unreachable`: this build never opens a socket without a token (see
+        /// `RemoteCoordinatorPolicy`), and "Relay unreachable" -- which is what the page said before
+        /// -- sent people to check their network over a field they had simply not filled in.
+        case needsToken
         /// The relay let go of this device for a reason retrying cannot fix and that is not the
         /// token: `bad_signature`, or `replaced` -- another connection presenting the same device
         /// id, which is what two Nyx instances sharing one identity file look like. Rare, and named
@@ -40,6 +46,7 @@ public enum RemoteStatusText {
             return "Online as \(deviceName) \u{00b7} \(what) dropped while offline"
         case .unreachable(let host): return "Relay unreachable (\(host))"
         case .badToken: return "Relay rejected this device's token"
+        case .needsToken: return "Paste the relay token to connect"
         case .refused(let reason): return "Relay refused this device (\(reason))"
         }
     }

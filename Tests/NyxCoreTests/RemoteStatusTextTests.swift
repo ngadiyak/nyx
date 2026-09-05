@@ -77,3 +77,17 @@ import Testing
     #expect(RemoteStatusText.text(mode: .off, connection: .online, deviceName: "beta",
                                   droppedWhileOffline: 44) == "Remote sessions are off")
 }
+
+/// The switch on and the token field empty. This build never opens a socket in that state, so the
+/// page used to sit on "Relay unreachable (nyx.agentforge.cc)" -- a sentence that sends a person to
+/// check their network over a field they simply had not filled in.
+@Test func anEmptyTokenAsksForTheTokenRatherThanBlamingTheRelay() {
+    #expect(RemoteStatusText.text(mode: .on, connection: .needsToken, deviceName: "Studio")
+        == "Paste the relay token to connect")
+}
+
+/// Off still outranks it: a feature that is switched off has nothing to be missing a token for.
+@Test func aSwitchedOffFeatureNeverAsksForAToken() {
+    #expect(RemoteStatusText.text(mode: .off, connection: .needsToken, deviceName: "Studio")
+        == "Remote sessions are off")
+}

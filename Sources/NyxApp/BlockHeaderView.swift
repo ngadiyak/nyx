@@ -27,15 +27,23 @@ final class BlockHeaderView: NSView {
     /// What one control set measures, for one header and one font. Measuring is an Auto Layout
     /// pass; the pane asks for all three sets on every frame it hovers a block, and in steady state
     /// nothing about the answer has changed.
+    /// The summary's *length*, not its text: it is drawn in the pane's monospaced font, so its
+    /// width is exactly the character count times one advance, and a running command whose elapsed
+    /// time ticks from `12s` to `13s` reuses the entry instead of adding one every second. The
+    /// buttons are system-font and fixed per control set, and the chevron's two glyphs are kept
+    /// apart because that one *is* proportional.
     private struct WidthKey: Hashable {
         let controls: OverlayControls
-        let summary: String
+        let summaryCount: Int
         let chevron: String
         let hasOutput: Bool
         let font: String
         let size: CGFloat
     }
     private var widths: [WidthKey: CGFloat] = [:]
+    /// Count-keying already bounds this to a few dozen entries per font; the cap is for the one
+    /// thing that can still walk the key space, a user holding ⌘+ through fifty font sizes.
+    private static let widthCacheLimit = 64
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -94,8 +102,9 @@ final class BlockHeaderView: NSView {
     /// `update` skips its work when nothing changed and would otherwise leave the strip showing
     /// whatever the last measurement configured.
     func width(for controls: OverlayControls, header: BlockHeader, font: NSFont) -> CGFloat {
-        let key = WidthKey(controls: controls, summary: header.summary, chevron: header.chevron,
-                           hasOutput: header.hasOutput, font: font.fontName, size: font.pointSize)
+        let key = WidthKey(controls: controls, summaryCount: header.summary.count,
+                           chevron: header.chevron, hasOutput: header.hasOutput,
+                           font: font.fontName, size: font.pointSize)
         if let cached = widths[key] { return cached }
         let previousHeader = self.header
         let previousControls = self.controls
@@ -104,6 +113,7 @@ final class BlockHeaderView: NSView {
         // `configure` touches only the subviews, never `self.header`, so a measurement before the
         // first `update` cannot make that `update` think nothing changed and skip its styling.
         if let previousHeader { configure(header: previousHeader, controls: previousControls, font: font) }
+        if widths.count >= BlockHeaderView.widthCacheLimit { widths.removeAll(keepingCapacity: true) }
         widths[key] = width
         return width
     }
@@ -113,8 +123,8 @@ final class BlockHeaderView: NSView {
     private func configure(header: BlockHeader, controls: OverlayControls, font: NSFont) {
         summary.stringValue = header.summary
         summary.font = font
-        summary.isHidden = controls != .full || header.summary.isEmpty
-        copyButton.isHidden = controls == .minimal
+        summary.isHidden = controls == .minimal || header.summary.isEmpty
+        copyButton.isHidden = controls != .full
         chevronButton.isHidden = !header.hasOutput
     }
 

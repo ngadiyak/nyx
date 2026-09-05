@@ -262,7 +262,7 @@ private func foldedSession() -> (terminal: Terminal, folding: OutputFolding) {
 // its own content, it painted over the end of the command it describes: in a 28-column split,
 // hovering `git status --short` showed `~ % git status`, a different, real command.
 
-private let stripColumns: [OverlayControls: Int] = [.full: 20, .compact: 8, .minimal: 4]
+private let stripColumns: [OverlayControls: Int] = [.full: 20, .noCopy: 8, .minimal: 4]
 
 @Test func aWideRowCarriesTheWholeStrip() {
     let placement = CommandBlockChrome.overlayPlacement(
@@ -270,11 +270,12 @@ private let stripColumns: [OverlayControls: Int] = [.full: 20, .compact: 8, .min
     #expect(placement == OverlayPlacement(row: 4, controls: .full))
 }
 
-/// Eight free columns: the summary is what goes, because Copy and the chevron are the controls.
-@Test func aCrowdedRowDropsTheSummaryBeforeTheButtons() {
+/// Eight free columns: Copy is what goes, because the ⋯ menu still copies -- while the summary is
+/// the only place the exit status is left, the strip having suppressed the Metal one and the note.
+@Test func aCrowdedRowDropsCopyBeforeTheSummary() {
     let placement = CommandBlockChrome.overlayPlacement(
         commandRows: [(absoluteRow: 4, lastUsedColumn: 31)], stripColumns: stripColumns, cols: 40)
-    #expect(placement == OverlayPlacement(row: 4, controls: .compact))
+    #expect(placement == OverlayPlacement(row: 4, controls: .noCopy))
 }
 
 /// Four free columns: only the ⋯ menu and the chevron, which between them still reach every action.

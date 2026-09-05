@@ -114,7 +114,7 @@ enum UISnapshot {
         // and then Copy, and the ⋯ menu and the chevron, which between them reach every action,
         // never do. These are what `CommandBlockChrome.overlayPlacement` picks between.
         if let failed = blockHeaderStates().first(where: { $0.0 == "failed" })?.1 {
-            for (name, controls) in [("compact", OverlayControls.compact), ("minimal", .minimal)] {
+            for (name, controls) in [("nocopy", OverlayControls.noCopy), ("minimal", .minimal)] {
                 let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
                 view.appearance = NSAppearance(named: .darkAqua)
                 view.update(header: failed, controls: controls, palette: palette,

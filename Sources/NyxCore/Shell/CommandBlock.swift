@@ -189,20 +189,24 @@ public enum CommandBlockChrome {
 ///
 /// The strip is opaque and its content decides its width, so a strip sized only from itself paints
 /// over whatever the row already holds: in a 28-column split, hovering `git status --short` covered
-/// `--short` and left `~ % git status` on screen -- a different, real command. The controls give way
-/// in the order of what they are worth: the summary first (it is also in the gutter and the note),
-/// then Copy (the ⋯ menu still copies), never the ⋯ menu or the chevron, which between them reach
-/// every action the block has.
+/// `--short` and left `~ % git status` on screen -- a different, real command.
+///
+/// The controls give way in the order of what they are worth. Copy goes first: the ⋯ menu still
+/// copies, so nothing becomes unreachable. The summary outlives it because while the strip is up it
+/// is the *only* place the exit status is -- the strip suppresses both the Metal summary and the
+/// duration note on that row, so dropping it first meant hovering a crowded failed command replaced
+/// `exit 1 · 8.8s ▾` with `Copy ⋯ ▾` and the exit code was nowhere on screen. The ⋯ menu and the
+/// chevron never go: between them they reach every action the block has.
 public enum OverlayControls: Equatable, Hashable, CaseIterable {
     /// Summary, Copy, ⋯, chevron.
     case full
-    /// Copy, ⋯, chevron.
-    case compact
+    /// Summary, ⋯, chevron.
+    case noCopy
     /// ⋯ and the chevron.
     case minimal
 
     /// Richest first, which is the order `overlayPlacement` tries them in.
-    public static let allCases: [OverlayControls] = [.full, .compact, .minimal]
+    public static let allCases: [OverlayControls] = [.full, .noCopy, .minimal]
 }
 
 /// Which row of a command the hover strip goes on, and which controls it carries there.

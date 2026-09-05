@@ -259,8 +259,10 @@ public final class RemoteHost {
         // point in the byte stream it corresponds to cannot disagree.
         let (snapshot, cols, rows, fed) = registration.session.withTerminalAndOutputCount { terminal, count in
             let top = max(0, terminal.totalRows - snapshotLines)
-            return (terminal.transcript(rows: top..<terminal.totalRows, options: .forRestoring),
-                    terminal.cols, terminal.rows, count)
+            let text = terminal.transcript(rows: top..<terminal.totalRows, options: .forRestoring)
+            // Without the trim, the blank rows under the host's cursor arrive as newlines and
+            // scroll the host's screen off the top of the client's grid; see `RemoteSnapshot`.
+            return (RemoteSnapshot.trimmingTrailingBlankLines(text), terminal.cols, terminal.rows, count)
         }
         registration.attachments[from] = Attachment(deviceID: from, e2e: e2e, startSequence: fed)
 

@@ -332,3 +332,48 @@ private func session() -> Terminal {
     let region = try! #require(t.command(containingAbsoluteRow: row))
     #expect(abs((region.duration ?? 0) - 7) < 0.001)
 }
+
+// MARK: - The command line, without the shell's prompt
+
+/// A real prompt is not `$ `. `nik@host ~ %` in front of every copied command is what "Copy
+/// Command" used to produce, and "Run This Command Again" sent that whole string to the shell.
+private func promptedSession(cols: Int = 40, command: String = "make test") -> Terminal {
+    let t = makeTerminal(cols: cols, rows: 6, scrollback: 100)
+    t.feed(mark("A") + "nik@host ~ % " + mark("B") + command + "\r\n" + mark("C") + "ok\r\n" + mark("D", 0))
+    return t
+}
+
+@Test func theCommandLineDropsTheShellsOwnPrompt() {
+    let t = promptedSession()
+    let region = try! #require(t.command(containingAbsoluteRow: 0))
+    #expect(t.commandLine(of: region) == "make test")
+    // `commandText` is unchanged: a notification wants the host and directory for context.
+    #expect(t.commandText(of: region).contains("nik@host"))
+}
+
+/// A command longer than the window is the case "Run Again" must not corrupt: the two rows are one
+/// line, so they are joined with nothing between them rather than with a space.
+@Test func aWrappedCommandLineIsJoinedBackTogether() {
+    let t = promptedSession(cols: 20, command: "echo abcdefghij")
+    let region = try! #require(t.command(containingAbsoluteRow: 0))
+    #expect(t.commandLine(of: region) == "echo abcdefghij")
+}
+
+/// A shell that emits `A` and `C` but no `B` says nothing about where its prompt ends, so there is
+/// nothing to slice at and the older, wider answer is better than an empty one.
+@Test func withoutAnInputMarkTheCommandLineFallsBackToTheWholeRow() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 100)
+    t.feed(mark("A") + "nik@host ~ % make test\r\n" + mark("C") + "ok\r\n" + mark("D", 0))
+    let region = try! #require(t.command(containingAbsoluteRow: 0))
+    #expect(t.commandLine(of: region) == t.commandText(of: region))
+    #expect(t.commandLine(of: region).contains("nik@host"))
+}
+
+/// The prompt the user is typing at has no output yet; asking for its command line must not read
+/// past the end of the buffer.
+@Test func theCommandLineOfAPromptWithNothingTypedIsEmpty() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 100)
+    t.feed(mark("A") + "nik@host ~ % " + mark("B"))
+    let region = try! #require(t.command(containingAbsoluteRow: 0))
+    #expect(t.commandLine(of: region).isEmpty)
+}

@@ -2106,7 +2106,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func copyLastCommandAsMarkdown() -> Bool {
         let markdown: String? = session.withTerminal { t in
             guard let region = t.lastFinishedCommand else { return nil }
-            return BlockExport.markdown(command: t.commandText(of: region), output: t.outputText(of: region))
+            return BlockExport.markdown(command: t.commandLine(of: region), output: t.outputText(of: region))
         }
         guard let markdown else { return false }
         NSPasteboard.general.clearContents()
@@ -2168,18 +2168,22 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         guard let region else { NSSound.beep(); return }
         switch action {
         case .copyCommand:
-            let text = session.withTerminal { $0.commandText(of: region) }
+            // `commandLine`, not `commandText`: what belongs on the pasteboard is the command, not
+            // the machine's `PS1` in front of it.
+            let text = session.withTerminal { $0.commandLine(of: region) }
             copyToPasteboard(text)
         case .copyOutput:
             let text = session.withTerminal { $0.outputText(of: region) }
             copyToPasteboard(text)
         case .copyMarkdown:
-            let md = session.withTerminal { BlockExport.markdown(command: $0.commandText(of: region),
+            let md = session.withTerminal { BlockExport.markdown(command: $0.commandLine(of: region),
                                                                  output: $0.outputText(of: region)) }
             copyToPasteboard(md)
         case .saveOutput: saveOutput(ofCommand: id)
         case .runAgain:
-            let command = session.withTerminal { $0.commandText(of: region) }
+            // This one is typed at the shell. With the prompt still attached it ran
+            // `nik@host ~ % make test`, which is not a command.
+            let command = session.withTerminal { $0.commandLine(of: region) }
             guard !command.isEmpty else { NSSound.beep(); return }
             send(Array((command + "\r").utf8))
         case .editAndRun:
@@ -2475,7 +2479,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func editAndRunCommand(atAbsoluteRow row: Int) -> Bool {
         let command: String = session.withTerminal { terminal in
             guard let region = terminal.command(containingAbsoluteRow: row) else { return "" }
-            return terminal.commandText(of: region)
+            // The editor is prefilled with something the user is about to run, so it gets the
+            // command line without the prompt -- the same text `Run Again` sends.
+            return terminal.commandLine(of: region)
         }
         guard !command.isEmpty else { return false }
         presentCommandEditor(text: command, heading: "Edit and run", runTitle: "Run") {

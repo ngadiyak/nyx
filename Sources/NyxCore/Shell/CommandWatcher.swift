@@ -131,4 +131,49 @@ public extension Terminal {
             .joined(separator: " ")
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// Just what the user typed, with the shell's own prompt sliced off at the `B` mark.
+    ///
+    /// `commandText` above keeps the prompt on purpose, which is right for a notification and wrong
+    /// for everything that treats the result as a command: "Copy Command", "Copy as Markdown",
+    /// "Run This Command Again" and "Edit and Run" all produced
+    /// `nik@nik-newmac ~ % printf ...` on a real `PS1`, and Run Again sent that whole string to the
+    /// shell. `Row.inputStartColumn` is the shell telling us exactly where its prompt ends, so
+    /// there is nothing to guess.
+    ///
+    /// Rows between the prompt and the output belong to the command line too. A row that soft-wrapped
+    /// is joined to the next with nothing between them -- it is one line, and a space inserted at the
+    /// wrap point would corrupt the command being re-run -- while a genuinely new row (a multi-line
+    /// command) is joined with a space, as `commandText` does.
+    ///
+    /// Falls back to `commandText` when the shell emitted no `B`: without it there is no way to say
+    /// where the prompt ends, and the wider answer beats an empty one.
+    func commandLine(of region: CommandRegion) -> String {
+        guard let inputStart = absoluteRow(region.promptRow)?.inputStartColumn else {
+            return commandText(of: region)
+        }
+        let last = min(region.outputStart.map { $0 - 1 } ?? region.promptRow, totalRows - 1)
+        guard last >= region.promptRow else { return "" }
+
+        var text = ""
+        for row in region.promptRow...last {
+            let line = rowText(absoluteRow: row)
+            let characters = Array(line.text)
+            // The `B` column is a terminal column; `columnOf` maps it to a character index, which is
+            // not the same number once a wide glyph sits in the prompt.
+            let from = row == region.promptRow
+                ? (line.columnOf.firstIndex { $0 >= inputStart } ?? characters.count)
+                : 0
+            guard from < characters.count else { continue }
+            // `rowText` pads every empty cell with a space so a column stays a column; a command
+            // line has no columns to preserve, and the padding would otherwise land in the middle
+            // of a multi-row command.
+            var piece = String(characters[from...])
+            while piece.hasSuffix(" ") { piece.removeLast() }
+            guard !piece.isEmpty else { continue }
+            if !text.isEmpty { text += (absoluteRow(row - 1)?.wrapped ?? false) ? "" : " " }
+            text += piece
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }

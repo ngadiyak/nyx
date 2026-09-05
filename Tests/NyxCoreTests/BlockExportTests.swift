@@ -27,3 +27,13 @@ private func mark(_ letter: String, _ status: Int32? = nil) -> String {
     let region = t.command(containingAbsoluteRow: 0)!
     #expect(t.outputText(of: region) == "hi")
 }
+
+/// The export is fed `commandLine`, not `commandText`: a real `PS1` put
+/// `$ nik@host ~ % make test` inside the fence, which is not a command anyone can paste back.
+@Test func markdownFromARealPromptCarriesOnlyTheCommand() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 100)
+    t.feed(mark("A") + "nik@host ~ % " + mark("B") + "make test\r\n" + mark("C") + "ok\r\n" + mark("D", 0))
+    let region = t.command(containingAbsoluteRow: 0)!
+    let md = BlockExport.markdown(command: t.commandLine(of: region), output: t.outputText(of: region))
+    #expect(md == "```\n$ make test\nok\n```\n")
+}

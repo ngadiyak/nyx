@@ -27,6 +27,11 @@ public struct PairedDevices: Equatable {
 
     public enum SaveError: Error, Equatable {
         case cannotCreateFile(path: String)
+        /// The complete temporary file could not be renamed over the real one. Reported rather
+        /// than swallowed because the pairing the caller has just made is not on disk: it will
+        /// work until Nyx is restarted and then be gone, which is the kind of half-success a user
+        /// cannot diagnose.
+        case cannotReplaceFile(path: String, errno: Int32)
     }
 
     private enum CodingKeys: String, CodingKey { case devices }
@@ -74,21 +79,40 @@ public struct PairedDevices: Equatable {
         return PairedDevices()
     }
 
-    /// Written in the same create-empty-at-0600-then-fill order as `DeviceIdentity.load`: the
-    /// trusted-devices list is less sensitive than a private key, but the same class of bug applies
-    /// -- writing plaintext then `chmod`ing, or an atomic write that replaces the file with a fresh
-    /// temp file at the process umask's default mode, both leave a window where the file (which
-    /// still names every paired device) is readable more broadly than intended.
+    /// Written exactly the way `DeviceIdentity.load` writes the key beside it: the directory at
+    /// 0700, a sibling `paired.json.tmp` created *already* at 0600 (not written-then-chmod'd,
+    /// which leaves a window at the process umask's default mode), the bytes flushed to the disk
+    /// rather than to the page cache, and only then renamed over the real name.
+    ///
+    /// The rename is the point. This file is rewritten on every pairing and every Remove, and the
+    /// previous shape truncated it first and wrote afterwards -- so a crash or a full disk in
+    /// between left a zero-byte file where the list of every device this Mac trusts had been, and
+    /// the only cure is pairing each one again by hand on both Macs. `rename(2)` replaces the name
+    /// in one step: a reader sees the old contents or the new ones, never nothing.
     public func save(to url: URL) throws {
         let data = try Self.codec().encoder.encode(self)
+        let fm = FileManager.default
         let dir = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
-            throw SaveError.cannotCreateFile(path: url.path)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let temporary = url.appendingPathExtension("tmp")
+        // A leftover from a process that died mid-save is stale by definition: this one is about to
+        // write the whole list.
+        try? fm.removeItem(at: temporary)
+        guard fm.createFile(atPath: temporary.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+            throw SaveError.cannotCreateFile(path: temporary.path)
         }
-        let handle = try FileHandle(forWritingTo: url)
+        let handle = try FileHandle(forWritingTo: temporary)
         try handle.write(contentsOf: data)
+        try handle.synchronize()
         try handle.close()
+        // `rename`, not `moveItem`: the destination usually exists, and `FileManager` refuses to
+        // move onto an existing file. The mode travels with the temporary file, so the result is
+        // 0600 whatever the old file was.
+        guard rename(temporary.path, url.path) == 0 else {
+            let code = errno
+            try? fm.removeItem(at: temporary)
+            throw SaveError.cannotReplaceFile(path: url.path, errno: code)
+        }
     }
 
     /// Re-pairing an already-known id updates its entry in place rather than adding a duplicate --

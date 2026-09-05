@@ -541,31 +541,18 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     /// The viewport mapping of the frame before this one. See `dirtyRows(of:top:)`.
-    private var lastFrameLayout: FrameLayout?
-    private struct FrameLayout: Equatable {
-        var top: Int
-        var cols: Int
-        var rows: Int
-        var scrollbackGeneration: UInt64
-        var evictedRows: Int
-        var folded: Bool
-    }
+    private var lastMapping: ViewportMapping?
 
     /// Which visible rows changed since the last presented frame, or `[]` meaning "all of them".
     ///
-    /// `Row.dirty` describes a row of the *screen*, and it answers for a viewport slot only while
-    /// that slot keeps holding the same row. Scrolled back into the scrollback, with a fold open, or
-    /// after a `clear` renumbered every absolute row, slot *y* is filled from somewhere else, and a
-    /// row nothing has touched can be showing text it was not showing last frame. So whenever the
-    /// mapping itself moved the answer is "everything": one full frame, which cannot go stale, at
-    /// the moments where every row was going to change anyway.
+    /// The decision itself is `ViewportMapping` in NyxCore, where it can be tested: its failure
+    /// mode is a stale row on screen, which no test of the drawing catches and no user reports as
+    /// anything but "sometimes the terminal is wrong".
     private func dirtyRows(of t: Terminal, top: Int) -> [Bool] {
-        let layout = FrameLayout(top: top, cols: t.cols, rows: t.rows,
-                                 scrollbackGeneration: t.scrollbackGeneration,
-                                 evictedRows: t.evictedRows, folded: !folding.isEmpty)
-        let unmoved = lastFrameLayout == layout
-        lastFrameLayout = layout
-        guard unmoved, folding.isEmpty, t.viewportOffset == 0 else { return [] }
+        let mapping = ViewportMapping(of: t, top: top, folded: !folding.isEmpty)
+        let trusted = mapping.trustsDirtyFlags(after: lastMapping)
+        lastMapping = mapping
+        guard trusted else { return [] }
         return (0..<t.rows).map { t.screen.rows[$0].dirty }
     }
 

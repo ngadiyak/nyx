@@ -106,3 +106,137 @@ public enum CommandBlockChrome {
         hasMarks && !altScreen && !mouseReporting
     }
 }
+
+/// What can be done to a block, in the order the ⋯ menu lists it.
+public enum BlockAction: Equatable {
+    case copyCommand, copyOutput, copyMarkdown, saveOutput
+    case runAgain, editAndRun
+    case toggleFold, toggleFoldAll
+    case notifyWhenDone(armed: Bool)
+
+    /// The neutral title. `BlockHeader.title(for:)` adjusts the two fold titles to the state.
+    public var title: String {
+        switch self {
+        case .copyCommand: return "Copy Command"
+        case .copyOutput: return "Copy Output"
+        case .copyMarkdown: return "Copy as Markdown"
+        case .saveOutput: return "Save Output\u{2026}"
+        case .runAgain: return "Run This Command Again"
+        case .editAndRun: return "Edit and Run This Command\u{2026}"
+        case .toggleFold: return "Fold Output"
+        case .toggleFoldAll: return "Fold Everything Long"
+        case .notifyWhenDone: return "Notify When Done"
+        }
+    }
+
+    /// Where a separator goes in the menu: before the first action of each group after the first.
+    public var startsGroup: Bool {
+        switch self {
+        case .runAgain, .toggleFold, .notifyWhenDone: return true
+        default: return false
+        }
+    }
+}
+
+/// Everything the command row and the hover overlay say about one block, decided once.
+public struct BlockHeader: Equatable {
+    public enum State: Equatable {
+        case running(elapsed: Double)
+        case finished
+        case failed(status: Int32)
+    }
+
+    public let id: UInt32
+    public let state: State
+    public let folded: Bool
+    public let hasOutput: Bool
+    /// Whether any block in the pane is folded, which is what "Unfold Everything" needs to know.
+    public let anyFolds: Bool
+    public let notifyArmed: Bool
+    /// "exit 1 · 8.8s" for a failure, "8.8s" for a slow success, "12s" for a command still going,
+    /// and nothing for a quick success -- a status that appears the instant you press return is
+    /// noise. Computed by `CommandBlock.header(now:...)`, stored here so the view compares one value.
+    public let summary: String
+
+    public init(id: UInt32, state: State, folded: Bool, hasOutput: Bool, anyFolds: Bool,
+                notifyArmed: Bool, summary: String) {
+        self.id = id; self.state = state; self.folded = folded; self.hasOutput = hasOutput
+        self.anyFolds = anyFolds; self.notifyArmed = notifyArmed; self.summary = summary
+    }
+
+    public var isRunning: Bool { if case .running = state { return true } else { return false } }
+
+    public var chevron: String {
+        guard hasOutput else { return "" }
+        return folded ? "\u{25B8}" : "\u{25BE}"
+    }
+
+    /// What the renderer draws at the end of the command row: the summary, a space, the chevron.
+    public var summaryWithChevron: String {
+        switch (summary.isEmpty, chevron.isEmpty) {
+        case (true, true): return ""
+        case (true, false): return chevron
+        case (false, true): return summary
+        case (false, false): return summary + " " + chevron
+        }
+    }
+
+    /// The ⋯ menu, in order, each with whether it can do anything right now.
+    public var actions: [(action: BlockAction, enabled: Bool)] {
+        var list: [(BlockAction, Bool)] = [
+            (.copyCommand, true), (.copyOutput, hasOutput), (.copyMarkdown, true), (.saveOutput, hasOutput),
+            (.runAgain, !isRunning), (.editAndRun, !isRunning),
+            (.toggleFold, hasOutput), (.toggleFoldAll, true),
+        ]
+        if isRunning { list.append((.notifyWhenDone(armed: notifyArmed), true)) }
+        return list.map { (action: $0.0, enabled: $0.1) }
+    }
+
+    public func title(for action: BlockAction) -> String {
+        switch action {
+        case .toggleFold: return folded ? "Unfold Output" : "Fold Output"
+        case .toggleFoldAll: return anyFolds ? "Unfold Everything" : "Fold Everything Long"
+        default: return action.title
+        }
+    }
+}
+
+public extension CommandBlock {
+    /// The header for this block at clock reading `now`.
+    func header(now: Double, folding: OutputFolding, notifyArmed: Bool, anyFolds: Bool) -> BlockHeader {
+        let state: BlockHeader.State
+        let summary: String
+        if isRunning {
+            let elapsed = max(0, now - (region.startedAt ?? now))
+            state = .running(elapsed: elapsed)
+            summary = elapsed >= 1 ? DurationText.short(elapsed) : ""
+        } else if let status = region.exitStatus, status != 0 {
+            state = .failed(status: status)
+            summary = self.summary()
+        } else {
+            state = .finished
+            summary = self.summary()
+        }
+        return BlockHeader(id: region.id, state: state, folded: folding.isFolded(region.id),
+                           hasOutput: !region.outputRows.isEmpty, anyFolds: anyFolds,
+                           notifyArmed: notifyArmed, summary: summary)
+    }
+}
+
+/// Which block the pointer is over, and where its chrome goes. Pure so the answer for "pointer on
+/// the row after the last block" or "chrome disallowed while a TUI runs" is a test, not a guess.
+public struct BlockHover: Equatable {
+    public let id: UInt32
+    /// Visible rows to tint.
+    public let rows: Range<Int>
+    /// The visible row to attach the overlay to, nil when the command line is above the viewport.
+    public let headerRow: Int?
+
+    public static func resolve(pointerRow: Int?, blocks: [CommandBlock], allowed: Bool) -> BlockHover? {
+        guard allowed, let pointerRow,
+              let block = blocks.first(where: { $0.visibleRows.contains(pointerRow) }),
+              block.region.id != 0 else { return nil }
+        return BlockHover(id: block.region.id, rows: block.visibleRows,
+                          headerRow: block.showsHeader ? block.visibleRows.lowerBound : nil)
+    }
+}

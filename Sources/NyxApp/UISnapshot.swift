@@ -85,6 +85,8 @@ enum UISnapshot {
                       named: "pairing-\(stateName)-\(name)", into: directory,
                       background: windowGround(appearance))
             }
+            write(clientIdlePairingSheetView(appearance), named: "pairing-client-idle-\(name)",
+                  into: directory, background: windowGround(appearance))
             write(invalidCodePairingSheetView(appearance), named: "pairing-code-invalid-\(name)",
                   into: directory, background: windowGround(appearance))
             writeSettings(into: directory, appearance: appearance, suffix: "-\(name)")
@@ -382,6 +384,11 @@ enum UISnapshot {
             ("requested", .requested(peerID: "peer-device-id", peerName: "Nik's MacBook Pro")),
             ("confirming", .confirming(peerID: "peer-device-id", peerName: "Nik's MacBook Pro",
                                        fingerprint: "apple-river-stone-zero", mine: false, theirs: false)),
+            // The same state after this side has pressed Confirm: no button, and a body that says
+            // what is being waited for. It used to be the "confirming" picture with the button
+            // simply gone, which reads as a sheet that has stopped responding.
+            ("waiting", .confirming(peerID: "peer-device-id", peerName: "Nik's MacBook Pro",
+                                    fingerprint: "apple-river-stone-zero", mine: true, theirs: false)),
             ("paired", .paired(peerID: "peer-device-id", peerName: "Nik's MacBook Pro")),
             ("failed", .failed("Code expired")),
         ]
@@ -390,6 +397,18 @@ enum UISnapshot {
     private static func pairingSheetView(state: PairingFlow.State, _ appearance: NSAppearance.Name) -> NSView {
         let sheet = PairingSheet(side: .host)
         sheet.update(state: state)
+        let view = sheet.panel.contentView ?? NSView()
+        view.appearance = NSAppearance(named: appearance)
+        view.layoutSubtreeIfNeeded()
+        return view
+    }
+
+    /// Client side, `.idle`: the sheet somebody actually looks at when they choose "Enter a code…",
+    /// with the field and the default "Pair" button that submits it. It opened without one, so the
+    /// only way forward was a Return key nothing on the sheet mentioned.
+    private static func clientIdlePairingSheetView(_ appearance: NSAppearance.Name) -> NSView {
+        let sheet = PairingSheet(side: .client)
+        sheet.update(state: .idle)
         let view = sheet.panel.contentView ?? NSView()
         view.appearance = NSAppearance(named: appearance)
         view.layoutSubtreeIfNeeded()
@@ -507,12 +526,19 @@ enum UISnapshot {
             s.role = role
             return s
         }
+        // The live *writer* with a geometry note is the one picture of that state there can be: it
+        // is the only thing that puts a strip on a tab which otherwise has none.
+        var clipped = state(.live, .writer)
+        clipped.geometryNote = AttachState.geometryNote(host: GridSize(cols: 160, rows: 74),
+                                                        pane: GridSize(cols: 96, rows: 30))
         return [
             ("attaching", state(.attaching, .observer)),
             ("observer", state(.live, .observer)),
             ("reconnecting", state(.reconnecting, .writer)),
+            ("suspended", state(.suspended("Mac mini (office)"), .writer)),
             ("ended", state(.ended("Mac mini (office)"), .writer)),
             ("failed", state(.failed(AttachFailure.text(code: "host_offline")), .observer)),
+            ("clipped", clipped),
         ]
     }
 

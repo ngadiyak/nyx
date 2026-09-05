@@ -38,6 +38,10 @@ final class PairingSheet: NSObject {
     private static let invalidCodeMessage = "A code is six letters and digits, like K7M-4QZ"
 
     private var state: PairingFlow.State = .idle
+    /// The code in the field has been sent for this state. Return in the field and the default
+    /// button are two routes to one act, and AppKit does not promise which of them a Return press
+    /// takes; without this, a build where it took both would join the pairing twice.
+    private var submitted = false
 
     init(side: PairingFlow.Side) {
         self.side = side
@@ -137,6 +141,7 @@ final class PairingSheet: NSObject {
     /// `UISnapshot` picture every state directly -- then resizes the panel to fit.
     func update(state: PairingFlow.State) {
         self.state = state
+        submitted = false
         let text = PairingFlow.sheetText(for: state, side: side)
         titleLabel.stringValue = text.title
         bodyLabel.stringValue = text.body
@@ -231,6 +236,8 @@ final class PairingSheet: NSObject {
         switch state {
         case .requested: onEvent?(.accept)
         case .confirming: onEvent?(.confirmMine)
+        // The client's idle sheet: "Pair" submits the field, which is the same act as Return in it.
+        case .idle where side == .client: codeSubmitted()
         default: break
         }
     }
@@ -248,6 +255,7 @@ final class PairingSheet: NSObject {
     }
 
     @objc private func codeSubmitted() {
+        guard !submitted else { return }
         guard let normalised = PairCode.normalise(codeField.stringValue) else {
             codeErrorLabel.stringValue = PairingSheet.invalidCodeMessage
             setCodeError(hidden: false)
@@ -255,6 +263,7 @@ final class PairingSheet: NSObject {
             resizeToFitContent()
             return
         }
+        submitted = true
         // `now` starts the five-minute deadline the flow times every later state against; the
         // relay forgets the code at the same point, so this is when the pairing really began.
         onEvent?(.join(code: normalised, now: Date()))
@@ -265,6 +274,7 @@ extension PairingSheet: NSTextFieldDelegate {
     /// Clears "that code isn't valid" the moment the person starts fixing it -- not only once they
     /// resubmit -- so the message doesn't sit there describing text that no longer exists.
     func controlTextDidChange(_ obj: Notification) {
+        submitted = false
         guard obj.object as? NSTextField === codeField, !codeErrorLabel.isHidden else { return }
         setCodeError(hidden: true)
         resizeToFitContent()

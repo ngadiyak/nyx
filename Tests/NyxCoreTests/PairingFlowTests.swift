@@ -152,7 +152,7 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
     _ = client.handle(.join(code: "ABCDEF", now: t0), selfID: "id")
     let effects = client.handle(.error(code: "pair_expired"), selfID: "id")
     #expect(effects == [])
-    #expect(client.state == .failed("Code expired"))
+    #expect(client.state == .failed("That code is wrong or has expired"))
 }
 
 @Test func cancelReturnsToIdleFromAnyState() {
@@ -188,7 +188,7 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
     // the host's it has to say what to type and where the other Mac shows it.
     #expect(PairingFlow(side: .client).sheetText
         == ("Enter the code shown on the other Mac",
-            "Settings → Remote → Pair with another device… shows it", nil))
+            "Settings → Remote → Pair with another device… shows it", "Pair"))
 
     var host = PairingFlow(side: .host)
     _ = host.handle(.open(code: "ABCDEF", now: t0), selfID: "id")
@@ -208,7 +208,9 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
     // it is not repeated here.
     #expect(host.sheetText == ("Confirm the fingerprint", "Both Macs must show:", "Confirm"))
     _ = host.handle(.confirmMine, selfID: "id")
-    #expect(host.sheetText.primary == nil) // already confirmed on this side
+    // Confirmed on this side: no button left, and a body that says what is being waited for rather
+    // than going on asking for something that has already been done.
+    #expect(host.sheetText == ("Confirm the fingerprint", "Waiting for the other Mac…", nil))
 
     _ = host.handle(.confirmTheirs, selfID: "id")
     #expect(host.sheetText == ("Paired with MacBook", "", "Done"))
@@ -220,7 +222,7 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
     var failedFlow = PairingFlow(side: .client)
     _ = failedFlow.handle(.join(code: "ABCDEF", now: t0), selfID: "id")
     _ = failedFlow.handle(.error(code: "pair_expired"), selfID: "id")
-    #expect(failedFlow.sheetText == ("Pairing failed", "Code expired", "Close"))
+    #expect(failedFlow.sheetText == ("Pairing failed", "That code is wrong or has expired", "Close"))
 }
 
 // MARK: - Resolving the fingerprint before the state is shown

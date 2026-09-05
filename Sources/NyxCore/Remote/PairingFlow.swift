@@ -277,12 +277,15 @@ public struct PairingFlow: Equatable {
         return remaining
     }
 
-    /// What the relay's `error.code` means to the person waiting on this pairing. `pair_expired`
-    /// covers both a code that timed out and one the relay never heard of (it cannot tell those
-    /// apart once the code is gone), so both read as the same message.
+    /// What the relay's `error.code` means to the person waiting on this pairing.
+    ///
+    /// `pair_expired` covers a code that timed out *and* a code the relay never heard of -- once a
+    /// code is gone the relay cannot tell those apart -- so the sentence has to cover both. Saying
+    /// only "Code expired" told somebody who had mistyped one character to go back to a Mac whose
+    /// code was perfectly good and ask for another.
     private static func failureText(for errorCode: String) -> String {
         switch errorCode {
-        case "pair_expired": return "Code expired"
+        case "pair_expired": return "That code is wrong or has expired"
         case "pair_taken": return "That code is in use"
         default: return "No such code"
         }
@@ -307,8 +310,11 @@ public struct PairingFlow: Equatable {
         switch state {
         case .idle:
             guard side == .client else { return ("", "", nil) }
+            // A default button, not only the field's own Return: the sheet opened with a text field
+            // and two buttons neither of which submitted it, so the only way forward was a key
+            // nothing on screen mentioned.
             return ("Enter the code shown on the other Mac",
-                    "Settings → Remote → Pair with another device… shows it", nil)
+                    "Settings → Remote → Pair with another device… shows it", "Pair")
         case .opening:
             return ("Pairing…", "Requesting a code from the relay", nil)
         case .showingCode:
@@ -326,7 +332,12 @@ public struct PairingFlow: Equatable {
         case .confirming(_, _, _, let mine, _):
             // Just the lead-in: the fingerprint itself is shown once, by the sheet's own bold
             // label -- repeating it here as well as in the body read as the same word twice.
-            return ("Confirm the fingerprint", "Both Macs must show:", mine ? nil : "Confirm")
+            //
+            // Once this side has pressed Confirm there is nothing left to do here, and the body
+            // stops asking. It said "Both Macs must show:" over a fingerprint and no button, which
+            // reads as a sheet that has stopped responding rather than as one that is waiting.
+            guard mine else { return ("Confirm the fingerprint", "Both Macs must show:", "Confirm") }
+            return ("Confirm the fingerprint", "Waiting for the other Mac…", nil)
         case .paired(_, let peerName):
             return ("Paired with \(peerName)", "", "Done")
         case .failed(let message):

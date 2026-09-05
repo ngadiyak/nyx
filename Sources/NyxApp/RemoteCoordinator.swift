@@ -133,6 +133,10 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
             self?.appendAudit(event)
         }, snapshotLines: config.remoteSnapshotLines)
         client = RemoteClient(link: connection, identity: identity, paired: { pairedBox.devices })
+        // Every tab that is already open, before the socket is: the relay refuses an `attached` for
+        // a session its host does not publish, and a Mac that had to be restarted to publish what
+        // it already had open would be a feature nobody could find.
+        registerExistingPublications()
         // The switch being turned on, or the app being launched with it on, is the user's gesture.
         connection.connect()
     }
@@ -238,6 +242,14 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
 
     /// Removes a pairing: the device can no longer see this Mac's sessions, and every attachment it
     /// still holds is torn down rather than left running on a device the user has just disowned.
+    /// The paired list as the settings page shows it, and the audit log's last lines.
+    func auditLogTail(lines: Int) -> [String] {
+        let url = RemoteFiles.auditLog(in: RemoteFiles.directory(besideConfigAt: ConfigStore.path))
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return Array(text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+            .suffix(lines))
+    }
+
     func removePairing(deviceID: String) {
         let name = paired.devices.first { $0.id == deviceID }?.name ?? deviceID
         paired.remove(id: deviceID)
@@ -332,6 +344,65 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         pairedBox.set(paired)
         let directory = RemoteFiles.directory(besideConfigAt: ConfigStore.path)
         try? paired.save(to: RemoteFiles.pairedDevices(in: directory))
+    }
+
+    // MARK: - Publishing this Mac's sessions
+
+    /// Starts publishing one local pane's session to paired Macs, and hands back the handle the
+    /// pane keeps for as long as it lives.
+    ///
+    /// A handle is made whether or not remote sessions are on right now: switching them on later
+    /// must publish the tabs that are already open, and a pane cannot be asked to notice that. The
+    /// coordinator holds every handle weakly -- the pane owns it, and a pane that has gone must not
+    /// keep a session id alive in a list nobody will ever look at again.
+    func publish(_ session: TerminalSession) -> RemotePublication {
+        let publication = RemotePublication(session: session, coordinator: self)
+        publications.append(Weak(publication))
+        publications.removeAll { $0.value == nil }
+        register(publication)
+        return publication
+    }
+
+    /// The pane closed. Its clients are told the session ended; nothing about this Mac changes.
+    func unpublish(_ publication: RemotePublication) {
+        publications.removeAll { $0.value == nil || $0.value === publication }
+        host?.unregister(sessionID: publication.sessionID)
+    }
+
+    /// The pane published a new title, directory, command or size.
+    func summaryChanged() {
+        host?.summaryChanged()
+    }
+
+    private func register(_ publication: RemotePublication) {
+        guard let host, let session = publication.session else { return }
+        // The summary closure runs on the host's own queue, at moments nobody here chooses, so it
+        // reads only the box -- a value the pane writes from the main thread and nothing else
+        // touches. Reaching into the pane's AppKit state from that queue is the mistake this shape
+        // exists to make impossible.
+        let box = publication.box
+        host.register(sessionID: publication.sessionID, session: session, summary: { box.value })
+    }
+
+    /// Every live publication, weakly. A window with twelve tabs is twelve of these; a `Weak` box
+    /// rather than an `NSHashTable` because the order matters (it is the order the catalogue is
+    /// published in) and the list is swept on every change anyway.
+    private var publications: [Weak<RemotePublication>] = []
+
+    private struct Weak<T: AnyObject> {
+        weak var value: T?
+        init(_ value: T) { self.value = value }
+    }
+
+    /// Re-publishes every open pane after the connection is rebuilt -- the switch turned on, a
+    /// relay address changed, a token pasted in. Without it, turning remote sessions on would
+    /// publish nothing until the user opened a new tab.
+    private func registerExistingPublications() {
+        publications.removeAll { $0.value == nil }
+        for entry in publications {
+            guard let publication = entry.value else { continue }
+            register(publication)
+        }
     }
 
     // MARK: - The audit log
@@ -430,6 +501,73 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         default:
             host?.handle(message)
             client?.handle(message)
+        }
+    }
+}
+
+/// One local pane published to paired Macs, for as long as that pane exists.
+///
+/// It owns the session id (16 random bytes, made once and stable for the pane's life) and the box
+/// the summary is read out of. The pane writes the box on the main thread whenever anything a
+/// palette row shows moves; `RemoteHost` reads it on its own queue, which is why it is a box and
+/// not a closure over the pane.
+final class RemotePublication {
+    let sessionID: [UInt8]
+    /// Weak: the pane owns its session, and a published session that has ended must not be kept
+    /// alive by the list of things that were once published.
+    private(set) weak var session: TerminalSession?
+    let box = SummaryBox()
+    private weak var coordinator: RemoteCoordinator?
+    private var ended = false
+
+    init(session: TerminalSession, coordinator: RemoteCoordinator) {
+        // 16 random bytes, per the wire contract and spec §11: made when the pane is created and
+        // never persisted, so a session id means "this pane, this run" and cannot be guessed from
+        // one launch to the next.
+        self.sessionID = (0..<16).map { _ in UInt8.random(in: 0...255) }
+        self.session = session
+        self.coordinator = coordinator
+    }
+
+    /// What this pane looks like in another Mac's palette. Called on the main thread only.
+    func update(_ info: RemoteSessionInfo) {
+        guard !ended, box.set(info) else { return }
+        coordinator?.summaryChanged()
+    }
+
+    /// The pane closed. Everyone attached is told the session ended.
+    func end() {
+        guard !ended else { return }
+        ended = true
+        coordinator?.unpublish(self)
+    }
+
+    /// The published summary, readable from any thread.
+    ///
+    /// `RemoteHost.register`'s closure runs on the host's serial queue at moments the pane does not
+    /// choose -- a debounced publish, a reconnect -- so it must read only values that are safe to
+    /// touch from another thread. This is that value: written on main, copied out under a lock.
+    final class SummaryBox {
+        private let lock = NSLock()
+        private var info = RemoteSessionInfo(sessionID: "", title: "", cwd: "", repo: "", branch: "",
+                                             process: "", lastCommand: "", lastActivity: "",
+                                             cols: 80, rows: 24)
+
+        var value: RemoteSessionInfo {
+            lock.lock()
+            defer { lock.unlock() }
+            return info
+        }
+
+        /// Returns whether anything actually changed, so an unchanged summary does not wake the
+        /// host's queue and re-publish the whole catalogue every half second.
+        @discardableResult
+        func set(_ new: RemoteSessionInfo) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard new != info else { return false }
+            info = new
+            return true
         }
     }
 }

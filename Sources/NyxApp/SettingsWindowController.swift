@@ -341,11 +341,20 @@ final class SettingsWindowController: NSWindowController {
     /// Reads the real `paired.json` and the last 20 lines of `audit.log` from beside the config
     /// file in force -- the same files `RemoteHost`/`RemoteClient` read and write.
     private func refreshPairedDevicesAndActivity() {
+        // Through the coordinator when there is one: it holds the list the relay was told about, so
+        // a pairing made a second ago is here without waiting for a file to be re-read. Straight
+        // from disk otherwise, which is what a snapshot run and a window opened before remote
+        // sessions were switched on have.
         let dir = RemoteFiles.directory(besideConfigAt: ConfigStore.path)
-        pairedRows = PairedDevices.load(from: RemoteFiles.pairedDevices(in: dir)).devices
-            .sorted { $0.pairedAt > $1.pairedAt }
+        let devices = coordinator?.pairedDevices
+            ?? PairedDevices.load(from: RemoteFiles.pairedDevices(in: dir)).devices
+        pairedRows = devices.sorted { $0.pairedAt > $1.pairedAt }
         pairedTable.reloadData()
 
+        if let coordinator {
+            setActivityText(lines: coordinator.auditLogTail(lines: 20))
+            return
+        }
         let text = try? String(contentsOf: RemoteFiles.auditLog(in: dir), encoding: .utf8)
         let lines = text?.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) ?? []
         setActivityText(lines: Array(lines.suffix(20)))
@@ -372,10 +381,17 @@ final class SettingsWindowController: NSWindowController {
             return
         }
         let id = pairedRows[selected].id
-        let dir = RemoteFiles.directory(besideConfigAt: ConfigStore.path)
-        var paired = PairedDevices.load(from: RemoteFiles.pairedDevices(in: dir))
-        paired.remove(id: id)
-        try? paired.save(to: RemoteFiles.pairedDevices(in: dir))
+        // Through the coordinator: removing a pairing is not only a line out of a file. Every
+        // attachment that device still holds is torn down, the relay is told this Mac no longer
+        // lists it, and the audit log records it -- none of which a write to `paired.json` does.
+        if let coordinator {
+            coordinator.removePairing(deviceID: id)
+        } else {
+            let dir = RemoteFiles.directory(besideConfigAt: ConfigStore.path)
+            var paired = PairedDevices.load(from: RemoteFiles.pairedDevices(in: dir))
+            paired.remove(id: id)
+            try? paired.save(to: RemoteFiles.pairedDevices(in: dir))
+        }
         refreshPairedDevicesAndActivity()
     }
 
@@ -444,6 +460,7 @@ final class SettingsWindowController: NSWindowController {
     /// The catalogue, the status or the paired list moved.
     func remoteChanged() {
         refreshRemoteStatus()
+        refreshPairedDevicesAndActivity()
     }
 
     /// Brings the Remote page forward, for `remote_pair` arriving from the menu.

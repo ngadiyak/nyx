@@ -209,6 +209,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         session.onUpdate = { [weak self] in self?.sessionDidUpdate() }
         session.onEvent = { [weak self] e in DispatchQueue.main.async { self?.handle(e) } }
         session.onExit = { [weak self] code in DispatchQueue.main.async { self?.onExit?(code) } }
+        // After the callbacks and before `start()`: `register` publishes the catalogue immediately,
+        // and a session announced before it can answer an attach would be a palette row that beeps.
+        if let local = session as? TerminalSession { startPublishing(local) }
         if let restoringTranscript, !restoringTranscript.isEmpty {
             // The shell's own prompt then lands on a line of its own rather than on the end of
             // whatever the buffer was showing when it was saved.
@@ -497,6 +500,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         runningTimer = nil
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
+        // Before the session goes: everyone attached is told the session ended, and the palette row
+        // on the other Mac disappears rather than staying there pointing at nothing.
+        publication?.end()
+        publication = nil
         session.terminate()
     }
 
@@ -603,6 +610,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     private func outputArrived() {
+        lastActivityAt = Date()
         onOutput?()
         scheduleSearchRefresh()
         scheduleCommandCheck()
@@ -1127,7 +1135,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     private func handle(_ event: TerminalEvent) {
         switch event {
-        case .titleChanged(let t): onTitleChange?(t)
+        case .titleChanged(let t):
+            lastOSCTitle = t
+            onTitleChange?(t)
         case .bell:
             onBell?()
             switch config.bell {
@@ -2151,6 +2161,62 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// Exactly one terminal row tall and exactly over the first one, inside the padding and clear
     /// of the gutter -- so the strip covers a row of text and never the marks beside it.
+    // MARK: - Publishing this pane to paired Macs
+
+    /// This pane's entry in every paired Mac's palette, for as long as it lives. nil on a remote
+    /// pane (spec §11: only local PTY sessions are published, so attachments cannot chain) and when
+    /// there is no coordinator at all.
+    private var publication: RemotePublication?
+    /// The last repo lookup and the directory it was made for. `SessionSummary.repo` walks up to the
+    /// filesystem root reading `.git/HEAD`, and this runs twice a second on a busy pane -- but the
+    /// answer only changes when the directory does.
+    private var cachedRepo: (cwd: String, repo: (name: String, branch: String)?)?
+    /// What the program last set with OSC 0/2, for the summary. The tab keeps its own copy for the
+    /// bar; this pane needs one because the summary is built here.
+    private var lastOSCTitle = ""
+    /// When this pane last printed anything -- what a palette row on another Mac turns into
+    /// "2 min ago". Wall-clock rather than anything from the prompt marks, because a shell with no
+    /// integration has no marks and still has activity worth reporting.
+    private var lastActivityAt: Date?
+
+    /// Publishes this pane, if it is a local one and the application has remote sessions at all.
+    private func startPublishing(_ local: TerminalSession) {
+        guard let coordinator = (NSApp.delegate as? AppDelegate)?.remote else { return }
+        publication = coordinator.publish(local)
+        updatePublishedSummary()
+    }
+
+    /// Rebuilds what paired Macs see of this pane: its title, where it is, what it is running, what
+    /// it last ran, and the grid an attach would take. Called from the same coalesced half-second
+    /// check that notices a `cd` and a finished command, so a pane printing at full speed costs one
+    /// of these twice a second rather than one per chunk.
+    ///
+    /// Everything here is read on the main thread and handed over as a value. The host's queue
+    /// reads only that value.
+    private func updatePublishedSummary() {
+        guard let publication else { return }
+        let cwd = workingDirectory
+        let (lastCommand, cols, rows) = session.withTerminal { t -> (String?, Int, Int) in
+            (SessionSummary.lastCommand(in: t), t.cols, t.rows)
+        }
+        let title = lastOSCTitle.isEmpty ? fallbackTitle : lastOSCTitle
+        publication.update(SessionSummary.make(sessionID: RemoteID.base64url(publication.sessionID),
+                                               title: title, cwd: cwd,
+                                               processName: foregroundProcessName,
+                                               lastCommand: lastCommand, lastActivity: lastActivityAt,
+                                               cols: cols, rows: rows, repo: repo(at: cwd)))
+    }
+
+    /// The repository a directory is in, cached by directory: the walk reads a file per level, and
+    /// nothing about it can change while the pane stays where it is.
+    private func repo(at cwd: String?) -> (name: String, branch: String)? {
+        guard let cwd, !cwd.isEmpty else { return nil }
+        if let cachedRepo, cachedRepo.cwd == cwd { return cachedRepo.repo }
+        let found = SessionSummary.repo(atPath: cwd) { try? String(contentsOfFile: $0, encoding: .utf8) }
+        cachedRepo = (cwd, found)
+        return found
+    }
+
     private func layoutStickyStrip() {
         let cell = cellSizePoints
         let left = max(padding, CGFloat(PromptGutter.width(padding: Double(padding))))
@@ -2326,6 +2392,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             self.commandCheckScheduled = false
             self.checkWorkingDirectory()
             self.checkForFinishedCommand()
+            // Here rather than on its own timer: what a paired Mac sees of this pane -- its title,
+            // its directory, what it is running, what it last ran -- can only have moved when one
+            // of the two checks above could have, and this is already the coalesced half second
+            // after output arrived.
+            self.updatePublishedSummary()
         }
     }
 

@@ -193,12 +193,19 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
 
     /// The one line the settings page shows, and the row the palette's Remote section leads with
     /// when it is not simply "Online".
+    ///
+    /// Reading it consumes `droppedWhileOffline`. That is the whole of "said once": what an outage
+    /// cost is news at the moment the socket comes back and nothing at all a minute later, and a
+    /// number that stayed on the page until the *next* outage would be read as describing the
+    /// connection that is working. The next refresh says plainly "Online as …".
     var statusText: String {
         let connection = self.connection?.status.statusText(relayHost: relayHost)
             ?? .unreachable(host: relayHost)
-        return RemoteStatusText.text(mode: config.remote, connection: connection,
-                                     deviceName: deviceName, failure: startupFailure,
-                                     droppedWhileOffline: droppedWhileOffline)
+        let text = RemoteStatusText.text(mode: config.remote, connection: connection,
+                                         deviceName: deviceName, failure: startupFailure ?? saveFailure,
+                                         droppedWhileOffline: droppedWhileOffline)
+        droppedWhileOffline = 0
+        return text
     }
 
     /// The palette's Remote rows. Only a status row when there is something wrong: a section headed
@@ -211,12 +218,16 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         return shown.paletteItems(now: now, home: NSHomeDirectory())
     }
 
-    /// What the outage this connection has just come back from cost, read at the moment it came
-    /// back. `RelayConnection` clears its own counter when the *next* offline stretch starts
-    /// filling the queue, so the count has to be taken at the `.online` transition rather than
-    /// asked for whenever the page happens to redraw. It is only ever shown beside "Online as …",
-    /// and every reconnection overwrites it, so one outage's number never outlives the next.
+    /// What the outage this connection has just come back from cost. Written at the `.online`
+    /// transition, because `RelayConnection` clears its own counter when the *next* offline stretch
+    /// starts filling the queue; cleared again by the first `statusText` that shows it, so the line
+    /// appears once per outage rather than for the rest of the session.
     private var droppedWhileOffline = 0
+
+    /// The paired list could not be written to disk. Shown in place of the connection status the
+    /// same way `startupFailure` is: the pairing the user has just made works until Nyx is
+    /// restarted and is then gone, which is a half-success nobody could diagnose from silence.
+    private var saveFailure: String?
 
     private var isConnected: Bool {
         if case .online = connection?.status { return true }
@@ -358,7 +369,13 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
     private func savePaired() {
         pairedBox.set(paired)
         let directory = RemoteFiles.directory(besideConfigAt: ConfigStore.path)
-        try? paired.save(to: RemoteFiles.pairedDevices(in: directory))
+        do {
+            try paired.save(to: RemoteFiles.pairedDevices(in: directory))
+            saveFailure = nil
+        } catch {
+            // Both callers fire `onChange` immediately after this, which is what puts it on screen.
+            saveFailure = "Could not save paired devices: \(error)"
+        }
     }
 
     // MARK: - Publishing this Mac's sessions
@@ -386,6 +403,7 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
 
     /// The pane published a new title, directory, command or size.
     func summaryChanged() {
+        refreshSessionTitles()
         host?.summaryChanged()
     }
 
@@ -397,6 +415,10 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         // exists to make impossible.
         let box = publication.box
         host.register(sessionID: publication.sessionID, session: session, summary: { box.value })
+        // Recorded as it is published as well as when it is audited: a pane opened and closed
+        // without a single summary update in between still has to audit `session ended  <title>`
+        // rather than an id prefix.
+        refreshSessionTitles()
     }
 
     /// Every live publication, weakly. A window with twelve tabs is twelve of these; a `Weak` box

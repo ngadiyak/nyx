@@ -734,3 +734,27 @@ private final class Recorder {
     try f.hostSends("still here")
     #expect(f.link.messages(ofType: "detach").isEmpty)
 }
+
+/// The geometry check must not become a way to kill a working tab. The host signs its ephemeral
+/// key and the session id, not the two numbers, so anyone who saw a genuine `attached` can re-send
+/// it with `cols` rewritten -- and if the size were checked before the round guards, that copy
+/// would end a session that is live and running. It is a replay, and replays are dropped.
+@Test func aReplayedAttachedWithAbsurdGeometryChangesNothingOnALiveAttachment() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    var answer = try f.acceptAttach(cols: 160, rows: 74)
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    #expect(attachment.state.phase == .live)
+
+    answer.cols = 1_000_000
+    f.client.handle(answer)
+
+    #expect(attachment.state.phase == .live)
+    #expect(attachment.cols == 160)
+    #expect(attachment.rows == 74)
+    // And the session still decrypts: nothing about the cipher was touched.
+    let recorder = Recorder()
+    recorder.watch(attachment)
+    try f.hostSends("still here")
+    #expect(recorder.text == "still here")
+}

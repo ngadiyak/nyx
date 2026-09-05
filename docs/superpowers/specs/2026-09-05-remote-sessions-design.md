@@ -303,6 +303,13 @@ None of these stops the feature being used; each is a thing a person will notice
   (`bad_token`, `bad_signature`, `replaced`), open attachments are ended with a reason, but the
   catalogue keeps the rows it last heard about; the palette then lists sessions on Macs this device
   can no longer reach. `.offline` does clear it, which is what `.failed` should do too.
+- **A pairing confirmed on one side at the five-minute boundary can leave the other side failed.**
+  Both flows count the same five minutes (§5.2) from the `open` or the `join` that started them,
+  but they start a second or two apart and each ticks on its own timer, so a pairing confirmed
+  right at the deadline can be stored on one Mac while the other has already said "Pairing timed
+  out". The two are then not paired, which is the safe direction: the one that timed out stores
+  nothing and shows nothing. Re-pairing recovers -- `PairedDevices.add` updates an existing id in
+  place rather than duplicating it. A shared deadline carried on the wire would close it.
 - **Disabled palette rows are still selectable.** A Mac that is offline, one with nothing open, and
   the relay's status line are drawn greyed and beep when run (§5.3), but `CommandPalette` knows
   nothing about `isEnabled`: `moveSelection` walks onto them, and `selection = 0` after a rank

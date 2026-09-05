@@ -238,18 +238,6 @@ public final class RemoteClient {
                 // `attaching`, rather than being decrypted by whoever sent it.
                 return
             }
-            // Checked before the cipher is built, and fatal to the attachment rather than merely
-            // ignored: the size is what the mirror `Terminal` is resized to on the main thread, and
-            // an `attached` this far outside the possible is not a host with an odd window -- it is
-            // a message this client has no reason to trust the rest of either.
-            guard AttachGeometry.isSane(cols: m.cols ?? 0, rows: m.rows ?? 0) else {
-                // The host still believes it has a viewer, and a stranded attachment holds the
-                // writer token; this side is leaving, so it says so before it stops listening.
-                link.send(.detach(to: hostID, sessionID: key))
-                end(reason: AttachFailure.badGeometry)
-                client?.forget(key)
-                return
-            }
             lock.lock()
             // `awaiting` is what makes this one round's answer rather than any round's: it is set
             // by `begin()` and cleared here, so a duplicate inside this round and an answer to the
@@ -259,6 +247,23 @@ public final class RemoteClient {
                   let session = try? E2ESession(mine: ephemeral, peer: pubkey,
                                                 sessionID: sessionID, isHost: false) else {
                 lock.unlock()
+                return
+            }
+            // *After* the round guards, and deliberately so. The host's signature covers its
+            // ephemeral key and the session id, not the geometry, so a copy of a genuine `attached`
+            // with its cols/rows rewritten is a message anyone who saw the original can produce --
+            // and checking the size first would let that copy end a tab that is already live. Every
+            // such copy is a replay, and the guards above have already dropped it. What is left
+            // here is an answer this attachment asked for and has not used, which is the only kind
+            // worth refusing out loud: the size is what the mirror `Terminal` is resized to on the
+            // main thread, and one this far outside the possible is not a host with an odd window.
+            guard AttachGeometry.isSane(cols: m.cols ?? 0, rows: m.rows ?? 0) else {
+                lock.unlock()
+                // The host still believes it has a viewer, and a stranded attachment holds the
+                // writer token; this side is leaving, so it says so before it stops listening.
+                link.send(.detach(to: hostID, sessionID: key))
+                end(reason: AttachFailure.badGeometry)
+                client?.forget(key)
                 return
             }
             awaiting = nil

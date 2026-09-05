@@ -22,13 +22,22 @@ public enum RemoteStatusText {
     /// `failure` is something that went wrong before the relay was ever reached -- an identity file
     /// this Mac cannot read or write. It outranks the connection (there is no connection to report)
     /// but not `off`, because a feature that is switched off has nothing to fail at.
+    ///
+    /// `droppedWhileOffline` is what the connection's send queue threw away during the outage it
+    /// has just come back from, and it is reported on exactly one state: `online`. Anywhere else it
+    /// would be describing an outage that is still happening in the past tense. It is said once per
+    /// outage -- the caller reads the count at the moment the socket comes back -- because a number
+    /// that stayed on the page for the rest of the session would stop meaning "just now".
     public static func text(mode: RemoteMode, connection: Connection, deviceName: String,
-                            failure: String? = nil) -> String {
+                            failure: String? = nil, droppedWhileOffline: Int = 0) -> String {
         guard mode == .on else { return "Remote sessions are off" }
         if let failure { return failure }
         switch connection {
         case .connecting: return "Connecting\u{2026}"
-        case .online: return "Online as \(deviceName)"
+        case .online:
+            guard droppedWhileOffline > 0 else { return "Online as \(deviceName)" }
+            let what = droppedWhileOffline == 1 ? "1 update was" : "\(droppedWhileOffline) updates were"
+            return "Online as \(deviceName) \u{00b7} \(what) dropped while offline"
         case .unreachable(let host): return "Relay unreachable (\(host))"
         case .badToken: return "Relay rejected this device's token"
         case .refused(let reason): return "Relay refused this device (\(reason))"

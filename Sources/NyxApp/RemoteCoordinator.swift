@@ -197,7 +197,8 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         let connection = self.connection?.status.statusText(relayHost: relayHost)
             ?? .unreachable(host: relayHost)
         return RemoteStatusText.text(mode: config.remote, connection: connection,
-                                     deviceName: deviceName, failure: startupFailure)
+                                     deviceName: deviceName, failure: startupFailure,
+                                     droppedWhileOffline: droppedWhileOffline)
     }
 
     /// The palette's Remote rows. Only a status row when there is something wrong: a section headed
@@ -209,6 +210,13 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         shown.relayStatusText = isConnected ? nil : statusText
         return shown.paletteItems(now: now, home: NSHomeDirectory())
     }
+
+    /// What the outage this connection has just come back from cost, read at the moment it came
+    /// back. `RelayConnection` clears its own counter when the *next* offline stretch starts
+    /// filling the queue, so the count has to be taken at the `.online` transition rather than
+    /// asked for whenever the page happens to redraw. It is only ever shown beside "Online as …",
+    /// and every reconnection overwrites it, so one outage's number never outlives the next.
+    private var droppedWhileOffline = 0
 
     private var isConnected: Bool {
         if case .online = connection?.status { return true }
@@ -488,6 +496,9 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
 
     private func statusChanged(_ status: RelayConnection.Status) {
         if case .online = status {
+            // Read here and nowhere else: the count is what the outage just ended cost, and
+            // `RelayConnection` clears it when the next one starts filling the queue.
+            droppedWhileOffline = connection?.droppedWhileOffline ?? 0
             // The relay keeps nothing across a disconnect: it dropped this device's catalogue and
             // every attachment on it. Both sides re-declare, which is also what publishes this
             // Mac's sessions and re-declares the pairings for the first connection of all.

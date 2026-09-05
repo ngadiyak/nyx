@@ -22,13 +22,15 @@ private func render(cols: Int = 8, rows: Int = 3, padding: Int,
                     summaries: [(row: Int, text: String, color: RGB)] = [],
                     notes: [String?] = [],
                     highlighted: Range<Int>? = nil,
-                    selection: [Range<Int>?] = []) throws -> (FontSet, Int, (Int, Int) -> Pixel) {
+                    selection: [Range<Int>?] = [],
+                    lines givenLines: [Row]? = nil,
+                    cursor: Cursor? = nil) throws -> (FontSet, Int, (Int, Int) -> Pixel) {
     let device = try #require(MTLCreateSystemDefaultDevice())
     let fonts = FontSet(family: "Menlo", pointSize: 12, scale: 1)
     let r = try Renderer(device: device, fonts: fonts)
-    let lines = Array(repeating: Row(cols: cols), count: rows)
+    let lines = givenLines ?? Array(repeating: Row(cols: cols), count: rows)
     let frame = RenderFrame(cols: cols, rows: rows, lines: lines, graphemes: [], palette: blockPalette(),
-                            cursor: nil, cursorShape: .block, focused: true, preedit: nil,
+                            cursor: cursor, cursorShape: .block, focused: true, preedit: nil,
                             selection: selection,
                             rowNotes: notes, blockSpines: spines, blockSummaries: summaries,
                             highlightedRows: highlighted)
@@ -115,4 +117,50 @@ private let spineColor = RGB(0, 255, 0)
     var ink = 0
     for x in lastCell { for y in 0..<fonts.metrics.height where px(x, y).g > 100 { ink += 1 } }
     #expect(ink > 4)
+}
+
+/// The caret with a fold on screen.
+///
+/// `Pane.render()` used to hand the renderer `screen.cursor` — a *screen* row — while every line in
+/// the frame is a display slot. With a fold hiding rows above the prompt those are different
+/// numbers, and the block cursor was drawn as many rows below the prompt as the fold had hidden
+/// above it: nine, in the product manager's session. This builds the frame exactly the way the pane
+/// does, mapping the caret's absolute row through the same display rows the lines came from.
+@Test func theBlockCursorLandsOnThePromptWhenAFoldIsOnScreen() throws {
+    let cols = 12, rows = 6
+    let t = Terminal(cols: cols, rows: rows, scrollbackLimit: 200)
+    func mark(_ letter: String, _ status: Int32? = nil) -> String {
+        "\u{1b}]133;\(status.map { "\(letter);\($0)" } ?? letter)\u{7}"
+    }
+    t.feed(mark("A") + "$ " + mark("B") + "build\r\n" + mark("C"))
+    for i in 1...8 { t.feed("out \(i)\r\n") }
+    t.feed(mark("D", 0))
+    t.feed(mark("A") + "$ ")
+
+    var folding = OutputFolding()
+    folding.fold(try #require(t.command(containingAbsoluteRow: 0)).id, .all)
+    let top = t.viewportTopRow
+    let display = t.displayRows(from: top, count: rows, folding: folding)
+    let lines = display.map { entry -> Row in
+        switch entry {
+        case .row(let absolute): return t.absoluteRow(absolute) ?? Row(cols: cols)
+        case .fold(_, let hidden, let failed): return t.foldPlaceholderRow(hiddenRows: hidden, failed: failed)
+        }
+    } + Array(repeating: Row(cols: cols), count: max(0, rows - display.count))
+
+    let caretAbsolute = t.scrollback.count + t.screen.cursor.y
+    let slot = try #require(DisplayRows.cursorSlot(absoluteRow: caretAbsolute, in: display))
+    let promptSlot = try #require(display.firstIndex { $0 == .row(caretAbsolute) })
+    #expect(slot == promptSlot)
+    // The defect it replaces: the raw screen row is a different slot entirely.
+    #expect(t.screen.cursor.y != slot)
+
+    let (fonts, _, px) = try render(cols: cols, rows: rows, padding: 4,
+                                    lines: lines, cursor: Cursor(x: t.screen.cursor.x, y: slot))
+    let m = fonts.metrics
+    let cursorCell = { (slot: Int) -> Pixel in
+        px(4 + t.screen.cursor.x * m.width + m.width / 2, 4 + slot * m.height + m.height / 2)
+    }
+    #expect(cursorCell(slot) == Pixel(r: 0, g: 0, b: 255))            // the palette's cursor colour
+    #expect(cursorCell(t.screen.cursor.y) != Pixel(r: 0, g: 0, b: 255))
 }

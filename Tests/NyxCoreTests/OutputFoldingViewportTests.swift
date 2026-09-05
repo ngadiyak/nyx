@@ -46,14 +46,14 @@ private func folded(_ ids: UInt32..., shape: FoldShape = .all) -> OutputFolding 
 @Test func aFullFoldReplacesTheOutputWithOnePlaceholder() {
     let rows = session().displayRows(from: 0, count: 6, folding: folded(2))
     #expect(rows[2] == .row(2))
-    #expect(rows[3] == .fold(commandID: 2, hiddenRows: 10))
+    #expect(rows[3] == .fold(commandID: 2, hiddenRows: 10, failed: true))
     #expect(rows[4] == .row(13))
 }
 
 @Test func aTailFoldKeepsTheLastLinesAfterThePlaceholder() {
     let rows = session().displayRows(from: 0, count: 8, folding: folded(2, shape: .tail(keep: 3)))
     #expect(rows[2] == .row(2))
-    #expect(rows[3] == .fold(commandID: 2, hiddenRows: 7))
+    #expect(rows[3] == .fold(commandID: 2, hiddenRows: 7, failed: true))
     #expect(rows[4] == .row(10))
     #expect(rows[5] == .row(11))
     #expect(rows[6] == .row(12))
@@ -63,7 +63,7 @@ private func folded(_ ids: UInt32..., shape: FoldShape = .all) -> OutputFolding 
 @Test func aViewportStartingInsideHiddenRowsStartsOnThePlaceholder() {
     let t = session()
     let rows = t.displayRows(from: 5, count: 4, folding: folded(2, shape: .tail(keep: 3)))
-    #expect(rows.first == .fold(commandID: 2, hiddenRows: 7))
+    #expect(rows.first == .fold(commandID: 2, hiddenRows: 7, failed: true))
     #expect(rows[1] == .row(10))
 }
 
@@ -77,15 +77,53 @@ private func folded(_ ids: UInt32..., shape: FoldShape = .all) -> OutputFolding 
     #expect(rows.count == 6)
 }
 
-@Test func thePlaceholderRowIsDimItalicBrightBlack() {
+/// Not dim: dimmed bright black reads as a comment the shell printed, and the placeholder is the
+/// button that puts the output back. It keeps the italic and takes the block's own status colour.
+@Test func thePlaceholderRowIsItalicInTheBlocksStatusColour() {
     let t = session()
-    let row = t.foldPlaceholderRow(hiddenRows: 10)
+    let row = t.foldPlaceholderRow(hiddenRows: 10, failed: false)
     let text = String(row.cells.prefix(30).map { $0.content == 0 ? " " : Character(UnicodeScalar($0.content)!) })
         .trimmingCharacters(in: .whitespaces)
     #expect(text == OutputFolding.placeholder(hiddenRows: 10))
     #expect(row.cells[0].fg == .indexed(8))
-    #expect(row.cells[0].attrs.contains(.dim))
+    #expect(!row.cells[0].attrs.contains(.dim))
     #expect(row.cells[0].attrs.contains(.italic))
+
+    let failed = t.foldPlaceholderRow(hiddenRows: 10, failed: true)
+    #expect(failed.cells[0].fg == .indexed(1))
+    #expect(!failed.cells[0].attrs.contains(.dim))
+    #expect(failed.cells[0].attrs.contains(.italic))
+}
+
+/// A fold placeholder carries its command's status, so the pane can colour the row without
+/// re-deriving the region on the render path.
+@Test func aPlaceholderKnowsWhetherItsCommandFailed() {
+    let rows = session().displayRows(from: 0, count: 6, folding: folded(2))
+    #expect(rows[3] == .fold(commandID: 2, hiddenRows: 10, failed: true))
+    let ok = session().displayRows(from: 13, count: 3, folding: folded(3))
+    #expect(ok[1] == .fold(commandID: 3, hiddenRows: 8, failed: false))
+}
+
+// MARK: - Where the cursor goes when a fold is on screen
+
+// The cursor and the IME preedit are positioned by screen row while every line in the frame is a
+// display slot. With a fold on screen those are different numbers, and the caret was drawn as far
+// below the prompt as the fold had hidden rows above it.
+
+@Test func theCursorLandsOnItsOwnRowWhenAFoldIsOnScreen() {
+    let display = session().displayRows(from: 0, count: 6, folding: folded(2))
+    // Row 13 is `$ tail`; ten hidden rows collapsed into one placeholder above it.
+    #expect(DisplayRows.cursorSlot(absoluteRow: 13, in: display) == 4)
+}
+
+@Test func aCursorOnARowInsideAFoldIsNotDrawnAtAll() {
+    let display = session().displayRows(from: 0, count: 6, folding: folded(2))
+    #expect(DisplayRows.cursorSlot(absoluteRow: 5, in: display) == nil)
+}
+
+@Test func withoutFoldsTheCursorSlotIsTheOffsetFromTheViewportTop() {
+    let display = session().displayRows(from: 10, count: 6, folding: OutputFolding())
+    #expect(DisplayRows.cursorSlot(absoluteRow: 13, in: display) == 3)
 }
 
 @Test func searchHitsInsideAFoldAreNotDrawn() {

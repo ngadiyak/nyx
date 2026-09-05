@@ -12,8 +12,10 @@ public enum FoldShape: Equatable {
 public enum DisplayRow: Equatable {
     case row(Int)
     /// A folded command's hidden output, standing in for `hiddenRows` rows. Carries the command's
-    /// id so clicking it can unfold the right block after the rows underneath have shifted.
-    case fold(commandID: UInt32, hiddenRows: Int)
+    /// id so clicking it can unfold the right block after the rows underneath have shifted, and
+    /// whether that command failed -- the placeholder is drawn in the block's own status colour,
+    /// and the region is in hand here, where the entry is built, rather than on the render path.
+    case fold(commandID: UInt32, hiddenRows: Int, failed: Bool)
 }
 
 /// Which commands' output is collapsed, and how.
@@ -139,7 +141,7 @@ public extension Terminal {
         var out: [DisplayRow] = []
         var row = max(0, top)
         if let (region, hidden) = foldedCommand(containingOutputRow: row, folding: folding) {
-            out.append(.fold(commandID: region.id, hiddenRows: hidden.count))
+            out.append(.fold(commandID: region.id, hiddenRows: hidden.count, failed: region.failed))
             row = hidden.upperBound
         }
         while out.count < count && row < totalRows {
@@ -159,7 +161,9 @@ public extension Terminal {
                 out.append(.row(next))
                 next += 1
             }
-            if out.count < count { out.append(.fold(commandID: id, hiddenRows: hidden.count)) }
+            if out.count < count {
+                out.append(.fold(commandID: id, hiddenRows: hidden.count, failed: region.failed))
+            }
             row = hidden.upperBound
         }
         return out
@@ -182,13 +186,17 @@ public extension Terminal {
     }
 
     /// The placeholder as a row of cells, so it is drawn through the ordinary row path and nothing
-    /// in NyxRender learns what a fold is. Dim and italic in the theme's own bright black: a note
-    /// about the buffer, not something a program printed.
-    func foldPlaceholderRow(hiddenRows: Int) -> Row {
+    /// in NyxRender learns what a fold is.
+    ///
+    /// Italic, and in the block's own status colour -- red for a command that failed, bright black
+    /// otherwise. It used to be dim as well, and dimmed bright black read as a comment the shell
+    /// had printed rather than as the one thing on that row you are meant to click; a folded
+    /// failure looked exactly like a folded success, which is the state you most want to spot.
+    func foldPlaceholderRow(hiddenRows: Int, failed: Bool) -> Row {
         var row = Row(cols: cols)
         var cell = Cell()
-        cell.fg = .indexed(8)
-        cell.attrs = [.dim, .italic]
+        cell.fg = failed ? .indexed(1) : .indexed(8)
+        cell.attrs = [.italic]
         for (column, scalar) in OutputFolding.placeholder(hiddenRows: hiddenRows).unicodeScalars.enumerated() {
             guard column < cols else { break }
             cell.content = scalar.value
@@ -212,6 +220,23 @@ public enum DisplayRows {
         return map
     }
 
+    /// The slot showing `absoluteRow`, or nil when a fold hides that row.
+    ///
+    /// The cursor and the IME preedit are the only two things the renderer places by the *screen*
+    /// row it is handed, while every line in the frame is a display slot; with a fold on screen
+    /// those are different numbers, and the caret was drawn as many rows below the prompt as the
+    /// fold had hidden above it. A hidden row has no slot at all, and no caret is a better answer
+    /// than a caret on whichever row moved into that index.
+    ///
+    /// A walk rather than `indexByAbsoluteRow`: this is asked once per frame for one row, and
+    /// building a dictionary of the whole viewport to answer it would cost more than it saves.
+    public static func cursorSlot(absoluteRow: Int, in display: [DisplayRow]) -> Int? {
+        for (slot, entry) in display.enumerated() {
+            if case .row(absoluteRow) = entry { return slot }
+        }
+        return nil
+    }
+
     /// The display slots that belong to one block: every `.row` slot whose absolute row, relative
     /// to `viewportTop`, falls in `visibleRows`, plus the block's own fold placeholder -- it stands
     /// for the block's hidden output, so hovering or spining it should cover that slot too. `nil`
@@ -232,7 +257,7 @@ public enum DisplayRows {
             switch entry {
             case .row(let absolute):
                 guard visibleRows.contains(absolute - viewportTop) else { continue }
-            case .fold(let id, _):
+            case .fold(let id, _, _):
                 guard id == commandID else { continue }
             }
             if first == nil { first = slot }

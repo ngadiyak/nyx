@@ -88,7 +88,7 @@ private func session() -> Terminal {
 
     let rows = t.displayRows(in: 0..<14, folding: folding)
     #expect(rows.contains(.row(2)))
-    #expect(rows.contains { if case .fold(2, let hidden) = $0 { return hidden > 1 } else { return false } })
+    #expect(rows.contains { if case .fold(2, let hidden, _) = $0 { return hidden > 1 } else { return false } })
     #expect(!rows.contains(.row(6)))     // a row of the folded output
     #expect(rows.contains(.row(13)))     // the prompt after it is untouched
 }

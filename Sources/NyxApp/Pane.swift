@@ -270,6 +270,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 role: .button, frame: frame, in: self,
                 press: { [weak self] in self?.toggleFold(ofCommand: header.id, full: false) }))
         }
+        // The fold placeholder is a button -- clicking it puts the output back -- and it is drawn
+        // as a row of cells, so nothing in the view hierarchy reports it. Without this, a folded
+        // block could be opened with a mouse and by no other means.
+        for (row, entry) in foldRowsOnScreen.enumerated() {
+            guard case .fold(let id, let hidden, _) = entry, id != 0 else { continue }
+            let frame = NSRect(x: padding, y: bounds.height - padding - CGFloat(row + 1) * cell.height,
+                               width: bounds.width - padding * 2, height: cell.height)
+            children.append(DrawnControlElement.make(
+                label: "Unfold the \(hidden) hidden lines of the command on line \(row + 1)",
+                role: .button, frame: frame, in: self,
+                press: { [weak self] in
+                    self?.folding.unfold(id)
+                    self?.markDirty()
+                }))
+        }
         return children
     }
 
@@ -694,7 +709,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     self.armedNotifications = self.armedNotifications.filter { $0 >= oldest }
                 }
             }
-            let cursor: Cursor? = (t.modes.showCursor && t.viewportOffset == 0) ? t.screen.cursor : nil
+            // Screen coordinates: `cursor.y` counts from the top of the live screen. The renderer
+            // takes it as an index into the lines it is handed, which are display slots, so with a
+            // fold on screen it is remapped below -- and the IME preedit with it, since that is
+            // drawn from the same coordinate.
+            var cursor: Cursor? = (t.modes.showCursor && t.viewportOffset == 0) ? t.screen.cursor : nil
             // Resolved here, inside the lock, so the highlighted columns belong to the same
             // viewport as the lines being drawn.
             let top = t.viewportTopRow
@@ -723,10 +742,20 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // fold pulled up into that slot.
                 let display = t.displayRows(from: top, count: t.rows, folding: self.folding)
                 self.foldRowsOnScreen = display
+                // The caret goes through the same map as the text under it. Without this it was
+                // drawn at `cursor.y` -- as many rows below the prompt as the folds above had
+                // hidden -- which with two folds on screen put it nine rows down an empty screen.
+                // A caret whose row is inside a fold is not drawn at all: it has no slot.
+                if let c = cursor {
+                    let absolute = t.scrollback.count + c.y
+                    cursor = DisplayRows.cursorSlot(absoluteRow: absolute, in: display)
+                        .map { Cursor(x: c.x, y: $0) }
+                }
                 lines = display.map { row in
                     switch row {
                     case .row(let absolute): return t.absoluteRow(absolute) ?? Row(cols: t.cols)
-                    case .fold(_, let hidden): return t.foldPlaceholderRow(hiddenRows: hidden)
+                    case .fold(_, let hidden, let failed):
+                        return t.foldPlaceholderRow(hiddenRows: hidden, failed: failed)
                     }
                 } + Array(repeating: Row(cols: t.cols), count: max(0, t.rows - display.count))
                 selected = display.map { row in
@@ -1576,7 +1605,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let visible = visibleRow(at: point)
         let pointerRow: Int?
         if let visible, foldRowsOnScreen.indices.contains(visible),
-           case .fold(let commandID, _) = foldRowsOnScreen[visible] {
+           case .fold(let commandID, _, _) = foldRowsOnScreen[visible] {
             // The pointer is on a fold placeholder, which has no absolute row of its own: it
             // stands for the block whose output it hides, so hover that block directly.
             pointerRow = blocks.first { $0.region.id == commandID }?.visibleRows.lowerBound
@@ -2014,7 +2043,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func unfoldPlaceholder(at point: NSPoint) -> Bool {
         guard !folding.isEmpty, let visible = visibleRow(at: point),
               foldRowsOnScreen.indices.contains(visible),
-              case .fold(let id, _) = foldRowsOnScreen[visible] else { return false }
+              case .fold(let id, _, _) = foldRowsOnScreen[visible] else { return false }
         folding.unfold(id)
         markDirty()
         return true

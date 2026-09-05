@@ -58,6 +58,11 @@ public final class TerminalSession {
     /// session that has been running for hours -- so it is held under the same lock the reader
     /// thread already takes, rather than being a plain stored property racing with the reader.
     ///
+    /// One slot, one consumer: assigning replaces whatever was there, silently, so exactly one
+    /// thing per session may tap it (today, the remote host that publishes that session). A second
+    /// consumer needs a fan-out of its own rather than a second assignment here, which would leave
+    /// the first one wondering why its stream stopped.
+    ///
     /// It is called on the reader thread with the terminal lock **released**, and it must return
     /// immediately: everything it does happens between two reads of the PTY, so blocking here (on a
     /// socket, say) stalls the child process. Hand the bytes to a queue and return. It must not
@@ -155,6 +160,9 @@ public final class TerminalSession {
     }
 
     /// Installs a tap and says which chunk it will first be called for, in one step.
+    ///
+    /// The same single slot as `onOutput`, and the same rule: one consumer per session. Pass nil to
+    /// remove the tap.
     ///
     /// A session is usually tapped in the middle of its life -- it has been in a tab for hours
     /// before anything asks to publish it -- so a tap that assumed it was starting from chunk zero

@@ -16,6 +16,11 @@ import Foundation
 ///   host reported through OSC 7 rather than asking this machine's kernel about another machine's
 ///   process.
 ///
+/// The output tap (`TerminalSession.onOutput`/`tapOutput`) is deliberately not part of this: it is
+/// a single slot with one consumer -- the remote host that publishes a session -- and a pane draws
+/// from the terminal, not from the byte stream. A conformer that is itself a remote attachment has
+/// no PTY to tap.
+///
 /// `resize` on a remote attachment does not resize the host's PTY (the host's own user owns that
 /// window size); it is the pane's request, and a remote conformer may ignore it.
 public protocol PaneSession: AnyObject {

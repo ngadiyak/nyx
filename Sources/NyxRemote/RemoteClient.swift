@@ -81,13 +81,17 @@ public final class RemoteClient {
         /// over: a keystroke sent during the snapshot would arrive at the host out of the order the
         /// user saw, and one sent by an observer would be a keystroke the user was told was
         /// impossible.
+        ///
+        /// The seal and the transmit are one critical section, and deliberately so even though it
+        /// means holding a lock across a call into the link. Counters are the order: two threads
+        /// typing at once (a paste while a key repeats) that sealed under the lock and transmitted
+        /// after it could arrive at the host in the other order, and the host -- which rejects
+        /// anything at or below the last counter it accepted -- would drop the earlier keystroke
+        /// for good. `RelayLink.send` only enqueues, so the section stays short.
         public func send(_ input: [UInt8]) {
             lock.lock()
-            guard !finished, _state.acceptsInput, let e2e, let frame = try? e2e.seal(input) else {
-                lock.unlock()
-                return
-            }
-            lock.unlock()
+            defer { lock.unlock() }
+            guard !finished, _state.acceptsInput, let e2e, let frame = try? e2e.seal(input) else { return }
             link.send(frame)
         }
 
@@ -138,6 +142,12 @@ public final class RemoteClient {
             report { $0.phase = .ended(self.hostName) }
         }
 
+        /// The host's answer to *this* attach. Accepted only while one is outstanding: a relay that
+        /// re-delivers an `attached`, or an attacker replaying one, would otherwise rebuild the
+        /// cipher from the same two ephemeral keys -- the same session keys, with the replay window
+        /// wound back to the start -- so every frame of the session so far could be played into the
+        /// terminal again, and the tab would fall from `live` back to `snapshot` while the live
+        /// stream carried on.
         func handleAttached(_ m: RemoteMessage) {
             guard let pubkey = m.ephemeralPubkey, let sig = m.sig,
                   E2ESession.verifyPeer(pubkey: pubkey, sig: sig, sessionID: sessionID, deviceID: hostID) else {
@@ -147,8 +157,9 @@ public final class RemoteClient {
                 return
             }
             lock.lock()
-            guard !finished, let session = try? E2ESession(mine: ephemeral, peer: pubkey,
-                                                           sessionID: sessionID, isHost: false) else {
+            guard !finished, isAwaitingAttach(_state.phase),
+                  let session = try? E2ESession(mine: ephemeral, peer: pubkey,
+                                                sessionID: sessionID, isHost: false) else {
                 lock.unlock()
                 return
             }
@@ -207,6 +218,13 @@ public final class RemoteClient {
             lock.lock()
             defer { lock.unlock() }
             return !finished && !isEnded(_state.phase)
+        }
+
+        /// The two phases in which an `attached` is something this client asked for: the first
+        /// attach, and the re-attach after a reconnect. In `snapshot` and `live` the handshake is
+        /// over, and in `ended` there is nothing left to attach to.
+        private func isAwaitingAttach(_ phase: AttachState.Phase) -> Bool {
+            phase == .attaching || phase == .reconnecting
         }
 
         private func isEnded(_ phase: AttachState.Phase) -> Bool {

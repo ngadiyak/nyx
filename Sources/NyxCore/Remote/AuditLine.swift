@@ -10,6 +10,11 @@ public enum AuditLine {
         case attached(device: String, session: String)
         case tookControl(device: String, session: String)
         case detached(device: String, session: String)
+        /// The host ended the session itself -- the tab was closed, the shell exited. Distinct from
+        /// `detached`, which is a client leaving a session that carries on: the log has to say which
+        /// end walked away, because "detached" against every attached device is what a host looks
+        /// like when it is the one that stopped, and that reads as the clients' doing.
+        case sessionEnded(session: String)
     }
 
     public static func text(_ event: Event, at date: Date) -> String {
@@ -25,6 +30,8 @@ public enum AuditLine {
             return "\(iso)  took control  \(device) → \(session)"
         case .detached(let device, let session):
             return "\(iso)  detached  \(device) → \(session)"
+        case .sessionEnded(let session):
+            return "\(iso)  session ended  \(session)"
         }
     }
 }

@@ -28,3 +28,8 @@ private let date = Date(timeIntervalSince1970: 1_788_609_600) // 2026-09-05T12:0
     let text = AuditLine.text(.removed("MacBook"), at: date)
     #expect(text == "2026-09-05T12:00:00Z  removed  MacBook")
 }
+
+@Test func sessionEndedLineFormat() {
+    let text = AuditLine.text(.sessionEnded(session: "zsh"), at: date)
+    #expect(text == "2026-09-05T12:00:00Z  session ended  zsh")
+}

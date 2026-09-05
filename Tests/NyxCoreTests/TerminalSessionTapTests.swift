@@ -64,16 +64,22 @@ private func waitUntil(_ timeout: TimeInterval = 5, _ condition: () -> Bool) -> 
     }
     session.start()
 
-    #expect(waitUntil { session.withTerminal { $0.transcript(options: .plainText) }.contains("beta") })
-    // Once output has stopped, the count the terminal reports and the number of tap calls must
-    // agree: that equality is what lets a remote host say which chunks its snapshot already
+    // Waits for the tap itself to have been called twice, not for the text to appear in the
+    // terminal: the terminal is fed *before* the tap is called, so waiting on the transcript can
+    // return in the window between the two and compare a count against a tap that has not run yet.
+    func taken() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return taps
+    }
+    #expect(waitUntil { taken() >= 2 })
+    // The count the terminal reports and the number of tap calls must agree once output has
+    // stopped: that equality is what lets a remote host say which chunks its snapshot already
     // contains and which are still to come.
     let (transcript, count) = session.withTerminalAndOutputCount { t, n in (t.transcript(options: .plainText), n) }
-    lock.lock()
-    let taken = taps
-    lock.unlock()
-    #expect(count == UInt64(taken))
+    #expect(count == UInt64(taken()))
     #expect(transcript.contains("alpha"))
+    #expect(transcript.contains("beta"))
 }
 
 @Test func aSessionWithNoTapStillRunsAndFeedsItsTerminal() throws {

@@ -32,6 +32,12 @@ private final class HostFixture {
         lock.unlock()
     }
 
+    func unpair(_ deviceID: String) {
+        lock.lock()
+        pairedIDs.removeAll { $0 == deviceID }
+        lock.unlock()
+    }
+
     init(script: String, snapshotLines: Int = 200, debounce: TimeInterval = 0.05) throws {
         identity = try testIdentity()
         link = FakeLink(deviceID: identity.deviceID)
@@ -435,4 +441,129 @@ private func waitForShell(_ f: HostFixture, containing needle: String) -> Bool {
     // while quietly losing the first chunk after the snapshot, which is what a wrong offset does.
     let live = f.text(peer, Array(f.link.frames.dropFirst(snapshot.count)))
     #expect(live == "go\r\nafter:go\r\n")
+}
+
+@Test func aClientThatGoesOfflineLosesItsAttachmentAndItsWriterToken() throws {
+    let f = try HostFixture(script: "read x; printf \"got:$x\\n\"; sleep 30")
+    defer { f.terminate() }
+    let writer = try TestPeer()
+    let observer = try TestPeer()
+    f.pair(writer.deviceID)
+    f.pair(observer.deviceID)
+    f.register()
+    let writerAttached = try f.attach(writer)
+    let observerAttached = try f.attach(observer)
+    #expect(writerAttached?.role == "writer")
+    #expect(observerAttached?.role == "observer")
+
+    // The relay says nothing else about a client whose socket closed: `presence` is the whole
+    // notification. Without acting on it the writer token stays with a device that has gone, so
+    // nobody left can type, and every chunk of output is still encrypted for it.
+    f.link.reset()
+    f.host.handle(RemoteMessage(t: "presence", devices: [
+        RemotePresence(deviceID: writer.deviceID, name: "laptop", online: false),
+        RemotePresence(deviceID: observer.deviceID, name: "ipad", online: true),
+    ]))
+    f.host.flush()
+
+    let roles = f.link.messages(ofType: "role")
+    #expect(roles.count == 1)
+    #expect(roles.first?.to == observer.deviceID)
+    #expect(roles.first?.deviceID == observer.deviceID)
+    #expect(roles.first?.role == "writer")
+    #expect(f.audit.contains(.detached(device: writer.deviceID, session: f.key)))
+
+    // One frame per chunk, all of them for the device that is still here: a frame sealed for the
+    // departed writer would break the observer's counter sequence and fail to open.
+    f.session.send(Array("go\n".utf8))
+    #expect(waitForShell(f, containing: "got:go"))
+    f.host.flush()
+    #expect(!f.link.frames.isEmpty)
+    #expect(f.text(observer, f.link.frames) == "go\r\ngot:go\r\n")
+}
+
+@Test func deviceWentOfflineDoesTheSameAsAPresenceMessage() throws {
+    let f = try HostFixture(script: "sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    let attached = try f.attach(peer)
+    #expect(attached != nil)
+
+    f.link.reset()
+    f.host.deviceWentOffline(peer.deviceID)
+    f.host.flush()
+    #expect(f.audit.contains(.detached(device: peer.deviceID, session: f.key)))
+
+    // Its writer token went with it, so the next client in is the writer rather than an observer
+    // waiting on a device that will never come back.
+    let next = try TestPeer()
+    f.pair(next.deviceID)
+    let nextAttached = try f.attach(next)
+    #expect(nextAttached?.role == "writer")
+}
+
+@Test func aFrameSealedByAnotherClientDoesNotAdvanceTheWritersWindow() throws {
+    let f = try HostFixture(script: "read x; printf \"got:$x\\n\"; sleep 30")
+    defer { f.terminate() }
+    let writer = try TestPeer()
+    let observer = try TestPeer()
+    f.pair(writer.deviceID)
+    f.pair(observer.deviceID)
+    f.register()
+    let writerAttached = try f.attach(writer)
+    let observerAttached = try f.attach(observer)
+    #expect(writerAttached?.role == "writer")
+    #expect(observerAttached?.role == "observer")
+
+    // Counter 0, sealed with the wrong key. The host tries it against the writer's cipher, where it
+    // fails to authenticate; if that failure advanced the window, the writer's own counter-0 frame
+    // -- the next thing that happens -- would be thrown away as a replay.
+    f.host.handle(try observer.seal(Array("bad\n".utf8)))
+    f.host.flush()
+    f.host.handle(try writer.seal(Array("hi\n".utf8)))
+    #expect(waitForShell(f, containing: "got:hi"))
+}
+
+@Test func unregisterIsAuditedAsTheSessionEndingNotAsClientsLeaving() throws {
+    let f = try HostFixture(script: "sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    let attached = try f.attach(peer)
+    #expect(attached != nil)
+
+    f.host.unregister(sessionID: f.sessionID)
+    f.host.flush()
+
+    #expect(f.audit.contains(.sessionEnded(session: f.key)))
+    #expect(!f.audit.contains(.detached(device: peer.deviceID, session: f.key)))
+}
+
+@Test func takeControlAndDetachFromAnUnpairedDeviceAreIgnored() throws {
+    let f = try HostFixture(script: "sleep 30")
+    defer { f.terminate() }
+    let first = try TestPeer()
+    let second = try TestPeer()
+    f.pair(first.deviceID)
+    f.pair(second.deviceID)
+    f.register()
+    let firstAttached = try f.attach(first)
+    let secondAttached = try f.attach(second)
+    #expect(firstAttached?.role == "writer")
+    #expect(secondAttached?.role == "observer")
+
+    // The device was unpaired while attached. Nothing it says afterwards may move the writer token
+    // or tear down anyone's attachment, whatever the relay is still willing to forward.
+    f.unpair(second.deviceID)
+    f.link.reset()
+    f.host.handle(second.message(.takeControl(to: f.hostID, sessionID: f.key)))
+    f.host.handle(second.message(.detach(to: f.hostID, sessionID: f.key)))
+    f.host.flush()
+
+    #expect(f.link.messages(ofType: "role").isEmpty)
+    #expect(!f.audit.contains(.tookControl(device: second.deviceID, session: f.key)))
+    #expect(!f.audit.contains(.detached(device: second.deviceID, session: f.key)))
 }

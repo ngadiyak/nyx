@@ -85,6 +85,11 @@ public final class RemoteHost {
 
     /// Publishes a session and taps its output.
     ///
+    /// `summary` is called on this host's own serial queue, not on main, and at moments the caller
+    /// does not choose (a debounced publish, a reconnect). It must therefore read only values that
+    /// are safe to touch from another thread -- or capture what it needs and hop -- rather than
+    /// reaching into a pane's AppKit state.
+    ///
     /// The catalogue goes out immediately, before this returns to the queue's next block: the relay
     /// refuses an `attached` for a session its host does not publish, so a session that were
     /// announced only by the debounced summary could be attached to (from a palette row that is
@@ -126,8 +131,10 @@ public final class RemoteHost {
             registration.session.tapOutput(nil)
             for deviceID in registration.attachments.keys.sorted() {
                 self.link.send(.sessionEnded(to: deviceID, sessionID: key))
-                self.audit(.detached(device: deviceID, session: key))
             }
+            // One line for the session, not one per client: this end is what stopped, and a row of
+            // "detached" lines would read as the clients having left of their own accord.
+            self.audit(.sessionEnded(session: key))
             self.publishSessions()
         }
     }
@@ -179,6 +186,7 @@ public final class RemoteHost {
             case "attach": self.attach(m)
             case "take_control": self.takeControl(m)
             case "detach": self.detach(m)
+            case "presence": self.presence(m)
             default: break
             }
         }
@@ -196,6 +204,19 @@ public final class RemoteHost {
                   let attachment = registration.attachments[writer],
                   let input = try? attachment.e2e.open(f) else { return }
             registration.session.send(input)
+        }
+    }
+
+    /// A device this host was talking to has gone. The relay says so once, in `presence`, and says
+    /// nothing else -- there is no `detach` from a socket that closed -- so without this its
+    /// attachment lives on: the writer token is stranded on a Mac that is not there (nobody left
+    /// can type), and every chunk of output is still encrypted and sent for it.
+    ///
+    /// Public as well as reachable through `presence` because the app knows things the relay does
+    /// not: the connection this host itself is on has dropped, or the user removed a pairing.
+    public func deviceWentOffline(_ deviceID: String) {
+        queue.async { [weak self] in
+            self?.dropAttachments(of: deviceID)
         }
     }
 
@@ -231,8 +252,7 @@ public final class RemoteHost {
         if registration.attachments[from] != nil, let existing = registration.arbiter.role(of: from) {
             role = existing
         } else {
-            let assigned = registration.arbiter.attached(from)
-            role = assigned
+            role = registration.arbiter.attached(from)
         }
 
         // The snapshot and the cut-off come out of the session under one lock, so the text and the
@@ -244,27 +264,60 @@ public final class RemoteHost {
         }
         registration.attachments[from] = Attachment(deviceID: from, e2e: e2e, startSequence: fed)
 
+        // Sealed before anything is sent, because half a snapshot is worse than none: the client
+        // would draw a screen missing its middle and never know. A seal that fails here cannot
+        // recover -- the cipher is per attachment -- so the attach is abandoned and said so in the
+        // log, and the client, having had no `attached`, stays in `attaching` and can try again.
+        guard let frames = chunked(Array(snapshot.utf8), sealedBy: e2e) else {
+            registration.attachments[from] = nil
+            announce(registration.arbiter.detached(from), in: registration, key: key)
+            audit(.detached(device: from, session: key))
+            return
+        }
         link.send(.attached(to: from, sessionID: key, ephemeralPubkey: signed.pubkey, sig: signed.sig,
                             role: Self.name(role), cols: cols, rows: rows))
-        for frame in chunked(Array(snapshot.utf8), sealedBy: e2e) { link.send(frame) }
+        for frame in frames { link.send(frame) }
         link.send(.snapshotEnd(to: from, sessionID: key))
         audit(.attached(device: from, session: key))
     }
 
+    /// The relay's only word about a client that went away. Every device it lists as offline is
+    /// dropped from every session it was attached to, exactly as if it had sent `detach`.
+    private func presence(_ m: RemoteMessage) {
+        for device in m.devices ?? [] where !device.online {
+            dropAttachments(of: device.deviceID)
+        }
+    }
+
+    /// Removes a device from every session it is attached to: promote whoever the arbiter picks,
+    /// tell the clients that are left, and write the line that says it is gone. Shared by `detach`,
+    /// `presence` and `deviceWentOffline` so a client that vanishes leaves exactly the same state
+    /// behind as one that said goodbye.
+    private func dropAttachments(of deviceID: String) {
+        for key in order {
+            guard let registration = registrations[key],
+                  registration.attachments.removeValue(forKey: deviceID) != nil else { continue }
+            announce(registration.arbiter.detached(deviceID), in: registration, key: key)
+            audit(.detached(device: deviceID, session: key))
+        }
+    }
+
     private func takeControl(_ m: RemoteMessage) {
         guard let from = m.from, let key = m.sessionID, let registration = registrations[key],
-              registration.attachments[from] != nil else { return }
+              paired().contains(from), registration.attachments[from] != nil else { return }
         let changes = registration.arbiter.takeControl(from)
         guard !changes.isEmpty else { return }
         announce(changes, in: registration, key: key)
         audit(.tookControl(device: from, session: key))
     }
 
+    /// Both this and `takeControl` re-check the pairing rather than trusting the attachment alone:
+    /// a device unpaired while attached must not be able to move the writer token or tear anything
+    /// down afterwards, and the relay has no way to know the user has just removed it.
     private func detach(_ m: RemoteMessage) {
         guard let from = m.from, let key = m.sessionID, let registration = registrations[key],
-              registration.attachments.removeValue(forKey: from) != nil else { return }
-        announce(registration.arbiter.detached(from), in: registration, key: key)
-        audit(.detached(device: from, session: key))
+              paired().contains(from), registration.attachments[from] != nil else { return }
+        dropAttachments(of: from)
     }
 
     /// One `role` message per change, per client still attached: an observer's strip has to change
@@ -286,7 +339,7 @@ public final class RemoteHost {
         for deviceID in registration.attachments.keys.sorted() {
             guard let attachment = registration.attachments[deviceID],
                   attachment.startSequence <= sequence else { continue }
-            for frame in chunked(bytes, sealedBy: attachment.e2e) { link.send(frame) }
+            for frame in chunked(bytes, sealedBy: attachment.e2e) ?? [] { link.send(frame) }
         }
     }
 
@@ -294,13 +347,16 @@ public final class RemoteHost {
         link.send(.sessions(order.compactMap { registrations[$0]?.summary() }))
     }
 
-    private func chunked(_ bytes: [UInt8], sealedBy e2e: E2ESession) -> [BinaryFrame] {
+    /// nil if any part failed to seal, never a partial answer: a caller that sent what it got would
+    /// be putting a stream with a hole in it on the wire, and the client cannot tell a hole from a
+    /// program that printed nothing.
+    private func chunked(_ bytes: [UInt8], sealedBy e2e: E2ESession) -> [BinaryFrame]? {
         guard !bytes.isEmpty else { return [] }
         var frames: [BinaryFrame] = []
         var start = 0
         while start < bytes.count {
             let end = min(start + Self.maxFrameBytes, bytes.count)
-            guard let frame = try? e2e.seal(Array(bytes[start..<end])) else { return frames }
+            guard let frame = try? e2e.seal(Array(bytes[start..<end])) else { return nil }
             frames.append(frame)
             start = end
         }

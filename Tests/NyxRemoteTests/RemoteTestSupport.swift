@@ -13,6 +13,9 @@ final class FakeLink: RelayLink {
     /// other's owner is what makes an end-to-end test.
     var onMessage: ((RemoteMessage) -> Void)?
     var onFrame: ((BinaryFrame) -> Void)?
+    /// Called before a frame is recorded, so a test can make one transmission slow and see whether
+    /// a second sender can overtake it. A real link is slow in exactly this place.
+    var beforeAppendingFrame: ((BinaryFrame) -> Void)?
 
     private let lock = NSLock()
     private var sentMessages: [RemoteMessage] = []
@@ -32,6 +35,7 @@ final class FakeLink: RelayLink {
     }
 
     func send(_ f: BinaryFrame) {
+        beforeAppendingFrame?(f)
         lock.lock()
         sentFrames.append(f)
         sendLog.append("frame")

@@ -29,12 +29,16 @@ private final class ClientFixture {
         client.attach(hostID: host.deviceID, hostName: "studio", sessionID: sessionID, title: title)
     }
 
-    /// The host's side of the handshake: verify the client's key, answer `attached`.
-    func acceptAttach(role: String = "writer", cols: Int = 80, rows: Int = 24) throws {
+    /// The host's side of the handshake: verify the client's key, answer `attached`. Returns the
+    /// answer, so a test can re-deliver the identical message the way a relay can.
+    @discardableResult
+    func acceptAttach(role: String = "writer", cols: Int = 80, rows: Int = 24) throws -> RemoteMessage {
         let attach = try #require(link.messages(ofType: "attach").last)
         let accepted = try host.completeAttach(attach, sessionID: sessionID, peerID: deviceID)
         #expect(accepted)
-        client.handle(try host.attachedMessage(to: deviceID, sessionID: sessionID, role: role, cols: cols, rows: rows))
+        let answer = try host.attachedMessage(to: deviceID, sessionID: sessionID, role: role, cols: cols, rows: rows)
+        client.handle(answer)
+        return answer
     }
 
     func hostSends(_ text: String) throws {
@@ -376,4 +380,70 @@ private final class Recorder {
     #expect(second.state.phase == .snapshot)
     try f.hostSends("only for the new one")
     #expect(recorder.text.isEmpty)
+}
+
+@Test func aReplayedAttachedDoesNotRestartTheStream() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    let recorder = Recorder()
+    recorder.watch(attachment)
+    let answer = try f.acceptAttach()
+    let firstFrame = try f.host.seal(Array("snapshot".utf8))
+    f.client.handle(firstFrame)
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    #expect(attachment.state.phase == .live)
+
+    // The relay re-delivering the same `attached`, or an attacker replaying it. Rebuilding the
+    // cipher from it would derive the very same keys with a fresh replay window -- so every frame
+    // of the session so far could be played back into the terminal -- and would drop the tab from
+    // `live` to `snapshot` while the stream carried on.
+    f.client.handle(answer)
+
+    #expect(attachment.state.phase == .live)
+    #expect(recorder.phases == [.snapshot, .live])
+    f.client.handle(firstFrame)
+    #expect(recorder.text == "snapshot")
+}
+
+@Test func concurrentSendsReachTheWireInCounterOrder() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+
+    // Two panes' worth of typing at once -- a paste on one thread while a key repeat runs on
+    // another. Sealing and sending must be one step: a counter taken under the lock and transmitted
+    // after it can arrive behind a later one, and the host, which rejects anything at or below the
+    // last counter it accepted, throws the earlier keystroke away for good.
+    //
+    // Made deterministic rather than left to the scheduler: the one-byte send is held up inside the
+    // link, which is where a real link is slow, and the two-byte one is not. If the seal is not in
+    // the same critical section as the transmit, the second overtakes the first.
+    f.link.beforeAppendingFrame = { frame in
+        if frame.ciphertext.count == 1 + 16 { usleep(20_000) }
+    }
+    let slowSendStarted = DispatchSemaphore(value: 0)
+    let slowSendFinished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        slowSendStarted.signal()
+        attachment.send([0x41])
+        slowSendFinished.signal()
+    }
+    slowSendStarted.wait()
+    usleep(3_000)
+    attachment.send([0x42, 0x43])
+    slowSendFinished.wait()
+    #expect(f.link.frames.map(\.counter) == [0, 1])
+
+    f.link.beforeAppendingFrame = nil
+    f.link.reset()
+    DispatchQueue.concurrentPerform(iterations: 200) { i in
+        attachment.send([UInt8(i % 256)])
+    }
+
+    let counters = f.link.frames.map(\.counter)
+    #expect(counters == (2..<202).map { UInt64($0) })
+    // And the host opens all 200 in the order they arrived, which is the same statement made by
+    // the side that actually enforces it.
+    #expect(f.link.frames.allSatisfy { f.host.open($0) != nil })
 }

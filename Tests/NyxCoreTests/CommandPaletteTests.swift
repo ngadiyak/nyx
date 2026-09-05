@@ -7,11 +7,14 @@ private func palette(_ titles: [String]) -> CommandPalette {
 
 // MARK: - The list
 
-/// Actions first, then quick actions, themes, then tabs: the order a user builds a habit around.
-@Test func theListIsActionsThenThemesThenTabs() {
+/// Actions first, then quick actions, themes, then tabs, then remote sessions: the order a user
+/// builds a habit around, with the newest category last so it never displaces what's already there.
+@Test func theListIsActionsThenThemesThenTabsThenRemote() {
+    let remote = PaletteItem.remoteSession(deviceID: "d", sessionID: "s", title: "iMac · zsh", detail: "")
     let items = PaletteSource.items(actions: [.newTab, .copy], chord: { _ in nil },
-                                    themes: ["dracula"], tabTitles: ["zsh"])
-    #expect(items.map(\.kind) == [.action(.newTab), .action(.copy), .theme("dracula"), .tab(0)])
+                                    themes: ["dracula"], tabTitles: ["zsh"], remote: [remote])
+    #expect(items.map(\.kind) == [.action(.newTab), .action(.copy), .theme("dracula"), .tab(0),
+                                  .remoteSession(deviceID: "d", sessionID: "s")])
     #expect(items[0].title == "New Tab")
 }
 

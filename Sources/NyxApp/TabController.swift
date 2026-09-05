@@ -799,6 +799,10 @@ final class TabController: NSViewController, NSMenuItemValidation {
             selectTab(at: index)
         case .quickAction(let index):
             performQuickAction(index)
+        case .remoteSession:
+            // Attaching is wired once `RemoteCoordinator` exists; nothing populates this palette
+            // section yet, so there is no reachable row to run today.
+            NSSound.beep()
         }
     }
 

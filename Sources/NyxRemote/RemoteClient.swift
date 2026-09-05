@@ -411,16 +411,36 @@ public final class RemoteClient {
             report { $0.phase = .suspended(self.hostName, since: now) }
         }
 
-        /// The relay's word on whether this attachment's host is connected. The only thing that
-        /// makes a suspended tab start believing catalogues again -- see `awaitingHostReturn`.
-        func handlePresence(online: Bool) {
+        /// The relay's word on whether this attachment's host is connected.
+        ///
+        /// Two jobs. It is what makes a suspended tab start believing catalogues again (see
+        /// `awaitingHostReturn`), and it is how a tab learns that the host went while *this Mac's*
+        /// socket was down. The relay dropped us when our socket went, so it never sent us
+        /// `session_suspended`; on reconnect we ask again and get `host_offline` for a minute
+        /// before the tab gives up with "No answer from the host", which is a verdict about a
+        /// session that is merely waiting. Presence says so in one message, so the re-attach stops
+        /// there and the tab suspends instead.
+        func handlePresence(online: Bool, now: Date) {
             lock.lock()
             if online {
                 awaitingHostReturn = false
             } else if isSuspended(_state.phase) {
                 awaitingHostReturn = true
             }
+            // Only mid-re-attach. On the *first* attach `host_offline` means exactly what it says
+            // and the tab should say it; a live attachment is told by `session_suspended`, which
+            // the relay does send while our socket is up.
+            let suspend = !online && !finished && _state.phase == .reconnecting
+            if suspend {
+                e2e = nil
+                awaiting = nil
+                reattachDeadline = nil
+                awaitingHostReturn = true
+                round += 1
+            }
             lock.unlock()
+            guard suspend else { return }
+            report { $0.phase = .suspended(self.hostName, since: now) }
         }
 
         /// A `catalogue` from this attachment's host, while this tab is suspended: either the
@@ -669,9 +689,10 @@ public final class RemoteClient {
         // catalogue the relay sends *as* a host goes offline would end the tab a moment after
         // suspending it.
         if m.t == "presence" {
+            let now = clock.now()
             for device in m.devices ?? [] {
                 for attachment in attachments(on: device.deviceID) {
-                    attachment.handlePresence(online: device.online)
+                    attachment.handlePresence(online: device.online, now: now)
                 }
             }
             return

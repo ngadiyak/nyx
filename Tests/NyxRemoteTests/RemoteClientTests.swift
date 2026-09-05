@@ -1176,3 +1176,53 @@ private final class Recorder {
     #expect(attachment.state.stripText
         == "Host went offline before the session attached · ⌘W to close")
 }
+
+/// The other way a host can go without this side ever being told: it drops off while *our* socket
+/// is down. The relay dropped us too, so no `session_suspended` was ever sent -- and on reconnect
+/// the re-attach asked for a minute, was told `host_offline` each time, and ended on "No answer
+/// from the host": a verdict about a session that was only waiting. The presence that arrives
+/// before the catalogues says so in one message.
+@Test func aHostThatWentDuringOurOwnOutageSuspendsRatherThanFails() throws {
+    let clock = TestClock()
+    let f = try ClientFixture(clock: clock)
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    #expect(attachment.state.phase == .live)
+
+    f.client.linkDidDisconnect()
+    f.client.linkDidReconnect()
+    #expect(attachment.state.phase == .reconnecting)
+
+    // What the relay sends a client that comes back: presence first, then catalogues. The host is
+    // not there, so its presence says so and no catalogue of its own follows.
+    f.client.handle(f.presence(hostOnline: false))
+    #expect(isSuspended(attachment.state.phase))
+    f.client.handle(f.catalogue([]))
+    #expect(isSuspended(attachment.state.phase), "the empty catalogue is not news about the session")
+
+    // No sixty-second clock was started, so time passing changes nothing.
+    clock.advance(120)
+    #expect(isSuspended(attachment.state.phase))
+
+    // And the ordinary wake-up still works.
+    f.client.handle(f.presence(hostOnline: true))
+    f.client.handle(f.catalogue([f.sessionID]))
+    #expect(attachment.state.phase == .reconnecting)
+    try f.acceptAttach(role: "writer")
+    #expect(attachment.state.phase == .snapshot)
+}
+
+/// The first attach of all is not a race and not an outage: `host_offline` there means what it says
+/// and the tab must say it, rather than waiting for a host it has never reached.
+@Test func presenceSayingTheHostIsOfflineDoesNotSuspendAFirstAttach() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    #expect(attachment.state.phase == .attaching)
+
+    f.client.handle(f.presence(hostOnline: false))
+
+    #expect(attachment.state.phase == .attaching)
+    f.client.handle(f.error("host_offline"))
+    #expect(attachment.state.phase == .failed("Host is offline"))
+}

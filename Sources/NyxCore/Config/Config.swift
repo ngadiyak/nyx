@@ -99,6 +99,9 @@ public extension Config {
         # theme = nyx-dark
         # One override per line: `palette = <0-255>=<#rrggbb>`.
         # palette = 0=#1a1b26
+        # Your own theme: a file in ~/.config/nyx/themes/ named after the theme, holding
+        # `palette`, `foreground`, `background`, `cursor` and `selection` lines. A file whose
+        # name matches a built-in theme replaces it. Saving the file re-colours every window.
 
         # --- Cursor ---
         # cursor-style = block

@@ -4,9 +4,13 @@ public struct Row: Equatable {
     public var cells: [Cell]
     /// True when the line continues on the next row (soft wrap). Used by reflow and selection.
     public var wrapped = false
-    /// Maintained on every mutation but not consumed yet: the renderer rebuilds every row each
-    /// frame, and `Terminal.clearDirty()` (called by the view after a frame) just resets the flags.
-    /// This is the groundwork for the per-row partial redraw planned for phase 2.
+    /// Set on every mutation, cleared once a frame carrying this row has actually been presented.
+    ///
+    /// The renderer keeps the instances it built for each visible row and re-shapes only the rows
+    /// this flag names, so a frame that changes one line does not resolve colours and look up
+    /// glyphs for the other forty-nine. Clearing is `Terminal.clearDirty(ifContentVersionIs:)`,
+    /// which the view calls after the frame is on screen: a row marked clean for a frame that was
+    /// dropped or withheld is a row that stays stale.
     public var dirty = true
     /// OSC 133 marks as flags: 1 = prompt start (A), 2 = input start (B), 4 = output start (C),
     /// 8 = end (D). Flags rather than one value because a single row routinely carries A and B

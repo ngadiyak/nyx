@@ -102,6 +102,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         ])
         window.contentView = container
         window.contentResizeIncrements = firstPane.cellSizePoints
+        // A floor, in cells rather than points, so it follows the font size. Below roughly this,
+        // the tab bar has nothing but its own buttons and the grid stops being a terminal -- and
+        // `TabBarGeometry` spends its whole budget on the minimum slot width per tab, which is what
+        // makes a very narrow bar drop buttons in the first place. 24×6 is the smallest thing a
+        // prompt and its output still read in; below it a person is resizing by accident.
+        window.contentMinSize = firstPane.size(forCols: 24, rows: 6)
         window.setContentSize(firstPane.size(forCols: 100, rows: 30))
         window.center()
         window.setFrameAutosaveName("NyxMain")

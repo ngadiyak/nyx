@@ -1367,6 +1367,11 @@ extension TabController: ActionTarget {
         case .fontBigger: focusedPane?.zoomIn(nil)
         case .fontSmaller: focusedPane?.zoomOut(nil)
         case .fontReset: focusedPane?.zoomReset(nil)
+
+        // Wired to `RemoteCoordinator` in Task 9; until then there is nothing behind any of the
+        // three to do, so pressing one beeps rather than silently doing nothing.
+        case .remoteSessions, .remotePair, .remoteTakeControl:
+            NSSound.beep()
         }
     }
 
@@ -1409,6 +1414,10 @@ extension TabController: ActionTarget {
         case .focusLeft, .focusRight, .focusUp, .focusDown,
              .growLeft, .growRight, .growUp, .growDown, .toggleZoom:
             return (panes?.paneCount ?? 0) > 1
+        case .remoteSessions, .remotePair, .remoteTakeControl:
+            // Nothing behind these until `RemoteCoordinator` exists (Task 9): greyed out, not a
+            // beep on press, is what tells a user the feature is there but not yet reachable.
+            return false
         default:
             return focusedPane != nil
         }

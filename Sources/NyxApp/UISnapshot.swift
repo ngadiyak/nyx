@@ -1,5 +1,6 @@
 import AppKit
 import NyxCore
+import NyxRemote
 
 /// Renders the window chrome to PNG files, offscreen, and exits.
 ///
@@ -79,6 +80,11 @@ enum UISnapshot {
             write(commandEditorSheet(palette: palette, appearance),
                   named: "sheet-command-editor-\(name)", into: directory,
                   background: windowGround(appearance))
+            for (stateName, state) in pairingStates() {
+                write(pairingSheetView(state: state, appearance),
+                      named: "pairing-\(stateName)-\(name)", into: directory,
+                      background: windowGround(appearance))
+            }
             writeSettings(into: directory, appearance: appearance, suffix: "-\(name)")
         }
         write(stickyPrompt(palette: palette, failed: false), named: "sticky-prompt", into: directory,
@@ -329,11 +335,50 @@ enum UISnapshot {
         return view
     }
 
+    /// One `PairingFlow.State` per named picture -- constructed directly, not run through a real
+    /// flow, because a still picture only needs the state a real pairing would eventually reach,
+    /// not the events that got it there.
+    private static func pairingStates() -> [(String, PairingFlow.State)] {
+        [
+            ("code", .showingCode("K7M4QZ", expires: Date().addingTimeInterval(300))),
+            ("requested", .requested(peerID: "peer-device-id", peerName: "Nik's MacBook Pro")),
+            ("confirming", .confirming(peerID: "peer-device-id", peerName: "Nik's MacBook Pro",
+                                       fingerprint: "apple-river-stone-zero", mine: false, theirs: false)),
+            ("paired", .paired(peerID: "peer-device-id", peerName: "Nik's MacBook Pro")),
+            ("failed", .failed("Code expired")),
+        ]
+    }
+
+    private static func pairingSheetView(state: PairingFlow.State, _ appearance: NSAppearance.Name) -> NSView {
+        let sheet = PairingSheet(side: .host)
+        sheet.update(state: state)
+        let view = sheet.panel.contentView ?? NSView()
+        view.appearance = NSAppearance(named: appearance)
+        view.layoutSubtreeIfNeeded()
+        return view
+    }
+
     /// One PNG per settings page: an `NSTabView` shows one at a time, so a single render of the
     /// window would leave three of the four pages unlooked-at, which is the whole problem.
     private static func writeSettings(into directory: URL, appearance: NSAppearance.Name,
                                       suffix: String) {
         let controller = SettingsWindowController(store: ConfigStore())
+        // Two fake paired devices and three audit lines -- pictured this way rather than by
+        // writing them into a real person's `~/.config/nyx/remote/`, which is what reading the
+        // real files at their real path (the settings page's normal, reachable behaviour) would
+        // otherwise mean here.
+        controller.setRemoteDemoData(
+            paired: [
+                PairedDevice(id: "N1a2B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ01AB", name: "Nik's MacBook Pro",
+                            pairedAt: Date(timeIntervalSince1970: 1_762_000_000)),
+                PairedDevice(id: "Q9w8E7r6T5y4U3i2O1p0AsDfGhJkLzXcVbNm7654Z", name: "Mac mini (office)",
+                            pairedAt: Date(timeIntervalSince1970: 1_762_400_000)),
+            ],
+            auditLines: [
+                "2026-09-01T10:00:00Z  paired  Nik's MacBook Pro",
+                "2026-09-05T09:12:03Z  attached  Nik's MacBook Pro → nyx — zsh",
+                "2026-09-05T09:14:47Z  detached  Nik's MacBook Pro → nyx — zsh",
+            ])
         guard let content = controller.window?.contentView,
               let tabs = content.subviews.compactMap({ $0 as? NSTabView }).first else { return }
         // On the *window*, not the content view. An `NSTabView`'s strip resolves its appearance
@@ -353,6 +398,11 @@ enum UISnapshot {
             // the one part of this window nobody needs to review: it is Apple's, not ours.
             guard let page = item.view else { continue }
             page.layoutSubtreeIfNeeded()
+            // Same lazy-glyph-generation trap as `commandEditorSheet`: the Remote page's activity
+            // log is an `NSTextView`, and without this it caches to an empty box.
+            for textView in descendants(of: page).compactMap({ $0 as? NSTextView }) {
+                textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+            }
             write(page, named: "settings-\(label)\(suffix)", into: directory,
                   background: windowGround(appearance))
         }

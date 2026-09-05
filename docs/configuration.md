@@ -47,6 +47,11 @@ so that template and this page are the two places a new key must be added.
 | `fold-long-output` | `0` | Fold a command's output automatically once the next command starts, when it is longer than this many rows. `0` turns it off. A block you unfolded by hand is never re-folded |
 | `quick` | — | A button on the tab bar; see below. Additive |
 | `keybind` | — | A binding; see below. Additive |
+| `remote` | `off` | `off`, `on`. Publishes this Mac's sessions to the relay and accepts attaches from paired devices |
+| `remote-device-name` | — | Shown to a paired Mac in place of a name. Empty resolves to the Mac's own name (System Settings → Sharing) at the point of use |
+| `remote-relay` | `wss://nyx.agentforge.cc/v1/ws` | The relay's WebSocket URL |
+| `remote-relay-token` | — | The relay's shared secret, checked before pairing is even possible. Not comment-stripped, so `#` is allowed |
+| `remote-snapshot-lines` | `2000` | Lines of scrollback a host sends a client as the initial snapshot before switching to the live stream. Clamped to 100–20000 |
 
 Booleans accept `true`/`false`, `yes`/`no`, `1`/`0`.
 
@@ -125,6 +130,9 @@ A user binding beats a default for the same chord; the last line in the file win
 | `save_command_output` | — | Writes the last command's output to a file the user chooses |
 | `notify_when_done` | — | Arm a notification for the command running now, however short it turns out |
 | `save_scrollback` | — | Writes the transcript to a file the user chooses |
+| `remote_sessions` | — | Opens the command palette's Remote section. Settings → Remote also gets you there |
+| `remote_pair` | — | Opens the pairing sheet, either side |
+| `remote_take_control` | — | On an observed remote tab, takes over as writer |
 
 The menu is generated from `ActionCatalog.sections`, so every action is discoverable there with
 its current chord, and the settings window's Keys page lists them all.

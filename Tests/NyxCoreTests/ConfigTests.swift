@@ -222,6 +222,7 @@ private let scalarDefaultFileKeys = [
     "mouse-scroll-alt-screen", "bell", "confirm-close-process", "restore-session", "clipboard-read",
     "word-separators",
     "open-file-command",
+    "remote", "remote-device-name", "remote-relay", "remote-relay-token", "remote-snapshot-lines",
 ]
 
 @Test func theDefaultFileTextParsesBackToTheDefaults() {
@@ -269,7 +270,8 @@ private let scalarDefaultFileKeys = [
                 "working-directory", "copy-on-select", "middle-click-paste", "option-as-meta",
                 "bell", "confirm-close-process", "restore-session", "clipboard-read", "tab-bar",
                 "window-decorations",
-                "word-separators", "open-file-command", "keybind", "palette"] {
+                "word-separators", "open-file-command", "keybind", "palette",
+                "remote", "remote-device-name", "remote-relay", "remote-relay-token", "remote-snapshot-lines"] {
         #expect(Config.defaultFileText.contains(key), "default file does not mention \(key)")
     }
 }
@@ -369,4 +371,56 @@ private let scalarDefaultFileKeys = [
     #expect(ConfigParser.parse("fold-long-output = 200").config.foldLongOutput == 200)
     #expect(ConfigParser.parse("fold-keep-lines = many").diagnostics.count == 1)
     #expect(ConfigParser.parse("fold-long-output = -4").config.foldLongOutput == 0)
+}
+
+// MARK: - Remote
+
+@Test func remoteDefaultsToOff() {
+    #expect(Config.defaults.remote == .off)
+    #expect(Config.defaults.remoteDeviceName == "")
+    #expect(Config.defaults.remoteRelay == "wss://nyx.agentforge.cc/v1/ws")
+    #expect(Config.defaults.remoteRelayToken == "")
+    #expect(Config.defaults.remoteSnapshotLines == 2000)
+}
+
+@Test func parsesRemoteSettings() {
+    let (c, d) = parse("""
+    remote = on
+    remote-device-name = MacBook
+    remote-relay = wss://example.com/v1/ws
+    remote-relay-token = abc#123
+    remote-snapshot-lines = 500
+    """)
+    #expect(d.isEmpty)
+    #expect(c.remote == .on)
+    #expect(c.remoteDeviceName == "MacBook")
+    #expect(c.remoteRelay == "wss://example.com/v1/ws")
+    #expect(c.remoteRelayToken == "abc#123")
+    #expect(c.remoteSnapshotLines == 500)
+}
+
+/// `remote-relay-token` is exempt from comment stripping, like `open-file-command`: a relay token
+/// is an opaque secret that may itself contain `#`.
+@Test func remoteRelayTokenKeepsHash() {
+    let (c, d) = parse("remote-relay-token = abc#def")
+    #expect(d.isEmpty)
+    #expect(c.remoteRelayToken == "abc#def")
+}
+
+@Test func remoteSnapshotLinesClamps() {
+    #expect(parse("remote-snapshot-lines = 1").0.remoteSnapshotLines == 100)
+    #expect(parse("remote-snapshot-lines = 999999").0.remoteSnapshotLines == 20_000)
+    #expect(parse("remote-snapshot-lines = 500").0.remoteSnapshotLines == 500)
+}
+
+@Test func badRemoteModeIsADiagnostic() {
+    let (c, d) = parse("remote = maybe")
+    #expect(c.remote == .off)
+    #expect(d.count == 1 && d[0].line == 1)
+}
+
+@Test func badRemoteSnapshotLinesIsADiagnostic() {
+    let (c, d) = parse("remote-snapshot-lines = many")
+    #expect(c.remoteSnapshotLines == 2000)
+    #expect(d.count == 1)
 }

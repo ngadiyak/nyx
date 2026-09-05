@@ -238,7 +238,12 @@ public struct PairingFlow: Equatable {
 
     /// What the pairing sheet shows for the current state: title, body, and the primary button's
     /// label (nil hides the button -- there is nothing to do yet but wait).
-    public var sheetText: (title: String, body: String, primary: String?) {
+    public var sheetText: (title: String, body: String, primary: String?) { Self.sheetText(for: state) }
+
+    /// The state-only half of `sheetText`, so `PairingSheet.update(state:)` can render a state it
+    /// was just handed -- e.g. by `UISnapshot`, which pictures every state directly and never runs
+    /// a real flow -- without needing a live `PairingFlow` instance to read it off of.
+    public static func sheetText(for state: State) -> (title: String, body: String, primary: String?) {
         switch state {
         case .idle:
             return ("", "", nil)

@@ -21,6 +21,11 @@ public struct ConfigDiff: Equatable {
     public var windowDecorationsChanged: Bool
     /// `fold-keep-lines`, `fold-long-output`: read on the next fold; nothing on screen is rebuilt.
     public var foldingChanged: Bool
+    /// `remote`, `remote-device-name`, `remote-relay`, `remote-relay-token`,
+    /// `remote-snapshot-lines`: whether to start, stop or reconnect `RemoteCoordinator`. No
+    /// deferred note -- unlike `scrollback-lines`, every one of these takes effect immediately, by
+    /// tearing down and rebuilding the relay connection, not just for a future session.
+    public var remoteChanged: Bool
 
     public init(from old: Config, to new: Config) {
         fontChanged = old.fontFamily != new.fontFamily || old.fontSize != new.fontSize
@@ -35,13 +40,16 @@ public struct ConfigDiff: Equatable {
         windowAppearanceChanged = old.backgroundOpacity != new.backgroundOpacity || old.backgroundBlur != new.backgroundBlur
         windowDecorationsChanged = old.windowDecorations != new.windowDecorations
         foldingChanged = old.foldKeepLines != new.foldKeepLines || old.foldLongOutput != new.foldLongOutput
+        remoteChanged = old.remote != new.remote || old.remoteDeviceName != new.remoteDeviceName
+            || old.remoteRelay != new.remoteRelay || old.remoteRelayToken != new.remoteRelayToken
+            || old.remoteSnapshotLines != new.remoteSnapshotLines
     }
 
     /// True when nothing that `apply` acts on changed at all (e.g. only `shell` or `bell` changed,
     /// which are read at the point of use and need no rebuild).
     public var isEmpty: Bool {
         !(fontChanged || geometryChanged || paletteChanged || cursorChanged || scrollbackChanged
-            || windowAppearanceChanged || windowDecorationsChanged || foldingChanged)
+            || windowAppearanceChanged || windowDecorationsChanged || foldingChanged || remoteChanged)
     }
 
     /// Settings that changed but only take effect for a new session or window, so silently doing

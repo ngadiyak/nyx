@@ -24,7 +24,7 @@ final class RemoteStripView: NSView {
     /// reload changes no word on the strip, and without it the strip kept the old theme's colours
     /// while everything around it repainted.
     private var shown: (text: String, button: String?, palette: Palette, severity: AttachState.Severity,
-                        width: CGFloat)?
+                        width: CGFloat, font: NSFont)?
 
     /// The floor the label is held to, and why it is not 4.5.
     ///
@@ -75,16 +75,17 @@ final class RemoteStripView: NSView {
             if !isHidden { isHidden = true; shown = nil }
             return
         }
-        // The width is part of the key: which of `stripLabelOptions` fits depends on it, so a
-        // window the user has just narrowed has to be re-decided even though nothing else moved.
+        // The width and the font are part of the key: which of `stripLabelOptions` fits depends on
+        // both, so a window the user has just narrowed and a ⌘+ have to be re-decided even though
+        // nothing about the state moved. They are held here rather than read back off the label,
+        // which reports a resolved font that need not be the one that was asked for.
         guard shown?.text != text || shown?.button != state.stripButton
                 || shown?.palette != palette || shown?.severity != state.severity
-                || shown?.width != bounds.width
-                || label.font != font else {
+                || shown?.width != bounds.width || shown?.font != font else {
             isHidden = false
             return
         }
-        shown = (text, state.stripButton, palette, state.severity, bounds.width)
+        shown = (text, state.stripButton, palette, state.severity, bounds.width, font)
         // `stripLabelOptions`, not `stripText`: with the button beside it the whole sentence would
         // say "Take control" twice on one row, and on a narrow window the geometry clause goes
         // rather than the sentence in front of it being cut off mid-word. The full sentence is what

@@ -1276,8 +1276,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// doing nothing; only `.none` turns it off.
     private var optionActsAsMeta: Bool { config.optionAsMeta != .none }
 
-
-
     private func sendKey(_ e: NSEvent) {
         guard let ke = keyEvent(from: e) else { return }
         // Every mode the encoder needs, read under the one lock: `cursorKeysApp` and `keypadApp`
@@ -2163,7 +2161,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         session.withTerminal { $0.shellEmitsPromptMarks }
     }
 
-
     /// Moves the viewport to the prompt above or below what is on screen, and returns whether it
     /// moved -- the caller beeps when there is nowhere to go rather than doing nothing silently.
     @discardableResult
@@ -2272,14 +2269,20 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // nor should.
         shown.geometryNote = remoteGeometryNote()
         shown.closesWholeTab = isSolePaneInTab?() ?? true
-        // `updateGrid` calls this on every layout pass, and a tab bar that rebuilt its badge and
-        // title on each one would be doing that work for nothing.
-        guard shown != shownRemoteState else { return }
-        shownRemoteState = shown
+        shown.today = AttachState.startOfDay(Date(), in: shown.timeZone)
         let wasHidden = remoteStrip.isHidden
+        // Unconditionally, and *before* the guard below. Which of the strip's two labels fits
+        // depends on the pane's width and its font, and neither of those is in `AttachState`: a
+        // window dragged narrower and a ⌘+ both leave the state byte-identical, so a guard in front
+        // of this left the label truncating mid-word at the old width, in the old font.
+        // `RemoteStripView.update` has its own guard keyed on exactly those two.
         remoteStrip.update(state: shown, palette: Pane.resolvedPalette(for: config),
                            font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
         if wasHidden != remoteStrip.isHidden { layoutStickyStrip() }
+        // The *report* is what must not repeat: `updateGrid` calls this on every layout pass, and a
+        // tab bar that rebuilt its badge and title on each one would be doing that for nothing.
+        guard shown != shownRemoteState else { return }
+        shownRemoteState = shown
         onRemoteStateChange?(shown)
         markDirty()
     }

@@ -68,7 +68,6 @@ final class PairingSheet: NSObject {
         codeField.delegate = self
 
         codeErrorLabel.font = .systemFont(ofSize: 11)
-        codeErrorLabel.textColor = .systemRed
         codeErrorLabel.alignment = .center
         codeErrorLabel.isHidden = true
 
@@ -196,7 +195,32 @@ final class PairingSheet: NSObject {
         panel.setContentSize(NSSize(width: PairingSheet.width, height: max(height, 1)))
     }
 
+    /// The red the error is drawn in, moved far enough to be readable on *this* sheet.
+    ///
+    /// `NSColor.systemRed` is chosen against a system background in the abstract, and on the sheet's
+    /// own `windowBackgroundColor` it measures 3.0:1 in the light appearance and 3.6:1 in the dark
+    /// -- both below the 4.5 a line of text needs, and neither visible without rendering the sheet
+    /// and measuring it.
+    ///
+    /// A *dynamic* colour rather than one resolved once, because the two appearances need moving in
+    /// opposite directions -- towards black on one, towards white on the other -- and the provider
+    /// is called again whenever the appearance changes under a live window.
+    ///
+    /// The floor is 5, not 4.5: the ratio is computed in sRGB and the window is painted through a
+    /// device profile, and the couple of levels between them cost about 0.2 of a ratio. Aiming at
+    /// the floor exactly left the rendered pixels measuring 4.26:1.
+    private static let readableErrorColor = NSColor(name: nil) { appearance in
+        var result = NSColor.systemRed
+        appearance.performAsCurrentDrawingAppearance {
+            let fixed = RGB.readable(rgb(of: .systemRed), on: rgb(of: .windowBackgroundColor),
+                                     towards: rgb(of: .labelColor), minimum: 5)
+            result = nsColor(fixed, alpha: 1)
+        }
+        return result
+    }
+
     private func setCodeError(hidden: Bool) {
+        codeErrorLabel.textColor = PairingSheet.readableErrorColor
         codeErrorLabel.isHidden = hidden
         codeField.setAccessibilityLabel(hidden
             ? PairingSheet.codeFieldAccessibilityLabel

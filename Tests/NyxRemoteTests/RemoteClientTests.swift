@@ -577,3 +577,82 @@ private final class Recorder {
     f.client.handle(answer)
     #expect(recorder.phases.isEmpty)
 }
+
+// MARK: - The socket going away
+
+/// The gap this closes: nothing told a client its socket had dropped, so an attached tab stayed
+/// `live` -- no "Reconnecting…", and every keystroke still accepted, sealed with a cipher the host
+/// has already thrown away and flushed at it when the socket comes back.
+@Test func aDroppedSocketPutsEveryLiveAttachmentIntoReconnecting() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    #expect(attachment.state.phase == .live)
+    #expect(attachment.state.acceptsInput)
+
+    f.client.linkDidDisconnect()
+
+    #expect(attachment.state.phase == .reconnecting)
+    #expect(!attachment.state.acceptsInput)
+    f.link.reset()
+    attachment.send([0x61])
+    #expect(f.link.frames.isEmpty)   // nothing may be sealed for a session that has gone
+}
+
+/// It must not re-attach by itself: the socket is *down*, so an `attach` now would only be queued
+/// in the outbox and then sent behind the one `linkDidReconnect` sends when it comes back.
+@Test func aDroppedSocketSendsNothing() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach()
+    f.link.reset()
+    f.client.linkDidDisconnect()
+    #expect(f.link.messages.isEmpty)
+    #expect(attachment.state.phase == .reconnecting)
+}
+
+/// A drop then a reconnect is one round trip: `reconnecting` on the strip, then a fresh attach.
+@Test func aDropFollowedByAReconnectAttachesAgain() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach()
+    f.client.linkDidDisconnect()
+    f.link.reset()
+    f.client.linkDidReconnect()
+    #expect(f.link.messages(ofType: "attach").count == 1)
+    try f.acceptAttach(role: "observer")
+    #expect(attachment.state.phase == .snapshot)
+}
+
+@Test func aDroppedSocketLeavesAnEndedAttachmentAlone() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach()
+    f.client.handle(f.host.message(.sessionEnded(to: f.deviceID, sessionID: f.key)))
+    #expect(attachment.state.phase == .ended("studio"))
+    f.client.linkDidDisconnect()
+    #expect(attachment.state.phase == .ended("studio"))
+}
+
+/// Turning remote sessions off, or changing the relay, tears the client down. Every open tab has to
+/// be told, or it sits on a screen that has quietly stopped moving with no way to know why.
+@Test func endingEveryAttachmentSaysWhyAndStopsAcceptingInput() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    let recorder = Recorder()
+    recorder.watch(attachment)
+
+    f.client.endAll(reason: AttachFailure.remoteTurnedOff)
+
+    // `.failed`, not `.ended`: `.ended`'s payload is a *machine name*, interpolated into "Session
+    // ended on <host>", and nothing on the host ended -- this side stopped. `.failed` shows the
+    // reason as the whole sentence, and behaves identically otherwise.
+    #expect(attachment.state.phase == .failed(AttachFailure.remoteTurnedOff))
+    #expect(attachment.state.stripText == "Remote sessions turned off")
+    #expect(attachment.state.closesOnNextKey)
+    #expect(!attachment.state.acceptsInput)
+    #expect(recorder.phases == [.failed(AttachFailure.remoteTurnedOff)])
+}

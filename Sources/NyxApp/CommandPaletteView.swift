@@ -85,9 +85,13 @@ private final class PaletteListView: NSView {
                 rowSelection.setFill()
                 NSBezierPath(roundedRect: rect.insetBy(dx: 5, dy: 1), xRadius: 5, yRadius: 5).fill()
             }
+            // A row nothing can be done with is drawn at the detail's weight: a paired Mac that is
+            // asleep, one with nothing open, and the line saying the relay cannot be reached all
+            // belong in the list, but drawn like the rest they are rows people press (spec §5.3).
             let title = NSMutableAttributedString(
                 string: result.item.title,
-                attributes: [.font: titleFont, .foregroundColor: titleColor])
+                attributes: [.font: titleFont,
+                             .foregroundColor: result.item.isEnabled ? titleColor : detailColor])
             // Bold and in the theme's accent: the characters the query actually matched, which is
             // what tells a user why this row is in the list at all. Not `colors[12]` -- Solarized's
             // bright blue is a grey identical to its foreground, so there the matched characters
@@ -141,11 +145,13 @@ private final class PaletteListView: NSView {
             // The detail is the half that says what a row *is* -- a shortcut, "Theme", "Quick
             // action" -- and reading the title alone leaves three kinds of row sounding identical.
             let detail = result.item.detail.isEmpty ? "" : ", \(result.item.detail)"
+            // A disabled row gets no press: `DrawnControlElement` reports itself as not enabled
+            // when there is none, which is how the greying reaches somebody who cannot see it.
             return DrawnControlElement.make(
                 label: "\(result.item.title)\(detail), \(index + 1) of \(results.count)",
                 role: .row, frame: rowRect(index), in: self,
                 value: index == selection ? 1 : 0,
-                press: { [weak self] in self?.onChoose?(index) })
+                press: result.item.isEnabled ? { [weak self] in self?.onChoose?(index) } : nil)
         }
     }
 

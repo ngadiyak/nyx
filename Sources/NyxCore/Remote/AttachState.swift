@@ -26,6 +26,19 @@ public struct AttachState: Equatable {
 
     public enum Role: Equatable { case writer, observer }
 
+    /// How the strip is coloured. Not a second copy of the phase: it is the one thing the *band*
+    /// carries, and a view that switched on the phase itself would be the scatter of `if`s this
+    /// type exists to prevent.
+    ///
+    /// `reconnecting` is deliberately `info`. It is a state that fixes itself, and colouring it
+    /// like a failure would teach people to ignore the colour on the two states that do not.
+    public enum Severity: Equatable {
+        case info
+        /// Something is over and will not come back: the session ended on the host, or the attach
+        /// never happened. Drawn in the theme's failure colour, the way a failed exit status is.
+        case warning
+    }
+
     public var phase: Phase
     public var role: Role
     public var hostName: String
@@ -99,6 +112,13 @@ public struct AttachState: Equatable {
         }
     }
 
+    public var severity: Severity {
+        switch phase {
+        case .ended, .failed: return .warning
+        case .attaching, .snapshot, .live, .reconnecting: return .info
+        }
+    }
+
     public var badge: String { role == .writer ? "writer" : "observer" }
 }
 
@@ -120,6 +140,11 @@ public enum AttachFailure {
         default: return "The host could not be reached"
         }
     }
+
+    /// The user switched remote sessions off, or changed the relay this Mac talks to, while a tab
+    /// was attached. The session on the host is untouched; it is this side that stopped, and the
+    /// tab must say so rather than sitting on a screen that has quietly stopped moving.
+    public static let remoteTurnedOff = "Remote sessions turned off"
 
     /// An attach the relay never answered at all -- neither `attached` nor `error`. Distinct from
     /// every code above because nothing on the far end has admitted to anything: the message may

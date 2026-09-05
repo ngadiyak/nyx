@@ -353,6 +353,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     var workingDirectory: String? {
         if let cwd = session.withTerminal({ $0.cwd }), !cwd.isEmpty { return cwd }
         if let pgid = session.foregroundProcessGroup, let path = Pane.processWorkingDirectory(pgid) { return path }
+        // A remote session has no local child (`PaneSession` documents it as 0), and asking the
+        // kernel about process 0 is a syscall whose only possible answer is "no". The host's own
+        // OSC 7 above is where a remote pane's directory comes from.
+        guard session.pid > 0 else { return nil }
         return Pane.processWorkingDirectory(session.pid)
     }
 
@@ -1276,9 +1280,24 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if let bytes = KeyEncoder.encode(ke, options: opts) { send(bytes) }
     }
 
+    /// Whether anything this pane sends can reach a shell at all.
+    ///
+    /// True for every local pane. On a remote one it is `AttachState.acceptsInput`: observing, or
+    /// attaching, or reconnecting, and there is no path from a keystroke to the host. The gate is
+    /// here as well as inside `Attachment.send` because the *side effects* are the visible part --
+    /// without it, typing while observing still dropped the selection and threw the viewport back
+    /// to the bottom, and ⌘⇧V still opened the paste editor for a paste that went nowhere.
+    var acceptsInput: Bool { remote?.state.acceptsInput ?? true }
+
     /// Writes bytes to the shell as though the user had typed them. Not private because a quick
     /// action is exactly "type this for me".
     func send(_ bytes: [UInt8]) {
+        guard acceptsInput else {
+            // The strip is the explanation -- it is on screen saying "Observing", with the button
+            // that fixes it. The beep is only the acknowledgement that the key was seen.
+            NSSound.beep()
+            return
+        }
         // Typing both jumps the viewport back to the live screen and drops the selection: the text
         // it pointed at is about to move, and every terminal drops it here.
         clearSelection()
@@ -2680,6 +2699,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// it did before: one mode read and one write, no view work at all.
     @objc func paste(_ sender: Any?) {
         guard let text = NSPasteboard.general.string(forType: .string) else { return }
+        // Checked here, before the editor or the confirmation sheet: a paste into a session that
+        // will not take it must not put up a sheet and then do nothing when it is dismissed.
+        guard acceptsInput else {
+            NSSound.beep()
+            return
+        }
         let bracketed = session.withTerminal { $0.modes.bracketedPaste }
 
         // Several lines go to the editor by default, and this is why: once a multi-line command is
@@ -2819,7 +2844,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// that case, asked for on purpose.
     @discardableResult
     func pasteWithEditor() -> Bool {
-        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty,
+              acceptsInput else {
             return false
         }
         let bracketed = session.withTerminal { $0.modes.bracketedPaste }

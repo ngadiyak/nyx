@@ -19,8 +19,10 @@ final class RemoteStripView: NSView {
     private let label = NSTextField(labelWithString: "")
     private let button = NSButton(title: "Take control", target: nil, action: nil)
     /// What is currently shown, so a frame that changes nothing does no layout at all -- this is
-    /// updated on every render pass, like the sticky strip.
-    private var shown: (text: String, button: String?)?
+    /// updated on every render pass, like the sticky strip. The palette is part of the key: a theme
+    /// reload changes no word on the strip, and without it the strip kept the old theme's colours
+    /// while everything around it repainted.
+    private var shown: (text: String, button: String?, palette: Palette, severity: AttachState.Severity)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -65,11 +67,13 @@ final class RemoteStripView: NSView {
             if !isHidden { isHidden = true; shown = nil }
             return
         }
-        guard shown?.text != text || shown?.button != state.stripButton || label.font != font else {
+        guard shown?.text != text || shown?.button != state.stripButton
+                || shown?.palette != palette || shown?.severity != state.severity
+                || label.font != font else {
             isHidden = false
             return
         }
-        shown = (text, state.stripButton)
+        shown = (text, state.stripButton, palette, state.severity)
         // `stripLabel`, not `stripText`: with the button beside it the whole sentence would say
         // "Take control" twice on one row. The full sentence is what the accessibility label below
         // carries, where there is no button to read.
@@ -81,9 +85,17 @@ final class RemoteStripView: NSView {
         // The theme's own colours, never system ones: this sits on the terminal's background, and a
         // system label colour on a dark theme under Light Mode is the bug the block header already
         // has a comment about.
-        label.textColor = nsColor(palette.foreground, alpha: 1)
+        //
+        // The band's colour carries the severity, the way a block header colours a failed exit
+        // status: a session that ended and one that is attaching were otherwise the same picture
+        // with different words in it, and the words are the part a person reads last.
+        // `readable(1)` rather than `colors[1]` for the same reason `StickyPromptView` uses it --
+        // gruvbox's red is 2.7:1 against its own background and unreadable as a line of text.
+        let warning = state.severity == .warning
+        let band = warning ? palette.readable(1) : palette.accent
+        label.textColor = nsColor(warning ? palette.readable(1) : palette.foreground, alpha: 1)
         button.contentTintColor = nsColor(palette.accentText, alpha: 1)
-        layer?.backgroundColor = nsColor(palette.accent, alpha: 0.22).cgColor
+        layer?.backgroundColor = nsColor(band, alpha: warning ? 0.28 : 0.22).cgColor
 
         // A strip, not a decoration: a screen reader gets the whole sentence including the state
         // the colour is carrying.

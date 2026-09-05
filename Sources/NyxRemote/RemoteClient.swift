@@ -22,9 +22,38 @@ public final class RemoteClient {
         /// Kept for the strip and the tab title after the session ends, when the host is gone.
         public let hostName: String
 
-        public var onState: ((AttachState) -> Void)?
+        /// Behind the same lock as everything else here, and not a plain stored property.
+        ///
+        /// The owner assigns these on the main thread, while the relay's queue *and* the attach
+        /// timeout's queue are reading them in order to call back -- three threads on one
+        /// unsynchronised closure slot. They are copied out under the lock and called outside it,
+        /// because holding a lock across a call into a pane's redraw is how a UI freeze starts.
+        public var onState: ((AttachState) -> Void)? {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return _onState
+            }
+            set {
+                lock.lock()
+                _onState = newValue
+                lock.unlock()
+            }
+        }
+
         /// Decrypted PTY output, in order, with the snapshot first. Called on the relay's thread.
-        public var onBytes: (([UInt8]) -> Void)?
+        public var onBytes: (([UInt8]) -> Void)? {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return _onBytes
+            }
+            set {
+                lock.lock()
+                _onBytes = newValue
+                lock.unlock()
+            }
+        }
 
         /// The host's terminal size, from `attached`. The pane letterboxes or scrolls to it rather
         /// than resizing the host's window, which belongs to the person sitting in front of it.
@@ -61,6 +90,8 @@ public final class RemoteClient {
         private var e2e: E2ESession?
         private var _cols = 0
         private var _rows = 0
+        private var _onState: ((AttachState) -> Void)?
+        private var _onBytes: (([UInt8]) -> Void)?
         /// Set by `detach()`: the owner has closed the tab, so nothing more is reported to it and
         /// nothing more is sent on its behalf, even if the relay is still delivering frames.
         private var finished = false
@@ -258,6 +289,25 @@ public final class RemoteClient {
             begin()
         }
 
+        /// The socket went. Deliberately does *not* re-attach: there is nothing to send it on, so an
+        /// `attach` now would only sit in the outbox and go out behind the one `handleReconnect`
+        /// sends when the socket is back. All this does is stop the tab looking live -- which stops
+        /// `acceptsInput`, and with it every keystroke that would otherwise be sealed with a cipher
+        /// the host has already forgotten and flushed at it minutes later.
+        func handleDisconnect() {
+            report(if: { !self.isEnded($0.phase) }) { $0.phase = .reconnecting }
+        }
+
+        /// This side stopped: remote sessions were switched off, or the relay this Mac talks to
+        /// changed. Nothing on the host ended, so the reason is the whole sentence rather than a
+        /// machine name.
+        func end(reason: String) {
+            report(if: { !self.isEnded($0.phase) }) { $0.phase = .failed(reason) }
+            lock.lock()
+            finished = true
+            lock.unlock()
+        }
+
         func handle(_ frame: BinaryFrame) {
             lock.lock()
             guard !finished, !isEnded(_state.phase), let e2e, let bytes = try? e2e.open(frame) else {
@@ -267,8 +317,9 @@ public final class RemoteClient {
                 lock.unlock()
                 return
             }
+            let deliver = _onBytes
             lock.unlock()
-            onBytes?(bytes)
+            deliver?(bytes)
         }
 
         var isLive: Bool {
@@ -314,8 +365,9 @@ public final class RemoteClient {
                 return
             }
             _state = updated
+            let report = _onState
             lock.unlock()
-            onState?(updated)
+            report?(updated)
         }
     }
 
@@ -403,6 +455,30 @@ public final class RemoteClient {
         let live = attachments.values.filter { $0.isLive }
         lock.unlock()
         for attachment in live { attachment.handleReconnect() }
+    }
+
+    /// The socket dropped. Every live attachment says "Reconnecting…" and stops accepting input
+    /// until `linkDidReconnect` gets an answer from the host again.
+    ///
+    /// Without this a client whose network went sat at `live`, still taking keystrokes: they were
+    /// sealed with the pre-drop cipher, queued in the connection's outbox, and delivered after the
+    /// reconnect had rotated the keys -- so the host dropped them, and the person typing had no way
+    /// to know anything had happened at all.
+    public func linkDidDisconnect() {
+        lock.lock()
+        let live = attachments.values.filter { $0.isLive }
+        lock.unlock()
+        for attachment in live { attachment.handleDisconnect() }
+    }
+
+    /// Ends every attachment with one reason and forgets them. For an owner that is going away:
+    /// remote sessions switched off, or a relay setting changed under a live connection.
+    public func endAll(reason: String) {
+        lock.lock()
+        let live = attachments.values.filter { $0.isLive }
+        attachments.removeAll()
+        lock.unlock()
+        for attachment in live { attachment.end(reason: reason) }
     }
 
     /// Stops routing to an attachment: its tab is gone (`detach()`) or its session ended.

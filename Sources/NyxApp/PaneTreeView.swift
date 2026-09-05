@@ -502,3 +502,13 @@ final class PaneTreeView: NSView {
 func nsColor(_ rgb: RGB, alpha: CGFloat) -> NSColor {
     NSColor(srgbRed: CGFloat(rgb.r) / 255, green: CGFloat(rgb.g) / 255, blue: CGFloat(rgb.b) / 255, alpha: alpha)
 }
+
+/// An AppKit colour as `NyxCore`'s contrast arithmetic wants it, resolved in whatever appearance is
+/// current. Dynamic system colours have no components until they are resolved, so a caller has to
+/// be inside `performAsCurrentDrawingAppearance` (or on screen) for this to mean anything.
+func rgb(of color: NSColor) -> RGB {
+    guard let resolved = color.usingColorSpace(.sRGB) else { return RGB(0, 0, 0) }
+    return RGB(UInt8(max(0, min(255, resolved.redComponent * 255))),
+               UInt8(max(0, min(255, resolved.greenComponent * 255))),
+               UInt8(max(0, min(255, resolved.blueComponent * 255))))
+}

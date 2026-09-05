@@ -25,6 +25,9 @@ final class SettingsWindowController: NSWindowController {
     private let diagnosticsLabel = NSTextField(labelWithString: "")
 
     private let pairedTable = NSTableView()
+    /// Everything on the Remote page below the checkbox: it all follows "Enable remote sessions",
+    /// because a page of live-looking fields that do nothing is a page that reads as broken.
+    private var remoteBodyControls: [NSControl] = []
     private var pairedRows: [PairedDevice] = []
     private let removePairedButton = NSButton()
     private let remoteStatusLabel = NSTextField(labelWithString: "")
@@ -268,6 +271,13 @@ final class SettingsWindowController: NSWindowController {
         note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         note.textColor = .secondaryLabelColor
 
+        // Every control the switch governs. The status line, the labels and the note stay live:
+        // they are the page explaining itself, and the status line's whole job while the switch is
+        // off is to say so.
+        remoteBodyControls = ["remote-device-name", "remote-relay", "remote-relay-token",
+                              "remote-snapshot-lines"].compactMap { controls[$0] }
+            + [removePairedButton, pairHostButton, pairClientButton]
+
         let view = NSView()
         for subview in [grid, remoteStatusLabel, pairedLabel, pairedScroll, removePairedButton,
                        pairButtons, activityLabel, activityScroll, note] as [NSView] {
@@ -328,6 +338,23 @@ final class SettingsWindowController: NSWindowController {
     /// run renders this page with no application state behind it -- the honest answer is the one
     /// the configuration alone supports: off when it is off, and "Connecting…" when it is on but
     /// nothing here has reached anything.
+    /// Greys out the Remote page's body when the switch is off. The table goes with it: a paired
+    /// device you cannot reach is not a row worth selecting, and Remove beside it would be the one
+    /// live control on a dead page.
+    private func refreshRemoteEnabled() {
+        let on = config.remote == .on
+        for control in remoteBodyControls { control.isEnabled = on }
+        // A stepper is a second control beside its field, and neither is in `controls`.
+        for stepper in (controls["remote-snapshot-lines"]?.superview?.subviews
+            .compactMap { $0 as? NSStepper } ?? []) {
+            stepper.isEnabled = on
+        }
+        pairedTable.isEnabled = on
+        pairedTable.reloadData()   // the cells carry the enabled colour; see `pairedDeviceCell`
+        activityView.isSelectable = on
+        activityView.textColor = on ? activityView.textColor : .tertiaryLabelColor
+    }
+
     private func refreshRemoteStatus() {
         let text = coordinator?.statusText
             ?? RemoteStatusText.text(mode: config.remote, connection: .connecting,
@@ -782,6 +809,7 @@ final class SettingsWindowController: NSWindowController {
         set("remote-snapshot-lines", Double(c.remoteSnapshotLines), decimals: 0)
         refreshRemoteStatus()
         refreshPairedDevicesAndActivity()
+        refreshRemoteEnabled()
 
         let table = KeyBindingTable(user: c.keybinds)
         keyRows = ActionCatalog.allMenuActions.map { action in
@@ -901,6 +929,10 @@ extension SettingsWindowController: NSTableViewDataSource, NSTableViewDelegate {
         }
         let field = NSTextField(labelWithString: text)
         if id == "id" { field.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular) }
+        // `NSTableView.isEnabled` does not reach the views inside its rows, so a disabled table
+        // still drew its devices at full weight -- the one live-looking thing on a page that is
+        // otherwise entirely greyed.
+        field.textColor = config.remote == .on ? .labelColor : .tertiaryLabelColor
         return field
     }
 

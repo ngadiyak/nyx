@@ -105,3 +105,21 @@ private func best(_ query: String, _ candidates: [String]) -> String? {
         #expect(best(title, titles) == title, "typing \(title) should find itself")
     }
 }
+
+/// With nothing typed, the list is the list it was given.
+///
+/// Every candidate scores the same on an empty query, so the tie-break decided the whole order --
+/// and it was "shortest first", which shuffled `PaletteSource`'s documented sections (actions,
+/// quick actions, themes, tabs, then remote) into an arbitrary order the moment ⌘⇧P opened. It
+/// showed up as the Remote *section* not being a section at all: an offline Mac sorted above a live
+/// session two rows from the top. Length still breaks ties once something is typed, where it does
+/// what it is for -- preferring the shorter of two equally good matches.
+@Test func anEmptyQueryKeepsTheOrderItWasGiven() {
+    let items = ["a very long action name", "ab", "another long one", "b"]
+    #expect(FuzzySearch.rank("", items) { $0 }.map(\.item) == items)
+}
+
+@Test func aTypedQueryStillPrefersTheShorterOfTwoEqualMatches() {
+    let ranked = FuzzySearch.rank("ab", ["abracadabra", "ab"]) { $0 }
+    #expect(ranked.map(\.item) == ["ab", "abracadabra"])
+}

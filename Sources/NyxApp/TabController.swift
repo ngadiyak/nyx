@@ -254,7 +254,9 @@ final class TabController: NSViewController, NSMenuItemValidation {
         }, startingIn: nil)
         tree.autoresizingMask = [.width, .height]
         guard tree.focusedPane != nil else {
-            attachment.detach()
+            // The pane exists whatever the tree did with it, and it has a display link, a Metal
+            // layer and an attachment behind it. Dropping the reference is not tearing it down.
+            pane.terminate()
             return
         }
         let tab = Tab(panes: tree)
@@ -1479,7 +1481,10 @@ extension TabController: ActionTarget {
     func canPerform(_ action: TerminalAction) -> Bool {
         switch action {
         case .paste, .pasteWithEditor:
-            return focusedPane != nil && TabController.clipboardHasText
+            // Greyed out on a pane that will not take input -- observing a remote session, or one
+            // still attaching. A menu item that opens a paste editor for a paste that goes nowhere
+            // is worse than one that is plainly unavailable.
+            return focusedPane?.acceptsInput == true && TabController.clipboardHasText
         case .newWindow, .openConfig, .reloadConfig, .newTab:
             return true
         case .nextTab, .previousTab:

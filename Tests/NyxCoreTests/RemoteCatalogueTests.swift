@@ -51,8 +51,8 @@ private func session(id: String = "s1", title: String = "zsh", cwd: String = "/t
     c.applyCatalogue(deviceID: "d1", sessions: [])
     let items = c.paletteItems(now: now)
     #expect(items.count == 1)
-    #expect(items[0].title == "iMac — no sessions")
-    #expect(items[0].detail == "")
+    #expect(items[0].title == "iMac")
+    #expect(items[0].detail == "no sessions")
     #expect(items[0].kind == .remoteSession(deviceID: "d1", sessionID: ""))
 }
 
@@ -61,7 +61,9 @@ private func session(id: String = "s1", title: String = "zsh", cwd: String = "/t
 @Test func aPairedDeviceThatHasNeverConnectedIsOfflineNotEmpty() {
     var c = RemoteCatalogue()
     c.setPaired(["d1": "iMac"])
-    #expect(c.paletteItems(now: now)[0].title == "iMac — offline")
+    let row = c.paletteItems(now: now)[0]
+    #expect(row.title == "iMac")
+    #expect(row.detail == "offline")
 }
 
 // MARK: - relative()
@@ -129,4 +131,52 @@ private func iso(secondsAgo: TimeInterval) -> String {
     c.applyCatalogue(deviceID: "d1", sessions: [session(cwd: "/Users/nik/projects/nyx")])
     #expect(c.paletteItems(now: now, home: "/Users/nik")[0].detail.hasPrefix("~/projects/nyx"))
     #expect(c.paletteItems(now: now)[0].detail.hasPrefix("/Users/nik/projects/nyx"))
+}
+
+// MARK: - Rows nothing can be done with
+
+/// Spec §5.3: an offline host is greyed. The three rows that stand for something rather than being
+/// something -- an offline Mac, a Mac with nothing open, the relay's status -- say so in the model,
+/// because a row drawn exactly like an actionable one is a row people press.
+@Test func theThreeNonActionableRowsAreDisabled() {
+    var c = RemoteCatalogue()
+    c.relayStatusText = "Relay unreachable (nyx.agentforge.cc)"
+    c.applyPresence([
+        RemotePresence(deviceID: "d1", name: "iMac", online: true),
+        RemotePresence(deviceID: "d2", name: "Mac mini", online: false),
+    ])
+    c.applyCatalogue(deviceID: "d1", sessions: [])
+    #expect(c.paletteItems(now: now).allSatisfy { !$0.isEnabled })
+}
+
+@Test func aSessionRowIsActionable() {
+    var c = RemoteCatalogue()
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "iMac", online: true)])
+    c.applyCatalogue(deviceID: "d1", sessions: [session()])
+    #expect(c.paletteItems(now: now)[0].isEnabled)
+}
+
+@Test func everyOtherKindOfRowIsActionable() {
+    #expect(PaletteItem.action(.newTab, chord: nil).isEnabled)
+    #expect(PaletteItem.theme("dracula").isEnabled)
+    #expect(PaletteItem.tab(0, title: "zsh").isEnabled)
+}
+
+/// The state belongs on one side of the row, not on both. "iMac — offline" beside a detail reading
+/// "offline" said it twice; the title is the machine and the detail is what is wrong with it.
+@Test func aStateIsSaidOnceNotTwice() {
+    var c = RemoteCatalogue()
+    c.relayStatusText = "Relay unreachable (nyx.agentforge.cc)"
+    c.applyPresence([
+        RemotePresence(deviceID: "d1", name: "iMac", online: true),
+        RemotePresence(deviceID: "d2", name: "Mac mini", online: false),
+    ])
+    c.applyCatalogue(deviceID: "d1", sessions: [])
+    let items = c.paletteItems(now: now)
+    #expect(items[0].title == "Relay unreachable (nyx.agentforge.cc)")
+    #expect(items[0].detail == "")
+    #expect(items[1].title == "iMac")
+    #expect(items[1].detail == "no sessions")
+    #expect(items[2].title == "Mac mini")
+    #expect(items[2].detail == "offline")
 }

@@ -145,6 +145,10 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         pairingTimer?.invalidate()
         pairingTimer = nil
         pairing = nil
+        // Before the client goes: a tab whose attachment is simply dropped sits on a screen that
+        // has quietly stopped moving, with nothing saying why. Nothing on the host ended -- this
+        // side did -- so the reason is the whole sentence.
+        client?.endAll(reason: AttachFailure.remoteTurnedOff)
         connection?.delegate = nil
         connection?.disconnect()
         connection = nil
@@ -464,6 +468,10 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
             // and `paletteItems` puts the status line where the sessions were.
             catalogue = RemoteCatalogue()
             catalogue.setPaired(paired.namesByID)
+            // And every attached tab has to be told, or it goes on looking live: still taking
+            // keystrokes, sealing them with a cipher the host has already forgotten, and flushing
+            // them at it after the reconnect has rotated the keys.
+            client?.linkDidDisconnect()
         }
         onChange?()
     }

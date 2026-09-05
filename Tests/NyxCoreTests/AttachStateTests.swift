@@ -129,3 +129,29 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
     #expect(s.tabTitle(currentTitle: "") == "⟵ iMac · zsh")
     #expect(s.tabTitle == s.tabTitle(currentTitle: ""))
 }
+
+// MARK: - Severity
+
+/// Every state used to be the same accent band, so "Session ended" and "Attaching…" were the same
+/// picture with different words in it -- the two things a person most needs to tell apart at a
+/// glance, told apart only by reading.
+@Test func onlyTheStatesThatWentWrongAreWarnings() {
+    #expect(state(phase: .attaching, role: .observer).severity == .info)
+    #expect(state(phase: .snapshot, role: .observer).severity == .info)
+    #expect(state(phase: .live, role: .observer).severity == .info)
+    // Reconnecting is not a warning: it is a state that fixes itself, and the strip already says so.
+    #expect(state(phase: .reconnecting, role: .writer).severity == .info)
+    #expect(state(phase: .ended("iMac"), role: .writer).severity == .warning)
+    #expect(state(phase: .failed("Host is offline"), role: .observer).severity == .warning)
+}
+
+/// The one state with no strip has no severity to draw either.
+@Test func theLiveWriterHasNoStripAndSoNoBand() {
+    let writer = state(phase: .live, role: .writer)
+    #expect(writer.stripText == nil)
+    #expect(writer.severity == .info)
+}
+
+@Test func turningRemoteSessionsOffEndsATabWithWordsOfItsOwn() {
+    #expect(AttachFailure.remoteTurnedOff == "Remote sessions turned off")
+}

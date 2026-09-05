@@ -88,6 +88,10 @@ enum UISnapshot {
             write(invalidCodePairingSheetView(appearance), named: "pairing-code-invalid-\(name)",
                   into: directory, background: windowGround(appearance))
             writeSettings(into: directory, appearance: appearance, suffix: "-\(name)")
+            // The same page with the switch off: every field, the table, Remove and both pairing
+            // buttons greyed, and the status line saying why.
+            writeSettings(into: directory, appearance: appearance, suffix: "-off-\(name)",
+                          remoteOn: false, remotePageOnly: true)
         }
         // The remote strip is an `NSButton` on a theme-coloured band, so unlike the block header it
         // is *not* the same picture in both appearances: the button's bezel follows the system.
@@ -101,8 +105,14 @@ enum UISnapshot {
         write(tabBar(palette: palette, config: config, tabs: 3, quickActions: quickActions(),
                      remoteBadgeAt: 1),
               named: "tabbar-remote-badge", into: directory, background: palette.background)
-        write(remotePalettePanel(palette: palette), named: "command-palette-remote", into: directory,
-              background: palette.background)
+        // Two pictures, each a catalogue that could actually exist. The first is the everyday one:
+        // the palette as it opens, ordinary rows and the Remote section together. The second is the
+        // relay being down, which is the only state that puts a status row in the list -- and when
+        // it is there, there are no live sessions to list beside it.
+        write(remotePalettePanel(palette: palette, mixed: true),
+              named: "command-palette-mixed-remote", into: directory, background: palette.background)
+        write(remotePalettePanel(palette: palette, mixed: false), named: "command-palette-remote",
+              into: directory, background: palette.background)
         write(stickyPrompt(palette: palette, failed: false), named: "sticky-prompt", into: directory,
               background: palette.background)
         write(stickyPrompt(palette: palette, failed: true), named: "sticky-prompt-failed",
@@ -401,12 +411,20 @@ enum UISnapshot {
     /// One PNG per settings page: an `NSTabView` shows one at a time, so a single render of the
     /// window would leave three of the four pages unlooked-at, which is the whole problem.
     private static func writeSettings(into directory: URL, appearance: NSAppearance.Name,
-                                      suffix: String) {
-        let controller = SettingsWindowController(store: ConfigStore())
+                                      suffix: String, remoteOn: Bool = true,
+                                      remotePageOnly: Bool = false) {
+        let store = ConfigStore()
+        let controller = SettingsWindowController(store: store)
+        // The Remote page's controls follow its checkbox, so the page has to be pictured in both
+        // states: switched on (every field live) and switched off (the whole body greyed out, which
+        // is the state a Mac that has never set this up is actually in).
+        var config = store.config
+        config.remote = remoteOn ? .on : .off
+        controller.configChanged(config, diagnostics: [])
         // Two fake paired devices and three audit lines -- pictured this way rather than by
         // writing them into a real person's `~/.config/nyx/remote/`, which is what reading the
         // real files at their real path (the settings page's normal, reachable behaviour) would
-        // otherwise mean here.
+        // otherwise mean here. After `configChanged`, which re-reads the real files.
         controller.setRemoteDemoData(
             paired: [
                 PairedDevice(id: "N1a2B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ01AB", name: "Nik's MacBook Pro",
@@ -437,6 +455,7 @@ enum UISnapshot {
             // empty white pill above every settings page and made the tool look broken. It is also
             // the one part of this window nobody needs to review: it is Apple's, not ours.
             guard let page = item.view else { continue }
+            if remotePageOnly, label != "remote" { continue }
             page.layoutSubtreeIfNeeded()
             // Same lazy-glyph-generation trap as `commandEditorSheet`: the Remote page's activity
             // log is an `NSTextView`, and without this it caches to an empty box.
@@ -514,7 +533,7 @@ enum UISnapshot {
     /// row that appears in place of everything when the socket is down. Built through
     /// `RemoteCatalogue` rather than by hand, so the rows are the ones a real presence and
     /// catalogue message would produce.
-    private static func remotePalettePanel(palette: Palette) -> NSView {
+    private static func remotePalettePanel(palette: Palette, mixed: Bool) -> NSView {
         let now = Date()
         let iso = ISO8601DateFormatter()
         var catalogue = RemoteCatalogue()
@@ -536,12 +555,25 @@ enum UISnapshot {
                               cols: 120, rows: 40),
         ])
         catalogue.applyCatalogue(deviceID: "d2", sessions: [])
-        var items = catalogue.paletteItems(now: now, home: NSHomeDirectory())
-        var withStatus = catalogue
-        withStatus.relayStatusText = "Relay unreachable (nyx.agentforge.cc)"
-        // The status row on its own, appended after the rest, so one picture carries both the
-        // ordinary list and the row that replaces it when the relay is down.
-        items.append(contentsOf: withStatus.paletteItems(now: now, home: NSHomeDirectory()).prefix(1))
+
+        var items: [PaletteItem] = []
+        if mixed {
+            // What ⌘⇧P actually opens on: the window's own verbs, a theme, a tab, and the Remote
+            // section after them, in the order `PaletteSource.items` builds.
+            let bindings = KeyBindingTable(user: [])
+            items = PaletteSource.items(actions: Array(ActionCatalog.allMenuActions.prefix(5)),
+                                        chord: { bindings.binding(for: $0).map(chordText) },
+                                        themes: ["dracula"], tabTitles: ["nyx — zsh"],
+                                        remote: catalogue.paletteItems(now: now, home: NSHomeDirectory()))
+        } else {
+            // The relay is down. Its own row is what the section becomes: a host whose sessions
+            // this Mac cannot see has nothing to list, so showing live rows beside "unreachable"
+            // would be a picture of a state that cannot happen.
+            var offline = RemoteCatalogue()
+            offline.setPaired(["d1": "Mac mini (office)", "d3": "iMac (studio)"])
+            offline.relayStatusText = "Relay unreachable (nyx.agentforge.cc)"
+            items = offline.paletteItems(now: now, home: NSHomeDirectory())
+        }
 
         let view = CommandPaletteView(palette: palette, items: items)
         view.frame = NSRect(x: 0, y: 0, width: CommandPaletteView.width, height: view.preferredHeight)

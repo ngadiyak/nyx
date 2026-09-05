@@ -25,12 +25,22 @@ public struct PaletteItem: Equatable {
     /// is a list, not a search.
     public let searchText: String
     public let kind: PaletteItemKind
+    /// Whether pressing this row does anything.
+    ///
+    /// A palette is a list of verbs, and until the Remote section existed every row was one. Three
+    /// of its rows are not: a Mac that is offline, a Mac with nothing open, and the line saying the
+    /// relay cannot be reached. They belong in the list -- a paired Mac that vanished from it reads
+    /// as a broken pairing -- but drawn like the rest they are rows people press and get a beep
+    /// from. The view greys them (spec §5.3) and `TabController.run` beeps rather than acting.
+    public let isEnabled: Bool
 
-    public init(title: String, detail: String, searchText: String? = nil, kind: PaletteItemKind) {
+    public init(title: String, detail: String, searchText: String? = nil, kind: PaletteItemKind,
+                isEnabled: Bool = true) {
         self.title = title
         self.detail = detail
         self.searchText = searchText ?? title
         self.kind = kind
+        self.isEnabled = isEnabled
     }
 
     public static func action(_ action: TerminalAction, chord: String?) -> PaletteItem {
@@ -63,9 +73,11 @@ public struct PaletteItem: Equatable {
     /// formatted) rather than from raw `RemoteSessionInfo` fields here, because the formatting --
     /// relative time, `~` shortening -- needs `now` and the local home directory, neither of which
     /// this module should have to thread through.
-    public static func remoteSession(deviceID: String, sessionID: String, title: String, detail: String) -> PaletteItem {
+    public static func remoteSession(deviceID: String, sessionID: String, title: String,
+                                     detail: String, isEnabled: Bool = true) -> PaletteItem {
         PaletteItem(title: title, detail: detail, searchText: "\(title) remote",
-                    kind: .remoteSession(deviceID: deviceID, sessionID: sessionID))
+                    kind: .remoteSession(deviceID: deviceID, sessionID: sessionID),
+                    isEnabled: isEnabled)
     }
 }
 

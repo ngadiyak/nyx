@@ -80,13 +80,17 @@ public struct RemoteCatalogue: Equatable {
     public func paletteItems(now: Date, home: String = "") -> [PaletteItem] {
         var items: [PaletteItem] = []
         if let status = relayStatusText {
-            items.append(.remoteSession(deviceID: "", sessionID: "", title: status, detail: ""))
+            items.append(.remoteSession(deviceID: "", sessionID: "", title: status, detail: "",
+                                        isEnabled: false))
         }
         for device in devices {
             if device.online {
                 guard !device.sessions.isEmpty else {
+                    // The machine on the left, what is wrong with it on the right. Saying "iMac —
+                    // no sessions" *and* putting the same words in the detail said it twice.
                     items.append(.remoteSession(deviceID: device.id, sessionID: "",
-                                                title: "\(device.name) — no sessions", detail: ""))
+                                                title: device.name, detail: "no sessions",
+                                                isEnabled: false))
                     continue
                 }
                 for session in device.sessions {
@@ -97,7 +101,8 @@ public struct RemoteCatalogue: Equatable {
                 }
             } else {
                 items.append(.remoteSession(deviceID: device.id, sessionID: "",
-                                            title: "\(device.name) — offline", detail: "offline"))
+                                            title: device.name, detail: "offline",
+                                            isEnabled: false))
             }
         }
         return items

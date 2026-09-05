@@ -99,6 +99,14 @@ final class TestPeer {
         identity = try testIdentity()
     }
 
+    /// A second peer on the *same* device: one client attached to two of a host's sessions is one
+    /// device id with two attachments, each with its own ephemeral key and cipher, which is what a
+    /// real `RemoteClient` does.
+    init(identity: DeviceIdentity, isHost: Bool = false) {
+        self.isHost = isHost
+        self.identity = identity
+    }
+
     var deviceID: String { identity.deviceID }
 
     func attachMessage(to host: String, sessionID: [UInt8]) throws -> RemoteMessage {

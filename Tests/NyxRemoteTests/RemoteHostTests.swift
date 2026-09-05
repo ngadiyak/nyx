@@ -72,12 +72,25 @@ private final class HostFixture {
     }
 
     /// Runs a full attach for `peer` and returns the `attached` message the host sent.
-    func attach(_ peer: TestPeer) throws -> RemoteMessage? {
-        host.handle(try peer.attachMessage(to: hostID, sessionID: sessionID))
+    func attach(_ peer: TestPeer, to id: [UInt8]? = nil) throws -> RemoteMessage? {
+        let target = id ?? sessionID
+        let key = RemoteID.base64url(target)
+        host.handle(try peer.attachMessage(to: hostID, sessionID: target))
         host.flush()
-        guard let attached = link.messages(ofType: "attached").last(where: { $0.to == peer.deviceID }) else { return nil }
-        try peer.completeAttach(attached, sessionID: sessionID, peerID: hostID)
+        guard let attached = link.messages(ofType: "attached")
+            .last(where: { $0.to == peer.deviceID && $0.sessionID == key }) else { return nil }
+        try peer.completeAttach(attached, sessionID: target, peerID: hostID)
         return attached
+    }
+
+    /// A second published session on the same host. The caller terminates it.
+    func addSession(_ script: String, id: UInt8) throws -> (session: TerminalSession, sessionID: [UInt8], key: String) {
+        let session = try shellSession(script)
+        session.start()
+        let sessionID = testSessionID(id)
+        host.register(sessionID: sessionID, session: session, summary: { testSummary(sessionID, title: "second") })
+        host.flush()
+        return (session, sessionID, RemoteID.base64url(sessionID))
     }
 
     /// Everything the host sent to `peer` as data, decrypted in the order it was sent. Frames are
@@ -566,4 +579,44 @@ private func waitForShell(_ f: HostFixture, containing needle: String) -> Bool {
     #expect(f.link.messages(ofType: "role").isEmpty)
     #expect(!f.audit.contains(.tookControl(device: second.deviceID, session: f.key)))
     #expect(!f.audit.contains(.detached(device: second.deviceID, session: f.key)))
+}
+
+@Test func detachingFromOneSessionLeavesTheSameDevicesOtherSessionAlone() throws {
+    let f = try HostFixture(script: "read x; printf \"one:$x\\n\"; sleep 30")
+    defer { f.terminate() }
+    f.register()
+    let second = try f.addSession("read y; printf \"two:$y\\n\"; sleep 30", id: 5)
+    defer { second.session.terminate() }
+
+    // One device, two tabs. Each attachment has its own ephemeral key and cipher, exactly as a real
+    // client's two attachments do.
+    let identity = try testIdentity()
+    let onFirst = TestPeer(identity: identity)
+    let onSecond = TestPeer(identity: identity)
+    f.pair(identity.deviceID)
+    let firstAttached = try f.attach(onFirst)
+    let secondAttached = try f.attach(onSecond, to: second.sessionID)
+    #expect(firstAttached?.role == "writer")
+    #expect(secondAttached?.role == "writer")
+
+    // Closing one tab detaches from one session. `detach` names a session on the wire, and the spec
+    // says detaching never affects anything else; a device-wide sweep here would take the other tab
+    // down without a word to it -- no `session_ended`, no `role`, just a screen that stops moving.
+    f.link.reset()
+    f.host.handle(onFirst.message(.detach(to: f.hostID, sessionID: f.key)))
+    f.host.flush()
+
+    f.host.handle(try onSecond.seal(Array("go\n".utf8)))
+    #expect(waitUntil { second.session.withTerminal { $0.transcript(options: .plainText) }.contains("two:go") })
+    #expect(f.link.messages(ofType: "role").filter { $0.sessionID == second.key }.isEmpty)
+    let detachments = f.audit.filter { if case .detached = $0 { return true } else { return false } }
+    #expect(detachments == [.detached(device: identity.deviceID, session: f.key)])
+
+    // And the session it did leave sends it nothing more.
+    let framesAfterDetach = f.link.frames.count
+    f.session.send(Array("stop\n".utf8))
+    #expect(waitForShell(f, containing: "one:stop"))
+    f.host.flush()
+    let toSecondOnly = f.text(onSecond, Array(f.link.frames.dropFirst(framesAfterDetach)))
+    #expect(toSecondOnly.isEmpty || !toSecondOnly.contains("one:stop"))
 }

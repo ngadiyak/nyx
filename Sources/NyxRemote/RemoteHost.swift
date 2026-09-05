@@ -289,10 +289,9 @@ public final class RemoteHost {
         }
     }
 
-    /// Removes a device from every session it is attached to: promote whoever the arbiter picks,
-    /// tell the clients that are left, and write the line that says it is gone. Shared by `detach`,
-    /// `presence` and `deviceWentOffline` so a client that vanishes leaves exactly the same state
-    /// behind as one that said goodbye.
+    /// Removes a device from *every* session it is attached to, which is right for the two callers
+    /// that have it: a device that has gone offline, or been unpaired, is gone from all of them at
+    /// once, and there will be no `detach` for any of them. `detach` itself is per session.
     private func dropAttachments(of deviceID: String) {
         for key in order {
             guard let registration = registrations[key],
@@ -311,13 +310,21 @@ public final class RemoteHost {
         audit(.tookControl(device: from, session: key))
     }
 
-    /// Both this and `takeControl` re-check the pairing rather than trusting the attachment alone:
-    /// a device unpaired while attached must not be able to move the writer token or tear anything
+    /// One session, named by `session_id` -- never the device's other attachments. A client with two
+    /// of this host's sessions open in two tabs closes one of them, and the other must not notice:
+    /// the wire contract makes `detach` per session and spec 5.4 says detaching affects nothing
+    /// else, so a device-wide sweep here would take the second tab down with no `session_ended` and
+    /// no `role`, leaving it on a screen that simply stops moving.
+    ///
+    /// Like `takeControl` it re-checks the pairing rather than trusting the attachment alone: a
+    /// device unpaired while attached must not be able to move the writer token or tear anything
     /// down afterwards, and the relay has no way to know the user has just removed it.
     private func detach(_ m: RemoteMessage) {
         guard let from = m.from, let key = m.sessionID, let registration = registrations[key],
-              paired().contains(from), registration.attachments[from] != nil else { return }
-        dropAttachments(of: from)
+              paired().contains(from),
+              registration.attachments.removeValue(forKey: from) != nil else { return }
+        announce(registration.arbiter.detached(from), in: registration, key: key)
+        audit(.detached(device: from, session: key))
     }
 
     /// One `role` message per change, per client still attached: an observer's strip has to change
@@ -336,10 +343,27 @@ public final class RemoteHost {
         guard let registration = registrations[key] else { return }
         let sequence = registration.sequence
         registration.sequence += 1
+        var broken: [String] = []
         for deviceID in registration.attachments.keys.sorted() {
             guard let attachment = registration.attachments[deviceID],
                   attachment.startSequence <= sequence else { continue }
-            for frame in chunked(bytes, sealedBy: attachment.e2e) ?? [] { link.send(frame) }
+            guard let frames = chunked(bytes, sealedBy: attachment.e2e) else {
+                broken.append(deviceID)
+                continue
+            }
+            for frame in frames { link.send(frame) }
+        }
+        // A cipher that cannot seal is a cipher that will never seal again (in practice only a
+        // counter run to 2^64, so this is effectively unreachable) -- but sending nothing and
+        // saying nothing would leave that client drawing a screen with a hole in it, silently,
+        // since a receiver only checks that counters increase and cannot see a gap. Ending the
+        // attachment is the honest version: the tab says the session ended and the user can attach
+        // again, and the log says it happened.
+        for deviceID in broken {
+            registration.attachments[deviceID] = nil
+            link.send(.sessionEnded(to: deviceID, sessionID: key))
+            announce(registration.arbiter.detached(deviceID), in: registration, key: key)
+            audit(.detached(device: deviceID, session: key))
         }
     }
 

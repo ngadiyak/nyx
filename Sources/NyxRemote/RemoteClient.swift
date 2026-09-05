@@ -223,6 +223,14 @@ public final class RemoteClient {
         /// The two phases in which an `attached` is something this client asked for: the first
         /// attach, and the re-attach after a reconnect. In `snapshot` and `live` the handshake is
         /// over, and in `ended` there is nothing left to attach to.
+        ///
+        /// One corner is knowingly parked: an `attached` from the *previous* round, replayed while
+        /// this attachment is `reconnecting`, is still accepted, and the cipher it builds pairs the
+        /// new ephemeral key with the old round's -- so it decrypts nothing the host now sends and
+        /// the tab sits at `snapshot`. It costs nothing but a stuck tab (no key is exposed: the
+        /// keys are derived, not carried), and it wants the same machinery as a failed attach --
+        /// a per-round marker on the attach and a timeout when no usable `attached` arrives --
+        /// which Task 9 has to build for `host_offline` and `not_paired` anyway.
         private func isAwaitingAttach(_ phase: AttachState.Phase) -> Bool {
             phase == .attaching || phase == .reconnecting
         }

@@ -357,8 +357,14 @@ final class SettingsWindowController: NSWindowController {
     /// the configuration alone supports: off when it is off, and "Connecting…" when it is on but
     /// nothing here has reached anything.
     private func refreshRemoteStatus() {
+        // The fallback is for a window with no coordinator behind it -- a snapshot run, or this
+        // window opening before the application has one. It asks the same question the coordinator
+        // does first: with an empty token nothing is connecting, and saying "Connecting…" over a
+        // socket that will never be opened is the same lie "Relay unreachable" was.
+        let connection: RemoteStatusText.Connection = RemoteCoordinatorPolicy.needsToken(config: config)
+            ? .needsToken : .connecting
         let text = coordinator?.statusText
-            ?? RemoteStatusText.text(mode: config.remote, connection: .connecting,
+            ?? RemoteStatusText.text(mode: config.remote, connection: connection,
                                      deviceName: RemoteDeviceName.resolve(
                                         configured: config.remoteDeviceName,
                                         hostName: SettingsWindowController.localHostName))

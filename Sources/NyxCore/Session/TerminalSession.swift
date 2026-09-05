@@ -154,6 +154,22 @@ public final class TerminalSession {
         return try body(terminal, _outputCount)
     }
 
+    /// Installs a tap and says which chunk it will first be called for, in one step.
+    ///
+    /// A session is usually tapped in the middle of its life -- it has been in a tab for hours
+    /// before anything asks to publish it -- so a tap that assumed it was starting from chunk zero
+    /// would be off by however many chunks the session had already produced. Assigning the tap and
+    /// reading the count separately has the same fault in miniature: the reader thread can feed a
+    /// chunk between the two statements, and a listener one chunk out sends a client bytes it has
+    /// already been shown, or withholds bytes it will never be shown again.
+    @discardableResult
+    public func tapOutput(_ tap: (([UInt8]) -> Void)?) -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        _onOutput = tap
+        return _outputCount
+    }
+
     public func send(_ bytes: [UInt8]) {
         guard !bytes.isEmpty else { return }
         writeQueue.async { [pty] in pty.write(bytes) }

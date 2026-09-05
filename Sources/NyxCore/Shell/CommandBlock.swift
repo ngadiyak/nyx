@@ -55,10 +55,21 @@ public extension Terminal {
     /// Walks the visible rows and nothing else. The whole point of recording each command's status
     /// and duration on its own prompt row was that this can be answered without scanning the
     /// buffer, on every frame, under the session lock.
+    ///
+    /// A wrapper for the ordinary, unfolded case, where the rows on screen are exactly
+    /// `viewportTop ..< viewportTop + rows`. With a fold on screen they are not: hiding 27 rows
+    /// pulls rows from far below into the same number of slots, and every block down there used to
+    /// fall outside this window and lose its spine, summary and gutter mark.
     func visibleBlocks(rows visibleRows: Int) -> [CommandBlock] {
-        guard visibleRows > 0, shellEmitsPromptMarks else { return [] }
         let top = max(0, viewportTopRow)
-        let bottom = min(totalRows, top + visibleRows)
+        return visibleBlocks(from: top, through: top + visibleRows - 1)
+    }
+
+    /// The blocks overlapping an explicit window of absolute rows, indexed from `top`.
+    func visibleBlocks(from top: Int, through last: Int) -> [CommandBlock] {
+        guard shellEmitsPromptMarks else { return [] }
+        let top = max(0, top)
+        let bottom = min(totalRows, last + 1)
         guard top < bottom else { return [] }
 
         var blocks: [CommandBlock] = []

@@ -35,52 +35,68 @@ public enum PromptGutter {
 }
 
 public extension Terminal {
-    /// A mark per visible row: what happened to the command whose prompt is on that row, and
+    /// The mark for one absolute row: what happened to the command whose prompt is on it, and
     /// nothing at all for a row that carries no prompt.
     ///
-    /// One pass over the buffer starting at the top of the viewport, rather than
-    /// `command(containingAbsoluteRow:)` per row, which would rescan the scrollback once for every
-    /// line on screen. It reads past the bottom of the screen only far enough to find the status of
-    /// a prompt sitting on the last visible row.
-    func gutterMarks(rows visibleRows: Int) -> [GutterMark?] {
-        var marks = [GutterMark?](repeating: nil, count: max(0, visibleRows))
-        guard visibleRows > 0 else { return marks }
-        let top = max(0, viewportTopRow)
+    /// The status of each command was written onto its own prompt row when its `D` arrived, so
+    /// there is nothing to search for here -- searching forward used to walk to the end of the
+    /// buffer on every frame whenever a command was still running, under the session lock, which is
+    /// the one place that cost is worst.
+    func gutterMark(atAbsoluteRow row: Int) -> GutterMark? {
+        guard let line = absoluteRow(row),
+              PromptMarks(rawValue: line.promptMark).contains(.promptStart) else { return nil }
+        guard let status = line.commandStatus else { return .running }
+        return status == 0 ? .succeeded : .failed
+    }
 
-        // Only the rows on screen are looked at. The status of each command was written onto its
-        // own prompt row when its `D` arrived, so there is nothing to search for here -- searching
-        // forward used to walk to the end of the buffer on every frame whenever a command was
-        // still running, under the session lock, which is the one place that cost is worst.
-        for index in 0..<visibleRows {
-            let row = top + index
-            guard let line = absoluteRow(row),
-                  PromptMarks(rawValue: line.promptMark).contains(.promptStart) else { continue }
-            guard let status = line.commandStatus else {
-                marks[index] = .running
-                continue
-            }
-            marks[index] = status == 0 ? .succeeded : .failed
+    /// A mark per visible row, for a viewport with nothing folded: the rows on screen are exactly
+    /// `viewportTop ..< viewportTop + rows`.
+    func gutterMarks(rows visibleRows: Int) -> [GutterMark?] {
+        guard visibleRows > 0 else { return [] }
+        let top = max(0, viewportTopRow)
+        return (0..<visibleRows).map { gutterMark(atAbsoluteRow: top + $0) }
+    }
+
+    /// A mark per display slot, for a viewport with a fold in it.
+    ///
+    /// Driven by the slots rather than by a window of absolute rows on purpose. With a fold on
+    /// screen the last row displayed can be ten thousand rows below the first, and asking for a
+    /// mark per row of *that* window is a scan of the whole fold on every frame: measured at
+    /// 3.276 ms per frame over a 10,000-row fold, against 0.019 ms for the rows actually drawn.
+    /// A fold placeholder has no prompt of its own, so it gets no mark.
+    func gutterMarks(onDisplayRows display: [DisplayRow]) -> [GutterMark?] {
+        display.map { entry in
+            guard case .row(let absolute) = entry else { return nil }
+            return gutterMark(atAbsoluteRow: absolute)
         }
-        return marks
     }
 }
 
 public extension Terminal {
-    /// How long each visible command took, ready to draw at the right edge of its own row.
-    ///
-    /// Only the rows on screen are looked at, and only commands slow enough to be worth a number:
-    /// `3ms` beside every `cd` is noise that hides the one figure anybody cares about.
+    /// How long the command whose prompt is on this absolute row took, ready to draw at the right
+    /// edge of that row -- and nothing for a row with no prompt, or a command too quick to be worth
+    /// a number: `3ms` beside every `cd` is noise that hides the one figure anybody cares about.
+    func durationNote(atAbsoluteRow row: Int, threshold: Double = 0.5) -> String? {
+        guard let line = absoluteRow(row),
+              PromptMarks(rawValue: line.promptMark).contains(.promptStart),
+              let seconds = line.commandDuration,
+              DurationText.isWorthShowing(seconds, threshold: threshold) else { return nil }
+        return DurationText.short(seconds)
+    }
+
+    /// One per visible row, for a viewport with nothing folded.
     func durationNotes(rows visibleRows: Int, threshold: Double = 0.5) -> [String?] {
-        var notes = [String?](repeating: nil, count: max(0, visibleRows))
-        guard visibleRows > 0 else { return notes }
+        guard visibleRows > 0 else { return [] }
         let top = max(0, viewportTopRow)
-        for index in 0..<visibleRows {
-            guard let line = absoluteRow(top + index),
-                  PromptMarks(rawValue: line.promptMark).contains(.promptStart),
-                  let seconds = line.commandDuration,
-                  DurationText.isWorthShowing(seconds, threshold: threshold) else { continue }
-            notes[index] = DurationText.short(seconds)
+        return (0..<visibleRows).map { durationNote(atAbsoluteRow: top + $0, threshold: threshold) }
+    }
+
+    /// One per display slot, for a viewport with a fold in it. See `gutterMarks(onDisplayRows:)`
+    /// for why this is driven by the slots and not by a window of absolute rows.
+    func durationNotes(onDisplayRows display: [DisplayRow], threshold: Double = 0.5) -> [String?] {
+        display.map { entry in
+            guard case .row(let absolute) = entry else { return nil }
+            return durationNote(atAbsoluteRow: absolute, threshold: threshold)
         }
-        return notes
     }
 }

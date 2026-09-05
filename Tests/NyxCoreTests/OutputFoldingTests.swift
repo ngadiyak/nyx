@@ -76,3 +76,24 @@ private func region(output: Int, id: UInt32 = 7) -> CommandRegion {
     #expect(OutputFolding.placeholder(hiddenRows: 2431) == "\u{25B8} \u{2026} 2,431 lines hidden")
     #expect(OutputFolding.placeholder(hiddenRows: 1) == "\u{25B8} \u{2026} 1 line hidden")
 }
+
+/// Grouping is done by hand rather than through a formatter so the placeholder does not change
+/// with the machine's locale. The boundaries are where a hand-rolled loop goes wrong: the first
+/// number that needs no comma, the first that needs one, and one that needs two.
+@Test func thousandsAreGroupedAtEveryBoundary() {
+    #expect(OutputFolding.grouped(0) == "0")
+    #expect(OutputFolding.grouped(999) == "999")
+    #expect(OutputFolding.grouped(1000) == "1,000")
+    #expect(OutputFolding.grouped(1234567) == "1,234,567")
+}
+
+/// The placeholder is longer than a narrow pane is wide, and a row that writes past its last column
+/// is a crash in the renderer rather than a truncated line.
+@Test func thePlaceholderIsClampedToANarrowPane() {
+    let t = makeTerminal(cols: 10, rows: 4)
+    let row = t.foldPlaceholderRow(hiddenRows: 1234)
+    #expect(row.cells.count == 10)
+    #expect(row.cells.allSatisfy { $0.content != 0 })   // every column it could reach is written
+    let text = String(String.UnicodeScalarView(row.cells.compactMap { Unicode.Scalar($0.content) }))
+    #expect(text == String(OutputFolding.placeholder(hiddenRows: 1234).prefix(10)))
+}

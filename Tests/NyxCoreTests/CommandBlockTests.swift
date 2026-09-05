@@ -139,3 +139,72 @@ private func session() -> Terminal {
 @Test func noSummaryColumnsForEmptyText() {
     #expect(CommandBlockChrome.summaryColumns(textCount: 0, cols: 40, lastUsedColumn: -1) == nil)
 }
+
+// MARK: - Chrome for the rows a fold pushed onto the screen
+
+/// Five commands, the first with 30 rows of output. A tail fold keeping 3 of them hides 27, so the
+/// ten slots on screen reach absolute row 35 -- far past `viewportTop + rows`.
+private func foldedSession() -> (terminal: Terminal, folding: OutputFolding) {
+    let t = makeTerminal(cols: 40, rows: 10, scrollback: 200)
+    t.feed(mark("A") + "$ " + mark("B") + "build\r\n" + mark("C"))
+    for i in 1...30 { t.feed("out \(i)\r\n") }
+    t.feed(mark("D", 0))
+    for i in 2...5 {
+        t.feed(mark("A") + "$ " + mark("B") + "cmd \(i)\r\n" + mark("C") + "line\r\n" + mark("D", 0))
+    }
+    t.feed(mark("A") + "$ ")
+    t.scrollToAbsoluteRow(0, margin: 0)
+    var folding = OutputFolding()
+    folding.toggle(t.command(containingAbsoluteRow: 0)!.id, keep: 3)
+    return (t, folding)
+}
+
+/// The reviewer's probe: with a fold on screen, a window of `rows` absolute rows stops well above
+/// the last row actually displayed, and every block below the placeholder lost its spine, its
+/// summary and its gutter mark.
+@Test func aFoldPushesBlocksPastTheRowsWindowAndTheyStillGetChrome() {
+    let (t, folding) = foldedSession()
+    let display = t.displayRows(from: 0, count: 10, folding: folding)
+    let lastDisplayed = display.compactMap { if case .row(let r) = $0 { return r } else { return nil } }.max()!
+    #expect(lastDisplayed > 9)   // the whole point: past `viewportTop + rows`
+
+    let wide = t.visibleBlocks(from: 0, through: lastDisplayed)
+    let promptsOnScreen = display.compactMap { entry -> Int? in
+        guard case .row(let r) = entry,
+              t.promptMarks(atAbsoluteRow: r).contains(.promptStart) else { return nil }
+        return r
+    }
+    #expect(promptsOnScreen.count > 1)
+    for prompt in promptsOnScreen {
+        #expect(wide.contains { $0.region.promptRow == prompt && $0.showsHeader },
+                "no block header for the prompt displayed at absolute row \(prompt)")
+    }
+    // The unwindowed wrapper is what the pane used to call, and it sees only the first command.
+    #expect(t.visibleBlocks(rows: 10).count == 1)
+}
+
+/// The same for the gutter, which is answered per display slot rather than per absolute row: a
+/// window reaching the last displayed row would be a scan of the whole fold on every frame.
+@Test func aFoldPushesGutterMarksPastTheRowsWindowToo() {
+    let (t, folding) = foldedSession()
+    let display = t.displayRows(from: 0, count: 10, folding: folding)
+
+    let placed = t.gutterMarks(onDisplayRows: display)
+    #expect(placed.count == display.count)
+    var marked = 0
+    for (slot, entry) in display.enumerated() {
+        guard case .row(let absolute) = entry else {
+            #expect(placed[slot] == nil, "a fold placeholder has no prompt of its own")
+            continue
+        }
+        if t.promptMarks(atAbsoluteRow: absolute).contains(.promptStart) {
+            #expect(placed[slot] != nil, "no gutter mark for the prompt in slot \(slot)")
+            marked += 1
+        }
+    }
+    #expect(marked > 1)   // the reviewer's probe: prompts below the placeholder, all marked
+    // The unwindowed form is what the pane used to call for a folded viewport, and it sees one.
+    #expect(t.gutterMarks(rows: 10).compactMap { $0 }.count == 1)
+    // The same slots carry their durations.
+    #expect(t.durationNotes(onDisplayRows: display).count == display.count)
+}

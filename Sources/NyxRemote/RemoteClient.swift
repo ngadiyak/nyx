@@ -493,6 +493,21 @@ public final class RemoteClient {
         for attachment in live { attachment.end(reason: reason) }
     }
 
+    /// Ends every attachment to one host, and forgets them. For a device the user has just
+    /// unpaired: the tabs are this Mac's own, and one left live would go on decrypting the screen
+    /// of a device its owner has said they no longer trust.
+    ///
+    /// Deliberately silent on the wire. The host is told by the relay -- the `paired` list it is
+    /// sent no longer contains this device -- and a `detach` to a device that is no longer paired
+    /// would be refused by that same check anyway.
+    public func endAll(matching hostID: String, reason: String) {
+        lock.lock()
+        let live = attachments.values.filter { $0.isLive && $0.hostID == hostID }
+        for attachment in live { attachments[attachment.key] = nil }
+        lock.unlock()
+        for attachment in live { attachment.end(reason: reason) }
+    }
+
     /// Stops routing to an attachment: its tab is gone (`detach()`) or its session ended.
     fileprivate func forget(_ key: String) {
         lock.lock()

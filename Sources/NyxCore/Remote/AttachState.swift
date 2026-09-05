@@ -165,6 +165,11 @@ public enum AttachFailure {
     /// reached": the numbers came over the relay unsigned, and this Mac refused them.
     public static let badGeometry = "The host reported an impossible screen size"
 
+    /// The user removed this host from their paired devices while a tab on it was open. Ending it
+    /// is the other half of what Remove means: the host stops serving this Mac, and this Mac stops
+    /// showing the host's screen. Nothing on the host ended, so it says what this side did.
+    public static let unpaired = "This device was removed from your paired devices"
+
     /// An attach the relay never answered at all -- neither `attached` nor `error`. Distinct from
     /// every code above because nothing on the far end has admitted to anything: the message may
     /// have been dropped, or the host may have gone between the presence update and the attach.

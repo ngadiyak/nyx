@@ -710,3 +710,27 @@ private final class Recorder {
     #expect(attachment.cols == 160)
     #expect(attachment.rows == 74)
 }
+
+/// Remove in the settings page is about this Mac in both directions. The host side stops serving
+/// the device (`RemoteHost.deviceWentOffline`), and this is the other half: the tabs *this* Mac has
+/// open on the device it has just disowned are ended too. Leaving them live would go on decrypting
+/// somebody's screen into a window after the user said they no longer trust it.
+@Test func unpairingEndsThisMacsOwnTabsOnThatHostAndNoOthers() throws {
+    let f = try ClientFixture()
+    let other = try TestPeer(isHost: true)
+    let kept = f.client.attach(hostID: other.deviceID, hostName: "laptop",
+                               sessionID: testSessionID(3), title: "vim")
+    let ended = f.attach()
+    try f.acceptAttach()
+    #expect(ended.state.phase == .snapshot)
+
+    f.client.endAll(matching: f.host.deviceID, reason: AttachFailure.unpaired)
+
+    #expect(ended.state.phase == .failed(AttachFailure.unpaired))
+    #expect(ended.state.stripText == "This device was removed from your paired devices")
+    #expect(kept.state.phase == .attaching)
+    // And it is off the routing table: a frame the host sends afterwards reaches nothing.
+    f.link.reset()
+    try f.hostSends("still here")
+    #expect(f.link.messages(ofType: "detach").isEmpty)
+}

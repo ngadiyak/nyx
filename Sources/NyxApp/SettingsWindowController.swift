@@ -332,12 +332,6 @@ final class SettingsWindowController: NSWindowController {
         return formatter
     }()
 
-    /// The one line under the remote settings: what the connection is actually doing.
-    ///
-    /// Asked of the live coordinator, which is the only thing that knows. Without one -- a snapshot
-    /// run renders this page with no application state behind it -- the honest answer is the one
-    /// the configuration alone supports: off when it is off, and "Connecting…" when it is on but
-    /// nothing here has reached anything.
     /// Greys out the Remote page's body when the switch is off. The table goes with it: a paired
     /// device you cannot reach is not a row worth selecting, and Remove beside it would be the one
     /// live control on a dead page.
@@ -355,6 +349,12 @@ final class SettingsWindowController: NSWindowController {
         activityView.textColor = on ? .labelColor : .tertiaryLabelColor
     }
 
+    /// The one line under the remote settings: what the connection is actually doing.
+    ///
+    /// Asked of the live coordinator, which is the only thing that knows. Without one -- a snapshot
+    /// run renders this page with no application state behind it -- the honest answer is the one
+    /// the configuration alone supports: off when it is off, and "Connecting…" when it is on but
+    /// nothing here has reached anything.
     private func refreshRemoteStatus() {
         let text = coordinator?.statusText
             ?? RemoteStatusText.text(mode: config.remote, connection: .connecting,

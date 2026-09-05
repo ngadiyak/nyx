@@ -236,9 +236,7 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         return (device?.name ?? "Mac", session?.title ?? "session")
     }
 
-    /// Removes a pairing: the device can no longer see this Mac's sessions, and every attachment it
-    /// still holds is torn down rather than left running on a device the user has just disowned.
-    /// The paired list as the settings page shows it, and the audit log's last lines.
+    /// The audit log's last lines, as the settings page shows them.
     func auditLogTail(lines: Int) -> [String] {
         let url = RemoteFiles.auditLog(in: RemoteFiles.directory(besideConfigAt: ConfigStore.path))
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
@@ -246,12 +244,19 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
             .suffix(lines))
     }
 
+    /// Removes a pairing: the device can no longer see this Mac's sessions, and every attachment
+    /// either Mac still holds is torn down rather than left running on a device the user has just
+    /// disowned.
     func removePairing(deviceID: String) {
         let name = paired.devices.first { $0.id == deviceID }?.name ?? deviceID
         paired.remove(id: deviceID)
         savePaired()
         catalogue.setPaired(paired.namesByID)
         host?.deviceWentOffline(deviceID)
+        // Both directions. The line above stops serving this Mac's sessions to the device; this one
+        // ends the tabs this Mac has open *on* it, which would otherwise go on showing the screen
+        // of a device the user has just said they no longer trust.
+        client?.endAll(matching: deviceID, reason: AttachFailure.unpaired)
         connection?.send(.paired(paired.ids))
         appendAudit(.removed(name))
         onChange?()

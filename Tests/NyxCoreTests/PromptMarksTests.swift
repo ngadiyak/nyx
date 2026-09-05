@@ -134,6 +134,22 @@ private func session() -> Terminal {
     #expect(region.exitStatus == 1)
 }
 
+/// The auto-fold trigger needs "the command before this one", not "the last one that finished" --
+/// at the instant a new command starts, the region *containing* its own first output row is
+/// already the new command, so `lastFinishedCommand` would answer with the wrong one.
+@Test func previousCommandIsTheOneWhoseRegionEndsJustAbove() {
+    let t = session()
+    let false_ = try! #require(t.command(containingAbsoluteRow: 2))
+    let previous = try! #require(t.previousCommand(of: false_))
+    #expect(previous.promptRow == 0)
+}
+
+@Test func theFirstCommandHasNoPreviousCommand() {
+    let t = session()
+    let first = try! #require(t.command(containingAbsoluteRow: 0))
+    #expect(t.previousCommand(of: first) == nil)
+}
+
 @Test func theOutputSelectionCoversExactlyTheOutputRows() {
     let t = session()
     let region = try! #require(t.command(containingAbsoluteRow: 0))

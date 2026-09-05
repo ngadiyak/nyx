@@ -515,8 +515,7 @@ public final class Renderer {
         // so `exit 1` is read as a failure before it is read as words.
         for summary in f.blockSummaries {
             let characters = Array(summary.text)
-            let start = f.cols - characters.count
-            guard summary.row >= 0, summary.row < f.rows, start > 0 else { continue }
+            guard summary.row >= 0, summary.row < f.rows else { continue }
             let row = summary.row < f.lines.count ? f.lines[summary.row] : nil
             let lastUsed = row.map { line -> Int in
                 var last = -1
@@ -524,10 +523,13 @@ public final class Renderer {
                 return last
             } ?? -1
             // Never over the command it describes: a summary that overwrites the end of a long
-            // command line has destroyed the more important of the two.
-            guard lastUsed < start - 1 else { continue }
+            // command line has destroyed the more important of the two. `summaryColumns` is the one
+            // place that rule lives, so the pane's click target can never disagree with what is
+            // actually drawn.
+            guard let columns = CommandBlockChrome.summaryColumns(textCount: characters.count, cols: f.cols,
+                                                                  lastUsedColumn: lastUsed) else { continue }
             for (offset, character) in characters.enumerated() {
-                let px = Float(padding + (start + offset) * m.width)
+                let px = Float(padding + (columns.lowerBound + offset) * m.width)
                 let py = Float(padding + summary.row * m.height)
                 let text = String(character)
                 let glyphText: GlyphText = text.unicodeScalars.count == 1

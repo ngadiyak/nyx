@@ -112,3 +112,30 @@ private func session() -> Terminal {
     #expect(!CommandBlockChrome.isAllowed(altScreen: false, mouseReporting: false, hasMarks: false))
     #expect(CommandBlockChrome.isAllowed(altScreen: false, mouseReporting: false, hasMarks: true))
 }
+
+// MARK: - Where the summary may be drawn
+//
+// One rule for both the renderer (should it draw the summary) and the pane (did a click land on
+// it) -- so a long command line or a narrow pane can never leave one of them thinking the summary
+// is there when the other does not.
+
+@Test func theSummaryFitsBesideAShortCommand() {
+    #expect(CommandBlockChrome.summaryColumns(textCount: 5, cols: 40, lastUsedColumn: 10) == 35..<40)
+}
+
+/// The command line reaches all the way to where the summary would start: drawing it there would
+/// overwrite the more important of the two, so there is no summary at all rather than one on top
+/// of the text.
+@Test func noSummaryWhenTheCommandLineWouldTouchIt() {
+    #expect(CommandBlockChrome.summaryColumns(textCount: 5, cols: 40, lastUsedColumn: 34) == nil)
+}
+
+/// A pane too narrow for the summary to fit at all -- the click target must not exist either, or
+/// the pane would record a negative range nobody can click.
+@Test func noSummaryWhenThePaneIsTooNarrow() {
+    #expect(CommandBlockChrome.summaryColumns(textCount: 5, cols: 4, lastUsedColumn: -1) == nil)
+}
+
+@Test func noSummaryColumnsForEmptyText() {
+    #expect(CommandBlockChrome.summaryColumns(textCount: 0, cols: 40, lastUsedColumn: -1) == nil)
+}

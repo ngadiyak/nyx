@@ -105,6 +105,19 @@ public enum CommandBlockChrome {
     public static func isAllowed(altScreen: Bool, mouseReporting: Bool, hasMarks: Bool) -> Bool {
         hasMarks && !altScreen && !mouseReporting
     }
+
+    /// Where a right-aligned summary of `textCount` cells may be drawn on a row whose last used
+    /// column is `lastUsedColumn` (-1 for an empty row), or nil when it would touch the text.
+    ///
+    /// One rule, so the renderer (deciding whether to draw it) and the pane (deciding whether a
+    /// click landed on it) can never disagree about where the summary is -- or whether it is
+    /// showing at all. A command line long enough to reach the summary's column, or a pane too
+    /// narrow to fit it, means no summary rather than one drawn over the text or off the left edge.
+    public static func summaryColumns(textCount: Int, cols: Int, lastUsedColumn: Int) -> Range<Int>? {
+        let start = cols - textCount
+        guard textCount > 0, start > 0, lastUsedColumn < start - 1 else { return nil }
+        return start..<cols
+    }
 }
 
 /// What can be done to a block, in the order the ⋯ menu lists it.
@@ -238,5 +251,35 @@ public struct BlockHover: Equatable {
               block.region.id != 0 else { return nil }
         return BlockHover(id: block.region.id, rows: block.visibleRows,
                           headerRow: block.showsHeader ? block.visibleRows.lowerBound : nil)
+    }
+}
+
+public extension BlockHover {
+    /// The same hover in display slots, for a viewport with folds on screen.
+    ///
+    /// `rows` and `headerRow` come out of `visibleBlocks`/`resolve` in viewport-relative *absolute*
+    /// space, which only equals a display slot when nothing is folded. With a fold on screen a
+    /// slot's row content is not `viewportTop + slot`, so tinting or attaching the overlay by slot
+    /// number would land on whatever the fold happened to pull into that index. This walks the
+    /// actual slots the renderer is about to draw and asks each one whether it belongs to this
+    /// block. The block's own fold placeholder counts as one of its rows: it stands for the block's
+    /// output, and hovering it should tint and unfold the same thing a visible output row would.
+    func placed(onDisplayRows display: [DisplayRow], viewportTop: Int) -> BlockHover? {
+        var slots: [Int] = []
+        var headerSlot: Int?
+        for (slot, entry) in display.enumerated() {
+            switch entry {
+            case .row(let absolute):
+                let relative = absolute - viewportTop
+                guard rows.contains(relative) else { continue }
+                slots.append(slot)
+                if headerRow == relative { headerSlot = slot }
+            case .fold(let commandID, _):
+                guard commandID == id else { continue }
+                slots.append(slot)
+            }
+        }
+        guard let first = slots.min(), let last = slots.max() else { return nil }
+        return BlockHover(id: id, rows: first..<(last + 1), headerRow: headerSlot)
     }
 }

@@ -172,6 +172,18 @@ public extension Terminal {
                              id: id, startedAt: runningCommand?.id == id ? runningCommand?.startedAt : nil)
     }
 
+    /// The command whose region ends just above `region`'s prompt, or nil for the first command.
+    ///
+    /// Not `lastFinishedCommand`: at the instant a new command starts running, the region *containing
+    /// the bottom row* is already the one that just started -- its own output has begun -- so asking
+    /// "what finished last" answers with the command that is running right now instead of the one
+    /// before it. Walking to the row above the prompt is the only way to name the one that actually
+    /// finished.
+    func previousCommand(of region: CommandRegion) -> CommandRegion? {
+        guard region.promptRow > 0 else { return nil }
+        return command(containingAbsoluteRow: region.promptRow - 1)
+    }
+
     /// The most recently finished command -- what "copy the last command's output" means.
     ///
     /// The command at the bottom of the buffer is usually the prompt the user is typing at, which

@@ -545,6 +545,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         isOccluded = !(window?.occlusionState.contains(.visible) ?? true)
         if isOccluded {
             displayLink?.isPaused = true
+            // Nothing occluded is worth a tick a second for; render() starts it again once a
+            // running block is next actually drawn, which markDirty() below brings about.
+            runningTimer?.invalidate()
+            runningTimer = nil
         } else {
             markDirty()   // the flag may have accumulated changes while we were hidden
         }
@@ -743,7 +747,19 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 headers[row] = header
                 let text = header.summaryWithChevron
                 guard !text.isEmpty else { return nil }
-                summaryColumns[row] = (t.cols - text.count)..<t.cols
+                // The same rule the renderer uses to decide whether it draws the summary at all,
+                // so the click target and the pixels never disagree: a command line reaching this
+                // far right, or a pane too narrow to fit it, means there is nothing here to click.
+                let lastUsed: Int = {
+                    guard row < lines.count else { return -1 }
+                    var last = -1
+                    for (column, cell) in lines[row].cells.enumerated() where cell.content != 0 { last = column }
+                    return last
+                }()
+                if let columns = CommandBlockChrome.summaryColumns(textCount: text.count, cols: t.cols,
+                                                                   lastUsedColumn: lastUsed) {
+                    summaryColumns[row] = columns
+                }
                 // The overlay draws its own copy of the summary while it covers this row.
                 if self.hoveredBlock?.headerRow == row { return nil }
                 return (row: row, text: text,
@@ -1295,6 +1311,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // thousand wheel clicks. Step over the fold in the direction of travel instead.
                 t.snapViewportOutOfFold(movingUp: lines > 0, folding: folding)
             }
+            invalidateBlockHover()
             markDirty()
         }
     }
@@ -1398,22 +1415,34 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         guard lastHoverCell == nil || lastHoverCell! != cell else { return }
         lastHoverCell = cell
 
-        // Which block, if any, the pointer sits on -- for the tint and the overlay. The pointer's
-        // visible row is display-row space; with folds on screen that is not the same as an
-        // absolute row minus the viewport top, so it goes through the same map a click does.
+        // Which block, if any, the pointer sits on -- for the tint and the overlay. `resolve`
+        // answers in viewport-relative absolute space; `placed` re-expresses that in the display
+        // slots actually on screen, which only differ from absolute space when a fold is showing.
         let hover: BlockHover? = session.withTerminal { t in
             let allowed = CommandBlockChrome.isAllowed(altScreen: t.modes.altScreen,
                                                       mouseReporting: t.modes.mouse != .none,
                                                       hasMarks: t.shellEmitsPromptMarks)
             guard allowed else { return nil }
+            let blocks = t.visibleBlocks(rows: t.rows)
             let visible = self.visibleRow(at: point)
-            let absolute = visible.flatMap { self.absoluteRow(forVisibleRow: $0, in: t) }
-            let pointerRow = absolute.map { $0 - max(0, t.viewportTopRow) }
-            return BlockHover.resolve(pointerRow: pointerRow, blocks: t.visibleBlocks(rows: t.rows), allowed: true)
+            let pointerRow: Int?
+            if let visible, self.foldRowsOnScreen.indices.contains(visible),
+               case .fold(let commandID, _) = self.foldRowsOnScreen[visible] {
+                // The pointer is on a fold placeholder, which has no absolute row of its own: it
+                // stands for the block whose output it hides, so hover that block directly.
+                pointerRow = blocks.first { $0.region.id == commandID }?.visibleRows.lowerBound
+            } else {
+                let absolute = visible.flatMap { self.absoluteRow(forVisibleRow: $0, in: t) }
+                pointerRow = absolute.map { $0 - max(0, t.viewportTopRow) }
+            }
+            let resolved = BlockHover.resolve(pointerRow: pointerRow, blocks: blocks, allowed: true)
+            guard !self.foldRowsOnScreen.isEmpty else { return resolved }
+            return resolved?.placed(onDisplayRows: self.foldRowsOnScreen, viewportTop: max(0, t.viewportTopRow))
         }
         if hover != hoveredBlock {
             hoveredBlock = hover
             blockHeaderChanged()
+            updateHoverCursor()
             markDirty()
         }
 
@@ -1472,6 +1501,18 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// Filled in by Task 10, which draws the overlay; a hover change alone touches nothing else.
     private func blockHeaderChanged() {}
+
+    /// Every path that moves the viewport without a matching pointer move calls this. `hoveredBlock`
+    /// is expressed in display slots, so scrolling and leaving it alone would keep tinting whatever
+    /// slot the old block happened to occupy -- possibly a completely different block now sitting
+    /// under the pointer. `lastHoverCell` is cleared too, so the next `mouseMoved` recomputes rather
+    /// than seeing the same cell coordinates and assuming nothing changed.
+    private func invalidateBlockHover() {
+        hoveredBlock = nil
+        blockHeaderChanged()
+        updateHoverCursor()
+        lastHoverCell = nil
+    }
 
     /// The token under a view point, if any. One row is read, and the lock is released before the
     /// answer is looked at.
@@ -1750,7 +1791,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             _ = t.scrollToAbsoluteRow(row)
             return true
         }
-        if moved { markDirty() }
+        if moved {
+            invalidateBlockHover()
+            markDirty()
+        }
         return moved
     }
 
@@ -1778,6 +1822,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func scrollToStickyPrompt() {
         guard let row = stickyPromptRow else { return }
         session.withTerminal { t in _ = t.scrollToAbsoluteRow(row) }
+        invalidateBlockHover()
         onFocusRequested?()
         markDirty()
     }
@@ -1911,7 +1956,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             guard t.totalRows > 0, let region = t.command(containingAbsoluteRow: t.totalRows - 1)
             else { return (nil, false, 0, nil) }
             return (region.promptRow, region.outputStart != nil, t.runningCommand?.id ?? 0,
-                    region.outputStart != nil ? t.lastFinishedCommand : nil)
+                    region.outputStart != nil ? t.previousCommand(of: region) : nil)
         }
         // The moment a new command starts running is when the one before it is "done with", and
         // the only moment automatic folding is allowed to touch it.

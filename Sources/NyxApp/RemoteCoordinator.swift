@@ -488,7 +488,11 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
                 try? manager.createDirectory(at: url.deletingLastPathComponent(),
                                              withIntermediateDirectories: true,
                                              attributes: [.posixPermissions: 0o700])
-                try? data.write(to: url)
+                // 0600, and created with it rather than chmod-ed afterwards: the file is a list of
+                // which Macs reached this one and when, and a window in which it is world-readable
+                // is a window. `createFile` is what takes attributes; `Data.write` does not.
+                manager.createFile(atPath: url.path, contents: data,
+                                   attributes: [.posixPermissions: 0o600])
                 return
             }
             guard let handle = try? FileHandle(forWritingTo: url) else { return }

@@ -207,8 +207,36 @@ private struct Relay {
     var log: String { (try? String(contentsOf: logURL, encoding: .utf8)) ?? "" }
 }
 
+/// Refuses to run against a relay binary older than the last commit in the repo it was built from.
+///
+/// These tests are the only thing that checks this client against the real Go relay, and a stale
+/// binary makes them pass while proving nothing about the protocol as it now stands: the wire table
+/// gained `session_suspended`, the local `bin/nyx-relay` did not, and the run was green.
+///
+/// The repo is the binary's own grandparent (`<repo>/bin/nyx-relay`), so nothing here is hard-coded
+/// to one checkout. A binary outside a git repo is left alone: there is nothing to compare it to.
+private func requireFreshRelay(binary: String) throws {
+    let repo = URL(fileURLWithPath: binary).deletingLastPathComponent().deletingLastPathComponent()
+    let git = Process()
+    git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    git.arguments = ["-C", repo.path, "log", "-1", "--format=%ct"]
+    let pipe = Pipe()
+    git.standardOutput = pipe
+    git.standardError = FileHandle.nullDevice
+    guard (try? git.run()) != nil else { return }
+    let out = pipe.fileHandleForReading.readDataToEndOfFile()
+    git.waitUntilExit()
+    guard git.terminationStatus == 0,
+          let head = TimeInterval(String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)),
+          let built = try? FileManager.default.attributesOfItem(atPath: binary)[.modificationDate] as? Date
+    else { return }
+    guard built.timeIntervalSince1970 < head else { return }
+    throw RelayTestError.staleBinary(path: binary, repo: repo.path)
+}
+
 private func startRelay(binary: String, in directory: URL, port fixed: UInt16? = nil,
                         logName: String = "relay.log") throws -> Relay {
+    try requireFreshRelay(binary: binary)
     let port = try fixed ?? freePort()
     let logURL = directory.appendingPathComponent(logName)
     FileManager.default.createFile(atPath: logURL.path, contents: nil)
@@ -235,7 +263,20 @@ private func startRelay(binary: String, in directory: URL, port fixed: UInt16? =
     throw RelayTestError.neverBecameHealthy(port: port)
 }
 
-private enum RelayTestError: Error { case neverBecameHealthy(port: UInt16) }
+private enum RelayTestError: Error, CustomStringConvertible {
+    case neverBecameHealthy(port: UInt16)
+    case staleBinary(path: String, repo: String)
+
+    var description: String {
+        switch self {
+        case .neverBecameHealthy(let port):
+            return "the relay never became healthy on port \(port)"
+        case .staleBinary(let path, let repo):
+            return "\(path) is older than the last commit in \(repo) — "
+                + "rebuild the relay: `make -C \(repo) build`"
+        }
+    }
+}
 
 /// The whole client half of §6.1 against the real Go relay: two devices complete the handshake,
 /// a frame queued before the socket existed still arrives, one device's pairing code reaches the

@@ -247,7 +247,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     override func accessibilityChildren() -> [Any]? {
         var children = subviews.filter { !$0.isHidden } as [Any]
         let cell = cellSizePoints
+        // The row the visible overlay covers already contributes its own chevron button through
+        // `blockHeader`, included above as a subview; adding a second element for the same row
+        // here would report the same control twice.
+        let coveredRow = blockHeader.isHidden ? nil : hoveredBlock?.headerRow
         for (row, columns) in summaryColumnsOnScreen {
+            if let coveredRow, coveredRow == row { continue }
             guard let header = headersOnScreen[row], header.hasOutput else { continue }
             let frame = NSRect(x: padding + CGFloat(columns.lowerBound) * cell.width,
                                y: bounds.height - padding - CGFloat(row + 1) * cell.height,
@@ -842,8 +847,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if wasHidden != stickyStrip.isHidden { window?.invalidateCursorRects(for: stickyStrip) }
         // After the sticky strip so a running command's timer and a fold toggle -- both of which
         // can change the header without a matching pointer move -- refresh the overlay's text too;
-        // `update` compares before it applies, so redrawing here every frame is cheap.
-        blockHeaderChanged()
+        // `update` compares before it applies, so redrawing here every frame is cheap. `frame.palette`
+        // was already read under the lock this frame; passing it on saves a second lock take.
+        blockHeaderChanged(palette: frame.palette)
         switch renderer.draw(frame, in: metalLayer, padding: Int(padding * metalLayer.contentsScale),
                              syncOutput: syncOutput) {
         case .presented:
@@ -1370,7 +1376,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// do something different from the same item there, and both grey out by the same rule.
     private func contextMenu(at point: NSPoint? = nil) -> NSMenu {
         let menu = NSMenu()
-        menu.autoenablesItems = false
+        // Left at the default (true): Copy, Paste, Toggle Zoom and the rest all rely on AppKit
+        // calling `validateMenuItem` before the menu opens to grey themselves out. Turning
+        // auto-enabling off for the whole menu to control the block group's items also silenced
+        // every other item's validation, so this menu opened with Copy enabled on an empty
+        // selection and Paste enabled on an empty clipboard. `validateMenuItem` below has an
+        // explicit case for the block group instead.
         // The command under the pointer, when there is one. This is the entry that turns the
         // scrollback into something you can act on rather than only read: the prompt marks say
         // where each command began, so the whole block's actions -- not just rerun and edit -- are
@@ -1559,14 +1570,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         for rect in hoveredRect { addCursorRect(rect, cursor: .pointingHand) }
     }
 
-    /// Places the overlay over the hovered block's command row, or hides it.
-    private func blockHeaderChanged() {
+    /// Places the overlay over the hovered block's command row, or hides it. `palette` is the one
+    /// `render()` already read under the lock this frame; every other caller (a hover change, a
+    /// fold toggle) has no such value in hand and passes nil, which reads it here instead.
+    private func blockHeaderChanged(palette suppliedPalette: Palette? = nil) {
+        let palette = suppliedPalette ?? session.withTerminal { $0.palette }
         guard let row = hoveredBlock?.headerRow, let header = headersOnScreen[row] else {
-            blockHeader.update(header: nil, palette: session.withTerminal { $0.palette },
+            blockHeader.update(header: nil, palette: palette,
                                font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
             return
         }
-        blockHeader.update(header: header, palette: session.withTerminal { $0.palette },
+        blockHeader.update(header: header, palette: palette,
                            font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
         let size = blockHeader.intrinsicContentSize
         let origin = overlayOrigin(forHeaderRow: row)
@@ -1975,6 +1989,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         guard session.withTerminal({ $0.shellEmitsPromptMarks }) else { return false }
         guard folding.isEmpty else {
             folding.unfoldAll()
+            // Same reshuffle of display slots under the pointer as `toggleFold`, just for every
+            // block at once.
+            invalidateBlockHover()
             markDirty()
             return true
         }
@@ -1982,6 +1999,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             folding.foldLongOutput(in: t, longerThan: Pane.longOutputThreshold, keep: config.foldKeepLines)
         }
         guard !folding.isEmpty else { return false }
+        invalidateBlockHover()
         markDirty()
         return true
     }

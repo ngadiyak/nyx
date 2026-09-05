@@ -179,6 +179,11 @@ public struct BlockHeader: Equatable {
 
     public var isRunning: Bool { if case .running = state { return true } else { return false } }
 
+    /// Whether this command failed -- the one bit the overlay and the sticky strip both need to
+    /// pick a colour, kept here rather than re-derived at each call site so a third one cannot
+    /// switch on `state` a different way and disagree.
+    public var failed: Bool { if case .failed = state { return true } else { return false } }
+
     public var chevron: String {
         guard hasOutput else { return "" }
         return folded ? "\u{25B8}" : "\u{25BE}"

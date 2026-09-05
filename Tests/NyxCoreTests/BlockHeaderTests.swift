@@ -70,6 +70,15 @@ private func block(_ region: CommandRegion) -> CommandBlock {
     #expect(!done.actions.contains { if case .notifyWhenDone = $0.action { return true } else { return false } })
 }
 
+@Test func failedIsTrueOnlyForTheFailedState() {
+    let failed = block(region(status: 1)).header(now: 100, folding: OutputFolding(), notifyArmed: false, anyFolds: false)
+    let finished = block(region(status: 0)).header(now: 100, folding: OutputFolding(), notifyArmed: false, anyFolds: false)
+    let running = block(region(status: nil, duration: nil)).header(now: 1, folding: OutputFolding(), notifyArmed: false, anyFolds: false)
+    #expect(failed.failed)
+    #expect(!finished.failed)
+    #expect(!running.failed)
+}
+
 @Test func titlesFollowTheState() {
     #expect(BlockAction.toggleFold.title == "Fold Output")
     #expect(BlockAction.notifyWhenDone(armed: false).title == "Notify When Done")

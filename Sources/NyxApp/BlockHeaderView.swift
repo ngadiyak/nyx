@@ -52,8 +52,11 @@ final class BlockHeaderView: NSView {
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            // Centred rather than pinned top and bottom: the shipping height is one cell row
+            // (~17pt at the default size), shorter than the stack's fitting height with its
+            // default insets, and two required edge constraints on a view shorter than its
+            // content log a constraint break every frame instead of just centring it.
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
             hairline.leadingAnchor.constraint(equalTo: leadingAnchor),
             hairline.topAnchor.constraint(equalTo: topAnchor),
             hairline.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -80,19 +83,31 @@ final class BlockHeaderView: NSView {
         guard changed else { isHidden = false; return }
         summary.stringValue = header.summary
         summary.font = font
-        let failed: Bool = { if case .failed = header.state { return true } else { return false } }()
-        summary.textColor = nsColor(failed ? palette.readable(1) : palette.noteForeground, alpha: 1)
+        summary.textColor = nsColor(header.failed ? palette.readable(1) : palette.noteForeground, alpha: 1)
         summary.isHidden = header.summary.isEmpty
         copyButton.isEnabled = header.hasOutput
-        chevronButton.title = header.chevron
         chevronButton.isHidden = !header.hasOutput
         chevronButton.toolTip = header.folded ? "Unfold this command\u{2019}s output" : "Fold this command\u{2019}s output (\u{2325}: hide all of it)"
         chevronButton.setAccessibilityLabel(header.title(for: .toggleFold))
-        for button in [copyButton, moreButton, chevronButton] { button.contentTintColor = nsColor(palette.foreground, alpha: 1) }
+        // `contentTintColor` recolours a *symbol image*, not a titled button's text -- the title
+        // paints in the system's `labelColor`, which is black in Light Mode regardless of the
+        // pane's own (possibly dark) theme. Colouring the title itself is the only way a themed
+        // button reads correctly against a themed background irrespective of the system appearance.
+        style(copyButton, title: "Copy", enabled: copyButton.isEnabled)
+        style(moreButton, title: "\u{22EF}", enabled: true)
+        style(chevronButton, title: header.chevron, enabled: true)
         layer?.backgroundColor = nsColor(palette.background, alpha: 1).cgColor
         hairline.layer?.backgroundColor = nsColor(palette.noteForeground, alpha: 1).cgColor
         isHidden = false
         invalidateIntrinsicContentSize()
+    }
+
+    /// Sets a button's title through `attributedTitle` so its colour comes from the pane's palette
+    /// rather than the system appearance's `labelColor`, and so a disabled control visibly dims.
+    private func style(_ button: NSButton, title: String, enabled: Bool) {
+        let color = nsColor(enabled ? palette.foreground : palette.noteForeground, alpha: 1)
+        let font = button.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize(for: button.controlSize))
+        button.attributedTitle = NSAttributedString(string: title, attributes: [.foregroundColor: color, .font: font])
     }
 
     override var intrinsicContentSize: NSSize { stack.fittingSize }
@@ -103,6 +118,17 @@ final class BlockHeaderView: NSView {
         onToggleFold?(header.id, NSEvent.modifierFlags.contains(.option))
     }
 
+    /// One entry of the ⋯ menu: which action, on which command. Carried on the item rather than
+    /// resolved by index against `self.header` at click time -- the display link keeps calling
+    /// `update(header:...)` while this menu is open (it runs in `.common` modes), so output
+    /// scrolling in under the pointer can replace `header` with a different command's before the
+    /// click lands, sending the action to the wrong id or dropping it if the index no longer exists.
+    private final class MenuEntry: NSObject {
+        let action: BlockAction
+        let id: UInt32
+        init(action: BlockAction, id: UInt32) { self.action = action; self.id = id }
+    }
+
     @objc private func morePressed() {
         guard let header else { return }
         let menu = NSMenu()
@@ -111,18 +137,21 @@ final class BlockHeaderView: NSView {
             let item = NSMenuItem(title: header.title(for: entry.action), action: #selector(menuPressed(_:)),
                                   keyEquivalent: "")
             item.target = self
-            item.tag = index
+            item.representedObject = MenuEntry(action: entry.action, id: header.id)
             item.isEnabled = entry.enabled
             if case .notifyWhenDone(let armed) = entry.action { item.state = armed ? .on : .off }
             menu.addItem(item)
         }
         menu.autoenablesItems = false
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: moreButton.bounds.height), in: moreButton)
+        // The view is unflipped, so (0, 0) is its bottom-left -- where a menu that drops down from
+        // under the button should start. `moreButton.bounds.height` put the origin a button's
+        // height above that, floating the menu a row higher than the button it came from.
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: 0), in: moreButton)
     }
 
     @objc private func menuPressed(_ sender: NSMenuItem) {
-        guard let header, header.actions.indices.contains(sender.tag) else { return }
-        onAction?(header.actions[sender.tag].action, header.id)
+        guard let entry = sender.representedObject as? MenuEntry else { return }
+        onAction?(entry.action, entry.id)
     }
 
     override func isAccessibilityElement() -> Bool { false }   // the buttons are the elements

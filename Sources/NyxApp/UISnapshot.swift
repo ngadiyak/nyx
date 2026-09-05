@@ -86,17 +86,37 @@ enum UISnapshot {
         write(stickyPrompt(palette: palette, failed: true), named: "sticky-prompt-failed",
               into: directory, background: palette.background)
 
+        // The overlay's shipping height is one cell row -- what `Pane.cellSizePoints` gives it at
+        // the default font -- not an arbitrary round number. Rendering the snapshot shorter than
+        // that hid a real bug (Important 4): a stack pinned to both edges of a view shorter than
+        // its fitting size breaks a required constraint every frame.
+        let defaultFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let rowHeight = ceil(defaultFont.ascender - defaultFont.descender + defaultFont.leading)
         for (name, header) in blockHeaderStates() {
             for appearance in [NSAppearance.Name.darkAqua, .aqua] {
-                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: 20))
+                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
                 view.appearance = NSAppearance(named: appearance)
                 view.update(header: header, palette: palette, font: .monospacedSystemFont(ofSize: 12, weight: .regular))
                 let size = view.intrinsicContentSize
-                view.frame = NSRect(x: 0, y: 0, width: size.width, height: 20)
+                view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
                 view.layoutSubtreeIfNeeded()
                 write(view, named: "block-header-\(name)-\(appearance == .aqua ? "light" : "dark")",
                       into: directory, background: palette.background)
             }
+        }
+        // One state against the light built-in theme, in the aqua appearance: everything above
+        // uses `nyx-dark` (the default config's theme) under both system appearances, which never
+        // looks at a *light theme's own* colours.
+        if let lightPalette = Themes.builtin["nyx-light"],
+           let finished = blockHeaderStates().first(where: { $0.0 == "finished" })?.1 {
+            let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
+            view.appearance = NSAppearance(named: .aqua)
+            view.update(header: finished, palette: lightPalette, font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+            let size = view.intrinsicContentSize
+            view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
+            view.layoutSubtreeIfNeeded()
+            write(view, named: "block-header-finished-light-theme", into: directory,
+                  background: lightPalette.background)
         }
         write(stickyPrompt(palette: palette, failed: true, summary: "exit 2 \u{b7} 8.8s"),
               named: "sticky-prompt-summary", into: directory, background: palette.background)

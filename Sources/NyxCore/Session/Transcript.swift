@@ -57,8 +57,21 @@ public extension Terminal {
                 while lastContentColumn >= 0 && isBlank(row.cells[lastContentColumn]) { lastContentColumn -= 1 }
             }
 
+            // The shell's own marks, put back where they were, so a restored session still knows
+            // where each command began and how it ended. `D` first: it belongs to the command
+            // above, and a restored `D` after this row's `A` would close the wrong one.
+            if options.includeAttributes {
+                let marks = PromptMarks(rawValue: row.promptMark)
+                if marks.contains(.commandDone) {
+                    out += row.exitStatus.map { "\u{1b}]133;D;\($0)\u{7}" } ?? "\u{1b}]133;D\u{7}"
+                }
+                if marks.contains(.promptStart) { out += "\u{1b}]133;A\u{7}" }
+                if marks.contains(.outputStart) { out += "\u{1b}]133;C\u{7}" }
+            }
+
             var column = 0
             while column <= lastContentColumn {
+                if options.includeAttributes, column == row.inputStartColumn { out += "\u{1b}]133;B\u{7}" }
                 let cell = row.cells[column]
                 column += 1
                 // The second half of a wide glyph is not a character; the parser will place it
@@ -74,6 +87,11 @@ public extension Terminal {
                     }
                 }
                 out += cell.content == 0 ? " " : clusterText(of: cell)
+            }
+            // A prompt with nothing typed yet puts `B` past the last content column -- pad with
+            // spaces to put the restored cursor where the mark says it is.
+            if options.includeAttributes, let b = row.inputStartColumn, b > lastContentColumn {
+                out += String(repeating: " ", count: b - lastContentColumn - 1) + "\u{1b}]133;B\u{7}"
             }
 
             // Attributes must not bleed past the line they were written on: a background colour

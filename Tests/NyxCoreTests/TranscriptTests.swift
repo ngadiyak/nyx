@@ -241,3 +241,33 @@ private func date(_ year: Int, _ month: Int, _ day: Int, _ hour: Int, _ minute: 
     #expect(!text.contains("\r"))
     #expect(text.contains("red"))
 }
+
+// MARK: - Prompt marks survive a relaunch
+
+private func mark(_ letter: String, _ status: Int32? = nil) -> String {
+    let payload = status.map { "\(letter);\($0)" } ?? letter
+    return "\u{1b}]133;\(payload)\u{7}"
+}
+
+@Test func promptMarksRoundTripThroughTheTranscript() {
+    let original = makeTerminal(cols: 40, rows: 8, scrollback: 100)
+    original.feed(mark("A") + "$ " + mark("B") + "make\r\n" + mark("C") + "ok\r\n" + mark("D", 3))
+    original.feed(mark("A") + "$ ")
+    let restored = makeTerminal(cols: 40, rows: 8, scrollback: 100)
+    restored.feed(original.transcript())
+
+    #expect(restored.shellEmitsPromptMarks)
+    #expect(restored.promptMarks(atAbsoluteRow: 0) == [.promptStart, .commandStart])
+    #expect(restored.absoluteRow(0)?.inputStartColumn == 2)
+    #expect(restored.promptMarks(atAbsoluteRow: 1).contains(.outputStart))
+    let region = restored.command(containingAbsoluteRow: 0)
+    #expect(region?.exitStatus == 3)
+    #expect(region?.outputRows == 1..<2)
+    #expect(region?.id == 1)
+}
+
+@Test func aPlainTextTranscriptCarriesNoMarks() {
+    let t = makeTerminal(cols: 40, rows: 8, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "ls\r\n" + mark("C") + "a\r\n" + mark("D", 0) + mark("A") + "$ ")
+    #expect(!t.transcript(options: .plainText).contains("133;"))
+}

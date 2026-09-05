@@ -460,6 +460,8 @@ vim/htop/fzf/Claude Code работают без артефактов и `cat` �
 Kitty keyboard protocol, Kitty graphics / Sixel, quick-terminal (hotkey
 window), быстрый переключатель вкладок/панелей по имени, экспорт буфера.
 
+**Блоки команд закрыты 2026-09-05** второй итерацией: `docs/superpowers/specs/2026-09-05-command-blocks-v2-design.md`.
+
 ## 12. Открытые решения, принятые по умолчанию
 
 - Формат конфига: плоский `ключ = значение`, а не TOML/JSON: без зависимостей

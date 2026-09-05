@@ -69,9 +69,9 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
     /// rather than a setting to poke into a live object.
     func apply(_ newConfig: Config) {
         let wasRunning = connection != nil
-        let changed = RemoteCoordinator.settingsDiffer(config, newConfig)
+        let changed = ConfigDiff(from: config, to: newConfig).remoteChanged
         config = newConfig
-        guard shouldRun else {
+        guard RemoteCoordinatorPolicy.shouldRun(config: config) else {
             stop(reason: AttachFailure.remoteTurnedOff)
             onChange?()
             return
@@ -82,21 +82,6 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         stop(reason: AttachFailure.remoteSettingsChanged)
         start()
         onChange?()
-    }
-
-    /// Whether the two configurations describe the same remote setup. Compared field by field
-    /// rather than by `ConfigDiff.remoteChanged` so a reload that touched only the font does not
-    /// tear down a live connection and every attachment on it.
-    private static func settingsDiffer(_ a: Config, _ b: Config) -> Bool {
-        a.remote != b.remote || a.remoteDeviceName != b.remoteDeviceName
-            || a.remoteRelay != b.remoteRelay || a.remoteRelayToken != b.remoteRelayToken
-            || a.remoteSnapshotLines != b.remoteSnapshotLines
-    }
-
-    /// A token is as necessary as the switch: without one the relay closes the socket before the
-    /// handshake, so connecting would be a guaranteed failure reported as an outage.
-    private var shouldRun: Bool {
-        config.remote == .on && !config.remoteRelayToken.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private func start() {

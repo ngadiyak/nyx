@@ -188,15 +188,75 @@ private func session() -> Terminal {
 // Pressing a mark folds the block; ⌥-click selects its output. The label promised the opposite.
 
 @Test func aMarkSaysItFoldsAndHowToSelectInstead() {
-    #expect(GutterMarkLabel.text(mark: .succeeded, folded: false, line: 4)
+    #expect(GutterMarkLabel.text(mark: .succeeded, folded: false, hasOutput: true, line: 4)
         == "Command on line 4 succeeded. Fold its output. Option-click selects its output.")
-    #expect(GutterMarkLabel.text(mark: .failed, folded: true, line: 1)
+    #expect(GutterMarkLabel.text(mark: .failed, folded: true, hasOutput: true, line: 1)
         == "Command on line 1 failed. Unfold its output. Option-click selects its output.")
 }
 
 @Test func aRunningCommandsMarkSaysSo() {
-    #expect(GutterMarkLabel.text(mark: .running, folded: false, line: 2)
+    #expect(GutterMarkLabel.text(mark: .running, folded: false, hasOutput: true, line: 2)
         == "Command on line 2 is still running. Fold its output. Option-click selects its output.")
+}
+
+/// `cd ..`, `export FOO=1`, `true`: the dot is a record of what happened, and there is nothing to
+/// fold and nothing to select, so it promises neither. It used to offer both and then beep.
+@Test func aMarkOnACommandThatPrintedNothingPromisesNothing() {
+    #expect(GutterMarkLabel.text(mark: .succeeded, folded: false, hasOutput: false, line: 3)
+        == "Command on line 3 succeeded.")
+    #expect(GutterMarkLabel.text(mark: .failed, folded: false, hasOutput: false, line: 3)
+        == "Command on line 3 failed.")
+}
+
+@Test func onlyAMarkWithOutputCanBePressed() {
+    #expect(GutterMark.succeeded.isActionable(hasOutput: true))
+    #expect(!GutterMark.succeeded.isActionable(hasOutput: false))
+    #expect(!GutterMark.running.isActionable(hasOutput: false))
+}
+
+/// The prompt you are typing at carries a prompt mark and no status, so it reads as running. A ring
+/// there would sit beside an idle cursor for the rest of the session; a command is visibly running
+/// only once it has begun printing.
+@Test func aRunningMarkIsDrawnOnlyOnceTheCommandHasPrinted() {
+    #expect(!GutterMark.running.isDrawn(hasOutput: false))
+    #expect(GutterMark.running.isDrawn(hasOutput: true))
+    #expect(GutterMark.succeeded.isDrawn(hasOutput: false))   // a record, whatever it printed
+    #expect(GutterMark.failed.isDrawn(hasOutput: false))
+}
+
+// MARK: - Which commands printed anything
+
+@Test func aCommandThatPrintedNothingHasNoOutput() {
+    let t = makeTerminal(cols: 40, rows: 8, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "cd ..\r\n" + mark("C") + mark("D", 0))
+    t.feed(mark("A") + "$ " + mark("B") + "ls\r\n" + mark("C") + "a.txt\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    #expect(!t.commandHasOutput(atAbsoluteRow: 0))          // cd ..
+    #expect(t.commandHasOutput(atAbsoluteRow: 1))           // ls
+    #expect(!t.commandHasOutput(atAbsoluteRow: 3))          // the prompt being typed at
+}
+
+/// The cheap answer has to agree with the expensive one, because the expensive one is what beeps.
+@Test func theCheapOutputTestAgreesWithTheRegion() {
+    let t = makeTerminal(cols: 20, rows: 8, scrollback: 100)
+    // A wrapped command line, so the walk crosses rows that carry no marks at all.
+    t.feed(mark("A") + "$ " + mark("B") + "echo abcdefghijklmnop\r\n" + mark("C") + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    for row in 0..<t.totalRows where t.promptMarks(atAbsoluteRow: row).contains(.promptStart) {
+        let region = t.command(containingAbsoluteRow: row)
+        #expect(t.commandHasOutput(atAbsoluteRow: row) == !(region?.outputRows.isEmpty ?? true),
+                "row \(row)")
+    }
+}
+
+@Test func outputStatesFollowTheRowsOnScreen() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "cd ..\r\n" + mark("C") + mark("D", 0))
+    t.feed(mark("A") + "$ " + mark("B") + "ls\r\n" + mark("C") + "a.txt\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    let states = t.outputStates(rows: 6)
+    #expect(!states[0])
+    #expect(states[1])
 }
 
 @Test func theGutterKnowsWhichOfItsCommandsAreFolded() {

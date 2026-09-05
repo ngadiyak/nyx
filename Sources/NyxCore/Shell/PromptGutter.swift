@@ -10,22 +10,41 @@ public enum GutterMark: Equatable {
     case failed
 }
 
+public extension GutterMark {
+    /// Whether the dot is drawn for a row carrying this mark.
+    ///
+    /// A finished command's dot is a record and is drawn whatever it printed -- `cd ..` succeeded
+    /// and the gutter says so. `.running` is different: the prompt you are typing at carries a
+    /// prompt mark and no status, so it reads as running, and a mark there would sit beside an idle
+    /// cursor for the rest of the session. A command is only *visibly* running once it has begun
+    /// printing, which is exactly `hasOutput`.
+    func isDrawn(hasOutput: Bool) -> Bool { self == .running ? hasOutput : true }
+
+    /// Whether pressing the dot can do anything. Pressing folds the command's output, and ⌥ selects
+    /// it; a command that printed nothing has neither, and the click used to beep at the user after
+    /// offering a pointing hand, a tooltip and an accessibility button.
+    func isActionable(hasOutput: Bool) -> Bool { hasOutput }
+}
+
 /// What a gutter mark says to VoiceOver and in its tooltip.
 ///
-/// The words used to promise the wrong thing: every mark read "Select its output." while pressing
-/// one folded the block -- selecting is what ⌥-click does. A control that names an action it does
-/// not perform is worse than an unlabelled one, and there is no AppKit test target here, so the
-/// wording is decided in Core and asserted.
+/// The words used to promise the wrong thing twice over: every mark read "Select its output." while
+/// pressing one folded the block (selecting is what ⌥-click does), and a command that printed
+/// nothing offered both while doing neither. A control that names an action it does not perform is
+/// worse than an unlabelled one, and there is no AppKit test target here, so the wording is decided
+/// in Core and asserted.
 public enum GutterMarkLabel {
-    public static func text(mark: GutterMark, folded: Bool, line: Int) -> String {
+    public static func text(mark: GutterMark, folded: Bool, hasOutput: Bool, line: Int) -> String {
         let outcome: String
         switch mark {
         case .failed: outcome = "failed"
         case .succeeded: outcome = "succeeded"
         case .running: outcome = "is still running"
         }
-        let verb = folded ? "Unfold" : "Fold"
-        return "Command on line \(line) \(outcome). \(verb) its output. Option-click selects its output."
+        let state = "Command on line \(line) \(outcome)."
+        // Nothing to fold and nothing to select: the mark is a record, and says only what happened.
+        guard hasOutput else { return state }
+        return "\(state) \(folded ? "Unfold" : "Fold") its output. Option-click selects its output."
     }
 }
 
@@ -114,6 +133,42 @@ public extension Terminal {
         display.map { entry in
             guard case .row(let absolute) = entry else { return false }
             return isCommandFolded(atAbsoluteRow: absolute, folding: folding)
+        }
+    }
+
+    /// Whether the command whose prompt is on this absolute row printed anything -- which is what
+    /// decides whether its gutter mark can be pressed at all.
+    ///
+    /// Answers exactly what `CommandRegion.outputRows.isEmpty` answers, without building the region:
+    /// that walks to the next prompt three times over, and this is asked for every marked row on
+    /// every frame. A command that printed nothing leaves its `C` on the row its successor's prompt
+    /// lands on, so finding a prompt first means there was no output; the rows walked in between are
+    /// the command's own wrapped line, of which there are one or two.
+    func commandHasOutput(atAbsoluteRow row: Int) -> Bool {
+        guard let line = absoluteRow(row),
+              PromptMarks(rawValue: line.promptMark).contains(.promptStart) else { return false }
+        var next = row + 1
+        while next < totalRows {
+            let marks = promptMarks(atAbsoluteRow: next)
+            if marks.contains(.promptStart) { return false }
+            if marks.contains(.outputStart) { return true }
+            next += 1
+        }
+        return false
+    }
+
+    /// One flag per visible row, beside `gutterMarks(rows:)`.
+    func outputStates(rows visibleRows: Int) -> [Bool] {
+        guard visibleRows > 0 else { return [] }
+        let top = max(0, viewportTopRow)
+        return (0..<visibleRows).map { commandHasOutput(atAbsoluteRow: top + $0) }
+    }
+
+    /// One flag per display slot, beside `gutterMarks(onDisplayRows:)`.
+    func outputStates(onDisplayRows display: [DisplayRow]) -> [Bool] {
+        display.map { entry in
+            guard case .row(let absolute) = entry else { return false }
+            return commandHasOutput(atAbsoluteRow: absolute)
         }
     }
 }

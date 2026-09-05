@@ -662,6 +662,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // Whether each marked row's command is folded, so the mark can say which way pressing it
         // goes. Read in the same pass as the marks themselves.
         var gutterFolded: [Bool] = []
+        // And whether each has anything to fold: a command that printed nothing gets its dot and
+        // nothing else -- no pointing hand, no tooltip, no accessibility button.
+        var gutterHasOutput: [Bool] = []
         var notes: [String?] = []
         var spines: [(rows: Range<Int>, color: RGB)] = []
         var summaries: [(row: Int, text: String, color: RGB)] = []
@@ -819,12 +822,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             if self.foldRowsOnScreen.isEmpty {
                 gutterMarks = t.gutterMarks(rows: t.rows)
                 gutterFolded = t.foldStates(rows: t.rows, folding: self.folding)
+                gutterHasOutput = t.outputStates(rows: t.rows)
                 notes = t.durationNotes(rows: t.rows)
             } else {
                 let pad = max(0, t.rows - self.foldRowsOnScreen.count)
                 gutterMarks = t.gutterMarks(onDisplayRows: self.foldRowsOnScreen)
                     + Array(repeating: nil, count: pad)
                 gutterFolded = t.foldStates(onDisplayRows: self.foldRowsOnScreen, folding: self.folding)
+                    + Array(repeating: false, count: pad)
+                gutterHasOutput = t.outputStates(onDisplayRows: self.foldRowsOnScreen)
                     + Array(repeating: false, count: pad)
                 notes = t.durationNotes(onDisplayRows: self.foldRowsOnScreen)
                     + Array(repeating: nil, count: pad)
@@ -1024,8 +1030,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             timer.invalidate()
             runningTimer = nil
         }
-        gutter.update(marks: gutterMarks, folded: gutterFolded, palette: frame.palette,
-                      cellHeight: cellSizePoints.height, topPadding: padding)
+        gutter.update(marks: gutterMarks, folded: gutterFolded, hasOutput: gutterHasOutput,
+                      palette: frame.palette, cellHeight: cellSizePoints.height, topPadding: padding)
         stickyPromptRow = sticky?.row
         let wasHidden = stickyStrip.isHidden
         stickyStrip.update(text: sticky?.text, summary: sticky?.summary ?? "", failed: sticky?.failed ?? false,
@@ -2131,10 +2137,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                   !region.outputRows.isEmpty else { return nil }
             return region.id
         }
-        guard let id = commandID, id != 0 else {
-            NSSound.beep()
-            return
-        }
+        // No beep: `PromptGutterView` does not claim a click on a mark whose command printed
+        // nothing, so this is reached only if the buffer changed between the frame that drew the
+        // mark and the click -- a race, not a mistake the user made, and a beep would be blaming
+        // them for it.
+        guard let id = commandID, id != 0 else { return }
         toggleFold(ofCommand: id, full: false)
     }
 

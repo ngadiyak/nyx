@@ -14,6 +14,10 @@ final class PromptGutterView: NSView {
     private var marks: [GutterMark?] = []
     /// Whether each row's command is folded, so a mark says which way pressing it goes.
     private var folded: [Bool] = []
+    /// Whether each row's command printed anything. A mark without output is a record and nothing
+    /// more: no pointing hand, no tooltip, no accessibility button, because pressing it can do
+    /// nothing -- it used to offer all three and then beep.
+    private var hasOutput: [Bool] = []
     private var palette = Palette.xtermDefault()
     private var cellHeight: CGFloat = 1
     private var topPadding: CGFloat = 0
@@ -27,18 +31,20 @@ final class PromptGutterView: NSView {
         guard bounds.contains(local),
               let row = PromptGutter.row(atY: Double(local.y), cellHeight: Double(cellHeight),
                                          padding: Double(topPadding), rows: marks.count),
-              mark(at: row) != nil
+              isActionable(row)
         else { return nil }
         return self
     }
 
-    func update(marks: [GutterMark?], folded: [Bool], palette: Palette,
+    func update(marks: [GutterMark?], folded: [Bool], hasOutput: [Bool], palette: Palette,
                 cellHeight: CGFloat, topPadding: CGFloat) {
-        let changed = marks != self.marks || folded != self.folded || palette != self.palette
+        let changed = marks != self.marks || folded != self.folded || hasOutput != self.hasOutput
+            || palette != self.palette
             || cellHeight != self.cellHeight || topPadding != self.topPadding
         guard changed else { return }
         self.marks = marks
         self.folded = folded
+        self.hasOutput = hasOutput
         self.palette = palette
         self.cellHeight = cellHeight
         self.topPadding = topPadding
@@ -48,7 +54,7 @@ final class PromptGutterView: NSView {
         // describe a different command.
         removeAllToolTips()
         for row in marks.indices {
-            guard let mark = mark(at: row) else { continue }
+            guard let mark = mark(at: row), isActionable(row) else { continue }
             let y = topPadding + CGFloat(row) * cellHeight
             addToolTip(NSRect(x: 0, y: y, width: max(1, bounds.width), height: cellHeight),
                        owner: label(for: mark, row: row) as NSString, userData: nil)
@@ -56,21 +62,32 @@ final class PromptGutterView: NSView {
     }
 
     /// The words a mark says, in the tooltip and to VoiceOver. Decided in `GutterMarkLabel`, so a
-    /// control that folds cannot go on claiming it selects.
+    /// control that folds cannot go on claiming it selects -- or promise anything at all on a
+    /// command that printed nothing to fold.
     private func label(for mark: GutterMark, row: Int) -> String {
         GutterMarkLabel.text(mark: mark, folded: folded.indices.contains(row) && folded[row],
-                             line: row + 1)
+                             hasOutput: output(at: row), line: row + 1)
     }
 
-    /// Nothing is drawn for a command still running: a mark that appeared the instant you pressed
-    /// return and then changed colour would be a progress indicator, and this is a record.
+    private func output(at row: Int) -> Bool {
+        hasOutput.indices.contains(row) && hasOutput[row]
+    }
+
+    /// The mark to draw on a row, or nil for a row with nothing to say. Both rules are Core's:
+    /// a finished command's dot is a record whatever it printed, and a running one appears only
+    /// once it has actually begun printing -- otherwise the prompt you are typing at, which has a
+    /// prompt mark and no status, would wear a ring forever.
     private func mark(at row: Int) -> GutterMark? {
-        guard marks.indices.contains(row) else { return nil }
-        switch marks[row] {
-        case .succeeded: return .succeeded
-        case .failed: return .failed
-        case .running, .none: return nil
-        }
+        guard marks.indices.contains(row), let mark = marks[row],
+              mark.isDrawn(hasOutput: output(at: row)) else { return nil }
+        return mark
+    }
+
+    /// Whether a press on this row can do anything, which is what the pointing hand, the tooltip
+    /// and the accessibility element are for.
+    private func isActionable(_ row: Int) -> Bool {
+        guard let mark = mark(at: row) else { return false }
+        return mark.isActionable(hasOutput: output(at: row))
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -84,13 +101,30 @@ final class PromptGutterView: NSView {
         // worth doing once per visible row per frame.
         let failedColor = nsColor(palette.readable(1), alpha: 0.9)
         let succeededColor = nsColor(palette.readable(2), alpha: 0.9)
+        // The amber the spine and a folded running command's placeholder already use, so one glance
+        // down the gutter says which command is still going.
+        let runningColor = nsColor(palette.readable(3), alpha: 0.9)
         for row in marks.indices {
             guard let mark = mark(at: row) else { continue }
             let y = topPadding + CGFloat(row) * cellHeight
             let rect = NSRect(x: inset, y: y + 1, width: width, height: max(1, cellHeight - 2))
             guard rect.intersects(dirtyRect) else { continue }
-            (mark == .failed ? failedColor : succeededColor).setFill()
-            NSBezierPath(roundedRect: rect, xRadius: width / 2, yRadius: width / 2).fill()
+            let path = NSBezierPath(roundedRect: mark == .running ? rect.insetBy(dx: 0.5, dy: 0.5) : rect,
+                                    xRadius: width / 2, yRadius: width / 2)
+            switch mark {
+            // Hollow, so a command in progress is legible as unfinished at a glance rather than
+            // only by its colour -- the one thing a colour can never say on its own.
+            case .running:
+                runningColor.setStroke()
+                path.lineWidth = 1
+                path.stroke()
+            case .failed:
+                failedColor.setFill()
+                path.fill()
+            case .succeeded:
+                succeededColor.setFill()
+                path.fill()
+            }
         }
     }
 
@@ -98,7 +132,7 @@ final class PromptGutterView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         guard let row = PromptGutter.row(atY: Double(point.y), cellHeight: Double(cellHeight),
                                          padding: Double(topPadding), rows: marks.count),
-              mark(at: row) != nil
+              isActionable(row)
         else { return }
         onSelectRow?(row, event.modifierFlags.contains(.option))
     }
@@ -118,7 +152,7 @@ final class PromptGutterView: NSView {
     override func accessibilityChildren() -> [Any]? {
         guard cellHeight > 0 else { return [] }
         return marks.indices.compactMap { row -> NSAccessibilityElement? in
-            guard let mark = mark(at: row) else { return nil }
+            guard let mark = mark(at: row), isActionable(row) else { return nil }
             let y = topPadding + CGFloat(row) * cellHeight
             return DrawnControlElement.make(
                 label: label(for: mark, row: row),
@@ -132,7 +166,7 @@ final class PromptGutterView: NSView {
     override func resetCursorRects() {
         super.resetCursorRects()
         guard cellHeight > 0 else { return }
-        for row in marks.indices where mark(at: row) != nil {
+        for row in marks.indices where isActionable(row) {
             let y = topPadding + CGFloat(row) * cellHeight
             addCursorRect(NSRect(x: 0, y: y, width: bounds.width, height: cellHeight), cursor: .pointingHand)
         }

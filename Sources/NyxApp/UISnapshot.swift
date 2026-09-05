@@ -126,6 +126,28 @@ enum UISnapshot {
                       background: palette.background)
             }
         }
+        // The gutter's four marks, in one picture. A no-output command's dot is identical to any
+        // other succeeded one on purpose -- it is a record of what happened, and the difference is
+        // that it offers no tooltip, no pointing hand and no accessibility button, none of which a
+        // still picture can show. The running mark is the one thing here that is a shape rather
+        // than a colour: hollow, so "in progress" survives being looked at in greyscale. The
+        // `-light` and `-dark` pair is byte-identical for the same reason the block-header pair is:
+        // the view paints from the palette, so the system appearance has no say. A pair that
+        // differs is that bug coming back.
+        for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
+            let cell = ceil(defaultFont.ascender - defaultFont.descender + defaultFont.leading)
+            // The shipping width: the gutter takes at most `PromptGutter.maximumWidth` of the
+            // pane's own padding, so a wider picture would flatter marks that are really 6 points.
+            let width = CGFloat(PromptGutter.width(padding: Double(8)))
+            let gutter = PromptGutterView(frame: NSRect(x: 0, y: 0, width: width, height: cell * 4))
+            gutter.appearance = NSAppearance(named: appearance)
+            gutter.update(marks: [.succeeded, .failed, .running, .succeeded],
+                          folded: [false, true, false, false],
+                          hasOutput: [true, true, true, false],
+                          palette: palette, cellHeight: cell, topPadding: 0)
+            gutter.layoutSubtreeIfNeeded()
+            write(gutter, named: "gutter-marks-\(name)", into: directory, background: palette.background)
+        }
         // One state against the light built-in theme, in the aqua appearance: everything above
         // uses `nyx-dark` (the default config's theme) under both system appearances, which never
         // looks at a *light theme's own* colours.

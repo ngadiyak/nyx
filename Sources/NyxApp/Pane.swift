@@ -2252,9 +2252,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         // The moment a new command starts running is when the one before it is "done with", and
         // the only moment automatic folding is allowed to touch it.
-        if bottom.started, !commandWasRunning, config.foldLongOutput > 0, let previous = bottom.previous,
-           folding.autoFold(previous, longerThan: config.foldLongOutput, keep: config.foldKeepLines) {
-            markDirty()
+        if bottom.started, !commandWasRunning, config.foldLongOutput > 0, let previous = bottom.previous {
+            // The same predicate the chevron and the gutter use, so automatic folding cannot fold
+            // something the user is not allowed to fold by hand.
+            let hasOutput = session.withTerminal { $0.commandHasOutput(atAbsoluteRow: previous.promptRow) }
+            if folding.autoFold(previous, longerThan: config.foldLongOutput,
+                                keep: config.foldKeepLines, hasOutput: hasOutput) {
+                markDirty()
+            }
         }
         commandWasRunning = bottom.started
         guard let finished = commandWatcher.observe(bottomPromptRow: bottom.row, outputStarted: bottom.started,

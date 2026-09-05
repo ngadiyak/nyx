@@ -55,10 +55,10 @@ private func region(output: Int, id: UInt32 = 7) -> CommandRegion {
 
 @Test func autoFoldFoldsLongOutputAndLeavesShortAlone() {
     var f = OutputFolding()
-    let folded = f.autoFold(region(output: 300), longerThan: 200, keep: 3)
+    let folded = f.autoFold(region(output: 300), longerThan: 200, keep: 3, hasOutput: true)
     #expect(folded)
     #expect(f.shape(of: 7) == .tail(keep: 3))
-    let short = f.autoFold(region(output: 10, id: 8), longerThan: 200, keep: 3)
+    let short = f.autoFold(region(output: 10, id: 8), longerThan: 200, keep: 3, hasOutput: true)
     #expect(!short)
     #expect(f.shape(of: 8) == nil)
 }
@@ -68,7 +68,7 @@ private func region(output: Int, id: UInt32 = 7) -> CommandRegion {
     var f = OutputFolding()
     f.fold(7, .tail(keep: 3))
     f.unfold(7)
-    let folded = f.autoFold(region(output: 300), longerThan: 200, keep: 3)
+    let folded = f.autoFold(region(output: 300), longerThan: 200, keep: 3, hasOutput: true)
     #expect(!folded)
 }
 
@@ -96,4 +96,38 @@ private func region(output: Int, id: UInt32 = 7) -> CommandRegion {
     #expect(row.cells.allSatisfy { $0.content != 0 })   // every column it could reach is written
     let text = String(String.UnicodeScalarView(row.cells.compactMap { Unicode.Scalar($0.content) }))
     #expect(text == String(OutputFolding.placeholder(hiddenRows: 1234).prefix(10)))
+}
+
+// MARK: - Automatic folding obeys the same "has output" rule as the chevron
+
+// `region.outputRows.count` is the row *span*: a command that has started and printed nothing owns
+// every blank row below it, so in a 44-row pane a fresh `sleep 10` looked like 41 rows of output.
+// Its chevron was correctly absent and "Fold Everything Long" folded it anyway, into a placeholder
+// standing for 38 blank lines.
+
+@Test func foldEverythingLongLeavesARunningCommandsBlankScreenAlone() {
+    let t = makeTerminal(cols: 80, rows: 44, scrollback: 500)
+    t.feed(mark("A") + "$ " + mark("B") + "build\r\n" + mark("C"))
+    for i in 1...25 { t.feed("out \(i)\r\n") }
+    t.feed(mark("D", 0))
+    t.feed(mark("A") + "$ " + mark("B") + "sleep 10\r\n" + mark("C"))
+    let finished = t.command(containingAbsoluteRow: 0)!
+    let running = t.command(containingAbsoluteRow: 27)!
+    // Both are "long" by row span; only one of them has printed anything.
+    #expect(running.outputRows.count > 10)                       // the blank screen below it
+    #expect(finished.outputRows.count > 10)
+    #expect(!t.commandHasOutput(atAbsoluteRow: running.promptRow))
+    #expect(t.commandHasOutput(atAbsoluteRow: finished.promptRow))
+
+    var f = OutputFolding()
+    f.foldLongOutput(in: t, longerThan: 10, keep: 3)
+    #expect(f.isFolded(finished.id))
+    #expect(!f.isFolded(running.id))
+}
+
+@Test func autoFoldDoesNothingForACommandWithNothingOnItsOutputRows() {
+    var f = OutputFolding()
+    let quiet = f.autoFold(region(output: 300), longerThan: 200, keep: 3, hasOutput: false)
+    #expect(!quiet)
+    #expect(f.isEmpty)
 }

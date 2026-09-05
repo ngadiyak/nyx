@@ -68,19 +68,31 @@ public struct OutputFolding: Equatable {
 
     /// `fold-long-output`: folds `region` if its output is longer than `threshold` rows and the user
     /// has not opened it by hand. Returns whether it folded.
+    ///
+    /// `hasOutput` is `Terminal.commandHasOutput(atAbsoluteRow:)` -- the same rule the chevron, the
+    /// gutter mark and ⌘⇧↑ use. `region.outputRows.count` alone is the row *span*, and a command
+    /// that has started and printed nothing owns every blank row below it: at a 20-row threshold
+    /// that made a fresh `sleep 10` in a tall pane "long output" and folded it into a placeholder
+    /// standing for nothing.
     @discardableResult
-    public mutating func autoFold(_ region: CommandRegion, longerThan threshold: Int, keep: Int) -> Bool {
-        guard threshold > 0, region.id != 0, region.outputRows.count > threshold,
+    public mutating func autoFold(_ region: CommandRegion, longerThan threshold: Int, keep: Int,
+                                  hasOutput: Bool) -> Bool {
+        guard hasOutput, threshold > 0, region.id != 0, region.outputRows.count > threshold,
               !openedByHand.contains(region.id), folds[region.id] == nil else { return false }
         folds[region.id] = .tail(keep: keep)
         return true
     }
 
-    /// "Tidy up the screen": every finished command longer than `threshold` rows, folded.
+    /// "Tidy up the screen": every command with more than `threshold` rows of real output, folded.
+    ///
+    /// The `commandHasOutput` guard is the same one `autoFold` takes as a parameter, for the same
+    /// reason: without it this folded a running command's blank screen into "… 38 lines hidden"
+    /// while that command's own chevron was, correctly, not being drawn at all.
     public mutating func foldLongOutput(in terminal: Terminal, longerThan threshold: Int, keep: Int) {
         for promptRow in terminal.promptRows {
             guard let region = terminal.command(containingAbsoluteRow: promptRow),
-                  region.id != 0, region.outputRows.count > threshold else { continue }
+                  region.id != 0, region.outputRows.count > threshold,
+                  terminal.commandHasOutput(atAbsoluteRow: promptRow) else { continue }
             folds[region.id] = .tail(keep: keep)
         }
     }

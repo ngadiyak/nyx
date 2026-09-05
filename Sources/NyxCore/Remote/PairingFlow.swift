@@ -225,6 +225,36 @@ public struct PairingFlow: Equatable {
         }
     }
 
+    /// Runs `event` and every event its own effects feed straight back in, and returns only the
+    /// effects the caller still has to perform. Afterwards `state` is the state to *show*.
+    ///
+    /// `.computeFingerprint` is the one effect whose result is another event, and it is the only
+    /// thing on the confirming sheet a person is asked to compare aloud. A caller that ran the
+    /// effects itself had to feed `.fingerprint` back in re-entrantly, and then showed the state it
+    /// had captured before doing so -- so the sheet rendered `.confirming` with an empty
+    /// fingerprint on both Macs, and stayed blank until some later message happened to re-render
+    /// it. Two instances against the live relay showed exactly that; this exists so the order
+    /// cannot be got wrong again.
+    ///
+    /// `fingerprint` returns the words for a peer id, or nil when they cannot be computed (a peer
+    /// id that is not a device id). Nil leaves the flow in `.confirming` with an empty fingerprint
+    /// rather than skipping the confirmation: a pairing nobody can check must not complete quietly.
+    public mutating func handleResolvingFingerprint(_ e: Event, selfID: String,
+                                                    fingerprint: (String) -> String?) -> [Effect] {
+        var pending = handle(e, selfID: selfID)
+        var remaining: [Effect] = []
+        while !pending.isEmpty {
+            let effect = pending.removeFirst()
+            guard case .computeFingerprint(let peerID) = effect else {
+                remaining.append(effect)
+                continue
+            }
+            guard let words = fingerprint(peerID) else { continue }
+            pending += handle(.fingerprint(words), selfID: selfID)
+        }
+        return remaining
+    }
+
     /// What the relay's `error.code` means to the person waiting on this pairing. `pair_expired`
     /// covers both a code that timed out and one the relay never heard of (it cannot tell those
     /// apart once the code is gone), so both read as the same message.

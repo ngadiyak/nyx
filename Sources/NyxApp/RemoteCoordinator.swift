@@ -296,7 +296,15 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
     /// A button on the pairing sheet, or the code the user typed.
     func handlePairing(_ event: PairingFlow.Event) {
         guard var flow = pairing, let identity else { return }
-        let effects = flow.handle(event, selfID: identity.deviceID)
+        // `handleResolvingFingerprint`, not `handle`: the fingerprint has to be in the state before
+        // that state reaches the sheet. See the method's own note for what showing it a step early
+        // did to the one thing on that sheet a person is asked to read aloud.
+        let effects = flow.handleResolvingFingerprint(event, selfID: identity.deviceID,
+                                                      fingerprint: { peerID in
+            guard let digest = try? FingerprintHash.digest(myID: identity.deviceID, peerID: peerID)
+            else { return nil }
+            return Fingerprint.text(digest: digest)
+        })
         pairing = flow
         apply(effects)
         if case .cancel = event { endPairing() } else { onPairingState?(flow.state) }
@@ -329,13 +337,11 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
             switch effect {
             case .send(let message):
                 connection?.send(message)
-            case .computeFingerprint(let peerID):
-                guard let identity,
-                      let digest = try? FingerprintHash.digest(myID: identity.deviceID, peerID: peerID)
-                else { continue }
-                // Straight back in as an event: the flow asked for it, and it is the flow that
-                // decides what showing it means.
-                handlePairing(.fingerprint(Fingerprint.text(digest: digest)))
+            case .computeFingerprint:
+                // Resolved inside the flow, before the state it produced is shown -- see
+                // `handlePairing`. Reaching here would mean something drove the flow with `handle`
+                // directly, and the sheet would show a fingerprint that is one step behind.
+                continue
             case .store(let peerID, let peerName):
                 paired.add(PairedDevice(id: peerID, name: peerName, pairedAt: Date()))
                 savePaired()

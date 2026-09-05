@@ -220,3 +220,46 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
     _ = failedFlow.handle(.error(code: "pair_expired"), selfID: "id")
     #expect(failedFlow.sheetText == ("Pairing failed", "Code expired", "Close"))
 }
+
+// MARK: - Resolving the fingerprint before the state is shown
+
+/// The rung-6 run of two instances against the live relay showed an empty fingerprint on both
+/// sheets: the caller ran `handle`, then applied the `.computeFingerprint` effect by feeding
+/// `.fingerprint` back in, and then showed the state it had captured *before* doing so. The one
+/// thing on that sheet a person is asked to compare aloud was blank.
+@Test func acceptingLeavesTheFingerprintInTheStateTheSheetIsShownFrom() {
+    var host = PairingFlow(side: .host)
+    _ = host.handle(.open(code: "ABCDEF", now: t0), selfID: "me")
+    _ = host.handle(.opened(code: "ABCDEF"), selfID: "me")
+    _ = host.handle(.request(peerID: "peer", peerName: "MacBook"), selfID: "me")
+
+    let effects = host.handleResolvingFingerprint(.accept, selfID: "me",
+                                                  fingerprint: { $0 == "peer" ? "apple-river-stone-zero" : nil })
+
+    #expect(effects == [.send(.pairAccept(to: "peer"))])
+    #expect(host.state == .confirming(peerID: "peer", peerName: "MacBook",
+                                      fingerprint: "apple-river-stone-zero", mine: false, theirs: false))
+}
+
+@Test func theClientsAcceptedAlsoArrivesWithTheFingerprintAlreadyIn() {
+    var client = PairingFlow(side: .client)
+    _ = client.handle(.join(code: "ABCDEF"), selfID: "me")
+
+    let effects = client.handleResolvingFingerprint(.accepted(peerID: "peer", peerName: "iMac"),
+                                                    selfID: "me", fingerprint: { _ in "river-stone-zero-apple" })
+
+    #expect(effects.isEmpty)
+    #expect(client.state == .confirming(peerID: "peer", peerName: "iMac",
+                                        fingerprint: "river-stone-zero-apple", mine: false, theirs: false))
+}
+
+/// A fingerprint that cannot be computed -- a peer id that is not 32 base64url bytes -- leaves the
+/// sheet in `.confirming` with nothing to compare rather than skipping the confirmation step.
+@Test func afingerprintThatCannotBeComputedStillLeavesTheUserAtTheConfirmStep() {
+    var client = PairingFlow(side: .client)
+    _ = client.handle(.join(code: "ABCDEF"), selfID: "me")
+    _ = client.handleResolvingFingerprint(.accepted(peerID: "peer", peerName: "iMac"),
+                                          selfID: "me", fingerprint: { _ in nil })
+    #expect(client.state == .confirming(peerID: "peer", peerName: "iMac",
+                                        fingerprint: "", mine: false, theirs: false))
+}

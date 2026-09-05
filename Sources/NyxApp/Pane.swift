@@ -1097,7 +1097,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             return t.block(atAbsoluteRow: position.row, rows: t.rows)?.region.id
         }
         guard let id, id != 0 else { return false }
-        folding.toggle(id, keep: 3) // Task 3: config.foldKeepLines
+        folding.toggle(id, keep: config.foldKeepLines)
         markDirty()
         return true
     }
@@ -1725,7 +1725,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             NSSound.beep()
             return
         }
-        folding.toggle(id, keep: 3) // Task 3: config.foldKeepLines
+        folding.toggle(id, keep: config.foldKeepLines)
         onFocusRequested?()
         markDirty()
     }
@@ -1748,7 +1748,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             return region.id
         }
         guard let id = commandID, id != 0 else { return false }
-        folding.toggle(id, keep: 3) // Task 3: config.foldKeepLines
+        folding.toggle(id, keep: config.foldKeepLines)
         markDirty()
         return true
     }
@@ -1764,7 +1764,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             return true
         }
         session.withTerminal { t in
-            folding.foldLongOutput(in: t, longerThan: Pane.longOutputThreshold, keep: 3) // Task 3: config.foldKeepLines
+            folding.foldLongOutput(in: t, longerThan: Pane.longOutputThreshold, keep: config.foldKeepLines)
         }
         guard !folding.isEmpty else { return false }
         markDirty()

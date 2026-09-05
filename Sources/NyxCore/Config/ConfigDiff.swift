@@ -19,6 +19,8 @@ public struct ConfigDiff: Equatable {
     public var windowAppearanceChanged: Bool
     /// `window-decorations`: only takes effect for a new window.
     public var windowDecorationsChanged: Bool
+    /// `fold-keep-lines`, `fold-long-output`: read on the next fold; nothing on screen is rebuilt.
+    public var foldingChanged: Bool
 
     public init(from old: Config, to new: Config) {
         fontChanged = old.fontFamily != new.fontFamily || old.fontSize != new.fontSize
@@ -32,13 +34,14 @@ public struct ConfigDiff: Equatable {
         scrollbackChanged = old.scrollbackLines != new.scrollbackLines
         windowAppearanceChanged = old.backgroundOpacity != new.backgroundOpacity || old.backgroundBlur != new.backgroundBlur
         windowDecorationsChanged = old.windowDecorations != new.windowDecorations
+        foldingChanged = old.foldKeepLines != new.foldKeepLines || old.foldLongOutput != new.foldLongOutput
     }
 
     /// True when nothing that `apply` acts on changed at all (e.g. only `shell` or `bell` changed,
     /// which are read at the point of use and need no rebuild).
     public var isEmpty: Bool {
         !(fontChanged || geometryChanged || paletteChanged || cursorChanged || scrollbackChanged
-            || windowAppearanceChanged || windowDecorationsChanged)
+            || windowAppearanceChanged || windowDecorationsChanged || foldingChanged)
     }
 
     /// Settings that changed but only take effect for a new session or window, so silently doing

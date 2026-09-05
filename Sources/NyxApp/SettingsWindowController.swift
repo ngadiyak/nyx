@@ -121,6 +121,8 @@ final class SettingsWindowController: NSWindowController {
             row("Option key", popUp("option-as-meta", options: ["none", "left", "right", "both"])),
             row("Bell", popUp("bell", options: ["visual", "sound", "none"])),
             row("Multi-line paste", popUp("multiline-paste", options: ["edit", "confirm", "direct"])),
+            row("Folded output keeps", stepperField("fold-keep-lines", min: 0, max: 100, step: 1)),
+            row("Auto-fold output over", stepperField("fold-long-output", min: 0, max: 100_000, step: 50)),
         ], note: "Letting programs read the clipboard is off by default: any program in the terminal could then see whatever you last copied.")
     }
 
@@ -426,6 +428,8 @@ final class SettingsWindowController: NSWindowController {
         set("option-as-meta", c.optionAsMeta.rawValue)
         set("bell", c.bell.rawValue)
         set("multiline-paste", c.multilinePaste.rawValue)
+        set("fold-keep-lines", Double(c.foldKeepLines), decimals: 0)
+        set("fold-long-output", Double(c.foldLongOutput), decimals: 0)
 
         let table = KeyBindingTable(user: c.keybinds)
         keyRows = ActionCatalog.allMenuActions.map { action in

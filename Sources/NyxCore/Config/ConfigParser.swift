@@ -119,6 +119,10 @@ public enum ConfigParser {
             case "multiline-paste":
                 if let mode = MultilinePaste(rawValue: value) { config.multilinePaste = mode }
                 else { badValue() }
+            case "fold-keep-lines":
+                if let i = Int(value) { config.foldKeepLines = min(max(i, 0), 100) } else { badValue() }
+            case "fold-long-output":
+                if let i = Int(value) { config.foldLongOutput = min(max(i, 0), 1_000_000) } else { badValue() }
             case "quick":
                 if let action = QuickAction.parse(value) { config.quickActions.append(action) }
                 else { badValue() }

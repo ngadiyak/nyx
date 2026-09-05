@@ -342,7 +342,13 @@ public struct BlockHeader: Equatable {
 
 public extension CommandBlock {
     /// The header for this block at clock reading `now`.
-    func header(now: Double, folding: OutputFolding, notifyArmed: Bool, anyFolds: Bool) -> BlockHeader {
+    ///
+    /// `hasOutput` is the caller's -- `Terminal.commandHasOutput(atAbsoluteRow:)`, the one rule the
+    /// gutter's actionability and `toggleFold`'s precondition also use. Not `region.outputRows`:
+    /// a command whose `C` has arrived but which has printed nothing has output rows and nothing in
+    /// them, and a chevron there folds blank lines.
+    func header(now: Double, folding: OutputFolding, notifyArmed: Bool, anyFolds: Bool,
+                hasOutput: Bool) -> BlockHeader {
         let state: BlockHeader.State
         let summary: String
         if isRunning {
@@ -357,7 +363,7 @@ public extension CommandBlock {
             summary = self.summary()
         }
         return BlockHeader(id: region.id, state: state, folded: folding.isFolded(region.id),
-                           hasOutput: !region.outputRows.isEmpty, anyFolds: anyFolds,
+                           hasOutput: hasOutput, anyFolds: anyFolds,
                            notifyArmed: notifyArmed, summary: summary)
     }
 }

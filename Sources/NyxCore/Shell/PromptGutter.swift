@@ -15,14 +15,18 @@ public extension GutterMark {
     ///
     /// A finished command's dot is a record and is drawn whatever it printed -- `cd ..` succeeded
     /// and the gutter says so. `.running` is different: the prompt you are typing at carries a
-    /// prompt mark and no status, so it reads as running, and a mark there would sit beside an idle
-    /// cursor for the rest of the session. A command is only *visibly* running once it has begun
-    /// printing, which is exactly `hasOutput`.
-    func isDrawn(hasOutput: Bool) -> Bool { self == .running ? hasOutput : true }
+    /// prompt mark and no status, so it reads as running, and a ring there would sit beside an idle
+    /// cursor for the rest of the session. What tells the two apart is whether the shell said a
+    /// command actually started -- its `C` mark -- which a prompt waiting for you to type has not.
+    ///
+    /// Deliberately *not* keyed on there being output to fold: a `sleep 10` one second in has
+    /// printed nothing, and the whole point of the ring is that it says something is running.
+    func isDrawn(hasStarted: Bool) -> Bool { self == .running ? hasStarted : true }
 
     /// Whether pressing the dot can do anything. Pressing folds the command's output, and ⌥ selects
-    /// it; a command that printed nothing has neither, and the click used to beep at the user after
-    /// offering a pointing hand, a tooltip and an accessibility button.
+    /// it; a command with nothing on its output rows has neither, and the click used to beep at the
+    /// user after offering a pointing hand, a tooltip and an accessibility button. A ring can be
+    /// drawn and not pressable, which is exactly a command that has started and not yet printed.
     func isActionable(hasOutput: Bool) -> Bool { hasOutput }
 }
 
@@ -136,25 +140,82 @@ public extension Terminal {
         }
     }
 
-    /// Whether the command whose prompt is on this absolute row printed anything -- which is what
-    /// decides whether its gutter mark can be pressed at all.
+    /// How many rows of a command's output are looked at before assuming the rest has something in
+    /// it. Eight is one glance: a command whose first eight lines are blank and whose ninth is not
+    /// is rare enough that scanning ten thousand rows to catch it would be the wrong trade.
+    static var outputScanLimit: Int { 8 }
+
+    /// Whether the command whose prompt is on this absolute row has output worth folding -- which is
+    /// what decides whether its gutter mark can be pressed, whether its header shows a chevron, and
+    /// whether `toggleFold` does anything.
     ///
-    /// Answers exactly what `CommandRegion.outputRows.isEmpty` answers, without building the region:
-    /// that walks to the next prompt three times over, and this is asked for every marked row on
-    /// every frame. A command that printed nothing leaves its `C` on the row its successor's prompt
-    /// lands on, so finding a prompt first means there was no output; the rows walked in between are
-    /// the command's own wrapped line, of which there are one or two.
+    /// Two things it is *not*. It is not `CommandRegion.outputRows.isEmpty`: that walks to the next
+    /// prompt three times over, and this is asked for every marked row on every frame. And it is not
+    /// "the shell said output started" either -- `OSC 133;C` arrives when the command *begins*, so a
+    /// `sleep 10` one second in has an output region made of the blank rows below it, and folding it
+    /// collapsed five empty lines into "… 5 lines hidden".
+    ///
+    /// So: find where the output begins, then look for one row with something on it. A command that
+    /// printed nothing leaves its `C` on the row its successor's prompt lands on, so meeting a
+    /// prompt first means there was no output at all; the rows walked in between are the command's
+    /// own wrapped line, of which there are one or two. The search for content stops at the next
+    /// prompt, at the last row anything has been written to (rows below the cursor on the live
+    /// screen are not output, they are the rest of the screen), or after `outputScanLimit` rows.
     func commandHasOutput(atAbsoluteRow row: Int) -> Bool {
+        guard let start = outputStartRow(ofCommandAt: row) else { return false }
+        // Nothing below the cursor has been written yet; for a command still running that is most of
+        // the screen, and counting it as output is what made a fresh `sleep 10` look foldable.
+        let lastWritten = min(totalRows - 1, scrollback.count + screen.cursor.y)
+        var scanned = 0
+        var here = start
+        while here <= lastWritten, scanned < Terminal.outputScanLimit {
+            if here > start, promptMarks(atAbsoluteRow: here).contains(.promptStart) { return false }
+            if let row = absoluteRow(here), !row.isBlank { return true }
+            here += 1
+            scanned += 1
+        }
+        // Eight blank rows and the output still going: take the rest on trust rather than scan it.
+        return scanned >= Terminal.outputScanLimit
+    }
+
+    /// Where the output of the command whose prompt is on `row` begins, or nil when it never did.
+    ///
+    /// A command that printed nothing leaves its `C` on the row its successor's prompt lands on, so
+    /// meeting a prompt first means the command produced no output region at all; the rows walked in
+    /// between are the command's own wrapped line, of which there are one or two.
+    func outputStartRow(ofCommandAt row: Int) -> Int? {
         guard let line = absoluteRow(row),
-              PromptMarks(rawValue: line.promptMark).contains(.promptStart) else { return false }
+              PromptMarks(rawValue: line.promptMark).contains(.promptStart) else { return nil }
         var next = row + 1
         while next < totalRows {
             let marks = promptMarks(atAbsoluteRow: next)
-            if marks.contains(.promptStart) { return false }
-            if marks.contains(.outputStart) { return true }
+            if marks.contains(.promptStart) { return nil }
+            if marks.contains(.outputStart) { return next }
             next += 1
         }
-        return false
+        return nil
+    }
+
+    /// Whether the shell has said this command started running -- its `C` mark arrived. True the
+    /// instant `sleep 10` begins and false for the prompt you are typing at, which is the one bit
+    /// that decides whether the gutter draws a running ring.
+    func commandDidStart(atAbsoluteRow row: Int) -> Bool {
+        outputStartRow(ofCommandAt: row) != nil
+    }
+
+    /// One flag per visible row, beside `gutterMarks(rows:)`.
+    func startStates(rows visibleRows: Int) -> [Bool] {
+        guard visibleRows > 0 else { return [] }
+        let top = max(0, viewportTopRow)
+        return (0..<visibleRows).map { commandDidStart(atAbsoluteRow: top + $0) }
+    }
+
+    /// One flag per display slot, beside `gutterMarks(onDisplayRows:)`.
+    func startStates(onDisplayRows display: [DisplayRow]) -> [Bool] {
+        display.map { entry in
+            guard case .row(let absolute) = entry else { return false }
+            return commandDidStart(atAbsoluteRow: absolute)
+        }
     }
 
     /// One flag per visible row, beside `gutterMarks(rows:)`.

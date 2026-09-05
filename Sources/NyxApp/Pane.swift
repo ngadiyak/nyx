@@ -665,6 +665,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // And whether each has anything to fold: a command that printed nothing gets its dot and
         // nothing else -- no pointing hand, no tooltip, no accessibility button.
         var gutterHasOutput: [Bool] = []
+        // And whether the shell said each command started, which is what draws a running ring: a
+        // `sleep 10` one second in has started and has nothing to fold, and both are true at once.
+        var gutterHasStarted: [Bool] = []
         var notes: [String?] = []
         var spines: [(rows: Range<Int>, color: RGB)] = []
         var summaries: [(row: Int, text: String, color: RGB)] = []
@@ -823,6 +826,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 gutterMarks = t.gutterMarks(rows: t.rows)
                 gutterFolded = t.foldStates(rows: t.rows, folding: self.folding)
                 gutterHasOutput = t.outputStates(rows: t.rows)
+                gutterHasStarted = t.startStates(rows: t.rows)
                 notes = t.durationNotes(rows: t.rows)
             } else {
                 let pad = max(0, t.rows - self.foldRowsOnScreen.count)
@@ -831,6 +835,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 gutterFolded = t.foldStates(onDisplayRows: self.foldRowsOnScreen, folding: self.folding)
                     + Array(repeating: false, count: pad)
                 gutterHasOutput = t.outputStates(onDisplayRows: self.foldRowsOnScreen)
+                    + Array(repeating: false, count: pad)
+                gutterHasStarted = t.startStates(onDisplayRows: self.foldRowsOnScreen)
                     + Array(repeating: false, count: pad)
                 notes = t.durationNotes(onDisplayRows: self.foldRowsOnScreen)
                     + Array(repeating: nil, count: pad)
@@ -904,7 +910,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 guard block.showsHeader, let promptSlot = screenRow(block.region.promptRow) else { return nil }
                 let header = block.header(now: now, folding: self.folding,
                                           notifyArmed: self.armedNotifications.contains(block.region.id),
-                                          anyFolds: !self.folding.isEmpty)
+                                          anyFolds: !self.folding.isEmpty,
+                                          hasOutput: t.commandHasOutput(atAbsoluteRow: block.region.promptRow))
                 let text = header.summaryWithChevron
                 // Every row of the command line is a candidate, not just the prompt row: a pasted
                 // `curl` wraps, and the row that has room is usually the last one.
@@ -1008,7 +1015,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // overlay never disagree about what a command's duration or exit status was.
                 let summary = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
                     .header(now: t.now(), folding: self.folding, notifyArmed: false,
-                            anyFolds: !self.folding.isEmpty).summary
+                            anyFolds: !self.folding.isEmpty,
+                            hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow)).summary
                 sticky = (StickyPromptLabel.text(command: t.commandText(of: region),
                                                  exitStatus: pinned.exitStatus, columns: t.cols),
                           pinned.failed, pinned.row, summary)
@@ -1030,8 +1038,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             timer.invalidate()
             runningTimer = nil
         }
-        gutter.update(marks: gutterMarks, folded: gutterFolded, hasOutput: gutterHasOutput,
-                      palette: frame.palette, cellHeight: cellSizePoints.height, topPadding: padding)
+        gutter.update(marks: gutterMarks, folded: gutterFolded, hasStarted: gutterHasStarted,
+                      hasOutput: gutterHasOutput, palette: frame.palette,
+                      cellHeight: cellSizePoints.height, topPadding: padding)
         stickyPromptRow = sticky?.row
         let wasHidden = stickyStrip.isHidden
         stickyStrip.update(text: sticky?.text, summary: sticky?.summary ?? "", failed: sticky?.failed ?? false,
@@ -1584,7 +1593,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                       let region = t.command(containingAbsoluteRow: row) else { return nil }
                 let block = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
                 return block.header(now: t.now(), folding: self.folding,
-                                    notifyArmed: self.armedNotifications.contains(id), anyFolds: !self.folding.isEmpty)
+                                    notifyArmed: self.armedNotifications.contains(id),
+                                    anyFolds: !self.folding.isEmpty,
+                                    hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow))
             }
             if let header {
                 for (index, entry) in header.actions.enumerated() {
@@ -2134,7 +2145,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let commandID: UInt32? = session.withTerminal { t in
             guard let entry = self.absoluteRow(forVisibleRow: row, in: t),
                   let region = t.command(containingAbsoluteRow: entry),
-                  !region.outputRows.isEmpty else { return nil }
+                  t.commandHasOutput(atAbsoluteRow: region.promptRow) else { return nil }
             return region.id
         }
         // No beep: `PromptGutterView` does not claim a click on a mark whose command printed
@@ -2159,7 +2170,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     @discardableResult
     func toggleFoldOfCurrentCommand() -> Bool {
         let commandID: UInt32? = session.withTerminal { t in
-            guard let region = t.commandToFold(), !region.outputRows.isEmpty else { return nil }
+            // The same rule the chevron and the gutter mark use, so ⌘⇧↑ cannot fold a screenful
+            // of blank rows a command has not filled in yet.
+            guard let region = t.commandToFold(),
+                  t.commandHasOutput(atAbsoluteRow: region.promptRow) else { return nil }
             return region.id
         }
         guard let id = commandID, id != 0 else { return false }

@@ -143,6 +143,7 @@ enum UISnapshot {
             gutter.appearance = NSAppearance(named: appearance)
             gutter.update(marks: [.succeeded, .failed, .running, .succeeded],
                           folded: [false, true, false, false],
+                          hasStarted: [true, true, true, false],
                           hasOutput: [true, true, true, false],
                           palette: palette, cellHeight: cell, topPadding: 0)
             gutter.layoutSubtreeIfNeeded()

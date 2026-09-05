@@ -14,9 +14,12 @@ final class PromptGutterView: NSView {
     private var marks: [GutterMark?] = []
     /// Whether each row's command is folded, so a mark says which way pressing it goes.
     private var folded: [Bool] = []
-    /// Whether each row's command printed anything. A mark without output is a record and nothing
-    /// more: no pointing hand, no tooltip, no accessibility button, because pressing it can do
-    /// nothing -- it used to offer all three and then beep.
+    /// Whether the shell said each row's command started -- what decides whether a running ring is
+    /// drawn at all, as opposed to whether it can be pressed.
+    private var hasStarted: [Bool] = []
+    /// Whether each row's command has anything on its output rows. A mark without it is a record
+    /// and nothing more: no pointing hand and no button, because pressing it can do nothing -- it
+    /// used to offer a hand, a tooltip and a button, and then beep.
     private var hasOutput: [Bool] = []
     private var palette = Palette.xtermDefault()
     private var cellHeight: CGFloat = 1
@@ -36,14 +39,16 @@ final class PromptGutterView: NSView {
         return self
     }
 
-    func update(marks: [GutterMark?], folded: [Bool], hasOutput: [Bool], palette: Palette,
-                cellHeight: CGFloat, topPadding: CGFloat) {
-        let changed = marks != self.marks || folded != self.folded || hasOutput != self.hasOutput
+    func update(marks: [GutterMark?], folded: [Bool], hasStarted: [Bool], hasOutput: [Bool],
+                palette: Palette, cellHeight: CGFloat, topPadding: CGFloat) {
+        let changed = marks != self.marks || folded != self.folded
+            || hasStarted != self.hasStarted || hasOutput != self.hasOutput
             || palette != self.palette
             || cellHeight != self.cellHeight || topPadding != self.topPadding
         guard changed else { return }
         self.marks = marks
         self.folded = folded
+        self.hasStarted = hasStarted
         self.hasOutput = hasOutput
         self.palette = palette
         self.cellHeight = cellHeight
@@ -54,7 +59,9 @@ final class PromptGutterView: NSView {
         // describe a different command.
         removeAllToolTips()
         for row in marks.indices {
-            guard let mark = mark(at: row), isActionable(row) else { continue }
+            // Every drawn mark, pressable or not: a `cd ..` mark still says "Command on line 3
+            // succeeded.", which is the whole reason the gutter exists -- it is a record.
+            guard let mark = mark(at: row) else { continue }
             let y = topPadding + CGFloat(row) * cellHeight
             addToolTip(NSRect(x: 0, y: y, width: max(1, bounds.width), height: cellHeight),
                        owner: label(for: mark, row: row) as NSString, userData: nil)
@@ -73,13 +80,17 @@ final class PromptGutterView: NSView {
         hasOutput.indices.contains(row) && hasOutput[row]
     }
 
+    private func started(at row: Int) -> Bool {
+        hasStarted.indices.contains(row) && hasStarted[row]
+    }
+
     /// The mark to draw on a row, or nil for a row with nothing to say. Both rules are Core's:
     /// a finished command's dot is a record whatever it printed, and a running one appears only
     /// once it has actually begun printing -- otherwise the prompt you are typing at, which has a
     /// prompt mark and no status, would wear a ring forever.
     private func mark(at row: Int) -> GutterMark? {
         guard marks.indices.contains(row), let mark = marks[row],
-              mark.isDrawn(hasOutput: output(at: row)) else { return nil }
+              mark.isDrawn(hasStarted: started(at: row)) else { return nil }
         return mark
     }
 
@@ -152,14 +163,18 @@ final class PromptGutterView: NSView {
     override func accessibilityChildren() -> [Any]? {
         guard cellHeight > 0 else { return [] }
         return marks.indices.compactMap { row -> NSAccessibilityElement? in
-            guard let mark = mark(at: row), isActionable(row) else { return nil }
+            guard let mark = mark(at: row) else { return nil }
             let y = topPadding + CGFloat(row) * cellHeight
+            // A mark with nothing to fold is still an element, because a command ran there and
+            // VoiceOver has no other way to learn that -- but it is text rather than a button, and
+            // `press: nil` is what makes it report as not enabled.
+            let actionable = isActionable(row)
             return DrawnControlElement.make(
                 label: label(for: mark, row: row),
-                role: .button,
+                role: actionable ? .button : .staticText,
                 frame: NSRect(x: 0, y: y, width: max(1, bounds.width), height: cellHeight),
                 in: self,
-                press: { [weak self] in self?.onSelectRow?(row, false) })
+                press: actionable ? { [weak self] in self?.onSelectRow?(row, false) } : nil)
         }
     }
 

@@ -301,3 +301,24 @@ private let stripColumns: [OverlayControls: Int] = [.full: 20, .noCopy: 8, .mini
         stripColumns: stripColumns, cols: 40)
     #expect(placement == OverlayPlacement(row: 4, controls: .full))
 }
+
+/// The chevron and the gutter mark answer to one rule. `OSC 133;C` arrives when a command *begins*,
+/// so a `sleep 10` one second in has an output region made of the blank rows below it; a chevron
+/// there folds nothing but empty lines.
+@Test func aJustStartedCommandHasNoChevron() throws {
+    let t = makeTerminal(cols: 40, rows: 24, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "sleep 10\r\n" + mark("C"))
+    let region = try #require(t.command(containingAbsoluteRow: 0))
+    let block = CommandBlock(region: region, visibleRows: 0..<24, showsHeader: true)
+    let quiet = block.header(now: 5, folding: OutputFolding(), notifyArmed: false, anyFolds: false,
+                             hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow))
+    #expect(quiet.isRunning)
+    #expect(!quiet.hasOutput)
+    #expect(quiet.chevron == "")
+    #expect(quiet.actions.first { $0.action == .toggleFold }?.enabled == false)
+
+    t.feed("compiling...\r\n")
+    let loud = block.header(now: 5, folding: OutputFolding(), notifyArmed: false, anyFolds: false,
+                            hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow))
+    #expect(loud.chevron == "\u{25BE}")
+}

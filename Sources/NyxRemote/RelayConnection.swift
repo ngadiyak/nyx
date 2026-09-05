@@ -51,23 +51,32 @@ struct RelayOutbox {
     }
 }
 
-/// The device's one socket to the relay: the handshake of spec §6.1, a heartbeat, reconnection with
-/// backoff, and delivery of decoded control messages and binary data frames to a delegate.
+/// The device's one socket to the relay: the handshake of spec §6.1, reconnection with backoff, and
+/// delivery of decoded control messages and binary data frames to a delegate.
 ///
 /// All mutable state lives on one serial queue and is only ever touched there. That is not
 /// decoration: `URLSessionWebSocketTask` calls back on URLSession's own queue, the timers fire on
 /// theirs, and the app sends from the main thread, so without a single owner every field here would
-/// be a race. `status` is the one exception -- it is read from the main thread to draw, so it sits
-/// behind a lock of its own rather than a `queue.sync`, which would deadlock the moment a delegate
-/// callback (already on the queue) read it.
+/// be a race. `status` and `droppedWhileOffline` are the exceptions -- they are read from the main
+/// thread to draw, so they sit behind a lock of their own rather than a `queue.sync`, which would
+/// deadlock the moment a delegate callback (already on the queue) read one.
+///
+/// **Liveness** is the relay's job, not this class's. The relay pings every 30 s and
+/// `URLSessionWebSocketTask` answers those itself, which keeps the socket warm through NAT and
+/// proxies; the relay closes a socket that has been silent for 90 s, and that close is what this
+/// side sees. A socket that has gone half-open in between is noticed by the next receive or send
+/// that fails -- there is deliberately no client-side ping, because one would only duplicate the
+/// relay's timer while adding a second way for a healthy connection to be declared dead.
 public final class RelayConnection {
     public enum Status: Equatable {
         case offline
         case connecting
         case authenticating
         case online
-        /// The relay refused this device: `bad_token`, `bad_signature`. No amount of reconnecting
-        /// fixes either, so this state does not retry -- only an explicit `connect()` leaves it.
+        /// The relay refused this device and reconnecting cannot help: `bad_token`,
+        /// `bad_signature`, or `replaced` -- the last meaning another connection presented the same
+        /// device id, which is why two Nyx instances must never share one identity file. Only an
+        /// explicit `connect()` leaves this state.
         case failed(String)
     }
 
@@ -77,12 +86,15 @@ public final class RelayConnection {
     private let deviceName: String
     private let session: URLSession
     private let queue = DispatchQueue(label: "nyx.relay")
+    private let handshakeTimeout: TimeInterval
 
     private let delegateLock = NSLock()
     private weak var storedDelegate: RelayConnectionDelegate?
     /// Weakly held, and behind a lock because it is set from the main thread while the relay queue
-    /// is reading it to call back. (Computed rather than a `weak var` for exactly that reason -- a
-    /// plain stored property here is a data race the first time an owner is replaced.)
+    /// is reading it in order to call back. The lock makes the *access* safe, not ordered: a
+    /// callback the queue had already read the delegate for can still arrive after the setter
+    /// returns, so an owner tearing down must tolerate one late call. (Being weak, an owner that
+    /// has actually been deallocated is simply never called.)
     public var delegate: RelayConnectionDelegate? {
         get {
             delegateLock.lock()
@@ -98,72 +110,94 @@ public final class RelayConnection {
 
     private let statusLock = NSLock()
     private var lockedStatus: Status = .offline
+    private var lockedDropped = 0
+
     public var status: Status {
         statusLock.lock()
         defer { statusLock.unlock() }
         return lockedStatus
     }
 
+    /// How many frames the send queue threw away during the most recent stretch of being offline.
+    /// It is set as the queue overflows and cleared when a new offline stretch starts filling the
+    /// queue again, so an owner that reads it while handling `.online` sees what the outage cost --
+    /// which is the only moment there is anything honest to tell the user.
+    public var droppedWhileOffline: Int {
+        statusLock.lock()
+        defer { statusLock.unlock() }
+        return lockedDropped
+    }
+
     // Queue-only state below.
     private var task: URLSessionWebSocketTask?
     private var handshake: RelayHandshake?
+    private var deadline: HandshakeDeadline?
     private var authenticated = false
     private var wantsConnection = false
-    private var backoff = Backoff()
+    private var backoff: Backoff
     private var outbox = RelayOutbox()
-    private var pingTimer: DispatchSourceTimer?
     /// Bumped every time a socket is opened or torn down. Every callback and timer carries the
     /// epoch it was armed in and does nothing if it no longer matches -- a `URLSessionWebSocketTask`
     /// completion for a socket that was cancelled two reconnects ago still arrives, and without
     /// this it would report the live connection as dropped.
     private var epoch = 0
 
-    /// How long the relay is given to get from `hello` to `welcome` before the socket is treated as
-    /// dead. The relay's own deadline is 10 s per step; a socket that is open but silent (a captive
-    /// portal, a stalled proxy) would otherwise leave the UI saying "connecting" forever.
-    private static let handshakeTimeout: TimeInterval = 25
-    /// The relay pings every 30 s and `URLSessionWebSocketTask` answers those itself, so this is
-    /// not needed to stay alive. It is needed to *notice*: a connection that is dead in one
-    /// direction produces no read error at all until something is written, and a Mac whose relay
-    /// socket is quietly dead shows sessions that cannot be attached to.
-    private static let pingInterval: TimeInterval = 30
-
+    /// `handshakeTimeout` and `backoff` are parameters, not constants, so a test can drive the
+    /// deadline and the reconnect delays in a second rather than in a minute. The defaults are what
+    /// ships: the relay allows itself 10 s per handshake step, so 25 s is comfortably past a relay
+    /// that is merely slow and well short of a user deciding the app is broken.
     public init(url: URL, token: String, identity: DeviceIdentity, deviceName: String,
-                session: URLSession = .shared) {
+                session: URLSession = .shared, handshakeTimeout: TimeInterval = 25,
+                backoff: Backoff = Backoff()) {
         self.url = url
         self.token = token
         self.identity = identity
         self.deviceName = deviceName
         self.session = session
+        self.handshakeTimeout = handshakeTimeout
+        self.backoff = backoff
     }
 
     deinit {
         // The receive loop holds only a weak reference to this object, so without this the socket
         // would stay open until the relay's 90 s idle timeout noticed nobody was home.
         task?.cancel(with: .goingAway, reason: nil)
-        pingTimer?.cancel()
     }
 
     public var deviceID: String { identity.deviceID }
 
-    /// Idempotent: calling it while connecting or online does nothing. Calling it after `failed`
-    /// deliberately does start a fresh attempt -- that is the "Reconnect" the user reaches for
-    /// after fixing the relay token, and it is the only way out of `failed`.
+    /// The user's gesture: the "Reconnect" button, or enabling remote sessions. Idempotent -- while
+    /// connecting or online it does nothing -- and it is the only way out of `failed`. It also
+    /// starts the reconnect delays over, because someone who has just fixed the relay token or
+    /// rejoined a network should not wait out a 60 s delay earned by an outage that is over.
+    /// Anything that fires on its own schedule wants `ensureConnected()` instead.
     public func connect() {
         queue.async { [weak self] in
             guard let self else { return }
             self.wantsConnection = true
             guard self.task == nil else { return }
-            // A deliberate connect starts the delays over: someone who has just fixed the token or
-            // rejoined a network should not wait out a 60 s delay earned by an outage that is over.
             self.backoff.reset()
             self.openSocket()
         }
     }
 
-    /// Stops for good until `connect()` is called again: no reconnect is scheduled and anything
-    /// still queued is dropped, because frames queued for a session the user has ended are not
-    /// worth replaying whenever the connection next comes back.
+    /// Connect if not already connecting, without resetting the backoff. For callers that run on
+    /// somebody else's schedule -- a wake-from-sleep notification, a network-path change, a periodic
+    /// check -- where treating every trigger as a user gesture would defeat the backoff entirely and
+    /// hammer a relay that is down. Like `connect()` it does not disturb a live socket; unlike
+    /// `connect()` it does not resurrect a `failed` connection on its own.
+    public func ensureConnected() {
+        queue.async { [weak self] in
+            guard let self, self.task == nil else { return }
+            if case .failed = self.status { return }
+            self.wantsConnection = true
+            self.openSocket()
+        }
+    }
+
+    /// Stops for good until `connect()` is called again: any pending reconnect is cancelled, and
+    /// anything still queued is dropped, because frames queued for a session the user has ended are
+    /// not worth replaying whenever the connection next comes back.
     public func disconnect() {
         queue.async { [weak self] in
             guard let self else { return }
@@ -171,16 +205,29 @@ public final class RelayConnection {
             self.closeSocket()
             self.backoff.reset()
             self.outbox.clear()
+            self.setDropped(0)
             self.setStatus(.offline)
         }
     }
 
     /// Queued while the connection is not yet authenticated and flushed after `welcome`, so callers
     /// never have to ask whether the socket is up; see `RelayOutbox` for what happens when the
-    /// queue is full.
+    /// queue is full and `droppedWhileOffline` for how to find out that it did.
     public func send(_ message: RemoteMessage) { enqueue(.text(message)) }
 
     public func send(_ frame: BinaryFrame) { enqueue(.binary(frame)) }
+
+    /// Which of the relay's private close codes (the server plan's "Close codes") mean this device
+    /// must stop rather than reconnect. Pure so the mapping is testable: the socket that carries
+    /// these is the one case where the relay says why without sending a message first.
+    static func terminalStatus(forCloseCode raw: Int) -> Status? {
+        switch raw {
+        case 4000: return .failed("replaced")
+        case 4401: return .failed("bad_token")
+        case 4403: return .failed("bad_signature")
+        default: return nil
+        }
+    }
 
     // MARK: - The socket
 
@@ -190,7 +237,11 @@ public final class RelayConnection {
             if self.authenticated, self.task != nil {
                 self.write(frame, epoch: self.epoch)
             } else {
+                // An empty queue means a new offline stretch is starting, so what the last one lost
+                // stops being the current answer.
+                if self.outbox.frames.isEmpty { self.setDropped(0) }
                 self.outbox.append(frame)
+                self.setDropped(self.outbox.dropped)
             }
         }
     }
@@ -200,32 +251,51 @@ public final class RelayConnection {
         let armed = epoch
         // Deliberately not an URLRequest with a `timeoutInterval`: on a WebSocket task that becomes
         // an idle timeout on an established socket, which would tear down a healthy but quiet
-        // connection between the relay's 30 s pings. The handshake deadline below is armed instead.
+        // connection between the relay's 30 s pings. `HandshakeDeadline` is armed instead.
         let socket = session.webSocketTask(with: url)
         task = socket
         authenticated = false
         handshake = RelayHandshake(deviceID: identity.deviceID) { [identity] message in
             try? identity.sign(message)
         }
+        deadline = HandshakeDeadline(startedAt: Self.now(), timeout: handshakeTimeout)
         setStatus(.connecting)
         socket.resume()
         write(.text(RelayHandshake.hello(deviceID: identity.deviceID, deviceName: deviceName, token: token)),
               epoch: armed)
         receiveNext(epoch: armed)
-        queue.asyncAfter(deadline: .now() + Self.handshakeTimeout) { [weak self] in
-            guard let self, armed == self.epoch, !self.authenticated else { return }
-            self.drop(epoch: armed)
+        armHandshakeDeadline(epoch: armed, after: handshakeTimeout)
+    }
+
+    /// The timer decides when to look; `HandshakeDeadline` decides what the answer is. If the wake
+    /// is early -- `asyncAfter` guarantees no upper bound, only a lower one, but a suspended and
+    /// resumed Mac can make wall-clock and dispatch time disagree either way -- it re-arms for
+    /// whatever is left rather than giving up on the deadline entirely.
+    private func armHandshakeDeadline(epoch armed: Int, after delay: TimeInterval) {
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, armed == self.epoch, let deadline = self.deadline, !self.authenticated else { return }
+            let now = Self.now()
+            if deadline.hasExpired(at: now, authenticated: self.authenticated) {
+                self.drop(epoch: armed)
+            } else {
+                self.armHandshakeDeadline(epoch: armed, after: max(0.01, deadline.remaining(at: now)))
+            }
         }
     }
 
-    private func closeSocket() {
+    private static func now() -> TimeInterval { Date().timeIntervalSinceReferenceDate }
+
+    /// Returns the close code the peer sent, read *before* the cancel below replaces it with ours.
+    @discardableResult
+    private func closeSocket() -> Int {
         epoch += 1
-        pingTimer?.cancel()
-        pingTimer = nil
+        let peerCode = task?.closeCode.rawValue ?? 0
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         handshake = nil
+        deadline = nil
         authenticated = false
+        return peerCode
     }
 
     private func write(_ frame: RelayOutbox.Frame, epoch armed: Int) {
@@ -277,7 +347,9 @@ public final class RelayConnection {
 
     /// Handshake messages are consumed here and never reach the delegate: the status change is what
     /// says the handshake succeeded, and an owner that had to recognise `challenge` and `welcome`
-    /// itself would be able to get the sequence wrong.
+    /// itself would be able to get the sequence wrong. Once authenticated, everything is passed on
+    /// verbatim -- including `error`, which after `welcome` is about one request (`pair_expired`,
+    /// `not_paired`) and says nothing about the health of the connection.
     private func deliver(_ message: RemoteMessage, epoch armed: Int) {
         if authenticated {
             delegate?.relay(self, didReceive: message)
@@ -292,27 +364,35 @@ public final class RelayConnection {
             setStatus(.authenticating)
         case .online:
             authenticated = true
+            deadline = nil
             backoff.reset()
             // Flushed before the status change so that anything the delegate sends on hearing
             // `.online` goes out behind what was queued while the socket was down, not in front.
             for frame in outbox.drain() { write(frame, epoch: armed) }
-            startPings(epoch: armed)
             setStatus(.online)
         case .rejected(let code):
             closeSocket()
             wantsConnection = false
             setStatus(.failed(code))
-        case .protocolError:
+        case .retryableError, .protocolError:
             drop(epoch: armed)
         }
     }
 
     /// One dropped socket: tear it down, say so, and arm the next attempt. Called from four places
-    /// (a read error, a write error, a failed ping, a handshake that never finished) so that all
-    /// four produce exactly one `.offline` and one scheduled reconnect.
+    /// (a read error, a write error, a handshake that never finished, a retryable refusal) so that
+    /// all four produce exactly one status change and at most one scheduled reconnect.
     private func drop(epoch armed: Int) {
         guard armed == epoch, task != nil else { return }
-        closeSocket()
+        let peerCode = closeSocket()
+        // The relay says `bad_token`/`bad_signature` in a message first, so those are normally
+        // handled by `deliver`; this is the backstop, and the only path for 4000 "replaced", which
+        // the relay closes on without sending anything at all.
+        if let terminal = Self.terminalStatus(forCloseCode: peerCode) {
+            wantsConnection = false
+            setStatus(terminal)
+            return
+        }
         setStatus(.offline)
         scheduleReconnect()
     }
@@ -327,21 +407,6 @@ public final class RelayConnection {
         }
     }
 
-    private func startPings(epoch armed: Int) {
-        let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + Self.pingInterval, repeating: Self.pingInterval)
-        timer.setEventHandler { [weak self] in
-            guard let self, armed == self.epoch, let socket = self.task else { return }
-            socket.sendPing { [weak self] error in
-                guard let self, error != nil else { return }
-                self.queue.async { self.drop(epoch: armed) }
-            }
-        }
-        pingTimer?.cancel()
-        pingTimer = timer
-        timer.resume()
-    }
-
     private func setStatus(_ new: Status) {
         statusLock.lock()
         let changed = lockedStatus != new
@@ -349,5 +414,11 @@ public final class RelayConnection {
         statusLock.unlock()
         guard changed else { return }
         delegate?.relay(self, didChange: new)
+    }
+
+    private func setDropped(_ count: Int) {
+        statusLock.lock()
+        lockedDropped = count
+        statusLock.unlock()
     }
 }

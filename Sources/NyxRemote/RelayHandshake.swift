@@ -17,10 +17,15 @@ public struct RelayHandshake {
         case send(RemoteMessage)
         /// `welcome` arrived: the connection is authenticated.
         case online
-        /// The relay refused this device. Reconnecting cannot help -- the token is wrong, or this
-        /// device's key is not one the relay will accept -- so the caller must stop rather than
-        /// retry, and tell the user the code.
+        /// The relay refused this device for a reason no reconnect can fix -- the token is wrong,
+        /// or this device's key is not one the relay will accept -- so the caller must stop rather
+        /// than retry, and tell the user the code.
         case rejected(code: String)
+        /// The relay answered with some other error before `welcome`. Unlike a rejection this is
+        /// worth retrying: a relay that is out of capacity, restarting, or newer than this client
+        /// (a code it has never heard of) is a temporary condition, and treating every unknown code
+        /// as permanent would strand a device until someone thought to press Reconnect.
+        case retryableError(code: String)
         /// The relay said something that is not part of the handshake, or said it malformed. The
         /// socket is not usable; the caller drops it and may retry with backoff, because unlike a
         /// rejection this can be a relay that is restarting or a proxy injecting frames.
@@ -30,6 +35,13 @@ public struct RelayHandshake {
     /// Which of the two relay messages the handshake is still waiting for. `.nothing` means it is
     /// over -- either authenticated or finished by a rejection or a protocol error.
     public enum Expecting: Equatable { case challenge, welcome, nothing }
+
+    /// The only two error codes the relay sends before `welcome` that mean "and do not come back":
+    /// the token is not the relay's, or this device's signature did not verify. Everything else --
+    /// including a code from a relay newer than this client -- is temporary by default, because
+    /// the cost of retrying something permanent is a backoff loop, while the cost of giving up on
+    /// something temporary is a Mac that never comes back until somebody notices.
+    public static let terminalErrorCodes: Set<String> = ["bad_token", "bad_signature"]
 
     public private(set) var expecting: Expecting = .challenge
 
@@ -57,7 +69,9 @@ public struct RelayHandshake {
         if message.t == "error" {
             expecting = .nothing
             let code = message.code ?? ""
-            return .rejected(code: code.isEmpty ? "error" : code)
+            let named = code.isEmpty ? "error" : code
+            return Self.terminalErrorCodes.contains(named) ? .rejected(code: named)
+                                                           : .retryableError(code: named)
         }
         switch expecting {
         case .challenge:
@@ -89,5 +103,30 @@ public struct RelayHandshake {
         case .nothing:
             return .protocolError("the handshake is already finished")
         }
+    }
+}
+
+/// When a handshake that has not finished has waited too long. Split out from `RelayConnection` so
+/// the rule can be tested against an injected clock instead of against a real timer: the timer only
+/// decides when to *look*, this decides what the answer is.
+///
+/// It exists because the relay is not obliged to answer. A socket that completes at the TCP level
+/// and then goes silent -- a stalled proxy, a captive portal that swallows the upgrade, a relay
+/// killed between `accept` and its first write -- produces no error of any kind, so without a
+/// deadline the connection sits in `.connecting` forever and the user is told nothing.
+struct HandshakeDeadline: Equatable {
+    /// Seconds on the same monotonic-enough scale the caller passes to `hasExpired`.
+    let startedAt: TimeInterval
+    let timeout: TimeInterval
+
+    func hasExpired(at now: TimeInterval, authenticated: Bool) -> Bool {
+        guard !authenticated else { return false }
+        return now - startedAt >= timeout
+    }
+
+    /// How much longer to wait before looking again. Never negative, so a caller can arm a timer
+    /// with it without checking.
+    func remaining(at now: TimeInterval) -> TimeInterval {
+        max(0, startedAt + timeout - now)
     }
 }

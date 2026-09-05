@@ -46,40 +46,19 @@ public struct DeviceIdentity {
     public static func load(from url: URL) throws -> DeviceIdentity {
         let fm = FileManager.default
         let dir = url.deletingLastPathComponent()
-        // A directory that already exists is tightened rather than trusted: `createDirectory` below
-        // only applies its attributes when it actually creates the directory, so a `remote/` left at
-        // 0755 by an earlier version, a restore from a backup, or a careless `chmod -R` would
-        // otherwise keep letting other local accounts list -- and stat the mode of -- files whose
-        // whole protection is that nobody else can open them.
-        if let attrs = try? fm.attributesOfItem(atPath: dir.path),
-           let posix = attrs[.posixPermissions] as? NSNumber, posix.uint16Value & 0o077 != 0 {
-            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
-        }
-        if fm.fileExists(atPath: url.path) {
-            guard let attrs = try? fm.attributesOfItem(atPath: url.path),
-                  let posix = attrs[.posixPermissions] as? NSNumber else {
-                throw LoadError.unreadable(path: url.path)
-            }
-            let mode = posix.uint16Value & 0o777
-            guard mode & 0o077 == 0 else {
-                throw LoadError.insecurePermissions(path: url.path, mode: mode)
-            }
-            guard let data = try? Data(contentsOf: url),
-                  let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: data) else {
-                throw LoadError.unreadable(path: url.path)
-            }
-            return DeviceIdentity(signing: key)
-        }
+        try tighten(directory: dir)
+        if let existing = try existingIdentity(at: url) { return existing }
 
         // Created so that the private key bytes never exist on disk at a mode looser than 0600 and
         // `identity` itself is never a partially written file: the directory is 0700 before
         // anything is written into it, the key goes to a sibling `identity.tmp` created empty
         // already at 0600 (not written-then-chmod'd, which would leave a window at the process
-        // umask's default mode), and only a complete temporary file is renamed over the final name.
-        // Without the rename, a crash or a full disk between `createFile` and `write` would leave a
-        // 0-byte `identity` that the branch above then refuses forever as unreadable -- and the
-        // only cure for that would be deleting the file, which changes this device's id out from
-        // under every peer it has paired with.
+        // umask's default mode), and only a complete temporary file -- flushed to the disk, not
+        // just to the page cache -- is renamed over the final name. Without the rename, a crash or
+        // a full disk between `createFile` and `write` would leave a 0-byte `identity` that
+        // `existingIdentity` then refuses forever as unreadable, and the only cure for that would
+        // be deleting the file, which changes this device's id out from under every peer it has
+        // paired with.
         let key = Curve25519.Signing.PrivateKey()
         try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let temporary = url.appendingPathExtension("tmp")
@@ -89,9 +68,59 @@ public struct DeviceIdentity {
         }
         let handle = try FileHandle(forWritingTo: temporary)
         try handle.write(contentsOf: key.rawRepresentation)
+        try handle.synchronize()
         try handle.close()
-        try fm.moveItem(at: temporary, to: url)
+        do {
+            try fm.moveItem(at: temporary, to: url)
+        } catch {
+            // Another process (a second Nyx starting at the same moment) created `identity` between
+            // the check above and this rename. Its key is the one both processes must use -- this
+            // one has never left the temporary file, so discarding it costs nothing, while
+            // overwriting the winner's key would give this Mac two ids in the same second.
+            try? fm.removeItem(at: temporary)
+            if let existing = try existingIdentity(at: url) { return existing }
+            throw error
+        }
         return DeviceIdentity(signing: key)
+    }
+
+    /// The identity already on disk, or `nil` if there is none. Refuses rather than returns for a
+    /// file that exists but cannot be trusted or cannot be parsed; see `load`.
+    private static func existingIdentity(at url: URL) throws -> DeviceIdentity? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return nil }
+        guard let attrs = try? fm.attributesOfItem(atPath: url.path),
+              let posix = attrs[.posixPermissions] as? NSNumber else {
+            throw LoadError.unreadable(path: url.path)
+        }
+        let mode = posix.uint16Value & 0o777
+        guard mode & 0o077 == 0 else {
+            throw LoadError.insecurePermissions(path: url.path, mode: mode)
+        }
+        guard let data = try? Data(contentsOf: url),
+              let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: data) else {
+            throw LoadError.unreadable(path: url.path)
+        }
+        return DeviceIdentity(signing: key)
+    }
+
+    /// A directory that already exists is tightened rather than trusted: `createDirectory` applies
+    /// its attributes only when it actually creates the directory, so a `remote/` left at 0755 by
+    /// an earlier version, a restore from a backup, or a careless `chmod -R` would otherwise keep
+    /// letting other local accounts list -- and stat the mode of -- files whose whole protection is
+    /// that nobody else can open them. A directory that cannot be tightened is refused: continuing
+    /// would write a new key into a place this process has just proved it does not control.
+    private static func tighten(directory: URL) throws {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: directory.path),
+              let posix = attrs[.posixPermissions] as? NSNumber else { return }
+        let mode = posix.uint16Value & 0o777
+        guard mode & 0o077 != 0 else { return }
+        do {
+            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        } catch {
+            throw LoadError.insecurePermissions(path: directory.path, mode: mode)
+        }
     }
 
     public func sign(_ message: [UInt8]) throws -> [UInt8] {

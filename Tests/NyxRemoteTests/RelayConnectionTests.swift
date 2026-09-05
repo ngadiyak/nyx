@@ -65,16 +65,55 @@ private func message(_ t: String) -> RelayOutbox.Frame { .text(RemoteMessage(t: 
     #expect(outbox.drain() == [.binary(frame)])
 }
 
+/// A throwaway identity in its own directory, removed by the caller's `defer`.
+private func scratchIdentity(in directory: URL, named name: String = "identity") throws -> DeviceIdentity {
+    try DeviceIdentity.load(from: directory.appendingPathComponent(name).appendingPathComponent("identity"))
+}
+
 @Test func aConnectionStartsOfflineAndKnowsItsDeviceID() throws {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("nyx-relay-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: dir) }
-    let identity = try DeviceIdentity.load(from: dir.appendingPathComponent("identity"))
+    let identity = try scratchIdentity(in: dir)
 
     let connection = RelayConnection(url: URL(string: "ws://127.0.0.1:1/v1/ws")!, token: "t",
                                      identity: identity, deviceName: "Test")
 
     #expect(connection.status == .offline)
+    #expect(connection.droppedWhileOffline == 0)
     #expect(connection.deviceID == identity.deviceID)
+}
+
+@Test func theRelaysPrivateCloseCodesThatMeanStopTrying() {
+    #expect(RelayConnection.terminalStatus(forCloseCode: 4000) == .failed("replaced"))
+    #expect(RelayConnection.terminalStatus(forCloseCode: 4401) == .failed("bad_token"))
+    #expect(RelayConnection.terminalStatus(forCloseCode: 4403) == .failed("bad_signature"))
+}
+
+@Test func everyOtherCloseCodeIsWorthReconnectingAfter() {
+    // 4400 is a protocol violation, 1001 is the relay shutting down for a deploy, 1000 is a clean
+    // close, and 0 is "the peer never sent one" -- a reconnect is right for all four.
+    for code in [0, 1000, 1001, 1006, 4400] {
+        #expect(RelayConnection.terminalStatus(forCloseCode: code) == nil, "close code \(code)")
+    }
+}
+
+@Test func whatTheOutageCostIsReadableWhileOffline() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("nyx-relay-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let connection = RelayConnection(url: URL(string: "ws://127.0.0.1:1/v1/ws")!, token: "t",
+                                     identity: try scratchIdentity(in: dir), deviceName: "Test")
+
+    // Never connected, so every one of these is queued and the bound throws the oldest away.
+    for index in 0..<300 { connection.send(RemoteMessage(t: "sessions", name: "\(index)")) }
+
+    let deadline = Date().addingTimeInterval(5)
+    while connection.droppedWhileOffline != 44, Date() < deadline { usleep(10_000) }
+    #expect(connection.droppedWhileOffline == 44)
+
+    connection.disconnect()
+    let cleared = Date().addingTimeInterval(5)
+    while connection.droppedWhileOffline != 0, Date() < cleared { usleep(10_000) }
+    #expect(connection.droppedWhileOffline == 0)
 }
 
 // MARK: - Against the real relay
@@ -129,6 +168,12 @@ private final class Recorder: RelayConnectionDelegate {
 
 /// A port nothing is listening on right now: bind to 0, read back what the kernel chose, close.
 /// The relay binary does not report the port it bound, so there is no way to ask it afterwards.
+///
+/// There is a race here by construction -- something else on the machine could take the port
+/// between this closing it and the relay binding it. It is accepted rather than solved: the
+/// alternative is handing the relay an inherited listening socket, which its `-listen` flag does
+/// not support. If it ever fires, `startRelay` fails on `/healthz` with the port in the message
+/// rather than hanging.
 private func freePort() throws -> UInt16 {
     let fd = socket(AF_INET, SOCK_STREAM, 0)
     try #require(fd >= 0)
@@ -174,6 +219,9 @@ private func startRelay(binary: String, in directory: URL, port fixed: UInt16? =
     process.standardOutput = handle
     process.standardError = handle
     try process.run()
+    // The child has its own copy of the descriptor from here on; a test that starts two relays
+    // would otherwise leak one open handle per relay for the life of the test process.
+    try handle.close()
 
     let health = URL(string: "http://127.0.0.1:\(port)/healthz")!
     let deadline = Date().addingTimeInterval(10)
@@ -311,4 +359,147 @@ func theConnectionComesBackByItselfAfterTheRelayRestarts() throws {
     #expect(recorder.wait(upTo: 5) { recorder.messages.contains { $0.t == "pair_opened" } },
             "what was queued while offline never went out; log:\n\(second.log)")
     #expect(connection.status == .online)
+}
+
+/// A TCP port that accepts connections and never answers: `listen` with a backlog but no `accept`,
+/// so the kernel completes the three-way handshake on its own and the HTTP upgrade request sits
+/// there unanswered forever. That is the shape of a stalled proxy or a captive portal -- the case
+/// that produces no error of any kind and that `HandshakeDeadline` exists for.
+private final class SilentListener {
+    let port: UInt16
+    private let fd: Int32
+
+    init() throws {
+        // A local descriptor throughout: referring to `self.fd` inside these closures would capture
+        // `self` before `port` is initialised.
+        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+        try #require(descriptor >= 0)
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = 0
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        try #require(bound == 0)
+        try #require(listen(descriptor, 8) == 0)
+        var chosen = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named = withUnsafeMutablePointer(to: &chosen) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(descriptor, $0, &length) }
+        }
+        try #require(named == 0)
+        fd = descriptor
+        port = UInt16(bigEndian: chosen.sin_port)
+    }
+
+    func close() { Darwin.close(fd) }
+}
+
+@Test func aRelayThatTakesTheSocketAndThenSaysNothingIsGivenUpOn() throws {
+    let listener = try SilentListener()
+    defer { listener.close() }
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("nyx-relay-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let recorder = Recorder()
+    let connection = RelayConnection(url: URL(string: "ws://127.0.0.1:\(listener.port)/v1/ws")!,
+                                     token: "test-token", identity: try scratchIdentity(in: dir),
+                                     deviceName: "Patient Mac", handshakeTimeout: 0.2,
+                                     backoff: Backoff(initial: 0.2, maximum: 0.2))
+    connection.delegate = recorder
+    defer { connection.disconnect() }
+    connection.connect()
+
+    #expect(recorder.wait(upTo: 5) { recorder.statuses.contains(.offline) },
+            "a silent socket was never given up on: \(recorder.snapshot { recorder.statuses })")
+    #expect(recorder.snapshot { Array(recorder.statuses.prefix(2)) } == [.connecting, .offline])
+    // And it keeps trying, because a socket that stalled once is not a refusal.
+    #expect(recorder.wait(upTo: 5) { recorder.statuses.filter { $0 == .connecting }.count >= 2 },
+            "it gave up for good: \(recorder.snapshot { recorder.statuses })")
+}
+
+/// An `error` after `welcome` is about one request, not about the connection: the socket stays up
+/// and the owner gets to decide what to do. Without this the obvious implementation -- reusing the
+/// handshake's error handling everywhere -- would tear down a healthy connection because somebody
+/// typed a pairing code wrong.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["NYX_RELAY_BIN"] != nil))
+func anErrorAfterWelcomeReachesTheDelegateAndLeavesTheConnectionUp() throws {
+    let binary = try #require(ProcessInfo.processInfo.environment["NYX_RELAY_BIN"])
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nyx-relay-it-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let relay = try startRelay(binary: binary, in: directory)
+    defer {
+        relay.process.terminate()
+        relay.process.waitUntilExit()
+    }
+
+    let recorder = Recorder()
+    let connection = RelayConnection(url: relay.socketURL, token: "test-token",
+                                     identity: try scratchIdentity(in: directory, named: "device"),
+                                     deviceName: "Mistyping Mac")
+    connection.delegate = recorder
+    defer { connection.disconnect() }
+    connection.connect()
+    #expect(recorder.wait(upTo: 10) { recorder.statuses.contains(.online) }, "log:\n\(relay.log)")
+
+    // A well-formed code that no host has opened.
+    connection.send(.pairJoin(code: "QRSTUV"))
+
+    #expect(recorder.wait(upTo: 5) { recorder.messages.contains { $0.t == "error" } },
+            "no error came back for an unknown pairing code; log:\n\(relay.log)")
+    let error = recorder.snapshot { recorder.messages.first { $0.t == "error" } }
+    #expect(error?.code == "pair_expired")
+    #expect(connection.status == .online)
+    #expect(recorder.snapshot { recorder.statuses } == [.connecting, .authenticating, .online])
+}
+
+/// `disconnect()` while a reconnect is already on the clock must cancel it. Without this, telling
+/// Nyx to stop using remote sessions would be followed a second later by it connecting anyway.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["NYX_RELAY_BIN"] != nil))
+func disconnectCancelsAReconnectThatIsAlreadyOnTheClock() throws {
+    let binary = try #require(ProcessInfo.processInfo.environment["NYX_RELAY_BIN"])
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nyx-relay-it-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let first = try startRelay(binary: binary, in: directory)
+    var running = first.process
+    defer {
+        running.terminate()
+        running.waitUntilExit()
+    }
+
+    let recorder = Recorder()
+    let connection = RelayConnection(url: first.socketURL, token: "test-token",
+                                     identity: try scratchIdentity(in: directory, named: "device"),
+                                     deviceName: "Leaving Mac")
+    connection.delegate = recorder
+    defer { connection.disconnect() }
+    connection.connect()
+    #expect(recorder.wait(upTo: 10) { recorder.statuses.contains(.online) }, "log:\n\(first.log)")
+
+    first.process.terminate()
+    first.process.waitUntilExit()
+    #expect(recorder.wait(upTo: 10) { recorder.statuses.last == .offline },
+            "the drop was never reported: \(recorder.snapshot { recorder.statuses })")
+
+    // The reconnect is now armed one second out. Cancel it, then put the relay back where it was:
+    // if the timer had survived, this is exactly the situation that would reconnect anyway.
+    connection.disconnect()
+    let second = try startRelay(binary: binary, in: directory, port: first.port, logName: "relay2.log")
+    running = second.process
+
+    let after = recorder.snapshot { recorder.statuses.count }
+    Thread.sleep(forTimeInterval: 3)
+    #expect(recorder.snapshot { recorder.statuses.count } == after,
+            "it reconnected after disconnect(): \(recorder.snapshot { recorder.statuses })")
+    #expect(connection.status == .offline)
 }

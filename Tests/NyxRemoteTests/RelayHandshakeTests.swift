@@ -62,12 +62,62 @@ private final class Signer {
     #expect(outcome == .rejected(code: "bad_signature"))
 }
 
-@Test func anErrorWithNoCodeStillRejectsRatherThanLoopingOnAnEmptyReason() {
+@Test func anErrorWithNoCodeStillCarriesAWordRatherThanAnEmptyReason() {
     var handshake = RelayHandshake(deviceID: testDeviceID, sign: Signer().sign)
 
     let outcome = handshake.receive(RemoteMessage(t: "error"))
 
-    #expect(outcome == .rejected(code: "error"))
+    #expect(outcome == .retryableError(code: "error"))
+}
+
+@Test func onlyBadTokenAndBadSignatureAreTerminal() {
+    #expect(RelayHandshake.terminalErrorCodes == ["bad_token", "bad_signature"])
+}
+
+@Test func anErrorCodeThisClientHasNeverHeardOfIsWorthRetrying() {
+    var handshake = RelayHandshake(deviceID: testDeviceID, sign: Signer().sign)
+
+    let outcome = handshake.receive(RemoteMessage(t: "error", code: "relay_restarting"))
+
+    #expect(outcome == .retryableError(code: "relay_restarting"))
+    #expect(handshake.expecting == .nothing)
+}
+
+@Test func aTooManyErrorBeforeWelcomeIsRetryableNotTerminal() {
+    var handshake = RelayHandshake(deviceID: testDeviceID, sign: Signer().sign)
+    _ = handshake.receive(RemoteMessage(t: "challenge", nonce: nonce().wire))
+
+    #expect(handshake.receive(RemoteMessage(t: "error", code: "too_many")) == .retryableError(code: "too_many"))
+}
+
+// MARK: - The handshake deadline, on an injected clock
+
+@Test func aHandshakeIsNotOverdueBeforeItsTimeout() {
+    let deadline = HandshakeDeadline(startedAt: 100, timeout: 25)
+
+    #expect(!deadline.hasExpired(at: 100, authenticated: false))
+    #expect(!deadline.hasExpired(at: 124.9, authenticated: false))
+    #expect(deadline.remaining(at: 110) == 15)
+}
+
+@Test func aHandshakeIsOverdueAtItsTimeout() {
+    let deadline = HandshakeDeadline(startedAt: 100, timeout: 25)
+
+    #expect(deadline.hasExpired(at: 125, authenticated: false))
+    #expect(deadline.hasExpired(at: 1000, authenticated: false))
+}
+
+@Test func anAuthenticatedConnectionIsNeverOverdue() {
+    let deadline = HandshakeDeadline(startedAt: 100, timeout: 0.2)
+
+    #expect(!deadline.hasExpired(at: 1000, authenticated: true))
+}
+
+@Test func theTimeLeftIsNeverNegativeSoATimerCanBeArmedWithItUnchecked() {
+    let deadline = HandshakeDeadline(startedAt: 100, timeout: 4)
+
+    #expect(deadline.remaining(at: 500) == 0)
+    #expect(deadline.remaining(at: 101) == 3)
 }
 
 @Test func aNonceThatIsNotThirtyTwoBytesIsAProtocolError() {

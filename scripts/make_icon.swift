@@ -4,9 +4,13 @@
 // toolchain, and because a drawn icon is diffable: changing the mark means changing the code below,
 // not committing a new opaque binary nobody can review.
 //
-// The mark: a night-blue rounded square -- Nyx is the goddess of night -- carrying a prompt chevron
-// and the block cursor that follows it. At 16 pt the chevron and the block are all that survive,
-// which is the point: it has to read as "a terminal" in the Dock and the ⌘-Tab strip, at a glance.
+// The mark: on a near-black rounded tile, one bold light-grey stroke traces a cursor's path -- up
+// the left stem, then diagonally down to the right -- and the right stem is finished as a solid
+// amber block, the shape of a terminal's block cursor. Read together, the stroke and the block form
+// an "N" (Nyx) without spelling the name or drawing a literal glyph: a prompt cursor moving is
+// already the terminal's own vocabulary, and a chevron-and-cursor pairing (the previous icon) reads
+// as generic "any terminal" once every other emulator uses the same cliche. One accent colour,
+// one stroke weight, no glow or glass on the mark itself, so the silhouette is what survives at 16pt.
 //
 // Usage: swift scripts/make_icon.swift <output-directory>
 
@@ -30,6 +34,7 @@ func draw(size: Int) -> CGImage? {
                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
     ctx.setShouldAntialias(true)
     ctx.interpolationQuality = .high
+    let space = CGColorSpaceCreateDeviceRGB()
 
     // macOS icons sit in a rounded square with a margin; these proportions match the system grid.
     let inset = s * 0.055
@@ -37,26 +42,24 @@ func draw(size: Int) -> CGImage? {
     let corner = rect.width * 0.2237
     let body = CGPath(roundedRect: rect, cornerWidth: corner, cornerHeight: corner, transform: nil)
 
-    // Night sky: deep indigo at the top falling to near-black, so the mark stays legible on both
-    // light and dark Dock backgrounds without a border.
+    // Near-black tile with a faint top-to-bottom fall-off, so the mark stays legible on both light
+    // and dark Dock backgrounds without needing a border.
     ctx.saveGState()
     ctx.addPath(body)
     ctx.clip()
-    let space = CGColorSpaceCreateDeviceRGB()
-    let colors = [
-        CGColor(colorSpace: space, components: [0.19, 0.20, 0.42, 1])!,
-        CGColor(colorSpace: space, components: [0.04, 0.04, 0.10, 1])!,
+    let tileColors = [
+        CGColor(colorSpace: space, components: [0.09, 0.10, 0.15, 1])!,
+        CGColor(colorSpace: space, components: [0.04, 0.04, 0.07, 1])!,
     ] as CFArray
-    if let gradient = CGGradient(colorsSpace: space, colors: colors, locations: [0, 1]) {
+    if let gradient = CGGradient(colorsSpace: space, colors: tileColors, locations: [0, 1]) {
         ctx.drawLinearGradient(gradient, start: CGPoint(x: 0, y: rect.maxY),
                                end: CGPoint(x: 0, y: rect.minY), options: [])
     }
-
     // A faint sweep of light down from the top edge, the way a glass surface catches it. It has to
     // fade out rather than stop: a flat fill leaves a hard seam across the middle of the icon that
     // reads as a rendering bug.
     let sheenColors = [
-        CGColor(colorSpace: space, components: [1, 1, 1, 0.10])!,
+        CGColor(colorSpace: space, components: [1, 1, 1, 0.08])!,
         CGColor(colorSpace: space, components: [1, 1, 1, 0])!,
     ] as CFArray
     if let sheen = CGGradient(colorsSpace: space, colors: sheenColors, locations: [0, 1]) {
@@ -65,58 +68,57 @@ func draw(size: Int) -> CGImage? {
     }
     ctx.restoreGState()
 
-    // The mark: a prompt chevron and the block cursor that follows it, laid out as ONE group and
-    // then centred. Placing the two independently inside an inset box is what left the previous
-    // version sitting low and to the left -- an icon is looked at next to other icons, and being a
-    // few percent off centre is visible even when nothing else is.
-    let markHeight = rect.height * 0.32
-    let stroke = max(1, rect.width * 0.068)
-    let chevronWidth = markHeight * 0.52
-    let blockWidth = markHeight * 0.32
-    // Wide enough that the chevron and the cursor stay two shapes: closer together they merge
-    // into one blob at small sizes, which is where the icon is actually seen.
-    let gap = markHeight * 0.42
-    let markWidth = chevronWidth + gap + blockWidth
-
-    let originX = rect.midX - markWidth / 2
-    let midY = rect.midY
-    let top = midY + markHeight / 2
-    let bottom = midY - markHeight / 2
-
-    // A soft glow behind the mark, so it sits on the surface rather than being painted flat onto
-    // it. Barely visible on its own; what it does is stop the icon looking like a sticker.
+    // A 1-unit inner rim: lighter at the top than the bottom, so the tile reads as a slightly
+    // raised surface rather than a flat cutout. Subtle on purpose -- it should not compete with
+    // the mark.
     ctx.saveGState()
-    ctx.addPath(body)
-    ctx.clip()
-    let glowColors = [
-        CGColor(colorSpace: space, components: [0.42, 0.55, 1.0, 0.22])!,
-        CGColor(colorSpace: space, components: [0.42, 0.55, 1.0, 0])!,
-    ] as CFArray
-    if let glow = CGGradient(colorsSpace: space, colors: glowColors, locations: [0, 1]) {
-        ctx.drawRadialGradient(glow, startCenter: CGPoint(x: rect.midX, y: midY), startRadius: 0,
-                               endCenter: CGPoint(x: rect.midX, y: midY), endRadius: rect.width * 0.45,
-                               options: [])
-    }
+    ctx.setStrokeColor(CGColor(colorSpace: space, components: [1, 1, 1, 0.07])!)
+    ctx.setLineWidth(max(1, s * 0.006))
+    ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: s * 0.003, dy: s * 0.003),
+                       cornerWidth: corner, cornerHeight: corner, transform: nil))
+    ctx.strokePath()
     ctx.restoreGState()
 
-    // The chevron, as a path rather than text: identical at every size, and no font to install.
+    // The mark, as one group then centred as a whole: an "N" read from a cursor's own path (stem
+    // up, diagonal down-right) with its second stem finished as the block cursor. The amber block
+    // is a solid fill and reads heavier than the grey stroke next to it, so the group is nudged a
+    // few percent left of true centre -- otherwise the icon looks right-heavy next to others in
+    // the Dock even though the bounding box is centred.
+    let markWidth = rect.width * 0.50
+    let markHeight = rect.height * 0.46
+    let stroke = max(1, rect.width * 0.105)
+    let nudge = rect.width * 0.022
+    let originX = rect.midX - markWidth / 2 - nudge
+    let baseline = rect.midY - markHeight / 2
+    let top = baseline + markHeight
+
+    let blockWidth = stroke * 1.18
+    let blockHeight = markHeight * 0.60
+    let blockLeft = originX + markWidth - blockWidth
+    let blockBottom = baseline
+
+    // Left stem up, then the diagonal down to the right -- the path a cursor takes -- ending well
+    // inside the amber block's silhouette. The block is drawn afterwards on top, so whatever the
+    // diagonal's stroke and its round cap cover there is hidden entirely; what stays visible is a
+    // clean cut exactly where the stroke crosses the block's top edge, with nothing poking out to
+    // the block's right.
+    let diagonalEndX = blockLeft + blockWidth * 0.5
+    let diagonalEndY = blockBottom + blockHeight * 0.32
     let path = CGMutablePath()
-    path.move(to: CGPoint(x: originX, y: top))
-    path.addLine(to: CGPoint(x: originX + chevronWidth, y: midY))
-    path.addLine(to: CGPoint(x: originX, y: bottom))
-    ctx.setStrokeColor(CGColor(colorSpace: space, components: [0.55, 0.76, 1.0, 1])!)
+    path.move(to: CGPoint(x: originX, y: baseline))
+    path.addLine(to: CGPoint(x: originX, y: top))
+    path.addLine(to: CGPoint(x: diagonalEndX, y: diagonalEndY))
+    ctx.setStrokeColor(CGColor(colorSpace: space, components: [0.85, 0.87, 0.92, 1])!)
     ctx.setLineWidth(stroke)
     ctx.setLineCap(.round)
     ctx.setLineJoin(.round)
     ctx.addPath(path)
     ctx.strokePath()
 
-    // The cursor, in the warm colour a terminal cursor takes, so the two halves of the mark do not
-    // read as one shape.
-    let blockHeight = markHeight * 0.78
-    let block = CGRect(x: originX + chevronWidth + gap, y: midY - blockHeight / 2,
-                       width: blockWidth, height: blockHeight)
-    ctx.setFillColor(CGColor(colorSpace: space, components: [1.0, 0.78, 0.36, 1])!)
+    // The right stem is the block cursor, rising from the same baseline as the left stem, in the
+    // one accent colour the mark uses.
+    let block = CGRect(x: blockLeft, y: blockBottom, width: blockWidth, height: blockHeight)
+    ctx.setFillColor(CGColor(colorSpace: space, components: [0.961, 0.647, 0.141, 1])!)
     let blockCorner = min(block.width, block.height) * 0.22
     ctx.addPath(CGPath(roundedRect: block, cornerWidth: blockCorner, cornerHeight: blockCorner,
                        transform: nil))

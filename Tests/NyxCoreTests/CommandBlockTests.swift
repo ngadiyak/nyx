@@ -208,3 +208,50 @@ private func foldedSession() -> (terminal: Terminal, folding: OutputFolding) {
     // The same slots carry their durations.
     #expect(t.durationNotes(onDisplayRows: display).count == display.count)
 }
+
+// MARK: - Where the summary actually goes
+
+// A command line long enough to reach the summary's columns used to mean no summary at all, so a
+// pasted `curl` in a 100-column pane lost the one control that folds it. These decide which of the
+// command's rows carries it, and what fits there.
+
+@Test func theSummaryGoesOnTheCommandRowWhenItFits() {
+    let placement = CommandBlockChrome.summaryPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 9)], textCount: 10, chevronCount: 1, cols: 40)
+    #expect(placement == SummaryPlacement(row: 4, columns: 30..<40, text: .full))
+}
+
+/// One row, filled to the last column: there is nowhere for the summary and nowhere for the
+/// chevron either, and the gutter mark is what folds the block.
+@Test func aCommandFillingItsOnlyRowLeavesNowhereForTheSummary() {
+    let placement = CommandBlockChrome.summaryPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 39)], textCount: 10, chevronCount: 1, cols: 40)
+    #expect(placement == nil)
+}
+
+/// A wrapped command line has several rows and the last is usually the shortest, so that is where
+/// the summary goes rather than nowhere.
+@Test func aWrappedCommandPutsTheSummaryOnItsLastRow() {
+    let placement = CommandBlockChrome.summaryPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 39), (absoluteRow: 5, lastUsedColumn: 12)],
+        textCount: 10, chevronCount: 1, cols: 40)
+    #expect(placement == SummaryPlacement(row: 5, columns: 30..<40, text: .full))
+}
+
+/// Both rows reach into the summary's columns, but the last leaves one free cell: the user's rule
+/// is that the chevron is always visible, so the status is what gives way.
+@Test func aLongCommandKeepsItsChevronWhenTheStatusNoLongerFits() {
+    let placement = CommandBlockChrome.summaryPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 39), (absoluteRow: 5, lastUsedColumn: 37)],
+        textCount: 10, chevronCount: 1, cols: 40)
+    #expect(placement == SummaryPlacement(row: 5, columns: 39..<40, text: .chevronOnly))
+}
+
+/// The overlay belongs on the row the summary was actually placed on -- a wrapped command line puts
+/// that below the prompt row -- and nowhere at all when no row had room for it.
+@Test func aHoversOverlayFollowsWhereTheSummaryWasPlaced() {
+    let hover = BlockHover(id: 7, rows: 2..<6, headerRow: 2)
+    #expect(hover.attachingHeader(to: 3) == BlockHover(id: 7, rows: 2..<6, headerRow: 3))
+    #expect(hover.attachingHeader(to: nil).headerRow == nil)
+    #expect(hover.attachingHeader(to: nil).rows == 2..<6)
+}

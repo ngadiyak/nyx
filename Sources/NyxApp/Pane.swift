@@ -839,7 +839,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let previousHover = self.hoveredBlock
             self.hoveredBlock = self.resolveBlockHover(in: t, blocks: blocks, allowed: chromeAllowed,
                                                        viewportTop: windowTop)
-            hoverChanged = self.hoveredBlock != previousHover
             // The three block colours, once per frame. `readable` picks between a colour and its
             // bright variant by contrast against the background -- a handful of Lab conversions --
             // and evaluating it per block, per frame, put that on the render path for nothing: the
@@ -878,50 +877,85 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let now = t.now()
             var headers: [Int: BlockHeader] = [:]
             var summaryColumns: [Int: Range<Int>] = [:]
+            // Which display slot each block's chrome ended up on, so the hover overlay can be moved
+            // onto the same row -- and taken away entirely when there was nowhere to put it.
+            var headerSlots: [UInt32: Int] = [:]
+            // Every slot whose duration note the summary now speaks for, including the prompt row
+            // when the summary moved off it onto a wrapped continuation.
+            var notesSpokenFor: Set<Int> = []
             summaries = blocks.compactMap { block -> (row: Int, text: String, color: RGB)? in
-                guard block.showsHeader, let row = screenRow(block.region.promptRow) else { return nil }
+                guard block.showsHeader, let promptSlot = screenRow(block.region.promptRow) else { return nil }
                 let header = block.header(now: now, folding: self.folding,
                                           notifyArmed: self.armedNotifications.contains(block.region.id),
                                           anyFolds: !self.folding.isEmpty)
-                headers[row] = header
                 let text = header.summaryWithChevron
-                guard !text.isEmpty else { return nil }
-                // The same rule the renderer uses to decide whether it draws the summary at all,
-                // so the click target and the pixels never disagree: a command line reaching this
-                // far right, or a pane too narrow to fit it, means there is nothing here to click.
-                let lastUsed: Int = {
-                    guard row < lines.count else { return -1 }
-                    var last = -1
-                    for (column, cell) in lines[row].cells.enumerated() where cell.content != 0 { last = column }
-                    return last
-                }()
-                if let columns = CommandBlockChrome.summaryColumns(textCount: text.count, cols: t.cols,
-                                                                   lastUsedColumn: lastUsed) {
-                    summaryColumns[row] = columns
+                // Nothing to say and nothing to fold: a quick success with no output. The overlay
+                // still attaches to the command row -- Copy and the ⋯ menu are what it is for.
+                guard !text.isEmpty else {
+                    headers[promptSlot] = header
+                    headerSlots[block.region.id] = promptSlot
+                    return nil
                 }
+                // Every row of the command line is a candidate, not just the prompt row: a pasted
+                // `curl` wraps, and the row that has room for the chevron is usually the last one.
+                let lastCommandRow = block.region.outputStart.map { $0 - 1 } ?? block.region.promptRow
+                var candidates: [(absoluteRow: Int, lastUsedColumn: Int)] = []
+                var slotOf: [Int: Int] = [:]
+                if lastCommandRow >= block.region.promptRow {
+                    for absolute in block.region.promptRow...lastCommandRow {
+                        guard let slot = screenRow(absolute), slot < lines.count else { continue }
+                        slotOf[absolute] = slot
+                        var last = -1
+                        for (column, cell) in lines[slot].cells.enumerated() where cell.content != 0 {
+                            last = column
+                        }
+                        candidates.append((absoluteRow: absolute, lastUsedColumn: last))
+                    }
+                }
+                // The same rule the renderer uses to decide what it draws and where, so the click
+                // target, the overlay and the pixels can never disagree.
+                guard let placement = CommandBlockChrome.summaryPlacement(
+                        commandRows: candidates, textCount: text.count,
+                        chevronCount: header.chevron.count, cols: t.cols),
+                      let slot = slotOf[placement.row] else { return nil }
+                headers[slot] = header
+                summaryColumns[slot] = placement.columns
+                headerSlots[block.region.id] = slot
+                notesSpokenFor.insert(slot)
+                notesSpokenFor.insert(promptSlot)
                 // The overlay draws its own copy of the summary while it covers this row.
-                if self.hoveredBlock?.headerRow == row { return nil }
+                if self.hoveredBlock?.id == block.region.id, self.hoveredBlock?.headerRow != nil { return nil }
                 // A running block used to differ from a finished one only by the digit in the
                 // elapsed time -- the same grey `12s ▾` a finished command's `12s ▾` shows. The
                 // theme's running colour is the one the spine already uses for the same state,
                 // so a glance down the screen says which command is still going.
-                return (row: row, text: text,
+                return (row: slot, text: placement.text == .full ? text : header.chevron,
                         color: block.failed ? failedColor
                             : (block.isRunning ? runningColor : t.palette.noteForeground))
             }
+            // The overlay goes where the summary went, not on the prompt row. With a wrapped
+            // command line those are different rows, and a strip placed from the prompt row alone
+            // painted over the command's own text on exactly the rows Core had refused a summary.
+            // No placement at all means no overlay: the tint and the context menu still say the
+            // block is there, and the gutter mark still folds it.
+            if let hover = self.hoveredBlock, hover.headerRow != nil,
+               headerSlots[hover.id] != hover.headerRow {
+                self.hoveredBlock = hover.attachingHeader(to: headerSlots[hover.id])
+            }
+            hoverChanged = self.hoveredBlock != previousHover
             self.headersOnScreen = headers
             self.summaryColumnsOnScreen = summaryColumns
             anyRunningOnScreen = blocks.contains { $0.isRunning && $0.showsHeader }
-            // The summary already carries the duration, and both draw right-aligned on the command's
-            // row: left alone they paint the same glyphs twice in two colours, on the failure case
-            // this feature exists to make obvious.
+            // The summary already carries the duration, and both draw right-aligned on a row of the
+            // command: left alone they paint the same glyphs twice in two colours, on the failure
+            // case this feature exists to make obvious.
             //
-            // Keyed off where a summary may actually be *drawn*, not off the list of summaries
-            // asked for: a command line long enough to reach the summary's columns means the
-            // renderer draws nothing there, and erasing the duration note as well left that row
-            // with neither. `summaryColumns` also covers the row the hover overlay took over,
-            // which draws its own summary.
-            for row in summaryColumns.keys where notes.indices.contains(row) {
+            // Keyed off where a summary was actually *placed*, not off the list of summaries asked
+            // for: a command line that leaves room for nothing at all means the renderer draws
+            // nothing there, and erasing the duration note as well left that row with neither. The
+            // command's prompt row goes with it, because a summary that moved onto a wrapped
+            // continuation row would otherwise say the duration one row below the note.
+            for row in notesSpokenFor where notes.indices.contains(row) {
                 notes[row] = nil
             }
             // Same pass, same lock, same viewport: the strip names the command whose output is on

@@ -321,6 +321,10 @@ public final class Renderer {
         var currentMatchBackground: RGB
         var matchForeground: RGB
         var noteForeground: RGB
+        /// The hovered block's tint. Derived with a search through the palette for a blend that
+        /// clears three contrast floors at once, so it belongs with the other once-per-frame
+        /// lookups rather than being recomputed inside `buildChrome` on every hovered frame.
+        var blockHover: RGB
     }
 
     private func buildInstances(_ f: RenderFrame, padding: Int) {
@@ -353,7 +357,8 @@ public final class Renderer {
         let colors = FrameColors(matchBackground: f.palette.searchMatchBackground,
                                  currentMatchBackground: f.palette.currentMatchBackground,
                                  matchForeground: f.palette.searchMatchForeground,
-                                 noteForeground: f.palette.noteForeground)
+                                 noteForeground: f.palette.noteForeground,
+                                 blockHover: f.palette.blockHoverBackground)
         stats.frames += 1
         stats.rowsSeen += visible
 
@@ -491,7 +496,7 @@ public final class Renderer {
             let top = Float(padding + max(0, rows.lowerBound) * m.height)
             let height = Float(min(rows.count, f.rows - max(0, rows.lowerBound)) * m.height)
             let width = Float(f.cols * m.width)
-            let tint = rect(Float(padding), top, width, height, f.palette.blockHoverBackground)
+            let tint = rect(Float(padding), top, width, height, colors.blockHover)
             instances.insert(tint, at: 0)
         }
 

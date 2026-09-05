@@ -93,6 +93,10 @@ enum UISnapshot {
         let defaultFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         let rowHeight = ceil(defaultFont.ascender - defaultFont.descender + defaultFont.leading)
         for (name, header) in blockHeaderStates() {
+            // The `-light` and `-dark` pair is now the *same* picture on purpose: `update` sets the
+            // view's appearance from the palette, so the system's has no say. That is the fix for
+            // the disabled Copy reading at 1.13:1 in Light Mode over the dark theme; a pair that
+            // differs again is that bug coming back.
             for appearance in [NSAppearance.Name.darkAqua, .aqua] {
                 let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
                 view.appearance = NSAppearance(named: appearance)

@@ -122,7 +122,7 @@ final class SettingsWindowController: NSWindowController {
             row("Bell", popUp("bell", options: ["visual", "sound", "none"])),
             row("Multi-line paste", popUp("multiline-paste", options: ["edit", "confirm", "direct"])),
             row("Folded output keeps", stepperField("fold-keep-lines", min: 0, max: 100, step: 1)),
-            row("Auto-fold output over", stepperField("fold-long-output", min: 0, max: 100_000, step: 50)),
+            row("Auto-fold output over", stepperField("fold-long-output", min: 0, max: 1_000_000, step: 50)),
         ], note: "Letting programs read the clipboard is off by default: any program in the terminal could then see whatever you last copied.")
     }
 

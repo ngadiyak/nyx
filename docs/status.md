@@ -26,7 +26,7 @@ same facts.
 | Quick actions | `send` / `run` / `toggle` buttons on the bar, editable from the UI, written back to the file; per-project `.nyx` behind a digest-bound approval |
 | Sessions | Windows, tabs, splits, cwd and scrollback restored; corrupt or newer snapshot → one window |
 | Accessibility | Every drawn control is an accessibility element with role and state |
-| Verification | 1002 swift-testing tests, offscreen Metal pixel tests, UI snapshot renderer, CI with warning gate, bench floor, launch check and snapshot artifact |
+| Verification | 1057 swift-testing tests, offscreen Metal pixel tests, UI snapshot renderer, CI with warning gate, bench floor, launch check and snapshot artifact |
 
 ## Not there yet
 

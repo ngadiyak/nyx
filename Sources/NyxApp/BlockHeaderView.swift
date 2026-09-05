@@ -81,9 +81,20 @@ final class BlockHeaderView: NSView {
         self.header = header
         self.palette = palette
         guard changed else { isHidden = false; return }
+        // The strip is painted in the pane's theme, but two things inside it are drawn by AppKit and
+        // follow the *window's* appearance instead: the `.inline` bezel's own fill, and the dimming
+        // NSButtonCell applies to a disabled control. In Light Mode over a dark theme that dimming
+        // lightened the disabled Copy toward the light-mode background it thought was behind it,
+        // landing at 1.13:1 against this strip's actual dark fill -- invisible. Telling the view
+        // which appearance it is really sitting in makes both agree with the theme.
+        appearance = NSAppearance(named: palette.isLight ? .aqua : .darkAqua)
         summary.stringValue = header.summary
         summary.font = font
-        summary.textColor = nsColor(header.failed ? palette.readable(1) : palette.noteForeground, alpha: 1)
+        // A running block used to read exactly like a finished one apart from the digit. The
+        // theme's running colour is the amber the spine already uses for the same state.
+        let summaryColor: RGB = header.failed ? palette.readable(1)
+            : (header.isRunning ? palette.readable(3) : palette.noteForeground)
+        summary.textColor = nsColor(summaryColor, alpha: 1)
         summary.isHidden = header.summary.isEmpty
         copyButton.isEnabled = header.hasOutput
         chevronButton.isHidden = !header.hasOutput

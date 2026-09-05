@@ -69,6 +69,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    /// Every remote tab in every window of this application, numbered by window.
+    ///
+    /// One attachment has one owner, so "is this session already open?" is a question about the
+    /// whole application and not about the window doing the asking. Asking only the current window
+    /// is what let a second window wire itself into a live attachment and freeze the first one's
+    /// tab -- drawn, taking keystrokes, and never showing another byte again.
+    var openRemoteTabs: [RemoteTabs.Open] {
+        controllers.enumerated().flatMap { index, controller in
+            controller.remoteTabs(inWindow: index)
+        }
+    }
+
+    /// Brings the window holding an already-open remote session forward, on the tab it is in.
+    /// `window` is an index into the same list `openRemoteTabs` numbered.
+    func revealRemoteTab(_ match: RemoteTabs.Match) {
+        guard controllers.indices.contains(match.window) else { return }
+        let controller = controllers[match.window]
+        controller.selectTab(at: match.tab)
+        controller.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     private func rebuildMenu(for config: Config) {
         NSApp.mainMenu = MainMenu.build(bindings: KeyBindingTable(user: config.keybinds))
     }

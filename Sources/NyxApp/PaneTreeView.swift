@@ -198,6 +198,10 @@ final class PaneTreeView: NSView {
         // whether or not the pane that exited was the focused one.
         pane.onExit = { [weak self, id = pane.id] _ in self?.close(id) }
         pane.onFocusRequested = { [weak self, id = pane.id] in self?.setFocus(id) }
+        // The remote strip offers "⌘W to close", which closes the whole tab -- true only while this
+        // pane is the tab's only one. Read through a closure rather than cached: a split can happen
+        // under a remote pane at any moment.
+        pane.isSolePaneInTab = { [weak self] in (self?.paneCount ?? 1) <= 1 }
         pane.onOutput = { [weak self] in self?.onAnyPaneOutput?() }
         pane.onBell = { [weak self] in self?.onAnyPaneBell?() }
         pane.onWorkingDirectoryChange = { [weak self, id = pane.id] directory in

@@ -386,9 +386,13 @@ public final class RemoteClient {
         /// The cipher goes with the attachment. Whatever the host sends after it comes back is
         /// sealed under a new pair of ephemeral keys, and a frame that arrived under the old ones
         /// after this point could only be a replay.
-        func handleSuspended() {
+        func handleSuspended(now: Date) {
             lock.lock()
             let ignore = finished || isEnded(_state.phase)
+            // A tab that never got past `attaching`/`reconnecting` has no transcript to keep and no
+            // snapshot to come back to, so there is nothing for a pause to preserve. It is an
+            // attach that did not happen, and says so.
+            let neverAttached = !ignore && isAwaitingAttach(_state.phase)
             if !ignore {
                 e2e = nil
                 awaiting = nil
@@ -399,7 +403,12 @@ public final class RemoteClient {
             }
             lock.unlock()
             guard !ignore else { return }
-            report { $0.phase = .suspended(self.hostName) }
+            guard !neverAttached else {
+                end(reason: AttachFailure.hostWentOfflineDuringAttach)
+                client?.forget(key)
+                return
+            }
+            report { $0.phase = .suspended(self.hostName, since: now) }
         }
 
         /// The relay's word on whether this attachment's host is connected. The only thing that
@@ -449,6 +458,12 @@ public final class RemoteClient {
         }
 
         func handleReconnect() {
+            // A suspended tab is waiting on the *host*, not on this Mac's socket. Dragging it into
+            // `reconnecting` would start a sixty-second window against a host that is still gone
+            // and land it on "No answer from the host" -- an outage on this side turned into a
+            // verdict about the other. It stays suspended; the presence and catalogue that follow
+            // the reconnect are what wake it, exactly as before the blip.
+            guard !isSuspendedNow else { return }
             report(if: { !self.isEnded($0.phase) }) { $0.phase = .reconnecting }
             beginReattach()
         }
@@ -459,6 +474,9 @@ public final class RemoteClient {
         /// `acceptsInput`, and with it every keystroke that would otherwise be sealed with a cipher
         /// the host has already forgotten and flushed at it minutes later.
         func handleDisconnect() {
+            // See `handleReconnect`: a suspended tab already says the truer of the two sentences,
+            // and it is already refusing input.
+            guard !isSuspendedNow else { return }
             report(if: { !self.isEnded($0.phase) }) { $0.phase = .reconnecting }
         }
 
@@ -522,6 +540,23 @@ public final class RemoteClient {
             return false
         }
 
+        private var isSuspendedNow: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return isSuspended(_state.phase)
+        }
+
+        /// Whether some `RemoteSession` has already wired itself into this attachment.
+        ///
+        /// The callbacks are one slot each, so a second owner does not share the stream -- it takes
+        /// it, and the first window's tab stays drawn, accepting keystrokes, and never showing
+        /// another byte. `attach` reports this so the caller can go to the window that has it.
+        var hasOwner: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return _onBytes != nil || _onState != nil
+        }
+
         /// Mutates the state under the lock and reports it outside: `onState` redraws a tab, and
         /// holding a lock across a caller's redraw is how a UI freeze starts.
         private func report(if condition: ((AttachState) -> Bool)? = nil, _ change: (inout AttachState) -> Void) {
@@ -574,20 +609,22 @@ public final class RemoteClient {
     /// host that was not true about anything. There is one attachment per session id because a data
     /// frame carries nothing else to route on, so a second one is not a second view of the session
     /// -- it is the same view, and the caller gets it.
-    public func attach(hostID: String, hostName: String, sessionID: [UInt8], title: String) -> Attachment {
+    public func attach(hostID: String, hostName: String, sessionID: [UInt8], title: String) -> Outcome {
         let key = RemoteID.base64url(sessionID)
         if sessionID.count == 16 {
             lock.lock()
             let open = attachments[key]
             lock.unlock()
-            if let open, open.isLive, open.hostID == hostID { return open }
+            if let open, open.isLive, open.hostID == hostID {
+                return Outcome(attachment: open, wasAlreadyOpen: open.hasOwner)
+            }
         }
         let attachment = Attachment(sessionID: sessionID, hostID: hostID, hostName: hostName,
                                     title: title, link: link, identity: identity,
                                     timeout: attachTimeout, clock: clock)
         guard sessionID.count == 16 else {
             attachment.failImmediately()
-            return attachment
+            return Outcome(attachment: attachment, wasAlreadyOpen: false)
         }
         attachment.client = self
         lock.lock()
@@ -596,7 +633,18 @@ public final class RemoteClient {
         lock.unlock()
         displaced?.displace()
         attachment.begin()
-        return attachment
+        return Outcome(attachment: attachment, wasAlreadyOpen: false)
+    }
+
+    /// What `attach` hands back: the attachment, and whether it was already open *and owned*.
+    ///
+    /// The flag is not "did this exist". It is "does something else already have the callbacks",
+    /// which is the only case a caller must not walk into: the slots are one each, so wiring a
+    /// second `RemoteSession` in does not share the stream, it takes it -- and the window that had
+    /// it is left with a tab that is drawn, accepts keystrokes and never shows another byte.
+    public struct Outcome {
+        public let attachment: Attachment
+        public let wasAlreadyOpen: Bool
     }
 
     public func handle(_ m: RemoteMessage) {
@@ -628,14 +676,14 @@ public final class RemoteClient {
             }
             return
         }
-        // `session_suspended` comes from the relay on the host's behalf. The deployed relay stamps
-        // the host's id in `from`; the wire table promises only `session_id` and `to`, so an
-        // absent `from` is accepted here rather than dropped -- there is exactly one attachment per
-        // session id, and it knows which host it belongs to.
+        // `session_suspended` comes from the relay on the host's behalf, and the wire table has it
+        // carrying `session_id` and `from` (the host it is about). An absent `from` is accepted
+        // rather than dropped: there is exactly one attachment per session id, and it knows which
+        // host it belongs to, so a relay that stopped stamping it would still route correctly.
         if m.t == "session_suspended" {
             guard let key = m.sessionID, let attachment = self[key],
                   m.from == nil || m.from == attachment.hostID else { return }
-            attachment.handleSuspended()
+            attachment.handleSuspended(now: clock.now())
             return
         }
         guard let key = m.sessionID, let from = m.from, let attachment = self[key],

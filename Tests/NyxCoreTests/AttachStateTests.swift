@@ -1,5 +1,12 @@
+import Foundation
 import Testing
 @testable import NyxCore
+
+/// 14:32 in UTC, and every test that shows a clock time pins the zone to match.
+private let offlineAt = Date(timeIntervalSince1970: 1_757_082_720)
+private let utc = TimeZone(identifier: "UTC")!
+
+private func suspended(_ host: String) -> AttachState.Phase { .suspended(host, since: offlineAt) }
 
 private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachState {
     var s = AttachState(hostName: "iMac", title: "zsh")
@@ -49,19 +56,45 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
 }
 
 @Test func stripTextEndedNamesTheHostFromTheEvent() {
-    #expect(state(phase: .ended("iMac"), role: .writer).stripText == "Session ended on iMac — ⌘W to close")
-    #expect(state(phase: .ended("iMac"), role: .observer).stripText == "Session ended on iMac — ⌘W to close")
+    #expect(state(phase: .ended("iMac"), role: .writer).stripText == "Session ended on iMac · ⌘W to close")
+    #expect(state(phase: .ended("iMac"), role: .observer).stripText == "Session ended on iMac · ⌘W to close")
 }
 
 /// The one sentence that has to say two things at once: the session is fine and this tab is not
 /// showing it right now. "Session ended" was what this build said before the relay could tell a
 /// host that closed its lid from a host that closed the session.
-@Test func stripTextSuspendedSaysTheHostIsOfflineAndWillComeBack() {
-    let s = state(phase: .suspended("iMac"), role: .writer)
-    #expect(s.stripText == "iMac is offline — will reattach — ⌘W to close")
+///
+/// It carries the time because "will reattach" reads the same after five seconds and after five
+/// hours, and which of those it is, is the whole of what a person wants to know.
+@Test func stripTextSuspendedSaysSinceWhenAndThatItIsWaiting() {
+    var s = state(phase: suspended("iMac"), role: .writer)
+    s.timeZone = utc
+    #expect(s.stripText
+        == "iMac has been offline since 14:32 — waiting for it to come back · ⌘W to close")
     #expect(s.acceptsInput == false)
     #expect(s.severity == .warning)
     #expect(s.stripButton == "Close")
+}
+
+/// A wall-clock time in the reader's own zone, not the host's and not UTC.
+@Test func theOfflineTimeIsInTheReadersOwnZone() {
+    var s = state(phase: suspended("iMac"), role: .writer)
+    s.timeZone = TimeZone(secondsFromGMT: 3 * 3600)!
+    #expect(s.stripText?.contains("since 17:32") == true)
+    s.timeZone = TimeZone(secondsFromGMT: -5 * 3600 - 1800)!
+    #expect(s.stripText?.contains("since 09:02") == true)
+}
+
+/// ⌘W closes the whole tab, so a pane sharing its tab with another must not offer it: the Close
+/// button beside these words closes this pane, and the two would have been saying different things.
+@Test func aPaneSharingItsTabDoesNotOfferCommandW() {
+    var s = state(phase: .ended("iMac"), role: .writer)
+    s.closesWholeTab = false
+    #expect(s.stripText == "Session ended on iMac")
+    #expect(s.stripButton == "Close")
+    var alone = s
+    alone.closesWholeTab = true
+    #expect(alone.stripText == "Session ended on iMac · ⌘W to close")
 }
 
 @Test func badgeMatchesRole() {
@@ -79,14 +112,14 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
     #expect(state(phase: .live, role: .writer).stripButton == nil)
     #expect(state(phase: .ended("iMac"), role: .observer).stripButton == "Close")
     #expect(state(phase: .failed("Host is offline"), role: .writer).stripButton == "Close")
-    #expect(state(phase: .suspended("iMac"), role: .writer).stripButton == "Close")
+    #expect(state(phase: suspended("iMac"), role: .writer).stripButton == "Close")
 }
 
 @Test func stripTextFailedIsTheReasonItself() {
     #expect(state(phase: .failed("Host is offline"), role: .observer).stripText
-        == "Host is offline — ⌘W to close")
+        == "Host is offline · ⌘W to close")
     #expect(state(phase: .failed("Not paired with this device"), role: .writer).stripText
-        == "Not paired with this device — ⌘W to close")
+        == "Not paired with this device · ⌘W to close")
     #expect(state(phase: .failed("Host is offline"), role: .writer).acceptsInput == false)
 }
 
@@ -95,8 +128,8 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
 @Test func onlyTheStatesThatKeepADeadTabTellYouHowToCloseIt() {
     for s in [state(phase: .ended("iMac"), role: .observer),
               state(phase: .failed("Host is offline"), role: .observer),
-              state(phase: .suspended("iMac"), role: .observer)] {
-        #expect(s.stripText?.hasSuffix(" — ⌘W to close") == true)
+              state(phase: suspended("iMac"), role: .observer)] {
+        #expect(s.stripText?.hasSuffix(" · ⌘W to close") == true)
     }
     for s in [state(phase: .attaching, role: .observer), state(phase: .snapshot, role: .observer),
               state(phase: .live, role: .observer), state(phase: .reconnecting, role: .writer)] {
@@ -138,7 +171,7 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
     // Every state without a button reads exactly as its sentence.
     for s in [state(phase: .attaching, role: .observer), state(phase: .snapshot, role: .writer),
               state(phase: .reconnecting, role: .writer), state(phase: .ended("iMac"), role: .writer),
-              state(phase: .suspended("iMac"), role: .writer),
+              state(phase: suspended("iMac"), role: .writer),
               state(phase: .failed("Host is offline"), role: .observer)] {
         #expect(s.stripLabel == s.stripText)
     }
@@ -167,7 +200,7 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
     #expect(state(phase: .reconnecting, role: .writer).severity == .info)
     #expect(state(phase: .ended("iMac"), role: .writer).severity == .warning)
     #expect(state(phase: .failed("Host is offline"), role: .observer).severity == .warning)
-    #expect(state(phase: .suspended("iMac"), role: .writer).severity == .warning)
+    #expect(state(phase: suspended("iMac"), role: .writer).severity == .warning)
 }
 
 // MARK: - The geometry note
@@ -175,9 +208,11 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
 /// The silent clipping a user could only diagnose by counting columns: a host on a 160-column
 /// screen mirrored into a 96-column pane loses the right-hand third with nothing said.
 @Test func aHostScreenBiggerThanThePaneSaysSoOnTheStrip() {
-    #expect(AttachState.geometryNote(host: GridSize(cols: 160, rows: 74),
+    // Two numbers and a subtraction was a puzzle: it left the reader to work out that the missing
+    // columns are the right-hand ones and that the prompt is off the bottom.
+    #expect(AttachState.geometryNote(host: GridSize(cols: 132, rows: 40),
                                      pane: GridSize(cols: 96, rows: 30))
-        == "Host’s screen is 160×74 — showing 96×30")
+        == "Host is 132×40 — the prompt and cursor may be off screen; enlarge the window")
     // Either dimension is enough: rows clip as invisibly as columns do.
     #expect(AttachState.geometryNote(host: GridSize(cols: 80, rows: 60),
                                      pane: GridSize(cols: 80, rows: 24)) != nil)
@@ -199,8 +234,8 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
 @Test func theNoteIsTheWholeStripWhenThePhaseHasNothingToSay() {
     var writer = state(phase: .live, role: .writer)
     #expect(writer.stripText == nil)
-    writer.geometryNote = "Host’s screen is 160×74 — showing 96×30"
-    #expect(writer.stripText == "Host’s screen is 160×74 — showing 96×30")
+    writer.geometryNote = "Host is 132×40"
+    #expect(writer.stripText == "Host is 132×40")
     #expect(writer.stripLabel == writer.stripText)
     #expect(writer.severity == .info)
     #expect(writer.stripButton == nil)
@@ -208,10 +243,32 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
 
 @Test func theNoteJoinsThePhasesOwnSentenceRatherThanReplacingIt() {
     var observing = state(phase: .live, role: .observer)
-    observing.geometryNote = "Host’s screen is 160×74 — showing 96×30"
-    #expect(observing.stripText == "Observing — Take control · Host’s screen is 160×74 — showing 96×30")
-    #expect(observing.stripLabel == "Observing · Host’s screen is 160×74 — showing 96×30")
+    observing.geometryNote = "Host is 132×40"
+    #expect(observing.stripText == "Observing — Take control · Host is 132×40")
+    #expect(observing.stripLabel == "Observing · Host is 132×40")
     #expect(observing.stripButton == "Take control")
+}
+
+/// A strip too narrow for both clauses loses the geometry note, not the end of the sentence in
+/// front of it: a window that is too small is a thing the user can also simply see, and
+/// "Mac mini has been offline since 14:3…" would lose the part that cannot be seen any other way.
+@Test func aNarrowStripDropsTheGeometryNoteBeforeItTruncates() {
+    var s = state(phase: suspended("Mac mini"), role: .writer)
+    s.timeZone = utc
+    s.geometryNote = "Host is 132×40 — the prompt and cursor may be off screen; enlarge the window"
+    let options = s.stripLabelOptions
+    #expect(options.count == 2)
+    #expect(options[0] == s.stripText)
+    #expect(options[1] == "Mac mini has been offline since 14:32 — waiting for it to come back · ⌘W to close")
+    #expect(options[0].count > options[1].count)
+}
+
+/// Nothing to choose between when there is no note: one option, and the view draws it.
+@Test func aStripWithNoNoteHasOneOption() {
+    #expect(state(phase: .ended("iMac"), role: .writer).stripLabelOptions
+        == ["Session ended on iMac · ⌘W to close"])
+    // The live writer has no strip at all, so there is nothing to offer the view.
+    #expect(state(phase: .live, role: .writer).stripLabelOptions.isEmpty)
 }
 
 /// The one state with no strip has no severity to draw either.
@@ -238,4 +295,13 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
                    AttachFailure.relayRefused("bad_token")]
     #expect(Set(reasons).count == 3)
     #expect(AttachFailure.remoteSettingsChanged == "Remote settings changed")
+}
+
+@Test func aSecondWindowIsToldWhyItCannotHaveTheAttachment() {
+    #expect(AttachFailure.alreadyOpen == "Already open in another window")
+}
+
+@Test func aHostThatGoesBeforeTheAttachLandsIsAFailedAttach() {
+    #expect(AttachFailure.hostWentOfflineDuringAttach
+        == "Host went offline before the session attached")
 }

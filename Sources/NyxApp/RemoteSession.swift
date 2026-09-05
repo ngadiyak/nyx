@@ -31,6 +31,17 @@ final class RemoteSession: PaneSession {
 
     let attachment: RemoteClient.Attachment
 
+    /// This session was handed an attachment another window's tab already owns.
+    ///
+    /// `onBytes` and `onState` are one slot each, so wiring in here would not share the stream --
+    /// it would take it, and the window that had it would be left with a tab that is drawn, accepts
+    /// keystrokes and never shows another byte. `TabController.openRemote` goes to that window
+    /// instead, so this is the belt to that braces: reaching it means the search missed, and the
+    /// tab says so rather than quietly stealing somebody else's session.
+    private let alreadyOwned: Bool
+    /// What this pane shows *instead of* the attachment's own state, when it does not own it.
+    private var refusedState: AttachState?
+
     private let terminal: Terminal
     private let lock = NSLock()
     /// Feeding happens here, never on main: a 2,000-line snapshot is a parse of a few hundred
@@ -44,10 +55,17 @@ final class RemoteSession: PaneSession {
     var pid: pid_t { 0 }
     var foregroundProcessGroup: pid_t? { nil }
 
-    var state: AttachState { attachment.state }
+    var state: AttachState { refusedState ?? attachment.state }
 
-    init(attachment: RemoteClient.Attachment, config: Config, palette: Palette) {
+    init(attachment: RemoteClient.Attachment, alreadyOwned: Bool = false, config: Config,
+         palette: Palette) {
         self.attachment = attachment
+        self.alreadyOwned = alreadyOwned
+        if alreadyOwned {
+            var refused = attachment.state
+            refused.phase = .failed(AttachFailure.alreadyOpen)
+            refusedState = refused
+        }
         // 80×24 until `attached` says otherwise. The host's real size arrives with that message,
         // moments later, and `applyHostSize` resizes to it before the snapshot is drawn.
         terminal = Terminal(cols: 80, rows: 24, scrollbackLimit: config.scrollbackLines,
@@ -68,6 +86,7 @@ final class RemoteSession: PaneSession {
     /// snapshot is over, which is what makes the observer strip the truth rather than a label:
     /// there is no path from a key to the host's shell while it says "Observing".
     func send(_ bytes: [UInt8]) {
+        guard !alreadyOwned else { return }
         attachment.send(bytes)
     }
 
@@ -80,6 +99,13 @@ final class RemoteSession: PaneSession {
         started = true
         lock.unlock()
         guard !alreadyStarted else { return }
+        // Not ours: leave the owner's callbacks exactly where they are and report the refusal to
+        // this pane only. Everything else here -- `send`, `terminate` -- is guarded the same way.
+        guard !alreadyOwned else {
+            let refused = state
+            DispatchQueue.main.async { [weak self] in self?.stateChanged(refused) }
+            return
+        }
         attachment.onBytes = { [weak self] bytes in self?.feed(bytes) }
         attachment.onState = { [weak self] state in
             DispatchQueue.main.async { self?.stateChanged(state) }
@@ -95,6 +121,9 @@ final class RemoteSession: PaneSession {
     func resize(cols: Int, rows: Int) {}
 
     func terminate() {
+        // Closing a tab that never owned the attachment must not detach it: that would end the
+        // session for the window that *does* own it, from a tab that never showed a byte of it.
+        guard !alreadyOwned else { return }
         attachment.onBytes = nil
         attachment.onState = nil
         attachment.detach()
@@ -133,6 +162,7 @@ final class RemoteSession: PaneSession {
     /// resizing the host: nothing is sent, the host's PTY is untouched, and all this does is give
     /// the grid the same shape the host's has so its rows land where they did there.
     private func applyHostSize() {
+        guard !alreadyOwned else { return }
         let cols = attachment.cols, rows = attachment.rows
         guard cols > 0, rows > 0 else { return }
         let changed: Bool = withTerminal { terminal in

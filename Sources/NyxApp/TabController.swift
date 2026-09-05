@@ -205,12 +205,17 @@ final class TabController: NSViewController, NSMenuItemValidation {
 
     /// Every tab in this window holding a remote pane, in strip order. A tab can hold at most one
     /// (a split beside it is an ordinary local shell), which is why the first one found is the tab.
-    private var openRemoteTabs: [RemoteTabs.Open] {
+    ///
+    /// `isLive` comes from the pane's own state rather than the attachment's, because a tab whose
+    /// session ended keeps its transcript and stays on screen: it is a remote tab that no longer
+    /// holds a session, and treating it as the session's tab would answer the palette row with a
+    /// corpse for as long as it was left open.
+    func remoteTabs(inWindow window: Int) -> [RemoteTabs.Open] {
         tabs.enumerated().compactMap { index, tab in
-            guard let attachment = tab.panes.allPanes.compactMap({ $0.remote?.attachment }).first
-            else { return nil }
-            return RemoteTabs.Open(index: index, hostID: attachment.hostID,
-                                   sessionID: RemoteID.base64url(attachment.sessionID))
+            guard let remote = tab.panes.allPanes.compactMap({ $0.remote }).first else { return nil }
+            return RemoteTabs.Open(window: window, index: index, hostID: remote.attachment.hostID,
+                                   sessionID: RemoteID.base64url(remote.attachment.sessionID),
+                                   isLive: remote.state.isAttached)
         }
     }
 
@@ -232,26 +237,27 @@ final class TabController: NSViewController, NSMenuItemValidation {
     /// an ordinary local shell beside it, because a split is a new session and there is only ever
     /// one attachment per row of the palette.
     func openRemote(deviceID: String, sessionID: String, hostName: String, title: String) {
-        // Already open somewhere in this window: go to it. A second attach to one session id is not
-        // a second view of it -- the client hands back the attachment that is already there -- so
-        // opening a second tab would be two tabs fed by one stream, and the first one would have
-        // looked like it died.
-        if let index = RemoteTabs.existing(sessionID: sessionID, hostID: deviceID,
-                                           among: openRemoteTabs) {
-            selectTab(at: index)
+        // Already open *anywhere in this application*: go to it, raising its window if that is not
+        // this one. A second attach to one session id is not a second view of it -- there is one
+        // attachment and it has one owner -- so a second tab would take the stream and leave the
+        // first drawn, taking keystrokes, and never showing another byte.
+        if let match = RemoteTabs.existing(sessionID: sessionID, hostID: deviceID,
+                                           among: appDelegate?.openRemoteTabs ?? []) {
+            appDelegate?.revealRemoteTab(match)
             return
         }
         guard let coordinator = appDelegate?.remote,
-              let attachment = coordinator.attach(deviceID: deviceID, sessionID: sessionID,
-                                                  hostName: hostName, title: title) else {
+              let outcome = coordinator.attach(deviceID: deviceID, sessionID: sessionID,
+                                               hostName: hostName, title: title) else {
             NSSound.beep()
             return
         }
-        let session = RemoteSession(attachment: attachment, config: config,
-                                    palette: Pane.resolvedPalette(for: config))
+        let attachment = outcome.attachment
+        let session = RemoteSession(attachment: attachment, alreadyOwned: outcome.wasAlreadyOpen,
+                                    config: config, palette: Pane.resolvedPalette(for: config))
         let pane: Pane
         do {
-            pane = try Pane(.zero, config: config, remote: session, state: attachment.state)
+            pane = try Pane(.zero, config: config, remote: session, state: session.state)
         } catch {
             // Nothing is on screen to show it, so the attachment is let go rather than left running
             // and delivering bytes to nobody.

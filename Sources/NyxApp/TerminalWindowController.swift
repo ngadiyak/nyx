@@ -4,6 +4,17 @@ import NyxCore
 final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     var onClose: ((TerminalWindowController) -> Void)?
     private var tabs: TabController?
+
+    /// This window's remote tabs, stamped with the index the application knows this window by.
+    func remoteTabs(inWindow index: Int) -> [RemoteTabs.Open] {
+        tabs?.remoteTabs(inWindow: index) ?? []
+    }
+
+    /// Selects one of this window's tabs from outside it -- the application raising the window that
+    /// already holds a remote session somebody has just chosen again.
+    func selectTab(at index: Int) {
+        tabs?.selectTab(at: index)
+    }
     private var banner: ConfigBanner?
     private var effectView: NSVisualEffectView?
     private var config: Config = .defaults

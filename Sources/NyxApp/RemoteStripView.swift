@@ -23,7 +23,8 @@ final class RemoteStripView: NSView {
     /// updated on every render pass, like the sticky strip. The palette is part of the key: a theme
     /// reload changes no word on the strip, and without it the strip kept the old theme's colours
     /// while everything around it repainted.
-    private var shown: (text: String, button: String?, palette: Palette, severity: AttachState.Severity)?
+    private var shown: (text: String, button: String?, palette: Palette, severity: AttachState.Severity,
+                        width: CGFloat)?
 
     /// The floor the label is held to, and why it is not 4.5.
     ///
@@ -74,18 +75,24 @@ final class RemoteStripView: NSView {
             if !isHidden { isHidden = true; shown = nil }
             return
         }
+        // The width is part of the key: which of `stripLabelOptions` fits depends on it, so a
+        // window the user has just narrowed has to be re-decided even though nothing else moved.
         guard shown?.text != text || shown?.button != state.stripButton
                 || shown?.palette != palette || shown?.severity != state.severity
+                || shown?.width != bounds.width
                 || label.font != font else {
             isHidden = false
             return
         }
-        shown = (text, state.stripButton, palette, state.severity)
-        // `stripLabel`, not `stripText`: with the button beside it the whole sentence would say
-        // "Take control" twice on one row. The full sentence is what the accessibility label below
-        // carries, where there is no button to read.
-        label.stringValue = state.stripLabel ?? text
+        shown = (text, state.stripButton, palette, state.severity, bounds.width)
+        // `stripLabelOptions`, not `stripText`: with the button beside it the whole sentence would
+        // say "Take control" twice on one row, and on a narrow window the geometry clause goes
+        // rather than the sentence in front of it being cut off mid-word. The full sentence is what
+        // the accessibility label below carries, where there is neither a button nor a width.
         label.font = font
+        label.stringValue = RemoteStripView.fitting(state.stripLabelOptions,
+                                                    width: labelWidth(button: state.stripButton),
+                                                    font: font) ?? text
         button.isHidden = state.stripButton == nil
         if let title = state.stripButton { button.title = title }
         // Re-described on every change: the two buttons are two different acts, and a screen reader
@@ -135,6 +142,27 @@ final class RemoteStripView: NSView {
         setAccessibilityRole(.group)
         setAccessibilityLabel("Remote session: \(text)")
         isHidden = false
+    }
+
+    /// How much room the label has: the strip minus its margins, minus the button when there is one.
+    private func labelWidth(button title: String?) -> CGFloat {
+        var available = bounds.width - 12
+        if let title, !title.isEmpty {
+            button.title = title
+            available -= button.intrinsicContentSize.width + 8
+        }
+        return max(0, available)
+    }
+
+    /// The first option that fits, or the last one when none does -- which the label then truncates,
+    /// because a strip has to say *something*.
+    static func fitting(_ options: [String], width: CGFloat, font: NSFont) -> String? {
+        guard let last = options.last else { return nil }
+        for option in options {
+            let size = (option as NSString).size(withAttributes: [.font: font])
+            if size.width <= width { return option }
+        }
+        return last
     }
 
     @objc private func buttonPressed() {

@@ -533,13 +533,26 @@ enum UISnapshot {
         // The live *writer* with a geometry note is the one picture of that state there can be: it
         // is the only thing that puts a strip on a tab which otherwise has none.
         var clipped = state(.live, .writer)
-        clipped.geometryNote = AttachState.geometryNote(host: GridSize(cols: 160, rows: 74),
+        clipped.geometryNote = AttachState.geometryNote(host: GridSize(cols: 132, rows: 40),
                                                         pane: GridSize(cols: 96, rows: 30))
+        // A fixed clock, so the picture is the same every run rather than "since <now>".
+        let offlineAt = Date(timeIntervalSince1970: 1_757_082_720)
+        var suspended = state(.suspended("Mac mini (office)", since: offlineAt), .writer)
+        suspended.timeZone = TimeZone(identifier: "UTC")!
+        // The same state in a split tab: no "⌘W to close" -- ⌘W would take the other pane's tab
+        // with it -- and the Close button carries the whole offer.
+        var suspendedSplit = suspended
+        suspendedSplit.closesWholeTab = false
+        // Both clauses at once, which is the case the strip has to choose between when it is narrow.
+        var suspendedClipped = suspended
+        suspendedClipped.geometryNote = clipped.geometryNote
         return [
             ("attaching", state(.attaching, .observer)),
             ("observer", state(.live, .observer)),
             ("reconnecting", state(.reconnecting, .writer)),
-            ("suspended", state(.suspended("Mac mini (office)"), .writer)),
+            ("suspended", suspended),
+            ("suspended-split", suspendedSplit),
+            ("suspended-clipped", suspendedClipped),
             ("ended", state(.ended("Mac mini (office)"), .writer)),
             ("failed", state(.failed(AttachFailure.text(code: "host_offline")), .observer)),
             ("clipped", clipped),

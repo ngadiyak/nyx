@@ -243,7 +243,7 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
     /// Attaches to a session on a paired Mac. nil when remote sessions are off or the session id is
     /// not one -- the palette's placeholder rows (an offline Mac, a Mac with nothing open, the
     /// status line) carry an empty one on purpose.
-    func attach(deviceID: String, sessionID: String, hostName: String, title: String) -> RemoteClient.Attachment? {
+    func attach(deviceID: String, sessionID: String, hostName: String, title: String) -> RemoteClient.Outcome? {
         guard let client, let bytes = RemoteID.bytes(base64url: sessionID), bytes.count == 16 else {
             return nil
         }
@@ -495,6 +495,14 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
                                    attributes: [.posixPermissions: 0o600])
                 return
             }
+            // Tightened on every append, not only at creation: a file that already existed at 0644
+            // -- written by a build before this check, or by a user's own `touch` -- would stay
+            // world-readable for ever, and it names every device that has reached this Mac and
+            // when. Read first so the ordinary case does no write at all.
+            let mode = (try? manager.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)??.intValue
+            if mode != 0o600 {
+                try? manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            }
             guard let handle = try? FileHandle(forWritingTo: url) else { return }
             defer { try? handle.close() }
             _ = try? handle.seekToEnd()
@@ -619,9 +627,17 @@ final class RemotePublication {
         // 16 random bytes, per the wire contract and spec §11: made when the pane is created and
         // never persisted, so a session id means "this pane, this run" and cannot be guessed from
         // one launch to the next.
-        self.sessionID = (0..<16).map { _ in UInt8.random(in: 0...255) }
+        let id = (0..<16).map { _ in UInt8.random(in: 0...255) }
+        self.sessionID = id
         self.session = session
         self.coordinator = coordinator
+        // Seeded rather than left at the empty default. A pane is registered before it has
+        // published anything about itself, so the first catalogue went out with a blank id and a
+        // blank title; `RemoteHost` stamps the id as the invariant, and this is what stops the
+        // *title* being blank in the half-second before the pane's first summary lands.
+        box.set(RemoteSessionInfo(sessionID: RemoteID.base64url(id), title: "Terminal", cwd: "",
+                                  repo: "", branch: "", process: "", lastCommand: "",
+                                  lastActivity: "", cols: 80, rows: 24))
     }
 
     /// What this pane looks like in another Mac's palette. Called on the main thread only.

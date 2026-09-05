@@ -63,6 +63,11 @@ private final class ClientFixture {
     var deviceID: String { identity.deviceID }
 
     func attach(title: String = "shell") -> RemoteClient.Attachment {
+        outcome(title: title).attachment
+    }
+
+    /// The whole answer, for the tests that care whether the attachment was already owned.
+    func outcome(title: String = "shell") -> RemoteClient.Outcome {
         client.attach(hostID: host.deviceID, hostName: "studio", sessionID: sessionID, title: title)
     }
 
@@ -83,6 +88,18 @@ private final class ClientFixture {
     func hostSends(_ text: String) throws {
         client.handle(try host.seal(Array(text.utf8)))
     }
+}
+
+/// `.suspended` carries the moment it started, which no test can predict; these are how a test says
+/// "suspended, whenever that was".
+private func isSuspended(_ phase: AttachState.Phase?) -> Bool {
+    if case .suspended = phase { return true }
+    return false
+}
+
+private func suspensionTime(_ phase: AttachState.Phase) -> Date? {
+    if case .suspended(_, let since) = phase { return since }
+    return nil
 }
 
 /// Collects what an attachment reported, so a test can assert on the whole sequence rather than on
@@ -192,7 +209,7 @@ private final class Recorder {
     let f = try ClientFixture()
     let stranger = try TestPeer(isHost: true)
     let attachment = f.client.attach(hostID: stranger.deviceID, hostName: "stranger",
-                                     sessionID: f.sessionID, title: "shell")
+                                     sessionID: f.sessionID, title: "shell").attachment
 
     let attach = try #require(f.link.messages(ofType: "attach").last)
     try stranger.completeAttach(attach, sessionID: f.sessionID, peerID: f.deviceID)
@@ -249,7 +266,7 @@ private final class Recorder {
     f.client.handle(f.host.message(.sessionEnded(to: f.deviceID, sessionID: f.key)))
 
     #expect(attachment.state.phase == .ended("studio"))
-    #expect(attachment.state.stripText == "Session ended on studio — ⌘W to close")
+    #expect(attachment.state.stripText == "Session ended on studio · ⌘W to close")
     #expect(!attachment.state.acceptsInput)
     // Nothing arrives after the end, and nothing more is said about it.
     let phases = recorder.phaseCount()
@@ -335,7 +352,7 @@ private final class Recorder {
 @Test func aSessionIDThatCannotBeOneNeverReachesTheRelay() throws {
     let f = try ClientFixture()
     let attachment = f.client.attach(hostID: f.host.deviceID, hostName: "studio",
-                                     sessionID: [1, 2, 3], title: "shell")
+                                     sessionID: [1, 2, 3], title: "shell").attachment
 
     // Every session id on the wire is 16 bytes. Sending this would have the relay answer
     // `no_such_session` at best; the tab says so itself instead of spinning on "Attaching…".
@@ -379,7 +396,7 @@ private final class Recorder {
     host.flush()
 
     let attachment = client.attach(hostID: hostIdentity.deviceID, hostName: "studio",
-                                   sessionID: sessionID, title: "shell")
+                                   sessionID: sessionID, title: "shell").attachment
     let recorder = Recorder()
     recorder.watch(attachment)
     host.flush()
@@ -412,7 +429,7 @@ private final class Recorder {
     let other = try TestPeer(isHost: true)
     f.paired.add(other.deviceID)
     let second = f.client.attach(hostID: other.deviceID, hostName: "loft",
-                                 sessionID: f.sessionID, title: "shell")
+                                 sessionID: f.sessionID, title: "shell").attachment
     #expect(first.state.phase == .ended("studio"))
     #expect(second.state.phase == .attaching)
 
@@ -506,7 +523,7 @@ private final class Recorder {
                                   sessionID: f.key, message: "device offline"))
 
     #expect(attachment.state.phase == .failed("Host is offline"))
-    #expect(attachment.state.stripText == "Host is offline — ⌘W to close")
+    #expect(attachment.state.stripText == "Host is offline · ⌘W to close")
     #expect(attachment.state.stripButton == "Close")
     #expect(recorder.phases == [.failed("Host is offline")])
 }
@@ -694,7 +711,7 @@ private final class Recorder {
     // ended on <host>", and nothing on the host ended -- this side stopped. `.failed` shows the
     // reason as the whole sentence, and behaves identically otherwise.
     #expect(attachment.state.phase == .failed(AttachFailure.remoteTurnedOff))
-    #expect(attachment.state.stripText == "Remote sessions turned off — ⌘W to close")
+    #expect(attachment.state.stripText == "Remote sessions turned off · ⌘W to close")
     #expect(!attachment.state.acceptsInput)
     #expect(recorder.phases == [.failed(AttachFailure.remoteTurnedOff)])
 }
@@ -711,7 +728,7 @@ private final class Recorder {
 
     f.client.endAll(reason: AttachFailure.relayRefused("bad_token"))
 
-    #expect(attachment.state.stripText == "Relay refused this device (bad_token) — ⌘W to close")
+    #expect(attachment.state.stripText == "Relay refused this device (bad_token) · ⌘W to close")
     #expect(!attachment.state.acceptsInput)
 }
 
@@ -722,7 +739,7 @@ private final class Recorder {
     let attachment = f.attach()
     try f.acceptAttach()
     f.client.endAll(reason: AttachFailure.remoteSettingsChanged)
-    #expect(attachment.state.stripText == "Remote settings changed — ⌘W to close")
+    #expect(attachment.state.stripText == "Remote settings changed · ⌘W to close")
 }
 
 /// A hostile or broken relay can put any integer in `attached`: nothing in that message is signed
@@ -760,7 +777,7 @@ private final class Recorder {
     let f = try ClientFixture()
     let other = try TestPeer(isHost: true)
     let kept = f.client.attach(hostID: other.deviceID, hostName: "laptop",
-                               sessionID: testSessionID(3), title: "vim")
+                               sessionID: testSessionID(3), title: "vim").attachment
     let ended = f.attach()
     try f.acceptAttach()
     #expect(ended.state.phase == .snapshot)
@@ -768,7 +785,7 @@ private final class Recorder {
     f.client.endAll(matching: f.host.deviceID, reason: AttachFailure.unpaired)
 
     #expect(ended.state.phase == .failed(AttachFailure.unpaired))
-    #expect(ended.state.stripText == "This device was removed from your paired devices — ⌘W to close")
+    #expect(ended.state.stripText == "This device was removed from your paired devices · ⌘W to close")
     #expect(kept.state.phase == .attaching)
     // And it is off the routing table: a frame the host sends afterwards reaches nothing.
     f.link.reset()
@@ -816,11 +833,14 @@ private final class Recorder {
 
     f.client.handle(f.suspended())
 
-    #expect(attachment.state.phase == .suspended("studio"))
-    #expect(attachment.state.stripText == "studio is offline — will reattach — ⌘W to close")
+    let suspendedAt = try #require(suspensionTime(attachment.state.phase))
+    #expect(attachment.state.phase == .suspended("studio", since: suspendedAt))
+    #expect(attachment.state.stripText?.hasPrefix("studio has been offline since ") == true)
+    #expect(attachment.state.stripText?.hasSuffix("waiting for it to come back · ⌘W to close") == true)
     #expect(attachment.state.severity == .warning)
     #expect(!attachment.state.acceptsInput)
-    #expect(recorder.phases == [.suspended("studio")])
+    #expect(recorder.phases.count == 1)
+    #expect(isSuspended(recorder.phases.first))
 }
 
 /// A suspended tab is not a dead one: input is refused, but the attachment is still routed to, and
@@ -885,7 +905,7 @@ private final class Recorder {
     f.client.handle(f.catalogue([testSessionID(7)]))
 
     #expect(attachment.state.phase == .ended("studio"))
-    #expect(attachment.state.stripText == "Session ended on studio — ⌘W to close")
+    #expect(attachment.state.stripText == "Session ended on studio · ⌘W to close")
     #expect(f.link.messages(ofType: "attach").isEmpty, "an ended session must not be attached to")
 }
 
@@ -971,7 +991,7 @@ private final class Recorder {
     }
 
     #expect(attachment.state.phase == .failed(AttachFailure.noAnswer))
-    #expect(attachment.state.stripText == "No answer from the host — ⌘W to close")
+    #expect(attachment.state.stripText == "No answer from the host · ⌘W to close")
 }
 
 /// Only the two codes a race produces are waited out. `not_paired` is a settled answer: retrying it
@@ -1067,11 +1087,92 @@ private final class Recorder {
     f.client.handle(f.catalogue([]))
     f.client.handle(f.presence(hostOnline: false))
 
-    #expect(attachment.state.phase == .suspended("studio"))
+    #expect(isSuspended(attachment.state.phase))
 
     // And when the host really does come back with nothing open, the tab does end: presence first,
     // then the catalogue, which is the order a reconnecting host produces.
     f.client.handle(f.presence(hostOnline: true))
     f.client.handle(f.catalogue([]))
     #expect(attachment.state.phase == .ended("studio"))
+}
+
+// MARK: - One attachment, one owner
+
+/// The freeze a second window caused. `onBytes`/`onState` are one slot each, so a second
+/// `RemoteSession` wiring itself in did not share the stream -- it took it, and the window that had
+/// it was left with a tab still drawn, still accepting keystrokes, and never showing another byte.
+/// `attach` says so, and the caller goes to the window that owns it instead.
+@Test func attachingToASessionAnotherOwnerAlreadyHasSaysSo() throws {
+    let f = try ClientFixture()
+    let first = f.outcome()
+    #expect(!first.wasAlreadyOpen)
+    try f.acceptAttach(role: "writer")
+    // What a `RemoteSession` does when it starts.
+    first.attachment.onBytes = { _ in }
+    first.attachment.onState = { _ in }
+
+    let second = f.outcome()
+
+    #expect(second.attachment === first.attachment)
+    #expect(second.wasAlreadyOpen)
+}
+
+/// An attachment nobody has wired into yet is not "already open": that is the ordinary case of a
+/// palette row chosen twice in the moment before the tab exists, and the caller should get on with
+/// making the tab rather than refusing it.
+@Test func anUnownedAttachmentIsNotReportedAsAlreadyOpen() throws {
+    let f = try ClientFixture()
+    _ = f.outcome()
+
+    #expect(!f.outcome().wasAlreadyOpen)
+}
+
+// MARK: - A blip on this Mac's socket while the host is away
+
+/// The defect: `.suspended` is not "ended", so the link's own disconnect/reconnect drove a suspended
+/// tab into `.reconnecting` -- which started a sixty-second window against a host that was still
+/// gone and landed the tab on "No answer from the host". An outage on this side turned into a
+/// verdict about the other one.
+@Test func aBlipOnThisMacsSocketLeavesASuspendedTabSuspended() throws {
+    let clock = TestClock()
+    let f = try ClientFixture(clock: clock)
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    f.client.handle(f.suspended())
+    #expect(isSuspended(attachment.state.phase))
+    f.link.reset()
+
+    f.client.linkDidDisconnect()
+    #expect(isSuspended(attachment.state.phase))
+    f.client.linkDidReconnect()
+    #expect(isSuspended(attachment.state.phase))
+    #expect(f.link.messages(ofType: "attach").isEmpty,
+            "a suspended tab must not re-attach on this side's reconnect: the host is still gone")
+
+    // A minute of the retry window would have expired by now, had one been started.
+    clock.advance(90)
+    #expect(isSuspended(attachment.state.phase))
+
+    // And the ordinary wake-up still works afterwards.
+    f.client.handle(f.presence(hostOnline: true))
+    f.client.handle(f.catalogue([f.sessionID]))
+    #expect(attachment.state.phase == .reconnecting)
+    try f.acceptAttach(role: "writer")
+    #expect(attachment.state.phase == .snapshot)
+}
+
+/// A `session_suspended` for a tab that never got past "Attaching…" has no transcript to keep and
+/// no snapshot to come back to. It is an attach that did not happen, and says so rather than
+/// offering to reattach to something the user never saw.
+@Test func aHostThatGoesBeforeTheAttachLandsFailsRatherThanSuspends() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    #expect(attachment.state.phase == .attaching)
+
+    f.client.handle(f.suspended())
+
+    #expect(attachment.state.phase == .failed(AttachFailure.hostWentOfflineDuringAttach))
+    #expect(attachment.state.stripText
+        == "Host went offline before the session attached · ⌘W to close")
 }

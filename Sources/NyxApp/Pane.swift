@@ -21,6 +21,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// The user clicked in this pane. `PaneTreeView` turns it into a focus change; the pane itself
     /// only ever knows that it was clicked.
     var onFocusRequested: (() -> Void)?
+    /// Whether this pane is the only one in its tab, from the tree that holds it. nil for a pane
+    /// that is not in a tree yet, which is treated as "alone" -- the state a remote tab starts in.
+    var isSolePaneInTab: (() -> Bool)?
     /// The session produced output, delivered on the main queue. The tab bar turns this into an
     /// activity dot for a tab that is not on screen; a pane the user is looking at just draws it.
     var onOutput: (() -> Void)?
@@ -2264,9 +2267,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// accepted at all -- is `AttachState` in NyxCore.
     private func showRemote(_ state: AttachState) {
         var shown = state
-        // Added here rather than by the client: how much of the host's screen fits is a fact about
-        // this window, and `RemoteClient` neither knows nor should know how big a pane is.
+        // Added here rather than by the client: how much of the host's screen fits, and how many
+        // panes share this tab, are facts about this window -- which `RemoteClient` neither knows
+        // nor should.
         shown.geometryNote = remoteGeometryNote()
+        shown.closesWholeTab = isSolePaneInTab?() ?? true
+        // `updateGrid` calls this on every layout pass, and a tab bar that rebuilt its badge and
+        // title on each one would be doing that work for nothing.
+        guard shown != shownRemoteState else { return }
+        shownRemoteState = shown
         let wasHidden = remoteStrip.isHidden
         remoteStrip.update(state: shown, palette: Pane.resolvedPalette(for: config),
                            font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
@@ -2275,8 +2284,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         markDirty()
     }
 
-    /// "Host's screen is 160×74 — showing 96×30", when this pane is smaller than the host's grid.
-    /// nil on a local pane, and before `attached` has said how big the host is.
+    /// The last state actually drawn, so an unchanged one is not redrawn or re-reported.
+    private var shownRemoteState: AttachState?
+
+    /// The geometry note for this pane, or nil on a local pane and before `attached` has said how
+    /// big the host is.
     private func remoteGeometryNote() -> String? {
         guard let remote else { return nil }
         let host = GridSize(cols: remote.attachment.cols, rows: remote.attachment.rows)
@@ -2289,7 +2301,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func remoteStripButtonPressed() {
         switch remote?.state.stripAction {
         case .takeControl: takeControl()
-        case .close: actionTarget?.perform(.closePane)
+        case .close:
+            // This pane, not whichever one happens to have focus. The button is on a strip inside
+            // one pane, and `closePane` acts on the focused one -- so clicking Close on a dead
+            // remote pane beside a live local one used to close the *local* one.
+            onFocusRequested?()
+            actionTarget?.perform(.closePane)
         case nil: break
         }
     }

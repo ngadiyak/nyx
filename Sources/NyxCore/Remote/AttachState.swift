@@ -19,7 +19,11 @@ public struct AttachState: Equatable {
         /// host's catalogue lists the session again. Saying "Session ended" here -- which is what
         /// this build did before the relay could tell the two apart -- was a sentence the user
         /// could check and find false, on the one screen they had no other way to check.
-        case suspended(String)
+        ///
+        /// `since` is when the suspension started, so the strip can say how long this has been
+        /// going on. "Will reattach" alone is the same sentence after five seconds and after five
+        /// hours, and the difference between those two is the whole of what a person wants to know.
+        case suspended(String, since: Date)
         /// The associated string is the host's name, not this state's own `hostName` -- the event
         /// that ends a session names the host that ended it, and while the two are normally the
         /// same value, the strip should say what the message said, not what was cached at attach.
@@ -60,6 +64,16 @@ public struct AttachState: Equatable {
     /// *this* window is, which nothing in `NyxRemote` knows or should. `AttachState.geometryNote`
     /// computes it; this carries it, so the strip stays one value to draw from.
     public var geometryNote: String?
+    /// Whether ⌘W on this pane closes the tab this strip is in -- true when the pane is its tab's
+    /// only one, which is the ordinary case for a remote tab.
+    ///
+    /// Set by the pane, like `geometryNote`, and for the same reason: the number of panes in a tab
+    /// is not something `NyxRemote` knows. It exists because the strip offering "⌘W to close" in a
+    /// split tab was telling the user to close their *other* pane's tab as well.
+    public var closesWholeTab = true
+    /// The clock the strip's "offline since" is read against. Injected so a test can pin it; the
+    /// pane leaves it at the system's.
+    public var timeZone = TimeZone.current
 
     public init(hostName: String, title: String) {
         self.phase = .attaching
@@ -73,7 +87,11 @@ public struct AttachState: Equatable {
     /// The tab used to close itself on the next keystroke, which threw away the transcript of a
     /// session that had just ended -- exactly when somebody wants to scroll back through it. It
     /// stays now, so the strip has to say how to get rid of it.
-    static let closeHint = " \u{2014} \u{2318}W to close"
+    ///
+    /// Empty when this pane is not its tab's only one: there ⌘W closes the whole tab, other pane
+    /// and all, which is not what the button beside these words does. The button says "Close" and
+    /// that is the whole offer.
+    private var closeHint: String { closesWholeTab ? " \u{00b7} \u{2318}W to close" : "" }
 
     public var tabTitle: String { tabTitle(currentTitle: "") }
 
@@ -102,13 +120,24 @@ public struct AttachState: Equatable {
             return role == .observer ? "Observing — Take control" : nil
         case .reconnecting:
             return "Reconnecting…"
-        case .suspended(let host):
-            return "\(host) is offline — will reattach" + Self.closeHint
+        case .suspended(let host, let since):
+            return "\(host) has been offline since \(Self.clockTime(since, in: timeZone))"
+                + " — waiting for it to come back" + closeHint
         case .ended(let host):
-            return "Session ended on \(host)" + Self.closeHint
+            return "Session ended on \(host)" + closeHint
         case .failed(let reason):
-            return reason + Self.closeHint
+            return reason + closeHint
         }
+    }
+
+    /// "14:32", in the reader's own time zone. Not a relative age ("3 minutes ago"): a strip is not
+    /// redrawn on a timer, so a relative time would be wrong the moment after it was written, and a
+    /// wall-clock time stays true for as long as the tab is open.
+    static func clockTime(_ date: Date, in zone: TimeZone) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        return String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
     }
 
     /// A state with nothing else to say still shows the note, which is why this is not simply an
@@ -120,6 +149,21 @@ public struct AttachState: Equatable {
         case (nil, let note?): return note
         case (let base?, let note?): return "\(base) · \(note)"
         }
+    }
+
+    /// What the strip may draw, longest first: the view takes the first that fits its width.
+    ///
+    /// There is only ever one alternative, and it is the geometry note that goes. It is the least
+    /// urgent clause on the strip -- a window that is too small is a thing the user can also simply
+    /// see -- and truncating the sentence in front of it ("Mac mini has been offline since 14:3…")
+    /// would lose the part that cannot be seen any other way.
+    public var stripLabelOptions: [String] {
+        guard let full = stripLabel else { return [] }
+        guard geometryNote != nil else { return [full] }
+        var withoutNote = self
+        withoutNote.geometryNote = nil
+        guard let shorter = withoutNote.stripLabel, shorter != full else { return [full] }
+        return [full, shorter]
     }
 
     /// What the strip's one button does, if it has one. The *title* is `stripButton`; this is what
@@ -165,6 +209,18 @@ public struct AttachState: Equatable {
 
     public var acceptsInput: Bool { role == .writer && phase == .live }
 
+    /// Whether this tab still holds an attachment the client is routing to.
+    ///
+    /// Everything but `ended` and `failed`, including `suspended`: a suspended tab is waiting, not
+    /// finished, and it is still the one tab that session belongs to. It is what stops the palette
+    /// selecting the corpse of a tab whose session ended instead of opening a fresh one.
+    public var isAttached: Bool {
+        switch phase {
+        case .ended, .failed: return false
+        case .attaching, .snapshot, .live, .reconnecting, .suspended: return true
+        }
+    }
+
     public var severity: Severity {
         switch phase {
         case .suspended, .ended, .failed: return .warning
@@ -180,9 +236,14 @@ public struct AttachState: Equatable {
     /// columns and the bottom rows -- silently, which is the part that makes a person think the
     /// host's shell is broken rather than that their own window is small. Scrolling the larger grid
     /// is still §12; saying so is not.
+    /// Two numbers and a subtraction was a puzzle, not a sentence: "160×74 — showing 96×30" left
+    /// the reader to work out that the missing columns are the *right-hand* ones and that the
+    /// prompt they cannot find is down there somewhere. This says what has happened to them and the
+    /// one thing that fixes it.
     public static func geometryNote(host: GridSize, pane: GridSize) -> String? {
         guard host.cols > pane.cols || host.rows > pane.rows else { return nil }
-        return "Host\u{2019}s screen is \(host.cols)×\(host.rows) — showing \(pane.cols)×\(pane.rows)"
+        return "Host is \(host.cols)×\(host.rows) — the prompt and cursor may be off screen;"
+            + " enlarge the window"
     }
 
     public var badge: String { role == .writer ? "writer" : "observer" }
@@ -240,4 +301,17 @@ public enum AttachFailure {
     /// every code above because nothing on the far end has admitted to anything: the message may
     /// have been dropped, or the host may have gone between the presence update and the attach.
     public static let noAnswer = "No answer from the host"
+
+    /// A second tab tried to take over an attachment another window already owns.
+    ///
+    /// There is one attachment per session id and it has one owner: its callbacks are a single slot
+    /// each, so a second `RemoteSession` wiring itself in silently froze the first window's tab in
+    /// `live` -- still drawn, still accepting keystrokes, and never showing another byte. Choosing
+    /// the row goes to the window that has it; this sentence is what a tab says if it ever gets
+    /// past that.
+    public static let alreadyOpen = "Already open in another window"
+
+    /// `session_suspended` for a session this tab never actually reached. There is no transcript to
+    /// keep and no snapshot to come back to, so it is a failed attach rather than a pause.
+    public static let hostWentOfflineDuringAttach = "Host went offline before the session attached"
 }

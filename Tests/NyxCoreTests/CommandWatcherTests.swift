@@ -138,3 +138,35 @@ private func mark(_ letter: String, _ status: Int32? = nil) -> String {
         #expect(w.observe(bottomPromptRow: 5, outputStarted: false, now: Double(tick)) == nil)
     }
 }
+
+// MARK: - Arming a notification for one command
+
+@Test func theFinishedCommandCarriesItsID() {
+    var w = CommandWatcher(minimumDuration: 10)
+    _ = w.observe(bottomPromptRow: 0, outputStarted: true, runningID: 42, now: 0)
+    let finished = w.observe(bottomPromptRow: 5, outputStarted: false, runningID: 0, now: 30)
+    #expect(finished?.id == 42)
+    #expect(finished?.duration == 30)
+}
+
+/// The watcher reports short commands too, so an armed one can be noticed; the rule decides.
+@Test func anArmedCommandIsReportedHoweverShort() {
+    var w = CommandWatcher(minimumDuration: 10)
+    _ = w.observe(bottomPromptRow: 0, outputStarted: true, runningID: 42, now: 0)
+    let finished = w.observe(bottomPromptRow: 5, outputStarted: false, runningID: 0, now: 2)
+    #expect(finished?.id == 42)
+    #expect(finished?.duration == 2)
+}
+
+@Test func armedBeatsDurationAndFocus() {
+    let quick = FinishedCommand(promptRow: 0, duration: 2, id: 42)
+    #expect(CommandNotificationRule.shouldNotify(quick, armed: [42], windowFocused: true, minimumDuration: 10))
+    #expect(!CommandNotificationRule.shouldNotify(quick, armed: [], windowFocused: true, minimumDuration: 10))
+    #expect(!CommandNotificationRule.shouldNotify(quick, armed: [], windowFocused: false, minimumDuration: 10))
+}
+
+@Test func anUnarmedLongCommandNotifiesOnlyWhenTheWindowIsNotFocused() {
+    let long = FinishedCommand(promptRow: 0, duration: 30, id: 7)
+    #expect(CommandNotificationRule.shouldNotify(long, armed: [], windowFocused: false, minimumDuration: 10))
+    #expect(!CommandNotificationRule.shouldNotify(long, armed: [], windowFocused: true, minimumDuration: 10))
+}

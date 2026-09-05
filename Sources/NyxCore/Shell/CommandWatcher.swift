@@ -5,10 +5,14 @@ public struct FinishedCommand: Equatable {
     /// The absolute row of the prompt it started at, so the caller can look up its status and text.
     public let promptRow: Int
     public let duration: Double
+    /// The id of the command that ran, from `Terminal.runningCommand?.id` -- 0 when none was tracked.
+    /// Lets `CommandNotificationRule` recognise a command the user armed by hand.
+    public let id: UInt32
 
-    public init(promptRow: Int, duration: Double) {
+    public init(promptRow: Int, duration: Double, id: UInt32 = 0) {
         self.promptRow = promptRow
         self.duration = duration
+        self.id = id
     }
 }
 
@@ -28,6 +32,7 @@ public struct CommandWatcher: Equatable {
     private var trackedPrompt: Int?
     private var startedAt: Double?
     private var wasRunning = false
+    private var trackedID: UInt32 = 0
 
     public init(minimumDuration: Double = 10) {
         self.minimumDuration = minimumDuration
@@ -47,21 +52,42 @@ public struct CommandWatcher: Equatable {
     /// a command is running, and then it is not.
     public mutating func observe(bottomPromptRow: Int?, outputStarted: Bool,
                                  now: Double) -> FinishedCommand? {
-        defer { wasRunning = outputStarted }
+        let finished = observe(bottomPromptRow: bottomPromptRow, outputStarted: outputStarted,
+                               runningID: 0, now: now)
+        guard let finished, finished.duration >= minimumDuration else { return nil }
+        return finished
+    }
 
+    /// As `observe(bottomPromptRow:outputStarted:now:)`, but reports *every* finished command with
+    /// its id, leaving "is it worth a notification" to `CommandNotificationRule` -- which can then
+    /// say yes to a two-second command the user armed by hand.
+    public mutating func observe(bottomPromptRow: Int?, outputStarted: Bool, runningID: UInt32,
+                                 now: Double) -> FinishedCommand? {
+        defer { wasRunning = outputStarted }
         if outputStarted {
             if !wasRunning { startedAt = now }
-            trackedPrompt = bottomPromptRow      // kept current as rows shift underneath
+            trackedPrompt = bottomPromptRow
+            if runningID != 0 { trackedID = runningID }
             return nil
         }
+        guard wasRunning, let started = startedAt, let row = trackedPrompt else {
+            startedAt = nil; trackedPrompt = nil; trackedID = 0
+            return nil
+        }
+        let finished = FinishedCommand(promptRow: row, duration: now - started, id: trackedID)
+        startedAt = nil; trackedPrompt = nil; trackedID = 0
+        return finished
+    }
+}
 
-        guard wasRunning, let started = startedAt else { return nil }
-        let ran = now - started
-        let row = trackedPrompt
-        startedAt = nil
-        trackedPrompt = nil
-        guard ran >= minimumDuration, let row else { return nil }
-        return FinishedCommand(promptRow: row, duration: ran)
+/// Whether a finished command is worth interrupting the user about.
+public enum CommandNotificationRule {
+    /// Armed by hand wins over everything: the user asked. Otherwise the old rule -- long enough
+    /// to have looked away from, and the window not in front.
+    public static func shouldNotify(_ finished: FinishedCommand, armed: Set<UInt32>,
+                                    windowFocused: Bool, minimumDuration: Double) -> Bool {
+        if finished.id != 0 && armed.contains(finished.id) { return true }
+        return !windowFocused && finished.duration >= minimumDuration
     }
 }
 

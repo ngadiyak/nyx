@@ -371,8 +371,20 @@ public final class RemoteHost {
         }
     }
 
+    /// The catalogue as the relay is told it.
+    ///
+    /// The session id is stamped from the registration rather than taken from the summary. A pane
+    /// registers before it has published anything about itself, so the very first catalogue after
+    /// launch carried a summary with an empty `session_id` -- and the relay validates that field and
+    /// rejects the *whole* message, so every Nyx launch answered its first publish with
+    /// `bad_message` and the real catalogue only went out on the next update. It also makes a
+    /// mismatch impossible: what a client attaches to is the id this host is keyed by.
     private func publishSessions() {
-        link.send(.sessions(order.compactMap { registrations[$0]?.summary() }))
+        link.send(.sessions(order.compactMap { key in
+            guard var info = registrations[key]?.summary() else { return nil }
+            info.sessionID = key
+            return info
+        }))
     }
 
     /// nil if any part failed to seal, never a partial answer: a caller that sent what it got would

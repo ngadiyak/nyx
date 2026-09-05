@@ -620,3 +620,22 @@ private func waitForShell(_ f: HostFixture, containing needle: String) -> Bool {
     let toSecondOnly = f.text(onSecond, Array(f.link.frames.dropFirst(framesAfterDetach)))
     #expect(toSecondOnly.isEmpty || !toSecondOnly.contains("one:stop"))
 }
+
+/// A pane registers before it has published anything about itself, so the first catalogue after
+/// launch carried a summary with an empty `session_id` -- and the relay validates that field and
+/// rejects the *whole* message, so every launch answered its first publish with `bad_message` and
+/// the real catalogue went out only on the next update. Found by running two instances against the
+/// relay and reading what it sent back.
+@Test func aCatalogueCarriesTheRegisteredSessionIDEvenBeforeTheSummaryHasOne() throws {
+    let f = try HostFixture(script: "sleep 30")
+    defer { f.session.terminate() }
+    // The default `RemoteSessionInfo` a pane's summary box holds before its first update.
+    f.host.register(sessionID: f.sessionID, session: f.session, summary: {
+        RemoteSessionInfo(sessionID: "", title: "", cwd: "", repo: "", branch: "", process: "",
+                          lastCommand: "", lastActivity: "", cols: 80, rows: 24)
+    })
+
+    #expect(waitUntil { !f.link.messages(ofType: "sessions").isEmpty })
+    let published = try #require(f.link.messages(ofType: "sessions").last?.sessions)
+    #expect(published.map(\.sessionID) == [f.key])
+}

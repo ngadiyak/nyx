@@ -182,3 +182,40 @@ private func session() -> Terminal {
     let t = makeTerminal(cols: 40, rows: 6).run("$ build\r\ndone")
     #expect(t.durationNotes(rows: 6).allSatisfy { $0 == nil })
 }
+
+// MARK: - What a mark says it does
+
+// Pressing a mark folds the block; ⌥-click selects its output. The label promised the opposite.
+
+@Test func aMarkSaysItFoldsAndHowToSelectInstead() {
+    #expect(GutterMarkLabel.text(mark: .succeeded, folded: false, line: 4)
+        == "Command on line 4 succeeded. Fold its output. Option-click selects its output.")
+    #expect(GutterMarkLabel.text(mark: .failed, folded: true, line: 1)
+        == "Command on line 1 failed. Unfold its output. Option-click selects its output.")
+}
+
+@Test func aRunningCommandsMarkSaysSo() {
+    #expect(GutterMarkLabel.text(mark: .running, folded: false, line: 2)
+        == "Command on line 2 is still running. Fold its output. Option-click selects its output.")
+}
+
+@Test func theGutterKnowsWhichOfItsCommandsAreFolded() {
+    let t = session()
+    var folding = OutputFolding()
+    let first = t.command(containingAbsoluteRow: 0)!
+    folding.fold(first.id, .all)
+    let states = t.foldStates(rows: 6, folding: folding)
+    #expect(states[0])                       // the folded command's prompt row
+    #expect(!states[1])                      // its output, which carries no prompt
+    #expect(!states[2])                      // the command that is not folded
+}
+
+@Test func aFoldPlaceholderSlotIsNotAFoldedCommandsPrompt() {
+    let t = session()
+    var folding = OutputFolding()
+    folding.fold(t.command(containingAbsoluteRow: 0)!.id, .all)
+    let display = t.displayRows(from: 0, count: 4, folding: folding)
+    let states = t.foldStates(onDisplayRows: display, folding: folding)
+    #expect(states[0])                       // slot 0 is the prompt of the folded command
+    #expect(!states[1])                      // slot 1 is the placeholder itself
+}

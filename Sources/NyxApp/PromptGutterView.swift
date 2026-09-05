@@ -12,6 +12,8 @@ final class PromptGutterView: NSView {
     var onSelectRow: ((Int, Bool) -> Void)?
 
     private var marks: [GutterMark?] = []
+    /// Whether each row's command is folded, so a mark says which way pressing it goes.
+    private var folded: [Bool] = []
     private var palette = Palette.xtermDefault()
     private var cellHeight: CGFloat = 1
     private var topPadding: CGFloat = 0
@@ -30,15 +32,34 @@ final class PromptGutterView: NSView {
         return self
     }
 
-    func update(marks: [GutterMark?], palette: Palette, cellHeight: CGFloat, topPadding: CGFloat) {
-        let changed = marks != self.marks || palette != self.palette
+    func update(marks: [GutterMark?], folded: [Bool], palette: Palette,
+                cellHeight: CGFloat, topPadding: CGFloat) {
+        let changed = marks != self.marks || folded != self.folded || palette != self.palette
             || cellHeight != self.cellHeight || topPadding != self.topPadding
         guard changed else { return }
         self.marks = marks
+        self.folded = folded
         self.palette = palette
         self.cellHeight = cellHeight
         self.topPadding = topPadding
         needsDisplay = true
+        // A tooltip per mark, saying the same sentence VoiceOver reads. Rebuilt rather than edited:
+        // the rows shift under the marks on every scroll, so a tooltip left where it was would soon
+        // describe a different command.
+        removeAllToolTips()
+        for row in marks.indices {
+            guard let mark = mark(at: row) else { continue }
+            let y = topPadding + CGFloat(row) * cellHeight
+            addToolTip(NSRect(x: 0, y: y, width: max(1, bounds.width), height: cellHeight),
+                       owner: label(for: mark, row: row) as NSString, userData: nil)
+        }
+    }
+
+    /// The words a mark says, in the tooltip and to VoiceOver. Decided in `GutterMarkLabel`, so a
+    /// control that folds cannot go on claiming it selects.
+    private func label(for mark: GutterMark, row: Int) -> String {
+        GutterMarkLabel.text(mark: mark, folded: folded.indices.contains(row) && folded[row],
+                             line: row + 1)
     }
 
     /// Nothing is drawn for a command still running: a mark that appeared the instant you pressed
@@ -100,9 +121,7 @@ final class PromptGutterView: NSView {
             guard let mark = mark(at: row) else { return nil }
             let y = topPadding + CGFloat(row) * cellHeight
             return DrawnControlElement.make(
-                label: mark == .failed
-                    ? "Command on line \(row + 1) failed. Select its output."
-                    : "Command on line \(row + 1) succeeded. Select its output.",
+                label: label(for: mark, row: row),
                 role: .button,
                 frame: NSRect(x: 0, y: y, width: max(1, bounds.width), height: cellHeight),
                 in: self,

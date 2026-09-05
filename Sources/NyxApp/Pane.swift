@@ -656,6 +656,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let focused = (window?.isKeyWindow ?? false) && window?.firstResponder === self
         let preedit = markedText.isEmpty ? nil : markedText
         var gutterMarks: [GutterMark?] = []
+        // Whether each marked row's command is folded, so the mark can say which way pressing it
+        // goes. Read in the same pass as the marks themselves.
+        var gutterFolded: [Bool] = []
         var notes: [String?] = []
         var spines: [(rows: Range<Int>, color: RGB)] = []
         var summaries: [(row: Int, text: String, color: RGB)] = []
@@ -812,11 +815,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // rather than rows.
             if self.foldRowsOnScreen.isEmpty {
                 gutterMarks = t.gutterMarks(rows: t.rows)
+                gutterFolded = t.foldStates(rows: t.rows, folding: self.folding)
                 notes = t.durationNotes(rows: t.rows)
             } else {
                 let pad = max(0, t.rows - self.foldRowsOnScreen.count)
                 gutterMarks = t.gutterMarks(onDisplayRows: self.foldRowsOnScreen)
                     + Array(repeating: nil, count: pad)
+                gutterFolded = t.foldStates(onDisplayRows: self.foldRowsOnScreen, folding: self.folding)
+                    + Array(repeating: false, count: pad)
                 notes = t.durationNotes(onDisplayRows: self.foldRowsOnScreen)
                     + Array(repeating: nil, count: pad)
             }
@@ -989,7 +995,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             timer.invalidate()
             runningTimer = nil
         }
-        gutter.update(marks: gutterMarks, palette: frame.palette,
+        gutter.update(marks: gutterMarks, folded: gutterFolded, palette: frame.palette,
                       cellHeight: cellSizePoints.height, topPadding: padding)
         stickyPromptRow = sticky?.row
         let wasHidden = stickyStrip.isHidden

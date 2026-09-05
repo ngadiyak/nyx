@@ -10,6 +10,25 @@ public enum GutterMark: Equatable {
     case failed
 }
 
+/// What a gutter mark says to VoiceOver and in its tooltip.
+///
+/// The words used to promise the wrong thing: every mark read "Select its output." while pressing
+/// one folded the block -- selecting is what ⌥-click does. A control that names an action it does
+/// not perform is worse than an unlabelled one, and there is no AppKit test target here, so the
+/// wording is decided in Core and asserted.
+public enum GutterMarkLabel {
+    public static func text(mark: GutterMark, folded: Bool, line: Int) -> String {
+        let outcome: String
+        switch mark {
+        case .failed: outcome = "failed"
+        case .succeeded: outcome = "succeeded"
+        case .running: outcome = "is still running"
+        }
+        let verb = folded ? "Unfold" : "Fold"
+        return "Command on line \(line) \(outcome). \(verb) its output. Option-click selects its output."
+    }
+}
+
 /// The geometry of the status gutter, and the marks to put in it.
 ///
 /// The gutter lives inside the pane's own left padding, so it costs no terminal columns and never
@@ -68,6 +87,33 @@ public extension Terminal {
         display.map { entry in
             guard case .row(let absolute) = entry else { return nil }
             return gutterMark(atAbsoluteRow: absolute)
+        }
+    }
+
+    /// Whether the command whose prompt is on this absolute row is folded. `false` for a row with
+    /// no prompt: the gutter draws nothing there, so nothing asks.
+    ///
+    /// Beside the marks because it is read for the same rows at the same moment, and because the
+    /// gutter's own label depends on it: pressing a mark folds, and the words have to say which way.
+    func isCommandFolded(atAbsoluteRow row: Int, folding: OutputFolding) -> Bool {
+        guard let line = absoluteRow(row),
+              PromptMarks(rawValue: line.promptMark).contains(.promptStart),
+              line.commandID != 0 else { return false }
+        return folding.isFolded(line.commandID)
+    }
+
+    /// One flag per visible row, beside `gutterMarks(rows:)`.
+    func foldStates(rows visibleRows: Int, folding: OutputFolding) -> [Bool] {
+        guard visibleRows > 0 else { return [] }
+        let top = max(0, viewportTopRow)
+        return (0..<visibleRows).map { isCommandFolded(atAbsoluteRow: top + $0, folding: folding) }
+    }
+
+    /// One flag per display slot, beside `gutterMarks(onDisplayRows:)`.
+    func foldStates(onDisplayRows display: [DisplayRow], folding: OutputFolding) -> [Bool] {
+        display.map { entry in
+            guard case .row(let absolute) = entry else { return false }
+            return isCommandFolded(atAbsoluteRow: absolute, folding: folding)
         }
     }
 }

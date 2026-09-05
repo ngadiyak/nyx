@@ -197,7 +197,12 @@ final class SettingsWindowController: NSWindowController {
             row("", checkbox("remote", title: "Enable remote sessions")),
             row("Device name", textField("remote-device-name", placeholder: SettingsWindowController.localHostName)),
             row("Relay", textField("remote-relay", width: 260)),
-            row("Relay token", textField("remote-relay-token", secure: true, width: 260)),
+            // The placeholder says where the token comes from. An empty secure field over the
+            // sentence "Paste the relay token to connect" told the user *that* they needed one and
+            // nothing about where to find it.
+            row("Relay token", textField("remote-relay-token", secure: true,
+                                         placeholder: "Token from your relay\u{2019}s token file (nyx-relay)",
+                                         width: 260)),
             row("Snapshot lines", stepperField("remote-snapshot-lines", min: 100, max: 20_000, step: 100)),
         ]
         let grid = NSGridView(views: rows.map { [$0.0, $0.1] })

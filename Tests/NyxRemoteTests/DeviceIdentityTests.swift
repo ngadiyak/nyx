@@ -119,3 +119,44 @@ private func scratchDirectory() -> URL {
     let error = DeviceIdentity.LoadError.insecurePermissions(path: "/tmp/identity", mode: 0o644)
     #expect(error.description.contains("must not be readable by group or other"))
 }
+
+@Test func theTemporaryFileDoesNotSurviveASuccessfulLoad() throws {
+    let dir = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("remote").appendingPathComponent("identity")
+
+    _ = try DeviceIdentity.load(from: url)
+
+    let temporary = url.appendingPathExtension("tmp")
+    #expect(!FileManager.default.fileExists(atPath: temporary.path))
+    #expect(FileManager.default.fileExists(atPath: url.path))
+}
+
+@Test func aStaleTemporaryFileDoesNotStopTheNextLoad() throws {
+    let dir = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let remoteDir = dir.appendingPathComponent("remote")
+    try FileManager.default.createDirectory(at: remoteDir, withIntermediateDirectories: true)
+    let url = remoteDir.appendingPathComponent("identity")
+    // What a crash between "create the temporary file" and "rename it over identity" leaves behind.
+    FileManager.default.createFile(atPath: url.appendingPathExtension("tmp").path, contents: Data())
+
+    let identity = try DeviceIdentity.load(from: url)
+
+    #expect(RemoteID.isDeviceID(identity.deviceID))
+    #expect(!FileManager.default.fileExists(atPath: url.appendingPathExtension("tmp").path))
+}
+
+@Test func anExistingLooseRemoteDirectoryIsTightenedTo0700() throws {
+    let dir = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let remoteDir = dir.appendingPathComponent("remote")
+    try FileManager.default.createDirectory(at: remoteDir, withIntermediateDirectories: true,
+                                            attributes: [.posixPermissions: 0o755])
+
+    _ = try DeviceIdentity.load(from: remoteDir.appendingPathComponent("identity"))
+
+    let attrs = try FileManager.default.attributesOfItem(atPath: remoteDir.path)
+    let mode = (attrs[.posixPermissions] as? NSNumber)?.uint16Value ?? 0
+    #expect(mode & 0o777 == 0o700)
+}

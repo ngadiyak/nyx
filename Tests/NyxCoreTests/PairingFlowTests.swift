@@ -197,7 +197,9 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
 
     _ = host.handle(.accept, selfID: "id")
     _ = host.handle(.fingerprint("apple-river-stone-zero"), selfID: "id")
-    #expect(host.sheetText == ("Confirm the fingerprint", "Both Macs must show:\napple-river-stone-zero", "Confirm"))
+    // The lead-in only: the fingerprint itself is the sheet's bold label, not the body text, so
+    // it is not repeated here.
+    #expect(host.sheetText == ("Confirm the fingerprint", "Both Macs must show:", "Confirm"))
     _ = host.handle(.confirmMine, selfID: "id")
     #expect(host.sheetText.primary == nil) // already confirmed on this side
 

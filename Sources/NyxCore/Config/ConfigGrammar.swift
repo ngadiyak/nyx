@@ -3,6 +3,12 @@ import Foundation
 /// The `key = value` grammar shared by the config file (`ConfigParser`) and theme files
 /// (`Themes.parse`), factored out so the two parsers can't quietly disagree about what's valid.
 enum ConfigGrammar {
+    /// Keys whose value is not comment-stripped on parse, because the value may legitimately
+    /// contain `#`: a command line (`quick`), a template (`open-file-command`), an opaque secret
+    /// (`remote-relay-token`). `ConfigWriter` reads this too -- a `#` inside the *old* value of one
+    /// of these keys is not a trailing human comment to preserve, and treating it as one is what let
+    /// writing `xyz#456` over `remote-relay-token = abc#123` come back as `xyz#456 #123`.
+    static let commentExemptKeys: Set<String> = ["quick", "open-file-command", "remote-relay-token"]
     /// Splits text into logical lines. Recognises `\n`, `\r\n` (a single grapheme cluster in
     /// Swift, and therefore invisible to a plain `split(separator: "\n")`) and a lone `\r` as line
     /// terminators, so a CRLF or classic-Mac file parses identically to the same file saved with

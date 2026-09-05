@@ -256,8 +256,10 @@ public struct PairingFlow: Equatable {
             return ("Pairing…", "Waiting for the other Mac", nil)
         case .requested(_, let peerName):
             return ("\(peerName) wants to pair", "Accept to continue", "Accept")
-        case .confirming(_, _, let fingerprint, let mine, _):
-            return ("Confirm the fingerprint", "Both Macs must show:\n\(fingerprint)", mine ? nil : "Confirm")
+        case .confirming(_, _, _, let mine, _):
+            // Just the lead-in: the fingerprint itself is shown once, by the sheet's own bold
+            // label -- repeating it here as well as in the body read as the same word twice.
+            return ("Confirm the fingerprint", "Both Macs must show:", mine ? nil : "Confirm")
         case .paired(_, let peerName):
             return ("Paired with \(peerName)", "", "Done")
         case .failed(let message):

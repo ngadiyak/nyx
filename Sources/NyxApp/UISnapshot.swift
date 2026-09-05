@@ -85,6 +85,8 @@ enum UISnapshot {
                       named: "pairing-\(stateName)-\(name)", into: directory,
                       background: windowGround(appearance))
             }
+            write(invalidCodePairingSheetView(appearance), named: "pairing-code-invalid-\(name)",
+                  into: directory, background: windowGround(appearance))
             writeSettings(into: directory, appearance: appearance, suffix: "-\(name)")
         }
         write(stickyPrompt(palette: palette, failed: false), named: "sticky-prompt", into: directory,
@@ -352,6 +354,18 @@ enum UISnapshot {
     private static func pairingSheetView(state: PairingFlow.State, _ appearance: NSAppearance.Name) -> NSView {
         let sheet = PairingSheet(side: .host)
         sheet.update(state: state)
+        let view = sheet.panel.contentView ?? NSView()
+        view.appearance = NSAppearance(named: appearance)
+        view.layoutSubtreeIfNeeded()
+        return view
+    }
+
+    /// Client side, mid-`.idle`, having just submitted something that doesn't normalise to a code
+    /// -- the one pairing-sheet state that lives in the sheet itself rather than in
+    /// `PairingFlow.State`, so it is driven through the real submit path instead of constructed.
+    private static func invalidCodePairingSheetView(_ appearance: NSAppearance.Name) -> NSView {
+        let sheet = PairingSheet(side: .client)
+        sheet.simulateInvalidCodeSubmission("not a code")
         let view = sheet.panel.contentView ?? NSView()
         view.appearance = NSAppearance(named: appearance)
         view.layoutSubtreeIfNeeded()

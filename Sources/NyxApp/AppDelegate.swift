@@ -87,7 +87,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard controllers.indices.contains(match.window) else { return }
         let controller = controllers[match.window]
         controller.selectTab(at: match.tab)
-        controller.window?.makeKeyAndOrderFront(nil)
+        // `makeKeyAndOrderFront` on a minimised window puts it in front of the other windows in the
+        // Dock's sense and leaves it in the Dock: the palette row would answer by doing nothing
+        // visible at all, which is the same symptom as the row being broken.
+        if let window = controller.window {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        }
         NSApp.activate(ignoringOtherApps: true)
     }
 

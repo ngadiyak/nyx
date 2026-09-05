@@ -60,3 +60,22 @@ private func blocks() -> [CommandBlock] {
     let hover = BlockHover(id: 9, rows: 20..<25, headerRow: 20)
     #expect(hover.placed(onDisplayRows: display, viewportTop: 0) == nil)
 }
+
+// MARK: - DisplayRows.slots, shared by the hover above and the spine in Pane
+//
+// The spine used to walk `block.visibleRows` -- which spans everything a tail fold hides -- and
+// look each row up in the display slots individually, a linear search per row. `DisplayRows.slots`
+// walks the display once instead; these fixtures are the same ones `placed` uses above, so a
+// passing spine reads exactly the same rows a passing hover would.
+
+@Test func slotsCoveredMatchesThePlacedHoverForTheSameFold() {
+    let display: [DisplayRow] = [.row(0), .row(1), .row(2), .fold(commandID: 2, hiddenRows: 7),
+                                 .row(10), .row(11), .row(12), .row(13)]
+    let slots = DisplayRows.slots(coveredBy: 2..<13, commandID: 2, in: display, viewportTop: 0)
+    #expect(slots == 2..<7)
+}
+
+@Test func slotsCoveredIsNilForABlockWithNoDisplayedRows() {
+    let display: [DisplayRow] = [.row(0), .row(1), .row(2)]
+    #expect(DisplayRows.slots(coveredBy: 20..<25, commandID: 9, in: display, viewportTop: 0) == nil)
+}

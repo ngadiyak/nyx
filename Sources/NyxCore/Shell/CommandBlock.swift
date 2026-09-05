@@ -281,21 +281,16 @@ public extension BlockHover {
     /// block. The block's own fold placeholder counts as one of its rows: it stands for the block's
     /// output, and hovering it should tint and unfold the same thing a visible output row would.
     func placed(onDisplayRows display: [DisplayRow], viewportTop: Int) -> BlockHover? {
-        var slots: [Int] = []
+        guard let slots = DisplayRows.slots(coveredBy: rows, commandID: id, in: display,
+                                            viewportTop: viewportTop) else { return nil }
         var headerSlot: Int?
-        for (slot, entry) in display.enumerated() {
-            switch entry {
-            case .row(let absolute):
-                let relative = absolute - viewportTop
-                guard rows.contains(relative) else { continue }
-                slots.append(slot)
-                if headerRow == relative { headerSlot = slot }
-            case .fold(let commandID, _):
-                guard commandID == id else { continue }
-                slots.append(slot)
+        if let headerRow {
+            for (slot, entry) in display.enumerated() {
+                guard case .row(let absolute) = entry, absolute - viewportTop == headerRow else { continue }
+                headerSlot = slot
+                break
             }
         }
-        guard let first = slots.min(), let last = slots.max() else { return nil }
-        return BlockHover(id: id, rows: first..<(last + 1), headerRow: headerSlot)
+        return BlockHover(id: id, rows: slots, headerRow: headerSlot)
     }
 }

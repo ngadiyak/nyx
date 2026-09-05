@@ -153,7 +153,7 @@ private func foldedSession() -> (terminal: Terminal, folding: OutputFolding) {
         t.feed(mark("A") + "$ " + mark("B") + "cmd \(i)\r\n" + mark("C") + "line\r\n" + mark("D", 0))
     }
     t.feed(mark("A") + "$ ")
-    t.scrollToAbsoluteRow(0, margin: 0)
+    _ = t.scrollToAbsoluteRow(0, margin: 0)
     var folding = OutputFolding()
     folding.toggle(t.command(containingAbsoluteRow: 0)!.id, keep: 3)
     return (t, folding)

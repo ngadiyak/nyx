@@ -211,4 +211,34 @@ public enum DisplayRows {
         }
         return map
     }
+
+    /// The display slots that belong to one block: every `.row` slot whose absolute row, relative
+    /// to `viewportTop`, falls in `visibleRows`, plus the block's own fold placeholder -- it stands
+    /// for the block's hidden output, so hovering or spining it should cover that slot too. `nil`
+    /// when none of the block survived onto the display.
+    ///
+    /// `visibleRows` can span everything a tail fold hides once the caller has widened its window
+    /// to the block's own region (`Terminal.visibleBlocks(from:through:)` does this because a
+    /// block's region spans hidden rows even though its drawn footprint does not). Looking up each
+    /// of those rows individually against `display` -- a linear search per row -- turns a viewport
+    /// walk into work proportional to the hidden row count. Walking `display` once instead, as this
+    /// does, costs the viewport's height regardless of how much is folded underneath it. Both
+    /// `BlockHover.placed` and the spine in `Pane` share this rather than each re-deriving it.
+    public static func slots(coveredBy visibleRows: Range<Int>, commandID: UInt32, in display: [DisplayRow],
+                              viewportTop: Int) -> Range<Int>? {
+        var first: Int?
+        var last: Int?
+        for (slot, entry) in display.enumerated() {
+            switch entry {
+            case .row(let absolute):
+                guard visibleRows.contains(absolute - viewportTop) else { continue }
+            case .fold(let id, _):
+                guard id == commandID else { continue }
+            }
+            if first == nil { first = slot }
+            last = slot
+        }
+        guard let first, let last else { return nil }
+        return first..<(last + 1)
+    }
 }

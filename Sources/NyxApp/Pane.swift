@@ -823,9 +823,25 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // running command draws nothing, and a spine that says "in progress" beside an idle
                 // prompt would sit there amber forever.
                 guard block.region.outputStart != nil else { return nil }
-                let placed = block.visibleRows.compactMap { screenRow($0 + max(0, t.viewportTopRow)) }
-                guard let first = placed.min(), let last = placed.max() else { return nil }
-                return (rows: first..<(last + 1),
+                // `block.visibleRows` spans everything a tail fold hides once `visibleBlocks`
+                // widened the window to the block's own region, so calling `screenRow` -- itself a
+                // linear search of the display slots -- once per row here was quadratic in the
+                // hidden row count. `DisplayRows.slots` walks the display once instead; with no
+                // folds on screen `screenRow` is already O(1) per row and stays as it was.
+                let placedRange: Range<Int>?
+                if self.foldRowsOnScreen.isEmpty {
+                    let placed = block.visibleRows.compactMap { screenRow($0 + windowTop) }
+                    if let first = placed.min(), let last = placed.max() {
+                        placedRange = first..<(last + 1)
+                    } else {
+                        placedRange = nil
+                    }
+                } else {
+                    placedRange = DisplayRows.slots(coveredBy: block.visibleRows, commandID: block.region.id,
+                                                    in: self.foldRowsOnScreen, viewportTop: windowTop)
+                }
+                guard let placedRange else { return nil }
+                return (rows: placedRange,
                         color: block.failed ? failedColor : (block.isRunning ? runningColor : doneColor))
             }
             // A summary only where the command it describes is on screen, and only when it has

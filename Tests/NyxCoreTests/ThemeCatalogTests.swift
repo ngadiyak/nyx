@@ -50,6 +50,23 @@ struct ThemeCatalogTests {
         #expect(problems.first?.message.contains("junk") == true)
     }
 
+    /// Two files can claim one theme name -- `mine` and `mine.bak` are the same name once the
+    /// extension is dropped, and the second is exactly what a person makes before editing the
+    /// first. The first in the caller's order wins (the caller sorts, so it is the same one on
+    /// every launch) and the collision is named, because a theme resolving to whichever file the
+    /// filesystem happened to return first is a thing nobody can debug.
+    @Test func collidingNamesResolveTheSameWayTwiceAndSaySo() {
+        let files = [ThemeFile(name: "mine", text: "background = #010101"),
+                     ThemeFile(name: "mine", text: "background = #020202")]
+        let (catalog, problems) = ThemeCatalog.make(files: files)
+        #expect(catalog.palette(named: "mine").background == RGB(0x01, 0x01, 0x01))
+        #expect(problems.count == 1)
+        #expect(problems.first?.message.contains("two files") == true)
+
+        let (again, _) = ThemeCatalog.make(files: files)
+        #expect(again.palette(named: "mine").background == catalog.palette(named: "mine").background)
+    }
+
     /// An unknown name still draws something. A typo in `theme =` must not leave a person with a
     /// terminal that refuses to paint.
     @Test func anUnknownNameFallsBackRatherThanFailing() {
@@ -65,7 +82,7 @@ struct ThemeCatalogTests {
         for name in Themes.builtin.keys {
             #expect(catalog.contains(name), "lost \(name)")
         }
-        #expect(catalog.userNames == ["mine"])
+        #expect(catalog.names.contains("mine"))
     }
 
     /// The palette a user file does not mention comes from the ANSI defaults rather than from

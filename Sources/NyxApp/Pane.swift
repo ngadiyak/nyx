@@ -312,10 +312,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         } else if diff.geometryChanged {
             updateGrid()
         }
-        if diff.paletteChanged {
-            applyPalette()
-            let palette = Pane.resolvedPalette(for: config)
-            searchBar?.apply(palette: palette)
+        // Asked of the *resolved* palette rather than of the config fields that usually move it.
+        // A theme now also comes from a file, and editing that file changes no field at all: the
+        // tab bar and the split dividers recoloured (they rebuild unconditionally) while the grid
+        // stayed on the old colours, which is a worse look than not reloading at all.
+        if applyPaletteIfChanged() {
+            searchBar?.apply(palette: Pane.resolvedPalette(for: config))
         }
         if diff.windowAppearanceChanged {
             applyBackgroundAppearance()
@@ -327,8 +329,22 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     private func applyPalette() {
         let palette = Pane.resolvedPalette(for: config)
+        appliedPalette = palette
         session.withTerminal { $0.palette = palette }
         markDirty()
+    }
+
+    /// The palette this pane is currently drawing in, so a reload can ask whether anything actually
+    /// moved rather than trusting a list of the fields that might have.
+    private var appliedPalette: Palette?
+
+    /// Repaints when the resolved palette is not the one in force. Returns whether it did.
+    @discardableResult
+    private func applyPaletteIfChanged() -> Bool {
+        let palette = Pane.resolvedPalette(for: config)
+        guard palette != appliedPalette else { return false }
+        applyPalette()
+        return true
     }
 
     /// The blur behind the window (`TerminalWindowController`'s `NSVisualEffectView`) only shows
@@ -418,6 +434,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                         baseFont: Pane.systemMonospacedFont(for: config.fontFamily))
         renderer.setFonts(fonts)
         window?.contentResizeIncrements = cellSizePoints
+        // The floor is in cells, so it moves with the font -- set once at creation it was a floor
+        // in points, and raising the font size to 24 left a "minimum" three lines tall.
+        window?.contentMinSize = size(forCols: 24, rows: 6)
         updateGrid()
     }
 
@@ -809,6 +828,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             target.perform(action)
             return
         }
+        // The numeric keypad in application mode goes straight to the encoder. Everything else
+        // reaches the input context first, and for a plain keypad key that ends in `insertText`,
+        // which sends the digit -- so `ESC O q` was produced by `KeyEncoder` and never sent by the
+        // application. Every keypad test passed because the tests called the encoder directly, and
+        // so did the smoke check that was supposed to prove the wiring. No input method wants the
+        // keypad, so nothing is taken away from one by deciding this here.
+        if MacKeyCodes.isKeypad(event.keyCode), session.withTerminal({ $0.modes.keypadApp }) {
+            sendKey(event)
+            return
+        }
         currentEvent = event
         defer { currentEvent = nil }
         if !(inputContext?.handleEvent(event) ?? false) { sendKey(event) }
@@ -868,6 +897,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// keyboard was held -- so `.left` and `.right` both act like `.both` here rather than silently
     /// doing nothing; only `.none` turns it off.
     private var optionActsAsMeta: Bool { config.optionAsMeta != .none }
+
 
 
     private func sendKey(_ e: NSEvent) {

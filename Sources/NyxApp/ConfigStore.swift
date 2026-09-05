@@ -107,9 +107,17 @@ final class ConfigStore {
     /// problems: from where the user is standing, a theme file that does nothing and a `theme =`
     /// line that does nothing are the same complaint.
     private func loadThemes() {
-        let (catalog, problems) = ThemeCatalog.make(files: ConfigStore.themeFiles())
+        let (files, unreadable) = ConfigStore.themeFiles()
+        let (catalog, problems) = ThemeCatalog.make(files: files)
         themes = catalog
+        diagnostics += unreadable
         diagnostics += problems.map { ConfigDiagnostic(line: 0, message: $0.message) }
+        // A `theme =` naming nothing that exists draws nyx-dark, which is right -- and looks
+        // exactly like the file being ignored, which is the complaint this feature exists to end.
+        for name in [config.themeName, config.darkThemeName, config.lightThemeName].compactMap({ $0 })
+        where !catalog.contains(name) {
+            diagnostics.append(ConfigDiagnostic(line: 0, message: "no theme named \"\(name)\""))
+        }
     }
 
     /// Every readable file in the themes directory, named by its filename without the extension.
@@ -117,16 +125,34 @@ final class ConfigStore {
     /// Extension-agnostic on purpose: `gruvbox`, `gruvbox.conf` and `gruvbox.nyx` all name the
     /// theme `gruvbox`, because the extension a person gives the file is not something the terminal
     /// should have an opinion about. Hidden files are skipped -- `.DS_Store` is not a theme.
-    private static func themeFiles() -> [ThemeFile] {
+    ///
+    /// Sorted by full filename so that two files claiming the same theme name resolve the same way
+    /// on every launch instead of by whatever order the filesystem enumerated them in;
+    /// `ThemeCatalog` reports the collision.
+    private static func themeFiles() -> ([ThemeFile], [ConfigDiagnostic]) {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(at: themesDirectory,
-                                                        includingPropertiesForKeys: [.isRegularFileKey],
-                                                        options: [.skipsHiddenFiles]) else { return [] }
-        return entries.compactMap { url in
-            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
-                  let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-            return ThemeFile(name: url.deletingPathExtension().lastPathComponent, text: text)
+                                                        includingPropertiesForKeys: [.isDirectoryKey],
+                                                        options: [.skipsHiddenFiles]) else { return ([], []) }
+        var files: [ThemeFile] = []
+        var problems: [ConfigDiagnostic] = []
+        for url in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            // Resolved, not `isRegularFile` on the link itself: people who keep their dotfiles in a
+            // repository symlink every one of them into place, and a theme that works when copied
+            // and vanishes when linked is indistinguishable from a theme that does not work.
+            let resolved = url.resolvingSymlinksInPath()
+            if (try? resolved.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true { continue }
+            guard let text = try? String(contentsOf: resolved, encoding: .utf8) else {
+                // Says so rather than skipping it. A file the user can see in the directory and the
+                // terminal cannot read -- a permission, a broken link, a file that is not UTF-8 --
+                // is exactly the case where silence looks like the feature being broken.
+                problems.append(ConfigDiagnostic(line: 0,
+                                                 message: "could not read theme \"\(url.lastPathComponent)\""))
+                continue
+            }
+            files.append(ThemeFile(name: url.deletingPathExtension().lastPathComponent, text: text))
         }
+        return (files, problems)
     }
 
     /// Missing file means defaults, not an error: a fresh install with no config yet is not a typo.

@@ -240,6 +240,27 @@ final class SettingsWindowController: NSWindowController {
     /// `none` is a real choice for the dark/light theme overrides: it means "follow `theme`".
     private static let noneTitle = "— none —"
 
+    /// The three theme menus, rebuilt from the catalogue on every reload.
+    ///
+    /// Built once, they were the themes that existed when the window was opened -- so a theme file
+    /// dropped in while the settings window was open could not be chosen from it, which is the exact
+    /// moment a person is most likely to be looking for it.
+    private func refreshThemeLists() {
+        let names = Pane.themes.names
+        for key in ["theme", "theme-dark", "theme-light"] {
+            guard let button = controls[key] as? NSPopUpButton else { continue }
+            let none = button.itemTitles.first == SettingsWindowController.noneTitle
+            guard button.itemTitles.filter({ $0 != SettingsWindowController.noneTitle }) != names else { continue }
+            let selected = button.titleOfSelectedItem
+            button.removeAllItems()
+            if none { button.addItem(withTitle: SettingsWindowController.noneTitle) }
+            button.addItems(withTitles: names)
+            // `refresh` sets the value from the config a line later; this only keeps the menu from
+            // flickering to its first entry for themes that are still there.
+            if let selected, button.itemTitles.contains(selected) { button.selectItem(withTitle: selected) }
+        }
+    }
+
     private func popUp(_ key: String, options: [String], includesNone: Bool = false) -> NSPopUpButton {
         let button = NSPopUpButton()
         if includesNone { button.addItem(withTitle: SettingsWindowController.noneTitle) }
@@ -378,6 +399,7 @@ final class SettingsWindowController: NSWindowController {
         isRefreshing = true
         defer { isRefreshing = false }
 
+        refreshThemeLists()
         set("theme", c.themeName)
         set("theme-dark", c.darkThemeName)
         set("theme-light", c.lightThemeName)

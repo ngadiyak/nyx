@@ -49,17 +49,27 @@ public struct ThemeCatalog: Equatable {
     /// tests and the snapshot renderer use.
     public static let builtinOnly = ThemeCatalog()
 
-    /// Reads a directory's worth of files. A file with no recognised colour key is reported rather
-    /// than registered: a stray `.DS_Store` or a half-written file must not become a theme that
+    /// Reads a directory's worth of files, in the order given -- the caller sorts, so that a name
+    /// two files both claim resolves the same way on every launch. A file with no recognised colour
+    /// key is reported rather than registered: a stray `.DS_Store` or a half-written file must not become a theme that
     /// quietly keeps every default and looks like the terminal ignoring your colours.
     public static func make(files: [ThemeFile]) -> (ThemeCatalog, [ThemeDiagnostic]) {
         var user: [String: Palette] = [:]
         var problems: [ThemeDiagnostic] = []
-        for file in files.sorted(by: { $0.name < $1.name }) {
+        for file in files {
             guard !file.name.isEmpty else { continue }
             guard let palette = Themes.parse(file.text) else {
                 problems.append(ThemeDiagnostic(name: file.name,
                                                 message: "no colours in theme \"\(file.name)\""))
+                continue
+            }
+            // Two files can claim one name -- `mine` and `mine.bak` both mean `mine`, and the
+            // second is exactly what a person makes before editing the first. The earlier file in
+            // the caller's order wins, and the loser is named: a theme quietly resolving to
+            // whichever file the filesystem happened to hand over first is unexplainable.
+            if user[file.name] != nil {
+                problems.append(ThemeDiagnostic(name: file.name,
+                                                message: "two files both name the theme \"\(file.name)\"; using the first"))
                 continue
             }
             user[file.name] = palette
@@ -83,7 +93,4 @@ public struct ThemeCatalog: Equatable {
     public var names: [String] {
         Array(Set(Themes.builtin.keys).union(user.keys)).sorted()
     }
-
-    /// The names that came from files, so an interface can say which of them are the user's own.
-    public var userNames: [String] { user.keys.sorted() }
 }

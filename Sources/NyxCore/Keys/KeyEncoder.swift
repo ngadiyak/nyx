@@ -47,9 +47,16 @@ public struct KeyEvent: Equatable {
 public enum ModifyOtherKeys: Int, Equatable {
     /// Legacy encoding for everything. Byte-for-byte what the terminal sent before this mode existed.
     case off = 0
-    /// `CSI > 4 ; 1 m`. Rewrite only combinations whose legacy bytes are already taken by another
-    /// combination of the same key, and only for character keys: xterm exempts the keys with
-    /// "well-known behavior" -- Tab, Backspace, Return, Escape and ctrl+space -- at this level.
+    /// `CSI > 4 ; 1 m`. Conservative: character keys only, and only where the legacy bytes are
+    /// already taken by another combination of the same key.
+    ///
+    /// xterm documents this level as "modify other keys except for those with well-known
+    /// behavior" -- Tab, Backspace, Return, Escape and ctrl+space -- and we keep that exemption.
+    /// The additional restriction to *ambiguous* combinations is ours, not a claim about xterm:
+    /// it is the reading that makes level 1 worth having as something distinct from level 2, and
+    /// it errs towards the legacy bytes, which is the safe direction for a level applications
+    /// rarely ask for. Everything that actually wants ctrl+Tab and ctrl+Enter asks for level 2,
+    /// which is unambiguous and where the conformance that matters was checked.
     case ambiguousOnly = 1
     /// `CSI > 4 ; 2 m`. Rewrite every modified key the protocol covers, including the well-known
     /// ones. This is the level applications actually ask for (Vim's `mok2`), and the level that
@@ -189,9 +196,10 @@ public enum KeyEncoder {
         if case .tab = e.key, m.contains(.shift), !m.contains(.ctrl), !m.contains(.alt) { return nil }
 
         if level == .ambiguousOnly {
-            // Level 1 is "except keys with well-known behavior": Tab, Backspace, Return, Escape and
-            // ctrl+space stay legacy however ambiguous they are. That exemption is why applications
-            // that want ctrl+Tab ask for level 2 instead.
+            // Level 1 keeps xterm's exemption for keys with well-known behaviour -- Tab, Backspace,
+            // Return, Escape and ctrl+space stay legacy however ambiguous they are, which is why
+            // applications that want ctrl+Tab ask for level 2 -- and adds a restriction of our own
+            // to combinations whose legacy bytes are genuinely ambiguous. See `ambiguousOnly`.
             guard isChar else { return nil }
             guard !(m.contains(.ctrl) && code == 0x20) else { return nil }
             guard isAmbiguous(code, m) else { return nil }

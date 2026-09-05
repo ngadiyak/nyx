@@ -194,8 +194,10 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
     _ = host.handle(.open(code: "ABCDEF", now: t0), selfID: "id")
     #expect(host.sheetText == ("Pairing…", "Requesting a code from the relay", nil))
     _ = host.handle(.opened(code: "ABCDEF"), selfID: "id")
+    // The code is deliberately absent from the body: the sheet's own 28-point label is where it is
+    // read from, and having it in both put the same seven characters on screen twice.
     #expect(host.sheetText == ("Pair with another device",
-                               "On the other Mac, open Settings → Remote → Pair… and enter\n ABC-DEF", nil))
+                               "On the other Mac, open Settings → Remote → Enter a code… and type:", nil))
 
     _ = host.handle(.request(peerID: "p", peerName: "MacBook"), selfID: "id")
     #expect(host.sheetText == ("MacBook wants to pair", "Accept to continue", "Accept"))

@@ -311,9 +311,14 @@ public struct PairingFlow: Equatable {
                     "Settings → Remote → Pair with another device… shows it", nil)
         case .opening:
             return ("Pairing…", "Requesting a code from the relay", nil)
-        case .showingCode(let code, _):
+        case .showingCode:
+            // The code itself is not here. The sheet shows it once, in the 28-point label under
+            // this text -- the size it has to be for somebody to read it across a room -- and
+            // putting it in the body as well printed it twice, three lines apart, which reads as
+            // two codes until you compare them. The body's job is to say where to type it, and it
+            // names the *other* Mac's button ("Enter a code…"), not this one's.
             return ("Pair with another device",
-                    "On the other Mac, open Settings → Remote → Pair… and enter\n \(PairCode.display(code))", nil)
+                    "On the other Mac, open Settings → Remote → Enter a code… and type:", nil)
         case .joining:
             return ("Pairing…", "Waiting for the other Mac", nil)
         case .requested(_, let peerName):

@@ -39,13 +39,20 @@ final class PromptGutterView: NSView {
         return self
     }
 
+    /// Returns whether anything that decides where a *cursor rect* goes changed, so the pane can
+    /// ask AppKit to rebuild them. Nothing else does: `resetCursorRects` is called when a view is
+    /// added, resized or explicitly invalidated, and this view is none of those between frames --
+    /// so after `ls` finished, its new green dot had no pointing hand until the next resize, and
+    /// after a resize a hand could sit over a `cd ..` mark that no longer had one.
+    @discardableResult
     func update(marks: [GutterMark?], folded: [Bool], hasStarted: [Bool], hasOutput: [Bool],
-                palette: Palette, cellHeight: CGFloat, topPadding: CGFloat) {
+                palette: Palette, cellHeight: CGFloat, topPadding: CGFloat) -> Bool {
         let changed = marks != self.marks || folded != self.folded
             || hasStarted != self.hasStarted || hasOutput != self.hasOutput
             || palette != self.palette
             || cellHeight != self.cellHeight || topPadding != self.topPadding
-        guard changed else { return }
+        guard changed else { return false }
+        let previousRects = actionableRows()
         self.marks = marks
         self.folded = folded
         self.hasStarted = hasStarted
@@ -66,6 +73,13 @@ final class PromptGutterView: NSView {
             addToolTip(NSRect(x: 0, y: y, width: max(1, bounds.width), height: cellHeight),
                        owner: label(for: mark, row: row) as NSString, userData: nil)
         }
+        return actionableRows() != previousRects
+    }
+
+    /// The rows a pointing hand belongs on. Compared between frames rather than recomputed by
+    /// AppKit, which has no way of knowing the gutter changed.
+    private func actionableRows() -> [Int] {
+        marks.indices.filter { isActionable($0) }
     }
 
     /// The words a mark says, in the tooltip and to VoiceOver. Decided in `GutterMarkLabel`, so a

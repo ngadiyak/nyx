@@ -1038,9 +1038,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             timer.invalidate()
             runningTimer = nil
         }
-        gutter.update(marks: gutterMarks, folded: gutterFolded, hasStarted: gutterHasStarted,
-                      hasOutput: gutterHasOutput, palette: frame.palette,
-                      cellHeight: cellSizePoints.height, topPadding: padding)
+        // The pointing hand over a gutter mark is a cursor rect, and nothing rebuilds those on its
+        // own between frames: after a command finished, its new mark had no hand until the window
+        // was resized. Only when the set of pressable marks actually moved -- `resetCursorRects` is
+        // not free to ask for per frame.
+        if gutter.update(marks: gutterMarks, folded: gutterFolded, hasStarted: gutterHasStarted,
+                         hasOutput: gutterHasOutput, palette: frame.palette,
+                         cellHeight: cellSizePoints.height, topPadding: padding) {
+            window?.invalidateCursorRects(for: gutter)
+        }
         stickyPromptRow = sticky?.row
         let wasHidden = stickyStrip.isHidden
         stickyStrip.update(text: sticky?.text, summary: sticky?.summary ?? "", failed: sticky?.failed ?? false,

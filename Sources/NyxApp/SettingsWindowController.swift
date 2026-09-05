@@ -204,7 +204,7 @@ final class SettingsWindowController: NSWindowController {
             // sentence "Paste the relay token to connect" told the user *that* they needed one and
             // nothing about where to find it.
             row("Relay token", textField("remote-relay-token", secure: true,
-                                         placeholder: "Token from your relay\u{2019}s token file (nyx-relay)",
+                                         placeholder: "Token from your relay\u{2019}s token file",
                                          width: 320)),
             row("Snapshot lines", stepperField("remote-snapshot-lines", min: 100, max: 20_000, step: 100)),
         ]

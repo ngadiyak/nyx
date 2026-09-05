@@ -260,8 +260,10 @@ final class TabController: NSViewController, NSMenuItemValidation {
             pane = try Pane(.zero, config: config, remote: session, state: session.state)
         } catch {
             // Nothing is on screen to show it, so the attachment is let go rather than left running
-            // and delivering bytes to nobody.
-            attachment.detach()
+            // and delivering bytes to nobody -- unless it is not ours to let go: an attachment
+            // another window owns would be torn down under a live tab by a pane that never drew a
+            // byte of it.
+            if !outcome.wasAlreadyOpen { attachment.detach() }
             paneCreationFailure = error
             NSSound.beep()
             return
@@ -286,7 +288,10 @@ final class TabController: NSViewController, NSMenuItemValidation {
             return
         }
         let tab = Tab(panes: tree)
-        tab.remoteState = attachment.state
+        // The session's state, not the attachment's: on the refused path they differ, and seeding
+        // from the attachment would put the *owner's* live "writer" badge on a tab that is showing
+        // "Already open in another window".
+        tab.remoteState = session.state
         pane.onRemoteStateChange = { [weak self, weak tab] state in
             guard let self, let tab, let index = self.tabs.firstIndex(where: { $0 === tab }) else { return }
             self.tabs[index].remoteState = state

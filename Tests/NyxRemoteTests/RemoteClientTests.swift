@@ -13,15 +13,44 @@ private final class ClientFixture {
     let paired = PairedBox()
     let sessionID = testSessionID()
     let key = RemoteID.base64url(testSessionID())
+    /// nil unless the test asked for one, in which case every delay the client takes is under the
+    /// test's control rather than the scheduler's.
+    let testClock: TestClock?
 
-    init(attachTimeout: TimeInterval = 15) throws {
+    init(attachTimeout: TimeInterval = 15, clock: TestClock? = nil) throws {
         identity = try testIdentity()
         link = FakeLink(deviceID: identity.deviceID)
         host = try TestPeer(isHost: true)
+        testClock = clock
         let paired = self.paired
         client = RemoteClient(link: link, identity: identity, paired: { paired.devices },
-                              attachTimeout: attachTimeout)
+                              attachTimeout: attachTimeout, clock: clock?.clock ?? .system)
         paired.add(host.deviceID)
+    }
+
+    /// A `catalogue` from this fixture's host, the way the relay forwards one.
+    func catalogue(_ ids: [[UInt8]]) -> RemoteMessage {
+        var m = RemoteMessage(t: "catalogue", deviceID: host.deviceID,
+                              sessions: ids.map {
+            RemoteSessionInfo(sessionID: RemoteID.base64url($0), title: "shell", cwd: "", repo: "",
+                              branch: "", process: "zsh", lastCommand: "", lastActivity: "",
+                              cols: 80, rows: 24)
+        })
+        m.from = host.deviceID
+        return m
+    }
+
+    /// The relay's own `session_suspended`, as the deployed relay sends it: stamped with the host
+    /// id it is about.
+    func suspended() -> RemoteMessage {
+        var m = RemoteMessage(t: "session_suspended", to: deviceID, sessionID: key)
+        m.from = host.deviceID
+        return m
+    }
+
+    /// The relay's refusal of an attach, carrying the session id it answers.
+    func error(_ code: String) -> RemoteMessage {
+        RemoteMessage(t: "error", to: host.deviceID, code: code, sessionID: key)
     }
 
     var deviceID: String { identity.deviceID }
@@ -213,7 +242,7 @@ private final class Recorder {
     f.client.handle(f.host.message(.sessionEnded(to: f.deviceID, sessionID: f.key)))
 
     #expect(attachment.state.phase == .ended("studio"))
-    #expect(attachment.state.stripText == "Session ended on studio")
+    #expect(attachment.state.stripText == "Session ended on studio — ⌘W to close")
     #expect(!attachment.state.acceptsInput)
     // Nothing arrives after the end, and nothing more is said about it.
     let phases = recorder.phaseCount()
@@ -362,24 +391,31 @@ private final class Recorder {
     #expect(recorder.text.components(separatedBy: "ready").count == 2)   // the snapshot, once
 }
 
-@Test func attachingAgainToOneSessionEndsTheAttachmentItReplaces() throws {
+/// Two *different* hosts claiming one session id -- the only way one session id can still mean two
+/// attachments now that attaching twice to the same host hands back the first. The client routes by
+/// session id and nothing else, so the older one will never be delivered another byte; it says so
+/// rather than sitting on a frozen screen in `live`.
+@Test func aSecondHostClaimingOneSessionIDEndsTheAttachmentItReplaces() throws {
     let f = try ClientFixture()
     let first = f.attach()
     let recorder = Recorder()
     recorder.watch(first)
     try f.acceptAttach()
 
-    // The host keys its attachments by device and session, so a second attach from this device
-    // replaces the first there too. The displaced one must say so rather than sit on a frozen
-    // screen in `live` waiting for bytes that will never be routed to it again.
-    let second = f.attach()
+    let other = try TestPeer(isHost: true)
+    f.paired.add(other.deviceID)
+    let second = f.client.attach(hostID: other.deviceID, hostName: "loft",
+                                 sessionID: f.sessionID, title: "shell")
     #expect(first.state.phase == .ended("studio"))
     #expect(second.state.phase == .attaching)
 
     // And it does not send `detach` on its way out: that would tear down the attachment that just
     // replaced it.
     #expect(f.link.messages(ofType: "detach").isEmpty)
-    try f.acceptAttach()
+    let attach = try #require(f.link.messages(ofType: "attach").last)
+    other.rotateEphemeral()
+    #expect(try other.completeAttach(attach, sessionID: f.sessionID, peerID: f.deviceID))
+    f.client.handle(try other.attachedMessage(to: f.deviceID, sessionID: f.sessionID, role: "writer"))
     #expect(second.state.phase == .snapshot)
     try f.hostSends("only for the new one")
     #expect(recorder.text.isEmpty)
@@ -463,8 +499,8 @@ private final class Recorder {
                                   sessionID: f.key, message: "device offline"))
 
     #expect(attachment.state.phase == .failed("Host is offline"))
-    #expect(attachment.state.stripText == "Host is offline")
-    #expect(attachment.state.closesOnNextKey)
+    #expect(attachment.state.stripText == "Host is offline — ⌘W to close")
+    #expect(attachment.state.stripButton == "Close")
     #expect(recorder.phases == [.failed("Host is offline")])
 }
 
@@ -651,8 +687,7 @@ private final class Recorder {
     // ended on <host>", and nothing on the host ended -- this side stopped. `.failed` shows the
     // reason as the whole sentence, and behaves identically otherwise.
     #expect(attachment.state.phase == .failed(AttachFailure.remoteTurnedOff))
-    #expect(attachment.state.stripText == "Remote sessions turned off")
-    #expect(attachment.state.closesOnNextKey)
+    #expect(attachment.state.stripText == "Remote sessions turned off — ⌘W to close")
     #expect(!attachment.state.acceptsInput)
     #expect(recorder.phases == [.failed(AttachFailure.remoteTurnedOff)])
 }
@@ -669,9 +704,8 @@ private final class Recorder {
 
     f.client.endAll(reason: AttachFailure.relayRefused("bad_token"))
 
-    #expect(attachment.state.stripText == "Relay refused this device (bad_token)")
+    #expect(attachment.state.stripText == "Relay refused this device (bad_token) — ⌘W to close")
     #expect(!attachment.state.acceptsInput)
-    #expect(attachment.state.closesOnNextKey)
 }
 
 /// A setting changed under a live connection is not the switch being turned off, and the tab says
@@ -681,7 +715,7 @@ private final class Recorder {
     let attachment = f.attach()
     try f.acceptAttach()
     f.client.endAll(reason: AttachFailure.remoteSettingsChanged)
-    #expect(attachment.state.stripText == "Remote settings changed")
+    #expect(attachment.state.stripText == "Remote settings changed — ⌘W to close")
 }
 
 /// A hostile or broken relay can put any integer in `attached`: nothing in that message is signed
@@ -727,7 +761,7 @@ private final class Recorder {
     f.client.endAll(matching: f.host.deviceID, reason: AttachFailure.unpaired)
 
     #expect(ended.state.phase == .failed(AttachFailure.unpaired))
-    #expect(ended.state.stripText == "This device was removed from your paired devices")
+    #expect(ended.state.stripText == "This device was removed from your paired devices — ⌘W to close")
     #expect(kept.state.phase == .attaching)
     // And it is off the routing table: a frame the host sends afterwards reaches nothing.
     f.link.reset()
@@ -757,4 +791,254 @@ private final class Recorder {
     recorder.watch(attachment)
     try f.hostSends("still here")
     #expect(recorder.text == "still here")
+}
+
+// MARK: - A host that drops off the relay
+
+/// The defect a person met by closing a laptop lid: the relay synthesised `session_ended`, the tab
+/// said "Session ended on <host>" -- which was false, the session was running the whole time -- and
+/// nothing ever brought it back. The relay now says `session_suspended` and this is what it means.
+@Test func aSuspendedSessionKeepsItsTabAndRefusesInput() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    #expect(attachment.state.acceptsInput)
+    let recorder = Recorder()
+    recorder.watch(attachment)
+
+    f.client.handle(f.suspended())
+
+    #expect(attachment.state.phase == .suspended("studio"))
+    #expect(attachment.state.stripText == "studio is offline — will reattach — ⌘W to close")
+    #expect(attachment.state.severity == .warning)
+    #expect(!attachment.state.acceptsInput)
+    #expect(recorder.phases == [.suspended("studio")])
+}
+
+/// A suspended tab is not a dead one: input is refused, but the attachment is still routed to, and
+/// a keystroke typed at it goes nowhere rather than being sealed with a cipher the relay has
+/// already forgotten.
+@Test func aSuspendedTabSendsNothing() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    f.client.handle(f.suspended())
+    f.link.reset()
+
+    attachment.send(Array("ls\n".utf8))
+
+    #expect(f.link.frames.isEmpty)
+}
+
+/// The whole recovery, end to end: the host comes back, publishes its catalogue, and this side
+/// re-attaches with a *new* ephemeral key and takes a fresh snapshot -- which is the only way to
+/// catch up on what the session printed while nobody was watching.
+@Test func aHostThatComesBackWithTheSessionIsReattachedTo() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    let firstKey = try #require(f.link.messages(ofType: "attach").last?.ephemeralPubkey)
+    f.client.handle(f.suspended())
+    f.link.reset()
+    let recorder = Recorder()
+    recorder.watch(attachment)
+
+    f.client.handle(f.catalogue([f.sessionID]))
+
+    let sent = try #require(f.link.messages(ofType: "attach").last)
+    #expect(sent.ephemeralPubkey != firstKey, "a re-attach must not reuse the suspended round's key")
+    #expect(attachment.state.phase == .reconnecting)
+
+    try f.acceptAttach(role: "writer")
+    #expect(attachment.state.phase == .snapshot)
+    try f.hostSends("back on the air\n")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+
+    #expect(attachment.state.phase == .live)
+    #expect(attachment.state.acceptsInput)
+    #expect(recorder.text == "back on the air\n")
+    #expect(recorder.phases == [.reconnecting, .snapshot, .live])
+}
+
+/// The other answer the host can give: it is back, and that session is not in its list. Nothing
+/// else can ever tell a suspended tab its session really has gone -- the `session_ended` that would
+/// have said so was never sent, because the host was not there to send it.
+@Test func aHostThatComesBackWithoutTheSessionEndsTheTab() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.suspended())
+    f.link.reset()
+
+    f.client.handle(f.catalogue([testSessionID(7)]))
+
+    #expect(attachment.state.phase == .ended("studio"))
+    #expect(attachment.state.stripText == "Session ended on studio — ⌘W to close")
+    #expect(f.link.messages(ofType: "attach").isEmpty, "an ended session must not be attached to")
+}
+
+/// A catalogue is not an event about a working tab. One arriving while the session is live -- they
+/// arrive whenever anything on the host changes its title -- must not restart the attach.
+@Test func aCatalogueDoesNothingToALiveTab() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    f.link.reset()
+
+    f.client.handle(f.catalogue([]))
+
+    #expect(attachment.state.phase == .live)
+    #expect(f.link.messages(ofType: "attach").isEmpty)
+}
+
+// MARK: - The re-attach race
+
+/// The second thing the lid-closing found: after an outage both Macs reconnect at their own pace,
+/// and a client that gets in first is told `no_such_session` about a session that is about to be
+/// re-published a second later. Believing that answer killed the tab.
+@Test func aReattachWaitsOutNoSuchSessionAndSucceedsWhenTheHostCatchesUp() throws {
+    let clock = TestClock()
+    let f = try ClientFixture(clock: clock)
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    f.client.linkDidDisconnect()
+    f.link.reset()
+    _ = clock.takeDelays()
+
+    f.client.linkDidReconnect()
+    #expect(f.link.messages(ofType: "attach").count == 1)
+
+    // The host has not re-published yet. Three refusals in a row, and the tab still says the one
+    // true thing about them: this is taking a while.
+    for _ in 0..<3 {
+        f.client.handle(f.error("no_such_session"))
+        #expect(attachment.state.phase == .reconnecting)
+        #expect(attachment.state.stripText == "Reconnecting…")
+        clock.advance(20)
+    }
+    #expect(f.link.messages(ofType: "attach").count == 4)
+
+    try f.acceptAttach(role: "writer")
+    #expect(attachment.state.phase == .snapshot)
+}
+
+/// The delays themselves: 1, 2, 4 -- `Backoff`, not a fixed poll, so a host that is really gone is
+/// asked about a handful of times rather than sixty.
+@Test func theReattachRetriesBackOff() throws {
+    let clock = TestClock()
+    let f = try ClientFixture(attachTimeout: 900, clock: clock)
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.linkDidReconnect()
+    _ = clock.takeDelays()
+
+    for _ in 0..<3 {
+        f.client.handle(f.error("host_offline"))
+        clock.advance(20)
+    }
+
+    // The attach timeout is armed per round as well; the retry delays are the ones under 16 s.
+    #expect(clock.takeDelays().filter { $0 <= 15 } == [1, 2, 4])
+    #expect(attachment.state.phase == .reconnecting)
+}
+
+/// A minute of asking is enough. After it the tab says nobody answered -- not the relay's last
+/// code, which by then describes one attempt out of several.
+@Test func aReattachThatNeverSucceedsGivesUpAfterAMinute() throws {
+    let clock = TestClock()
+    let f = try ClientFixture(attachTimeout: 900, clock: clock)
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.linkDidReconnect()
+
+    for _ in 0..<12 {
+        f.client.handle(f.error("host_offline"))
+        clock.advance(10)
+    }
+
+    #expect(attachment.state.phase == .failed(AttachFailure.noAnswer))
+    #expect(attachment.state.stripText == "No answer from the host — ⌘W to close")
+}
+
+/// Only the two codes a race produces are waited out. `not_paired` is a settled answer: retrying it
+/// for a minute would leave the tab saying "Reconnecting…" about something that will never connect.
+@Test func aSettledRefusalDuringAReattachIsShownAtOnce() throws {
+    let clock = TestClock()
+    let f = try ClientFixture(clock: clock)
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.linkDidReconnect()
+
+    f.client.handle(f.error("not_paired"))
+
+    #expect(attachment.state.phase == .failed("Not paired with this device"))
+}
+
+/// The *first* attach of all has no race to lose: nothing was ever attached, so `host_offline`
+/// means what it says and the tab must say it rather than spending a minute pretending.
+@Test func theFirstAttachDoesNotRetry() throws {
+    let clock = TestClock()
+    let f = try ClientFixture(clock: clock)
+    let attachment = f.attach()
+
+    f.client.handle(f.error("host_offline"))
+
+    #expect(attachment.state.phase == .failed("Host is offline"))
+}
+
+/// A suspension's re-attach is the same race and gets the same patience: the catalogue that woke it
+/// can arrive a moment before the host has finished publishing.
+@Test func aSuspendedReattachAlsoWaitsOutARefusal() throws {
+    let clock = TestClock()
+    let f = try ClientFixture(clock: clock)
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.suspended())
+    f.client.handle(f.catalogue([f.sessionID]))
+
+    f.client.handle(f.error("no_such_session"))
+    #expect(attachment.state.phase == .reconnecting)
+
+    clock.advance(5)
+    try f.acceptAttach(role: "writer")
+    #expect(attachment.state.phase == .snapshot)
+}
+
+// MARK: - Attaching twice
+
+/// Choosing the same palette row twice used to end the first tab with "Session ended on <host>" --
+/// a sentence about the host that was not true about anything. There is one attachment per session
+/// id because a data frame carries nothing else to route on, so the second caller gets the first.
+@Test func attachingTwiceToOneSessionReturnsTheSameAttachment() throws {
+    let f = try ClientFixture()
+    let first = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    f.link.reset()
+
+    let second = f.attach()
+
+    #expect(second === first)
+    #expect(first.state.phase == .live)
+    #expect(f.link.messages(ofType: "attach").isEmpty, "a second attach must not go on the wire")
+}
+
+/// A tab that ended is not in the way of a new one: re-attaching after "Session ended" is a fresh
+/// attachment, which is what makes the palette row work again once the host re-opens the session.
+@Test func attachingAgainAfterATabEndedMakesANewAttachment() throws {
+    let f = try ClientFixture()
+    let first = f.attach()
+    try f.acceptAttach(role: "writer")
+    f.client.handle(f.host.message(.sessionEnded(to: f.deviceID, sessionID: f.key)))
+    #expect(first.state.phase == .ended("studio"))
+
+    let second = f.attach()
+
+    #expect(second !== first)
+    #expect(second.state.phase == .attaching)
 }

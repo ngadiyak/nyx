@@ -1529,7 +1529,7 @@ extension TabController: ActionTarget {
         case .remoteTakeControl:
             // Only on a remote pane that is observing. On a local pane, or one already writing,
             // there is nothing to take.
-            return focusedPane?.remote?.state.stripButton != nil
+            return focusedPane?.remote?.state.stripAction == .takeControl
         default:
             return focusedPane != nil
         }

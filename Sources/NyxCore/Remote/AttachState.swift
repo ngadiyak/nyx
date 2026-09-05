@@ -10,6 +10,16 @@ public struct AttachState: Equatable {
         case snapshot
         case live
         case reconnecting
+        /// The host's own socket to the relay went (a closed lid, a dropped network), so the relay
+        /// dropped the attachment and told this side `session_suspended`. The associated string is
+        /// the host's name.
+        ///
+        /// Not `ended` and not `failed`: nothing is over. The session is still running on the host,
+        /// this tab keeps its transcript, and the client re-attaches by itself the moment that
+        /// host's catalogue lists the session again. Saying "Session ended" here -- which is what
+        /// this build did before the relay could tell the two apart -- was a sentence the user
+        /// could check and find false, on the one screen they had no other way to check.
+        case suspended(String)
         /// The associated string is the host's name, not this state's own `hostName` -- the event
         /// that ends a session names the host that ended it, and while the two are normally the
         /// same value, the strip should say what the message said, not what was cached at attach.
@@ -19,8 +29,8 @@ public struct AttachState: Equatable {
         ///
         /// Distinct from `ended` because the two are different sentences to read: `ended` is a
         /// session that was there and stopped, `failed` is one that was never reached. They behave
-        /// identically otherwise -- no input, no button, and the tab closes on the next key --
-        /// which is why `closesOnNextKey` exists rather than each caller matching both cases.
+        /// identically otherwise: no input, a Close button, and a transcript that stays until the
+        /// user closes the tab.
         case failed(String)
     }
 
@@ -34,8 +44,9 @@ public struct AttachState: Equatable {
     /// like a failure would teach people to ignore the colour on the two states that do not.
     public enum Severity: Equatable {
         case info
-        /// Something is over and will not come back: the session ended on the host, or the attach
-        /// never happened. Drawn in the theme's failure colour, the way a failed exit status is.
+        /// Nothing is arriving and nothing the user does here will change that on its own: the
+        /// session ended on the host, the attach never happened, or the host has dropped off the
+        /// relay. Drawn in the theme's failure colour, the way a failed exit status is.
         case warning
     }
 
@@ -43,6 +54,12 @@ public struct AttachState: Equatable {
     public var role: Role
     public var hostName: String
     public var title: String
+    /// "Host's screen is 160×74 — showing 96×30", or nil when the host's grid fits.
+    ///
+    /// Set by the pane, not by the client: it is the one thing on the strip that depends on how big
+    /// *this* window is, which nothing in `NyxRemote` knows or should. `AttachState.geometryNote`
+    /// computes it; this carries it, so the strip stays one value to draw from.
+    public var geometryNote: String?
 
     public init(hostName: String, title: String) {
         self.phase = .attaching
@@ -50,6 +67,13 @@ public struct AttachState: Equatable {
         self.hostName = hostName
         self.title = title
     }
+
+    /// The words on a strip that has a Close button, for the three states that keep their tab.
+    ///
+    /// The tab used to close itself on the next keystroke, which threw away the transcript of a
+    /// session that had just ended -- exactly when somebody wants to scroll back through it. It
+    /// stays now, so the strip has to say how to get rid of it.
+    static let closeHint = " \u{2014} \u{2318}W to close"
 
     public var tabTitle: String { tabTitle(currentTitle: "") }
 
@@ -66,6 +90,11 @@ public struct AttachState: Equatable {
     /// nil means no strip at all -- the one state (writer, live) where the tab looks exactly like a
     /// local one, because from the writer's side of a session that owns it, it is one.
     public var stripText: String? {
+        joined(phaseText)
+    }
+
+    /// The sentence the phase alone produces, before the pane's geometry note is added to it.
+    private var phaseText: String? {
         switch phase {
         case .attaching, .snapshot:
             return "Attaching…"
@@ -73,15 +102,50 @@ public struct AttachState: Equatable {
             return role == .observer ? "Observing — Take control" : nil
         case .reconnecting:
             return "Reconnecting…"
+        case .suspended(let host):
+            return "\(host) is offline — will reattach" + Self.closeHint
         case .ended(let host):
-            return "Session ended on \(host)"
+            return "Session ended on \(host)" + Self.closeHint
         case .failed(let reason):
-            return reason
+            return reason + Self.closeHint
+        }
+    }
+
+    /// A state with nothing else to say still shows the note, which is why this is not simply an
+    /// append: on a live writer the geometry note is the *only* thing the strip is there for.
+    private func joined(_ base: String?) -> String? {
+        switch (base, geometryNote) {
+        case (nil, nil): return nil
+        case (let base?, nil): return base
+        case (nil, let note?): return note
+        case (let base?, let note?): return "\(base) · \(note)"
+        }
+    }
+
+    /// What the strip's one button does, if it has one. The *title* is `stripButton`; this is what
+    /// pressing it means, so the view dispatches on a case rather than on the words it drew.
+    public enum StripAction: Equatable {
+        case takeControl
+        /// Closes the tab, exactly as ⌘W does. On the three states that keep a tab nothing will
+        /// ever arrive in again: the transcript stays until somebody says otherwise, so there has
+        /// to be a way to say it that does not require knowing a shortcut.
+        case close
+    }
+
+    public var stripAction: StripAction? {
+        switch phase {
+        case .live: return role == .observer ? .takeControl : nil
+        case .suspended, .ended, .failed: return .close
+        case .attaching, .snapshot, .reconnecting: return nil
         }
     }
 
     public var stripButton: String? {
-        phase == .live && role == .observer ? "Take control" : nil
+        switch stripAction {
+        case .takeControl: return "Take control"
+        case .close: return "Close"
+        case nil: return nil
+        }
     }
 
     /// What the strip's *label* reads when the button is drawn beside it.
@@ -92,31 +156,33 @@ public struct AttachState: Equatable {
     /// because every other state has no button.
     public var stripLabel: String? {
         switch phase {
-        case .live: return role == .observer ? "Observing" : nil
-        case .attaching, .snapshot, .reconnecting, .ended, .failed: return stripText
+        case .live: return role == .observer ? joined("Observing") : joined(nil)
+        // The Close button says "Close" and the sentence says "⌘W to close": not the same words,
+        // and the shortcut is the half a button cannot teach.
+        case .attaching, .snapshot, .reconnecting, .suspended, .ended, .failed: return stripText
         }
     }
 
     public var acceptsInput: Bool { role == .writer && phase == .live }
 
-    /// Whether the next keystroke should close this tab instead of being sent anywhere.
-    ///
-    /// A tab in either of these two phases will never show another byte, so leaving it on screen
-    /// waiting to be closed by hand is a dead window the user has to tidy up; closing it on the
-    /// first key is what every "press any key to continue" has always meant. The keystroke is
-    /// deliberately swallowed rather than delivered to whatever tab comes next.
-    public var closesOnNextKey: Bool {
+    public var severity: Severity {
         switch phase {
-        case .ended, .failed: return true
-        case .attaching, .snapshot, .live, .reconnecting: return false
+        case .suspended, .ended, .failed: return .warning
+        case .attaching, .snapshot, .live, .reconnecting: return .info
         }
     }
 
-    public var severity: Severity {
-        switch phase {
-        case .ended, .failed: return .warning
-        case .attaching, .snapshot, .live, .reconnecting: return .info
-        }
+    /// What the strip says when the host's screen is bigger than the pane showing it, and nil when
+    /// it is not.
+    ///
+    /// A remote pane takes the host's grid and does not resize it (§5.4: the person in front of the
+    /// host owns that window size), so a client on a smaller screen simply loses the right-hand
+    /// columns and the bottom rows -- silently, which is the part that makes a person think the
+    /// host's shell is broken rather than that their own window is small. Scrolling the larger grid
+    /// is still §12; saying so is not.
+    public static func geometryNote(host: GridSize, pane: GridSize) -> String? {
+        guard host.cols > pane.cols || host.rows > pane.rows else { return nil }
+        return "Host\u{2019}s screen is \(host.cols)×\(host.rows) — showing \(pane.cols)×\(pane.rows)"
     }
 
     public var badge: String { role == .writer ? "writer" : "observer" }

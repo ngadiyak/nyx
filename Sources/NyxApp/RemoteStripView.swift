@@ -13,8 +13,9 @@ import NyxCore
 /// `stripButton` -- so every state this can be in is decided and tested somewhere a test can reach.
 /// What is here is a background, a label, a button and a click.
 final class RemoteStripView: NSView {
-    /// The "Take control" button was pressed.
-    var onTakeControl: (() -> Void)?
+    /// The strip's one button was pressed. Which button it was is `AttachState.stripAction`, which
+    /// the owner reads: this view draws a title and reports a click.
+    var onButton: (() -> Void)?
 
     private let label = NSTextField(labelWithString: "")
     private let button = NSButton(title: "Take control", target: nil, action: nil)
@@ -43,10 +44,8 @@ final class RemoteStripView: NSView {
         button.controlSize = .small
         button.font = .systemFont(ofSize: 10, weight: .medium)
         button.target = self
-        button.action = #selector(takeControlPressed)
+        button.action = #selector(buttonPressed)
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.describeForAccessibility("Take control of this session",
-                                        help: "Type into this session; whoever is writing now becomes an observer.")
         addSubview(button)
 
         NSLayoutConstraint.activate([
@@ -89,6 +88,18 @@ final class RemoteStripView: NSView {
         label.font = font
         button.isHidden = state.stripButton == nil
         if let title = state.stripButton { button.title = title }
+        // Re-described on every change: the two buttons are two different acts, and a screen reader
+        // reading "Take control of this session" over a Close button would be worse than silence.
+        switch state.stripAction {
+        case .takeControl:
+            button.describeForAccessibility("Take control of this session",
+                                            help: "Type into this session; whoever is writing now becomes an observer.")
+        case .close:
+            button.describeForAccessibility("Close this tab",
+                                            help: "Nothing more will arrive here. The host's session is not affected.")
+        case nil:
+            break
+        }
 
         // The theme's own colours, never system ones: this sits on the terminal's background, and a
         // system label colour on a dark theme under Light Mode is the bug the block header already
@@ -126,8 +137,8 @@ final class RemoteStripView: NSView {
         isHidden = false
     }
 
-    @objc private func takeControlPressed() {
-        onTakeControl?()
+    @objc private func buttonPressed() {
+        onButton?()
     }
 
     override func isAccessibilityElement() -> Bool { !isHidden }

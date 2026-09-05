@@ -560,6 +560,9 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         case "catalogue":
             guard let deviceID = message.deviceID else { return }
             catalogue.applyCatalogue(deviceID: deviceID, sessions: message.sessions ?? [])
+            // The client needs it too, and not only for the palette: a tab suspended by that host
+            // going offline learns from this message, and nothing else, whether its session is back.
+            client?.handle(message)
             onChange?()
         case "pair_opened":
             guard let code = message.code else { return }

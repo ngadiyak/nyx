@@ -20,3 +20,16 @@ public enum AttachGeometry {
         columnRange.contains(cols) && rowRange.contains(rows)
     }
 }
+
+/// A terminal grid in cells. Two of these -- the host's and the pane's -- are what
+/// `AttachState.geometryNote` compares; a pair of loose `Int`s in that call would be four
+/// interchangeable numbers at every call site.
+public struct GridSize: Equatable {
+    public var cols: Int
+    public var rows: Int
+
+    public init(cols: Int, rows: Int) {
+        self.cols = cols
+        self.rows = rows
+    }
+}

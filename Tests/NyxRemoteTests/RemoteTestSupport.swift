@@ -213,3 +213,57 @@ func testSummary(_ sessionID: [UInt8], title: String = "shell") -> RemoteSession
                         processName: "sh", lastCommand: nil, lastActivity: nil, cols: 80, rows: 24,
                         repo: nil)
 }
+
+/// A clock a test drives by hand, so a retry schedule measured in minutes can be watched in
+/// microseconds.
+///
+/// `after` records rather than runs: nothing fires until `advance` moves the clock past its
+/// deadline, which is what makes "the backoff was 1, then 2, then 4" an assertion about the code
+/// rather than about how long the test happened to sleep.
+final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = Date(timeIntervalSince1970: 1_000_000)
+    private var pending: [(due: Date, delay: TimeInterval, body: () -> Void)] = []
+    /// Every delay asked for, in order -- the backoff sequence itself.
+    private(set) var delays: [TimeInterval] = []
+
+    var clock: RemoteClock {
+        RemoteClock(now: { [weak self] in self?.snapshotNow ?? Date() },
+                    after: { [weak self] seconds, body in self?.schedule(seconds, body) })
+    }
+
+    private var snapshotNow: Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return current
+    }
+
+    private func schedule(_ seconds: TimeInterval, _ body: @escaping () -> Void) {
+        lock.lock()
+        pending.append((current.addingTimeInterval(seconds), seconds, body))
+        delays.append(seconds)
+        lock.unlock()
+    }
+
+    /// Moves the clock forward and runs everything that came due, oldest deadline first. Bodies run
+    /// outside the lock because they schedule more work on this same clock.
+    func advance(_ seconds: TimeInterval) {
+        lock.lock()
+        current = current.addingTimeInterval(seconds)
+        let due = pending.filter { $0.due <= current }.sorted { $0.due < $1.due }
+        pending.removeAll { $0.due <= current }
+        lock.unlock()
+        for entry in due { entry.body() }
+    }
+
+    /// The delays asked for since the last time this was called, so one test can assert on one run
+    /// of retries without counting the attach timeouts armed alongside them.
+    func takeDelays() -> [TimeInterval] {
+        lock.lock()
+        defer {
+            delays = []
+            lock.unlock()
+        }
+        return delays
+    }
+}

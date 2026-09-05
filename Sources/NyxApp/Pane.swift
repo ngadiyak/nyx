@@ -199,7 +199,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         blockHeader.onToggleFold = { [weak self] id, full in self?.toggleFold(ofCommand: id, full: full) }
         addSubview(blockHeader)
         if let remote {
-            remoteStrip.onTakeControl = { [weak self] in self?.takeControl() }
+            remoteStrip.onButton = { [weak self] in self?.remoteStripButtonPressed() }
             addSubview(remoteStrip)
             // Wired before `start()`, like every other callback here: the attachment may already be
             // past `attaching` by the time this pane exists.
@@ -584,6 +584,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // The strip is one terminal row tall, so it moves with the grid rather than with the view:
         // a font change resizes it without the bounds changing at all.
         layoutStickyStrip()
+        // The geometry note is the one thing on the strip that changes when *this* window does, so
+        // it is re-decided here as well as on every state change.
+        if let remote { showRemote(remote.state) }
         markDirty()
     }
 
@@ -1182,10 +1185,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // A tab whose session ended on the host, or whose attach never happened, will never show
         // another byte. The first key closes it -- what "press any key to continue" has always
         // meant -- and the key is swallowed rather than handed on to whatever tab comes next.
-        if remoteClosesOnNextKey {
-            onExit?(0)
-            return
-        }
         // A chord bound to an action never reaches the shell. Most bindings are also menu key
         // equivalents, which AppKit consumes before `keyDown` is ever called; this path is what
         // makes a binding work when the config names a chord the menu cannot express.
@@ -1193,6 +1192,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
            let action = bindings.action(for: ke.key, modifiers: ke.modifiers),
            let target = actionTarget, target.canPerform(action) {
             target.perform(action)
+            return
+        }
+        // A remote pane that is not the writer -- observing, still attaching, reconnecting, or
+        // holding the transcript of a session that has ended -- has nowhere to send this. It beeps
+        // rather than swallowing it: a key that does nothing and says nothing is how a tab that has
+        // quietly stopped moving looks exactly like one that is working. Bound actions were already
+        // handled above, so ⌘W, ⌘F, ⌘C and the scroll keys all still work on the kept transcript.
+        if remote != nil, !acceptsInput {
+            NSSound.beep()
             return
         }
         // The numeric keypad in application mode goes straight to the encoder. Everything else
@@ -2255,27 +2263,44 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// changes; everything it decides -- the words, whether there is a button, whether input is
     /// accepted at all -- is `AttachState` in NyxCore.
     private func showRemote(_ state: AttachState) {
+        var shown = state
+        // Added here rather than by the client: how much of the host's screen fits is a fact about
+        // this window, and `RemoteClient` neither knows nor should know how big a pane is.
+        shown.geometryNote = remoteGeometryNote()
         let wasHidden = remoteStrip.isHidden
-        remoteStrip.update(state: state, palette: Pane.resolvedPalette(for: config),
+        remoteStrip.update(state: shown, palette: Pane.resolvedPalette(for: config),
                            font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
         if wasHidden != remoteStrip.isHidden { layoutStickyStrip() }
-        onRemoteStateChange?(state)
+        onRemoteStateChange?(shown)
         markDirty()
+    }
+
+    /// "Host's screen is 160×74 — showing 96×30", when this pane is smaller than the host's grid.
+    /// nil on a local pane, and before `attached` has said how big the host is.
+    private func remoteGeometryNote() -> String? {
+        guard let remote else { return nil }
+        let host = GridSize(cols: remote.attachment.cols, rows: remote.attachment.rows)
+        guard host.cols > 0, host.rows > 0 else { return nil }
+        return AttachState.geometryNote(host: host, pane: GridSize(cols: cols, rows: rows))
+    }
+
+    /// The strip's one button. Which of the two it is, is `AttachState.stripAction` -- the view
+    /// dispatches on the decision, never on the words it happens to have drawn.
+    private func remoteStripButtonPressed() {
+        switch remote?.state.stripAction {
+        case .takeControl: takeControl()
+        case .close: actionTarget?.perform(.closePane)
+        case nil: break
+        }
     }
 
     /// The strip's button and the `remote_take_control` action. Returns whether there was anything
     /// to take: a local pane, or one that is already writing, answers no and the caller beeps.
     @discardableResult
     func takeControl() -> Bool {
-        guard let remote, remote.state.stripButton != nil else { return false }
+        guard let remote, remote.state.stripAction == .takeControl else { return false }
         remote.attachment.takeControl()
         return true
-    }
-
-    /// Whether the next keystroke should close this tab rather than be sent anywhere -- a session
-    /// that ended on the host, or an attach that never happened. Local panes always answer no.
-    private var remoteClosesOnNextKey: Bool {
-        remote?.state.closesOnNextKey ?? false
     }
 
     /// Clicking the strip goes to the command it names: the point of pinning it is to be able to

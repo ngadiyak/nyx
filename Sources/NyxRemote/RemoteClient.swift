@@ -113,13 +113,27 @@ public final class RemoteClient {
         /// already been answered or superseded does nothing.
         private var round = 0
         private let timeout: TimeInterval
-        /// Timers only. `RemoteClient` deliberately has no queue of its own (see the type's note),
-        /// and a delayed check is the one thing it cannot do without somewhere to run.
-        private static let timers = DispatchQueue(label: "nyx.remote.client.timeout")
+        private let clock: RemoteClock
+        /// When the run of re-attach attempts this attachment is in the middle of must give up, or
+        /// nil when it is not re-attaching at all.
+        ///
+        /// A *re*-attach races the host: after a relay outage both Macs reconnect at their own
+        /// pace, and after a suspension the host has to publish its catalogue again -- so the relay
+        /// answers `no_such_session` or `host_offline` to an attach that is merely early. Treating
+        /// that first answer as final is what killed a tab whose session was alive the whole time.
+        /// Sixty seconds is long enough for the slowest of those races and short enough that a tab
+        /// which really is gone says so while the user still remembers opening it.
+        private var reattachDeadline: Date?
+        /// 1, 2, 4, 8, 15, 15 … -- the same shape `RelayConnection` reconnects with, capped lower
+        /// because the whole run is over in a minute.
+        private var reattachBackoff = Backoff(initial: 1, maximum: 15)
+
+        static let reattachWindow: TimeInterval = 60
 
         init(sessionID: [UInt8], hostID: String, hostName: String, title: String,
-             link: RelayLink, identity: DeviceIdentity, timeout: TimeInterval) {
+             link: RelayLink, identity: DeviceIdentity, timeout: TimeInterval, clock: RemoteClock) {
             self.timeout = timeout
+            self.clock = clock
             self.sessionID = sessionID
             self.hostID = hostID
             self.hostName = hostName
@@ -191,11 +205,27 @@ public final class RemoteClient {
             // Armed even when the signing failed and nothing was sent: with no `attach` on the wire
             // there will certainly be no answer, and the tab must say so rather than sit in
             // "Attaching…" for the rest of its life.
-            Attachment.timers.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            clock.after(timeout) { [weak self] in
                 self?.attachTimedOut(round: thisRound)
             }
             guard let signed else { return }
             link.send(.attach(to: hostID, sessionID: key, ephemeralPubkey: signed.pubkey, sig: signed.sig))
+        }
+
+        /// Starts a *re*-attach: the same round `begin()` sends, plus the sixty-second window in
+        /// which "the host is not there yet" is an answer to wait out rather than to believe.
+        ///
+        /// Called for both ways a live tab loses its attachment -- this Mac's socket dropped, or the
+        /// host's did -- because from here they are the same race with the same fix.
+        func beginReattach() {
+            lock.lock()
+            let alreadyRetrying = reattachDeadline != nil
+            if !alreadyRetrying {
+                reattachDeadline = clock.now().addingTimeInterval(Attachment.reattachWindow)
+                reattachBackoff.reset()
+            }
+            lock.unlock()
+            begin()
         }
 
         /// Nothing came back for this round. Neither `attached` nor `error` -- the relay may have
@@ -213,9 +243,54 @@ public final class RemoteClient {
         /// `too_many`. Only while an attach is outstanding -- an error that arrives after the
         /// session is live is about something else, and must not close a working tab.
         func handleError(code: String) {
+            if retryReattach(after: code) { return }
             report(if: { self.isAwaitingAttach($0.phase) }) {
                 $0.phase = .failed(AttachFailure.text(code: code))
             }
+        }
+
+        /// Whether this refusal is one to wait out rather than to show.
+        ///
+        /// Only during a re-attach, and only for the two codes a race produces: `host_offline` (the
+        /// host's socket has not come back yet) and `no_such_session` (it has, but it has not
+        /// re-published this session yet). Every other code -- `not_paired`, `too_many` -- is a
+        /// settled answer that retrying cannot change, and the first attach of all has no race to
+        /// lose: there the codes mean exactly what they say.
+        ///
+        /// The strip is left alone on purpose. It says "Reconnecting…" throughout, which is the
+        /// truth for the whole minute; flashing "Host is offline" between attempts would be a tab
+        /// that looks dead five times before it comes back.
+        private func retryReattach(after code: String) -> Bool {
+            guard code == "host_offline" || code == "no_such_session" else { return false }
+            lock.lock()
+            guard !finished, isAwaitingAttach(_state.phase), let deadline = reattachDeadline else {
+                lock.unlock()
+                return false
+            }
+            guard clock.now() < deadline else {
+                // Out of time. Fall through to `.failed` -- but as "no answer", not as the relay's
+                // last code: after a minute of asking, what the tab knows is that nobody answered.
+                reattachDeadline = nil
+                lock.unlock()
+                report(if: { self.isAwaitingAttach($0.phase) }) { $0.phase = .failed(AttachFailure.noAnswer) }
+                return true
+            }
+            // Retiring this round now is what stops its own 15-second timeout firing `.failed`
+            // while the backoff is still waiting: `attachTimedOut` drops any round but the current.
+            round += 1
+            awaiting = nil
+            let delay = reattachBackoff.next()
+            lock.unlock()
+            clock.after(delay) { [weak self] in
+                guard let self else { return }
+                self.lock.lock()
+                let stale = self.finished || self.reattachDeadline == nil
+                    || !self.isAwaitingAttach(self._state.phase)
+                self.lock.unlock()
+                guard !stale else { return }
+                self.begin()
+            }
+            return true
         }
 
         /// A session id that is not 16 bytes cannot be attached to: the relay would answer
@@ -267,6 +342,9 @@ public final class RemoteClient {
                 return
             }
             awaiting = nil
+            // The race is over: this run of retries has its answer, so the next drop starts its own
+            // minute rather than inheriting whatever is left of this one.
+            reattachDeadline = nil
             usedHostKeys.insert(pubkey)
             e2e = session
             _cols = m.cols ?? _cols
@@ -290,6 +368,51 @@ public final class RemoteClient {
             report(if: { !self.isEnded($0.phase) }) { $0.phase = .ended(self.hostName) }
         }
 
+        /// The relay dropped this attachment because the *host's* socket went. The session itself is
+        /// untouched -- a closed lid is not a closed shell -- so the tab keeps its transcript, stops
+        /// taking input, and waits for that host's catalogue to list the session again.
+        ///
+        /// The cipher goes with the attachment. Whatever the host sends after it comes back is
+        /// sealed under a new pair of ephemeral keys, and a frame that arrived under the old ones
+        /// after this point could only be a replay.
+        func handleSuspended() {
+            lock.lock()
+            let ignore = finished || isEnded(_state.phase)
+            if !ignore {
+                e2e = nil
+                awaiting = nil
+                reattachDeadline = nil
+                // Any round still outstanding is answered by this; its timeout must not fire.
+                round += 1
+            }
+            lock.unlock()
+            guard !ignore else { return }
+            report { $0.phase = .suspended(self.hostName) }
+        }
+
+        /// A `catalogue` from this attachment's host, while this tab is suspended: either the
+        /// session is back in the list -- in which case this is the first moment a re-attach can
+        /// succeed -- or the host is up and has not got it, which is the one message that can tell a
+        /// suspended tab its session is really gone.
+        ///
+        /// Returns whether the attachment is finished with, so the client can stop routing to it.
+        func handleCatalogue(sessionIDs: Set<String>) -> Bool {
+            lock.lock()
+            let suspended = !finished && isSuspended(_state.phase)
+            lock.unlock()
+            guard suspended else { return false }
+            guard sessionIDs.contains(key) else {
+                report { $0.phase = .ended(self.hostName) }
+                lock.lock()
+                finished = true
+                lock.unlock()
+                return true
+            }
+            report { $0.phase = .reconnecting }
+            beginReattach()
+            return false
+        }
+
         /// Another attachment has taken over this session id. This one is dead -- the client routes
         /// by session id, and the host keys its attachments by device and session, so nothing will
         /// ever be delivered here again. It deliberately does not send `detach`: on the host that
@@ -303,7 +426,7 @@ public final class RemoteClient {
 
         func handleReconnect() {
             report(if: { !self.isEnded($0.phase) }) { $0.phase = .reconnecting }
-            begin()
+            beginReattach()
         }
 
         /// The socket went. Deliberately does *not* re-attach: there is nothing to send it on, so an
@@ -363,8 +486,16 @@ public final class RemoteClient {
         private func isEnded(_ phase: AttachState.Phase) -> Bool {
             switch phase {
             case .ended, .failed: return true
-            case .attaching, .snapshot, .live, .reconnecting: return false
+            // Deliberately not `suspended`: that tab is waiting, not finished. It still belongs to
+            // the client's routing table, still comes back on a reconnect, and is still ended by
+            // `endAll` when this side stops.
+            case .attaching, .snapshot, .live, .reconnecting, .suspended: return false
             }
+        }
+
+        private func isSuspended(_ phase: AttachState.Phase) -> Bool {
+            if case .suspended = phase { return true }
+            return false
         }
 
         /// Mutates the state under the lock and reports it outside: `onState` redraws a tab, and
@@ -392,6 +523,7 @@ public final class RemoteClient {
     private let identity: DeviceIdentity
     private let paired: () -> PairedDevices
     private let attachTimeout: TimeInterval
+    private let clock: RemoteClock
     private let lock = NSLock()
     /// Keyed by session id, which is all a data frame carries: two attachments to the same session
     /// id would be the same session, and the relay does not allow two hosts to own one.
@@ -402,17 +534,33 @@ public final class RemoteClient {
     /// merely slow (the relay allows itself 10 s per handshake step) and short enough that a person
     /// is not left reading "Attaching…" wondering whether it is working.
     public init(link: RelayLink, identity: DeviceIdentity, paired: @escaping () -> PairedDevices,
-                attachTimeout: TimeInterval = 15) {
+                attachTimeout: TimeInterval = 15, clock: RemoteClock = .system) {
         self.link = link
         self.identity = identity
         self.paired = paired
         self.attachTimeout = attachTimeout
+        self.clock = clock
     }
 
+    /// Attaches to a session on a paired host -- or hands back the attachment that is already on
+    /// it.
+    ///
+    /// Attaching twice to one session used to displace the first tab: the second `attach` took the
+    /// routing slot and the first was ended with "Session ended", which is a sentence about the
+    /// host that was not true about anything. There is one attachment per session id because a data
+    /// frame carries nothing else to route on, so a second one is not a second view of the session
+    /// -- it is the same view, and the caller gets it.
     public func attach(hostID: String, hostName: String, sessionID: [UInt8], title: String) -> Attachment {
+        let key = RemoteID.base64url(sessionID)
+        if sessionID.count == 16 {
+            lock.lock()
+            let open = attachments[key]
+            lock.unlock()
+            if let open, open.isLive, open.hostID == hostID { return open }
+        }
         let attachment = Attachment(sessionID: sessionID, hostID: hostID, hostName: hostName,
                                     title: title, link: link, identity: identity,
-                                    timeout: attachTimeout)
+                                    timeout: attachTimeout, clock: clock)
         guard sessionID.count == 16 else {
             attachment.failImmediately()
             return attachment
@@ -437,6 +585,24 @@ public final class RemoteClient {
             attachment.handleError(code: m.code ?? "")
             return
         }
+        // A host's catalogue is how a suspended tab learns its session is back -- or gone. It
+        // carries a device and a list, never a session id, so it is routed before the id lookup
+        // every other message goes through.
+        if m.t == "catalogue" {
+            guard let deviceID = m.deviceID else { return }
+            handleCatalogue(from: deviceID, sessions: m.sessions ?? [])
+            return
+        }
+        // `session_suspended` comes from the relay on the host's behalf. The deployed relay stamps
+        // the host's id in `from`; the wire table promises only `session_id` and `to`, so an
+        // absent `from` is accepted here rather than dropped -- there is exactly one attachment per
+        // session id, and it knows which host it belongs to.
+        if m.t == "session_suspended" {
+            guard let key = m.sessionID, let attachment = self[key],
+                  m.from == nil || m.from == attachment.hostID else { return }
+            attachment.handleSuspended()
+            return
+        }
         guard let key = m.sessionID, let from = m.from, let attachment = self[key],
               attachment.hostID == from else { return }
         switch m.t {
@@ -457,6 +623,19 @@ public final class RemoteClient {
             forget(key)
         default:
             break
+        }
+    }
+
+    /// One host's published sessions. Only suspended attachments care: a live one is already
+    /// getting frames, and an ended one has nothing to come back to.
+    private func handleCatalogue(from hostID: String, sessions: [RemoteSessionInfo]) {
+        lock.lock()
+        let mine = attachments.values.filter { $0.hostID == hostID }
+        lock.unlock()
+        guard !mine.isEmpty else { return }
+        let ids = Set(sessions.map(\.sessionID))
+        for attachment in mine where attachment.handleCatalogue(sessionIDs: ids) {
+            forget(attachment.key)
         }
     }
 

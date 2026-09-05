@@ -613,7 +613,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // Folds whose prompt has gone -- evicted from the ring, or overwritten -- are dropped
             // here rather than accumulating over a session. Costs one row read per fold, and
             // nothing at all when there are none.
-            if !self.folding.isEmpty { self.folding.prune(in: t) }
+            if !self.folding.isEmpty { self.folding.prune(olderThan: t.oldestCommandID) }
             let cursor: Cursor? = (t.modes.showCursor && t.viewportOffset == 0) ? t.screen.cursor : nil
             // Resolved here, inside the lock, so the highlighted columns belong to the same
             // viewport as the lines being drawn.
@@ -1089,15 +1089,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// gesture that means two things depending on a few pixels is a gesture people stop trusting.
     private func foldBlock(atPointInPadding point: NSPoint) -> Bool {
         guard point.x < CGFloat(padding) else { return false }
-        let promptRow: Int? = session.withTerminal { t in
+        let id: UInt32? = session.withTerminal { t in
             guard CommandBlockChrome.isAllowed(altScreen: t.modes.altScreen,
                                                mouseReporting: t.modes.mouse != .none,
                                                hasMarks: t.shellEmitsPromptMarks) else { return nil }
             let position = self.position(topLeft(point), in: t)
-            return t.block(atAbsoluteRow: position.row, rows: t.rows)?.region.promptRow
+            return t.block(atAbsoluteRow: position.row, rows: t.rows)?.region.id
         }
-        guard let promptRow else { return false }
-        folding.toggle(promptRow: promptRow)
+        guard let id, id != 0 else { return false }
+        folding.toggle(id, keep: 3) // Task 3: config.foldKeepLines
         markDirty()
         return true
     }
@@ -1702,8 +1702,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func unfoldPlaceholder(at point: NSPoint) -> Bool {
         guard !folding.isEmpty, let visible = visibleRow(at: point),
               foldRowsOnScreen.indices.contains(visible),
-              case .fold(let promptRow, _) = foldRowsOnScreen[visible] else { return false }
-        folding.unfold(promptRow: promptRow)
+              case .fold(let id, _) = foldRowsOnScreen[visible] else { return false }
+        folding.unfold(id)
         markDirty()
         return true
     }
@@ -1715,17 +1715,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             selectCommand(atVisibleRow: row)
             return
         }
-        let absolute: Int? = session.withTerminal { t in
+        let commandID: UInt32? = session.withTerminal { t in
             guard let entry = self.absoluteRow(forVisibleRow: row, in: t),
                   let region = t.command(containingAbsoluteRow: entry),
                   !region.outputRows.isEmpty else { return nil }
-            return region.promptRow
+            return region.id
         }
-        guard let promptRow = absolute else {
+        guard let id = commandID, id != 0 else {
             NSSound.beep()
             return
         }
-        folding.toggle(promptRow: promptRow)
+        folding.toggle(id, keep: 3) // Task 3: config.foldKeepLines
         onFocusRequested?()
         markDirty()
     }
@@ -1742,13 +1742,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// `fold_command`: collapses the command the viewport is showing, and expands it again.
     @discardableResult
     func toggleFoldOfCurrentCommand() -> Bool {
-        let promptRow: Int? = session.withTerminal { t in
+        let commandID: UInt32? = session.withTerminal { t in
             guard let region = t.command(containingAbsoluteRow: t.viewportTopRow) ?? t.lastFinishedCommand,
                   !region.outputRows.isEmpty else { return nil }
-            return region.promptRow
+            return region.id
         }
-        guard let promptRow else { return false }
-        folding.toggle(promptRow: promptRow)
+        guard let id = commandID, id != 0 else { return false }
+        folding.toggle(id, keep: 3) // Task 3: config.foldKeepLines
         markDirty()
         return true
     }
@@ -1764,7 +1764,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             return true
         }
         session.withTerminal { t in
-            folding.foldLongOutput(in: t, longerThan: Pane.longOutputThreshold)
+            folding.foldLongOutput(in: t, longerThan: Pane.longOutputThreshold, keep: 3) // Task 3: config.foldKeepLines
         }
         guard !folding.isEmpty else { return false }
         markDirty()

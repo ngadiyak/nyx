@@ -1,122 +1,112 @@
 import Foundation
 
+/// How much of a command's output a fold hides.
+public enum FoldShape: Equatable {
+    /// Everything but the last `keep` rows. The tail is where the error and the summary line are,
+    /// which is what a person folding a build actually wants to keep.
+    case tail(keep: Int)
+    case all
+}
+
 /// One row as the viewport should show it.
 public enum DisplayRow: Equatable {
-    /// An ordinary row of the buffer, by absolute index.
     case row(Int)
-    /// A folded command's output, standing in for `hiddenRows` rows. Carries the command's own
-    /// prompt row so the placeholder can name what was folded, and so clicking it can unfold.
-    case fold(promptRow: Int, hiddenRows: Int)
+    /// A folded command's hidden output, standing in for `hiddenRows` rows. Carries the command's
+    /// id so clicking it can unfold the right block after the rows underneath have shifted.
+    case fold(commandID: UInt32, hiddenRows: Int)
 }
 
-/// Which commands' output is collapsed.
+/// Which commands' output is collapsed, and how.
 ///
-/// One `cat` of a large file pushes everything useful out of the scrollback and leaves you
-/// scrolling through thousands of lines you did not want. Folding it to a single line keeps the
-/// history readable and makes the buffer limit go further, without losing anything -- unfolding
-/// puts it back, because nothing was thrown away.
-///
-/// Folds are keyed by the command's prompt row, which is stable in absolute coordinates for as long
-/// as the row lives; when it scrolls out of the buffer the fold goes with it.
+/// Keyed by `Row.commandID` rather than by prompt row: once the scrollback ring is full every new
+/// line shifts every absolute row, and a fold keyed by row would collapse whatever moved into its
+/// index -- and vanish from the command it was on. The id stays with the command.
 public struct OutputFolding: Equatable {
-    private var folded: Set<Int>
+    private var folds: [UInt32: FoldShape] = [:]
+    /// Commands the user unfolded by hand. Automatic folding leaves them alone: a block that
+    /// re-collapses after you opened it is the terminal arguing with you.
+    private var openedByHand: Set<UInt32> = []
 
-    public init(_ folded: Set<Int> = []) {
-        self.folded = folded
+    public init() {}
+
+    public var isEmpty: Bool { folds.isEmpty }
+
+    public func shape(of id: UInt32) -> FoldShape? { folds[id] }
+    public func isFolded(_ id: UInt32) -> Bool { folds[id] != nil }
+
+    public mutating func fold(_ id: UInt32, _ shape: FoldShape) {
+        guard id != 0 else { return }
+        folds[id] = shape
     }
 
-    public var isEmpty: Bool { folded.isEmpty }
-
-    public func isFolded(promptRow: Int) -> Bool { folded.contains(promptRow) }
-
-    public mutating func fold(promptRow: Int) { folded.insert(promptRow) }
-    public mutating func unfold(promptRow: Int) { folded.remove(promptRow) }
-    public mutating func unfoldAll() { folded.removeAll() }
-
-    public mutating func toggle(promptRow: Int) {
-        if folded.contains(promptRow) { folded.remove(promptRow) } else { folded.insert(promptRow) }
+    public mutating func unfold(_ id: UInt32) {
+        folds[id] = nil
+        openedByHand.insert(id)
     }
 
-    /// Folds every command that produced more than `threshold` rows of output.
-    ///
-    /// This is "tidy up the screen": after a long session most of what is on screen is output you
-    /// have already read, and one action to collapse it is worth more than folding each by hand.
-    public mutating func foldLongOutput(in terminal: Terminal, longerThan threshold: Int) {
+    public mutating func unfoldAll() {
+        folds.removeAll()
+    }
+
+    /// Open ↔ tail. A block already folded fully opens too: the chevron means "show me".
+    public mutating func toggle(_ id: UInt32, keep: Int) {
+        if folds[id] != nil { unfold(id) } else { fold(id, .tail(keep: keep)) }
+    }
+
+    /// Open ↔ all. From a tail fold this tightens rather than opens: ⌥ means "more hidden".
+    public mutating func toggleFull(_ id: UInt32) {
+        if folds[id] == .all { unfold(id) } else { fold(id, .all) }
+    }
+
+    /// Drops folds for commands that have left the buffer, so the set cannot grow over a session.
+    public mutating func prune(olderThan oldest: UInt32) {
+        folds = folds.filter { $0.key >= oldest }
+        openedByHand = openedByHand.filter { $0 >= oldest }
+    }
+
+    /// `fold-long-output`: folds `region` if its output is longer than `threshold` rows and the user
+    /// has not opened it by hand. Returns whether it folded.
+    @discardableResult
+    public mutating func autoFold(_ region: CommandRegion, longerThan threshold: Int, keep: Int) -> Bool {
+        guard threshold > 0, region.id != 0, region.outputRows.count > threshold,
+              !openedByHand.contains(region.id), folds[region.id] == nil else { return false }
+        folds[region.id] = .tail(keep: keep)
+        return true
+    }
+
+    /// "Tidy up the screen": every finished command longer than `threshold` rows, folded.
+    public mutating func foldLongOutput(in terminal: Terminal, longerThan threshold: Int, keep: Int) {
         for promptRow in terminal.promptRows {
-            guard let region = terminal.command(containingAbsoluteRow: promptRow) else { continue }
-            if region.outputRows.count > threshold { folded.insert(promptRow) }
+            guard let region = terminal.command(containingAbsoluteRow: promptRow),
+                  region.id != 0, region.outputRows.count > threshold else { continue }
+            folds[region.id] = .tail(keep: keep)
         }
     }
 
-    /// Drops folds for commands that have scrolled out of the buffer, so the set cannot grow
-    /// without bound over a long session.
-    public mutating func prune(below firstRow: Int) {
-        folded = folded.filter { $0 >= firstRow }
+    /// A tail that would hide one row behind a one-row placeholder has hidden nothing; below
+    /// `keep + 1` rows the fold is a full one.
+    public static func effectiveShape(_ shape: FoldShape, outputRows: Int) -> FoldShape {
+        guard case .tail(let keep) = shape, keep > 0, outputRows > keep + 1 else { return .all }
+        return shape
     }
 
-    /// Drops folds whose prompt row is no longer a prompt row.
-    ///
-    /// A fold is an absolute row index, and absolute indices are only stable while the buffer is
-    /// only ever appended to. Once the scrollback ring is full every eviction shifts them all down
-    /// by one, so a fold would follow the index rather than the command -- and collapse whatever
-    /// text moved into its place. Checking that the row still carries a prompt mark is the cheap
-    /// version of noticing: a shifted fold almost never lands on another prompt, and the one that
-    /// does is a fold on a neighbouring command rather than on the middle of somebody's output.
-    ///
-    /// Costs one row read per fold, and is not called at all when there are none.
-    public mutating func prune(in terminal: Terminal) {
-        folded = folded.filter { terminal.promptMarks(atAbsoluteRow: $0).contains(.promptStart) }
-    }
-}
-
-public extension Terminal {
-    /// The rows to draw for a range of the buffer, with folded output replaced by a placeholder.
-    ///
-    /// Returns absolute rows when nothing is folded, so the renderer's ordinary path is unchanged
-    /// and costs nothing extra for the overwhelmingly common case.
-    func displayRows(in range: Range<Int>, folding: OutputFolding) -> [DisplayRow] {
-        guard !folding.isEmpty else { return range.map { .row($0) } }
-
-        var out: [DisplayRow] = []
-        var row = range.lowerBound
-        while row < range.upperBound {
-            // A fold is anchored on its prompt row: the prompt itself stays visible -- the point is
-            // to hide the output, not the command that produced it.
-            guard folding.isFolded(promptRow: row),
-                  let region = command(containingAbsoluteRow: row),
-                  region.promptRow == row,
-                  !region.outputRows.isEmpty else {
-                out.append(.row(row))
-                row += 1
-                continue
-            }
-            out.append(.row(row))
-            let hidden = region.outputRows.clamped(to: row..<range.upperBound)
-            if !hidden.isEmpty {
-                out.append(.fold(promptRow: row, hiddenRows: region.outputRows.count))
-            }
-            // Skip the output, and any rows of the command between the prompt and its output --
-            // a wrapped command line, for instance.
-            row = max(row + 1, region.outputRows.upperBound)
+    /// The absolute rows a fold hides for `region`, after the small-output rule.
+    public static func hiddenRange(of region: CommandRegion, shape: FoldShape) -> Range<Int> {
+        let output = region.outputRows
+        guard !output.isEmpty else { return output.lowerBound..<output.lowerBound }
+        switch effectiveShape(shape, outputRows: output.count) {
+        case .all: return output
+        case .tail(let keep): return output.lowerBound..<(output.upperBound - keep)
         }
-        return out
     }
 
-    /// How many rows a range collapses to, for deciding how much of the buffer the viewport covers.
-    func displayRowCount(in range: Range<Int>, folding: OutputFolding) -> Int {
-        folding.isEmpty ? range.count : displayRows(in: range, folding: folding).count
-    }
-}
-
-public extension OutputFolding {
-    /// What the placeholder row says. Written here so the wording, the grouping and the plural are
-    /// one testable rule rather than three guesses in a view.
-    static func placeholder(hiddenRows: Int) -> String {
-        "\u{2026} \(grouped(hiddenRows)) \(hiddenRows == 1 ? "line" : "lines") hidden"
+    /// What the placeholder row says: the same chevron the command row uses, so the two read as one
+    /// control, then the count. Thousands are grouped by hand so the text does not depend on the
+    /// machine's locale.
+    public static func placeholder(hiddenRows: Int) -> String {
+        "\u{25B8} \u{2026} \(grouped(hiddenRows)) \(hiddenRows == 1 ? "line" : "lines") hidden"
     }
 
-    /// Thousands separated, without asking `NumberFormatter` -- which would make the text depend on
-    /// the user's locale and the test on the machine it runs on. A row count is not a currency.
     static func grouped(_ number: Int) -> String {
         let digits = String(abs(number))
         var out = ""
@@ -129,81 +119,71 @@ public extension OutputFolding {
 }
 
 public extension Terminal {
-    /// The folded command whose *output* covers `row`, or nil. A prompt row is never inside its own
-    /// fold: folding hides what a command printed, not the command.
-    func foldedCommand(containingOutputRow row: Int, folding: OutputFolding) -> CommandRegion? {
+    /// The folded command whose *hidden* rows cover `row`, and those rows. A prompt row and a kept
+    /// tail row are never inside a fold.
+    func foldedCommand(containingOutputRow row: Int, folding: OutputFolding)
+        -> (region: CommandRegion, hidden: Range<Int>)? {
         guard !folding.isEmpty, shellEmitsPromptMarks,
               let region = command(containingAbsoluteRow: row),
-              folding.isFolded(promptRow: region.promptRow),
-              region.outputRows.contains(row) else { return nil }
-        return region
+              let shape = folding.shape(of: region.id) else { return nil }
+        let hidden = OutputFolding.hiddenRange(of: region, shape: shape)
+        return hidden.contains(row) ? (region, hidden) : nil
     }
 
-    /// Exactly what a viewport `count` rows tall shows, starting at absolute row `top`.
-    ///
-    /// The renderer needs a fixed number of rows, which `displayRows(in:folding:)` cannot give it:
-    /// collapsing a range returns fewer rows than it was asked about, and the viewport would come
-    /// up short by however much was folded. This walks forward until it has filled the screen.
-    ///
-    /// With nothing folded it is `(top..<top+count).map(DisplayRow.row)` and no buffer walk at all,
-    /// which is the path every frame of every ordinary session takes.
+    /// Exactly what a viewport `count` rows tall shows from absolute row `top`. With nothing folded
+    /// it is the plain range and no buffer walk, which is the path every ordinary frame takes.
     func displayRows(from top: Int, count: Int, folding: OutputFolding) -> [DisplayRow] {
         guard count > 0 else { return [] }
         guard !folding.isEmpty else { return (0..<count).map { .row(top + $0) } }
 
         var out: [DisplayRow] = []
         var row = max(0, top)
-
-        // A viewport that starts in the middle of folded output starts on the placeholder instead:
-        // those rows are precisely the ones the fold stands in for.
-        if let region = foldedCommand(containingOutputRow: row, folding: folding) {
-            out.append(.fold(promptRow: region.promptRow, hiddenRows: region.outputRows.count))
-            row = region.outputRows.upperBound
+        if let (region, hidden) = foldedCommand(containingOutputRow: row, folding: folding) {
+            out.append(.fold(commandID: region.id, hiddenRows: hidden.count))
+            row = hidden.upperBound
         }
-
         while out.count < count && row < totalRows {
             out.append(.row(row))
-            guard folding.isFolded(promptRow: row),
-                  let region = command(containingAbsoluteRow: row),
-                  region.promptRow == row,
-                  !region.outputRows.isEmpty else {
+            let line = absoluteRow(row)
+            guard let id = line?.commandID, id != 0, let shape = folding.shape(of: id),
+                  let region = command(containingAbsoluteRow: row), region.promptRow == row else {
                 row += 1
                 continue
             }
-            if out.count < count {
-                out.append(.fold(promptRow: row, hiddenRows: region.outputRows.count))
+            let hidden = OutputFolding.hiddenRange(of: region, shape: shape)
+            guard !hidden.isEmpty else { row += 1; continue }
+            // A wrapped command line lies between the prompt and its output; it belongs to the
+            // command, not to what it printed, and stays on screen.
+            var next = row + 1
+            while next < hidden.lowerBound && out.count < count {
+                out.append(.row(next))
+                next += 1
             }
-            // Past the output, and past any row between the prompt and it -- a wrapped command
-            // line belongs to the command, not to what it printed.
-            row = max(row + 1, region.outputRows.upperBound)
+            if out.count < count { out.append(.fold(commandID: id, hiddenRows: hidden.count)) }
+            row = hidden.upperBound
         }
         return out
     }
 
-    /// Moves the viewport off the middle of a folded command's output, in the direction the user
-    /// was already scrolling.
-    ///
-    /// Without this, scrolling into a fold of two thousand rows means two thousand more wheel
-    /// clicks to get out of it: the viewport top is an absolute row, and every one of those rows is
-    /// hidden, so the screen would not change. Returns whether it moved.
+    /// The rows to draw for a range of the buffer; used where a fixed count is not wanted.
+    func displayRows(in range: Range<Int>, folding: OutputFolding) -> [DisplayRow] {
+        guard !folding.isEmpty else { return range.map { .row($0) } }
+        return displayRows(from: range.lowerBound, count: range.count, folding: folding)
+            .filter { if case .row(let r) = $0 { return range.contains(r) } else { return true } }
+    }
+
+    /// Moves the viewport off hidden rows in the direction the user was scrolling, so a fold of two
+    /// thousand rows is not two thousand wheel clicks. Returns whether it moved.
     @discardableResult
     func snapViewportOutOfFold(movingUp: Bool, folding: OutputFolding) -> Bool {
-        guard !folding.isEmpty,
-              let region = foldedCommand(containingOutputRow: viewportTopRow, folding: folding)
+        guard let (region, hidden) = foldedCommand(containingOutputRow: viewportTopRow, folding: folding)
         else { return false }
-        // Up lands on the command that produced the output; down lands past it.
-        return scrollToAbsoluteRow(movingUp ? region.promptRow : region.outputRows.upperBound,
-                                   margin: 0)
+        return scrollToAbsoluteRow(movingUp ? region.promptRow : hidden.upperBound, margin: 0)
     }
-}
 
-public extension Terminal {
-    /// The placeholder as a row of cells, so the renderer draws it through exactly the same path as
-    /// every other row and nothing in `NyxRender` has to learn what a fold is.
-    ///
-    /// Dim and italic in the theme's own bright black: it has to read as a note about the buffer
-    /// rather than as something a program printed, and it must do that in any theme -- which rules
-    /// out naming a colour.
+    /// The placeholder as a row of cells, so it is drawn through the ordinary row path and nothing
+    /// in NyxRender learns what a fold is. Dim and italic in the theme's own bright black: a note
+    /// about the buffer, not something a program printed.
     func foldPlaceholderRow(hiddenRows: Int) -> Row {
         var row = Row(cols: cols)
         var cell = Cell()
@@ -220,9 +200,8 @@ public extension Terminal {
 
 /// Where the rows of a folded viewport ended up.
 public enum DisplayRows {
-    /// Absolute row to the screen row it is drawn on. Rows hidden inside a fold are absent, which
-    /// is what makes a highlight on folded text disappear with the text rather than being painted
-    /// onto whatever row happens to sit at that index now.
+    /// Absolute row → screen row. Hidden rows are absent, so a highlight on hidden text is drawn
+    /// nowhere rather than on whatever now sits at that index.
     public static func indexByAbsoluteRow(_ rows: [DisplayRow]) -> [Int: Int] {
         var map: [Int: Int] = [:]
         map.reserveCapacity(rows.count)

@@ -188,16 +188,26 @@ struct ScrollbackTrimTests {
         #expect(t.evictedRows > before)
     }
 
-    /// The same shift, handled: a fold is an absolute prompt row, and `prune` drops one whose row
-    /// no longer carries a prompt mark. This is the behaviour the selection is missing.
-    @Test func foldsAreDroppedWhenTheirPromptRowMovesAway() {
-        let t = Terminal(cols: 20, rows: 2, scrollbackLimit: 5)
+    /// The same shift, handled: a fold is keyed by command id rather than by row, so `prune` only
+    /// has to compare ids against the oldest one still in the buffer -- no row read needed, and no
+    /// chance of a fold surviving onto whatever text slid into its old index.
+    @Test func aFoldOnAnEvictedCommandIsDropped() {
+        let t = Terminal(cols: 20, rows: 2, scrollbackLimit: 4)
+        func markSeq(_ letter: String, _ status: Int32? = nil) -> String {
+            "\u{1b}]133;\(status.map { "\(letter);\($0)" } ?? letter)\u{7}"
+        }
+        t.feed(markSeq("A") + "$" + markSeq("B") + "one\r\n" + markSeq("C") + "1\r\n" + markSeq("D", 0))
+        t.feed(markSeq("A") + "$" + markSeq("B") + "two\r\n" + markSeq("C") + "2\r\n" + markSeq("D", 0))
         var folding = OutputFolding()
-        folding.toggle(promptRow: 2)
-        #expect(!folding.isEmpty)
-        for i in 0..<10 { t.feed("row\(i)\r\n") }
-        folding.prune(in: t)
-        #expect(folding.isEmpty)
+        folding.fold(1, .all)
+        folding.fold(2, .all)
+        // Two more lines push the ring past capacity, evicting the first command's prompt row for
+        // good -- the second command's is still held.
+        t.feed("row0\r\nrow1\r\n")
+        #expect(t.oldestCommandID == 2)
+        folding.prune(olderThan: t.oldestCommandID)
+        #expect(!folding.isFolded(1))
+        #expect(folding.isFolded(2))
     }
 
     /// `scrollback-lines = 0` is a value the parser accepts, and `Scrollback`'s subscript divides

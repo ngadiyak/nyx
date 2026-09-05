@@ -7,6 +7,11 @@ import NyxCore
 /// It lives inside the pane's own left padding, so it costs no terminal columns and never overlaps
 /// a glyph -- `PromptGutter.width` decides how much of the padding it may take, and a pane with too
 /// little padding gets no gutter rather than one over its text.
+///
+/// `otherMouseUp` is deliberately *not* overridden. Middle-click paste happens in the pane's
+/// `otherMouseUp`, which this view reaches through the responder chain; an override here -- even one
+/// that forwarded -- would put the release on a different path from the press and break it. Only
+/// `otherMouseDown` is forwarded, because this view claims the point and would otherwise swallow it.
 final class PromptGutterView: NSView {
     /// A click on a mark, as a visible row index, and whether ⌥ was held.
     var onSelectRow: ((Int, Bool) -> Void)?

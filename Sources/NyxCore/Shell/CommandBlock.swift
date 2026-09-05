@@ -172,8 +172,12 @@ public enum CommandBlockChrome {
     /// strip is chrome over a row of the user's own text, and the text wins. `stripColumns` is the
     /// view's measured width per control set, in columns (the pane rounds up, so a strip right
     /// aligned to the last column can never begin left of `lastUsedColumn + 1`). nil when not even
-    /// the ⋯ and the chevron fit anywhere on the command -- then there is no strip at all, and the
-    /// Metal chevron and the gutter mark are what fold the block.
+    /// the ⋯ and the chevron fit anywhere on the command.
+    ///
+    /// A pane narrower than the smallest strip therefore shows no strip at all, and that is the
+    /// decision rather than a gap: the chevron on the command row, the status mark in the gutter,
+    /// ⌘⇧↑ and the right-click menu all still fold the block, and a strip drawn anyway would cover
+    /// the command it describes.
     public static func overlayPlacement(commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
                                         stripColumns: [OverlayControls: Int],
                                         cols: Int) -> OverlayPlacement? {

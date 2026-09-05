@@ -751,7 +751,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
                                         quickActions: quickActions.map {
                                             ($0, QuickActionRunner.shared.isRunning($0))
                                         },
-                                        themes: Themes.builtin.keys.sorted(),
+                                        themes: Pane.themes.names,
                                         tabTitles: tabs.map(\.title))
         openPalette(items: items)
     }

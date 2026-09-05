@@ -18,6 +18,10 @@ final class ConfigStore {
     /// The current configuration. Replaced atomically on reload; read on the main thread only.
     private(set) var config: Config
     private(set) var diagnostics: [ConfigDiagnostic]
+    /// Every theme available: the built-in ones plus whatever is in the themes directory. Reloaded
+    /// with the config, because a `theme =` line and the file it names have to change together --
+    /// dropping a file in and then pointing at it is two edits, and either order must work.
+    private(set) var themes: ThemeCatalog = .builtinOnly
     /// Called on the main thread after every successful or failed reload.
     var onChange: ((Config, [ConfigDiagnostic]) -> Void)?
 
@@ -27,11 +31,18 @@ final class ConfigStore {
     }
 
     private var source: DispatchSourceFileSystemObject?
+    private var themeSource: DispatchSourceFileSystemObject?
     private var debounceItem: DispatchWorkItem?
     private let debounceInterval: TimeInterval = 0.1
 
+    /// `~/.config/nyx/themes` -- beside the config file, wherever that turned out to be.
+    static var themesDirectory: URL {
+        path.deletingLastPathComponent().appendingPathComponent("themes")
+    }
+
     init() {
         (config, diagnostics) = ConfigStore.load()
+        loadThemes()
     }
 
     deinit { stopWatching() }
@@ -88,7 +99,34 @@ final class ConfigStore {
 
     func reload() {
         (config, diagnostics) = ConfigStore.load(base: config)
+        loadThemes()
         onChange?(config, diagnostics)
+    }
+
+    /// Reads the themes directory. Problems there are reported in the same banner as config
+    /// problems: from where the user is standing, a theme file that does nothing and a `theme =`
+    /// line that does nothing are the same complaint.
+    private func loadThemes() {
+        let (catalog, problems) = ThemeCatalog.make(files: ConfigStore.themeFiles())
+        themes = catalog
+        diagnostics += problems.map { ConfigDiagnostic(line: 0, message: $0.message) }
+    }
+
+    /// Every readable file in the themes directory, named by its filename without the extension.
+    ///
+    /// Extension-agnostic on purpose: `gruvbox`, `gruvbox.conf` and `gruvbox.nyx` all name the
+    /// theme `gruvbox`, because the extension a person gives the file is not something the terminal
+    /// should have an opinion about. Hidden files are skipped -- `.DS_Store` is not a theme.
+    private static func themeFiles() -> [ThemeFile] {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: themesDirectory,
+                                                        includingPropertiesForKeys: [.isRegularFileKey],
+                                                        options: [.skipsHiddenFiles]) else { return [] }
+        return entries.compactMap { url in
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+                  let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+            return ThemeFile(name: url.deletingPathExtension().lastPathComponent, text: text)
+        }
     }
 
     /// Missing file means defaults, not an error: a fresh install with no config yet is not a typo.
@@ -110,13 +148,24 @@ final class ConfigStore {
         stopWatching()
         let dir = ConfigStore.path.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        source = watch(dir)
+        // A second watch on the themes directory: a change *inside* a subdirectory does not reach
+        // the parent's watch, so without this, editing a theme file would need a config save (or a
+        // restart) before it was seen -- which is precisely the loop a person is in while they are
+        // getting the colours right.
+        try? FileManager.default.createDirectory(at: ConfigStore.themesDirectory,
+                                                 withIntermediateDirectories: true)
+        themeSource = watch(ConfigStore.themesDirectory)
+    }
+
+    private func watch(_ dir: URL) -> DispatchSourceFileSystemObject? {
         let fd = open(dir.path, O_EVTONLY)
-        guard fd >= 0 else { return }
+        guard fd >= 0 else { return nil }
         let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete, .extend], queue: .main)
         src.setEventHandler { [weak self] in self?.handle(src.data) }
         src.setCancelHandler { close(fd) }
-        source = src
         src.resume()
+        return src
     }
 
     func stopWatching() {
@@ -124,6 +173,8 @@ final class ConfigStore {
         debounceItem = nil
         source?.cancel()
         source = nil
+        themeSource?.cancel()
+        themeSource = nil
     }
 
     private func handle(_ event: DispatchSource.FileSystemEvent) {

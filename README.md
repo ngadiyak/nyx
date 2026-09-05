@@ -65,6 +65,15 @@ white), and `nyx-dark` replaces Tokyo Night's bright row (three duplicates, an o
 slot, and a bright cyan darker than cyan). Every one of those changes is named, with its before and
 after, in the doc comment on the theme itself.
 
+**Your own themes.** A file in `~/.config/nyx/themes/` is a theme, named after the file (the
+extension is ignored), holding the same `palette`, `foreground`, `background`, `cursor`,
+`selection` and `selection-foreground` keys the config uses. Name it after a built-in to replace
+that one — your `gruvbox-dark` beats ours. The directory is watched, so saving the file recolours
+every open window, and the derived interface colours follow whatever sixteen you gave. A file with
+no colours in it is reported in the banner rather than becoming a theme that silently keeps every
+default. Nyx does not hold your file to the floor above: it is your terminal, and a palette pasted
+from a scheme you like should come out as that scheme.
+
 **Sessions.** Quitting remembers every window, tab and split, each pane's working directory and its
 scrollback; the next launch puts them back. `restore-session = no` turns it off. A snapshot that
 cannot be read — corrupt, or from a newer Nyx — opens one ordinary window rather than nothing.

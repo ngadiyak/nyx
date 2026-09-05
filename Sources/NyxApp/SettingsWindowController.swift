@@ -85,7 +85,7 @@ final class SettingsWindowController: NSWindowController {
     // MARK: - Pages
 
     private func appearancePage() -> NSView {
-        let themes = Themes.builtin.keys.sorted()
+        let themes = Pane.themes.names
         return page([
             row("Theme", popUp("theme", options: themes)),
             row("Dark theme", popUp("theme-dark", options: themes, includesNone: true)),

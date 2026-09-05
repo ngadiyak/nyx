@@ -170,6 +170,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Resolves `theme`/`dark:.../light:...` against the current system appearance, then applies
     /// `palette` overrides on top. Not private: `PaneTreeView` draws its dividers and focus border
     /// in theme colours and resolves them the same way.
+    /// Every theme this installation has, kept up to date by `AppDelegate` on each config reload.
+    ///
+    /// Process-wide because that is what it describes: one themes directory, shared by every window
+    /// and read by the settings window and the palette as well. It starts as the built-ins, so a
+    /// pane created before the first reload draws in a real theme rather than in nothing.
+    static var themes: ThemeCatalog = .builtinOnly
+
     static func resolvedPalette(for config: Config) -> Palette {
         let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let name: String
@@ -179,7 +186,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         case let (nil, light?): name = isDark ? config.themeName : light
         case (nil, nil): name = config.themeName
         }
-        var palette = Themes.palette(named: name)
+        var palette = themes.palette(named: name)
         for (idx, rgb) in config.paletteOverrides where idx >= 0 && idx < palette.colors.count {
             palette.colors[idx] = rgb
         }

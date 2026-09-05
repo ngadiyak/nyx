@@ -18,7 +18,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         rebuildMenu(for: configStore.config)
         configStore.createIfMissing()
+        Pane.themes = configStore.themes
         configStore.onChange = { [weak self] config, diagnostics in
+            // Before the windows are told: they will resolve palettes as they apply the config, and
+            // a `theme =` line and the file it names arrive in the same reload.
+            Pane.themes = self?.configStore.themes ?? .builtinOnly
             // The menu carries the key equivalents, so a changed `keybind` line has to rebuild it.
             self?.rebuildMenu(for: config)
             self?.settings?.configChanged(config, diagnostics: diagnostics)

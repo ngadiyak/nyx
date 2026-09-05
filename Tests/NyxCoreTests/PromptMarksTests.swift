@@ -377,3 +377,48 @@ private func promptedSession(cols: Int = 40, command: String = "make test") -> T
     let region = try! #require(t.command(containingAbsoluteRow: 0))
     #expect(t.commandLine(of: region).isEmpty)
 }
+
+// MARK: - Which command a fold gesture acts on
+
+/// A 20-row build, then a three-row curl, then the prompt the user is typing at.
+private func buildThenCurl() -> Terminal {
+    let t = makeTerminal(cols: 40, rows: 10, scrollback: 200)
+    t.feed(mark("A") + "$ " + mark("B") + "make\r\n" + mark("C"))
+    for i in 1...20 { t.feed("build \(i)\r\n") }
+    t.feed(mark("D", 0))
+    t.feed(mark("A") + "$ " + mark("B") + "curl\r\n" + mark("C"))
+    for i in 1...3 { t.feed("json \(i)\r\n") }
+    t.feed(mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    return t
+}
+
+/// The top screen row at the bottom of a session is somewhere in the middle of the build's output,
+/// so folding "the command at the top" folded the build the user was not looking at.
+@Test func atTheBottomTheFoldTargetsTheLastCommand() throws {
+    let t = buildThenCurl()
+    let region = try #require(t.commandToFold())
+    #expect(t.commandLine(of: region) == "curl")
+}
+
+@Test func aRunningCommandIsTheOneTheBottomFolds() throws {
+    let t = buildThenCurl()
+    t.feed(mark("A") + "$ " + mark("B") + "sleep 10\r\n" + mark("C") + "starting\r\n")
+    let region = try #require(t.commandToFold())
+    #expect(t.commandLine(of: region) == "sleep 10")
+}
+
+/// Scrolled back, the top row is a deliberate choice and means what it says.
+@Test func scrolledBackTheFoldTargetsTheCommandAtTheTopOfTheScreen() throws {
+    let t = buildThenCurl()
+    _ = t.scrollToAbsoluteRow(5, margin: 0)
+    #expect(t.viewportOffset > 0)
+    let region = try #require(t.commandToFold())
+    #expect(t.commandLine(of: region) == "make")
+}
+
+@Test func withoutShellIntegrationThereIsNothingToFold() {
+    let t = makeTerminal(cols: 40, rows: 10, scrollback: 100)
+    t.feed("hello\r\n")
+    #expect(t.commandToFold() == nil)
+}

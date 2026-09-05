@@ -198,6 +198,25 @@ public extension Terminal {
         return nil
     }
 
+    /// Which command a fold gesture acts on -- ⌘⇧↑, and "select the command's output" with it.
+    ///
+    /// "The command containing the top screen row" is right only when the user put that row there.
+    /// At the bottom of a session it is wherever the last few commands happened to leave the
+    /// scroll: after a twenty-row build and a three-row `curl`, the top row is in the middle of the
+    /// build's output, so ⌘⇧↑ folded the build while the user was looking at the curl. At the
+    /// bottom the answer is *this* command -- the one running, if one is, so a noisy build can be
+    /// folded to a live tail while it runs, else the last one that finished. Scrolled back, the top
+    /// row is a deliberate choice and still means what it says.
+    func commandToFold() -> CommandRegion? {
+        guard shellEmitsPromptMarks else { return nil }
+        guard viewportOffset == 0 else { return command(containingAbsoluteRow: viewportTopRow) }
+        if let running = runningCommand, running.id != 0,
+           let region = command(containingAbsoluteRow: totalRows - 1), region.id == running.id {
+            return region
+        }
+        return lastFinishedCommand
+    }
+
     /// The selection covering a command's output, or nil when it produced none.
     func selectionForOutput(of region: CommandRegion) -> Selection? {
         let rows = region.outputRows

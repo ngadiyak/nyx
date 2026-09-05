@@ -2112,12 +2112,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return absolute
     }
 
-    /// `fold_command`: collapses the command the viewport is showing, and expands it again.
+    /// `fold_command`: collapses the last command's output -- or, scrolled back, the one at the top
+    /// of the screen -- and expands it again. `Terminal.commandToFold` is the rule.
     @discardableResult
     func toggleFoldOfCurrentCommand() -> Bool {
         let commandID: UInt32? = session.withTerminal { t in
-            guard let region = t.command(containingAbsoluteRow: t.viewportTopRow) ?? t.lastFinishedCommand,
-                  !region.outputRows.isEmpty else { return nil }
+            guard let region = t.commandToFold(), !region.outputRows.isEmpty else { return nil }
             return region.id
         }
         guard let id = commandID, id != 0 else { return false }
@@ -2211,12 +2211,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                                    exitStatus: described.status))
     }
 
-    /// Selects the output of the command the viewport is showing.
+    /// Selects the output of the last command -- or, scrolled back, the one at the top of the
+    /// screen. The same rule ⌘⇧↑ folds by, so the two gestures cannot name different commands.
     @discardableResult
     func selectCommandOutput() -> Bool {
         let selection: Selection? = session.withTerminal { t in
-            guard let region = t.command(containingAbsoluteRow: t.viewportTopRow) ?? t.lastFinishedCommand
-            else { return nil }
+            guard let region = t.commandToFold() else { return nil }
             return t.selectionForOutput(of: region)
         }
         guard let selection else { return false }

@@ -390,7 +390,11 @@ enum UISnapshot {
             ("waiting", .confirming(peerID: "peer-device-id", peerName: "Nik's MacBook Pro",
                                     fingerprint: "apple-river-stone-zero", mine: true, theirs: false)),
             ("paired", .paired(peerID: "peer-device-id", peerName: "Nik's MacBook Pro")),
-            ("failed", .failed("Code expired")),
+            // The relay's wording, not the local five-minute timeout's: a mistyped code and an
+            // expired one are indistinguishable once the relay has forgotten it, and this is the
+            // sentence most people who fail a pairing actually read -- and the longer of the two,
+            // so it is the one that shows whether the sheet's body wraps.
+            ("failed", .failed("That code is wrong or has expired")),
         ]
     }
 

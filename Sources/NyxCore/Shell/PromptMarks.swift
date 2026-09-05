@@ -68,6 +68,20 @@ public struct CommandRegion: Equatable {
     /// A command the shell reported a non-zero status for. `nil` status is not failure -- it is a
     /// command still running, or a shell that reports `D` without one.
     public var failed: Bool { (exitStatus ?? 0) != 0 }
+
+    /// The one bit every piece of a block's chrome colours itself by. Kept here so the spine, the
+    /// gutter, the summary and a fold placeholder cannot each derive it a different way -- a
+    /// running block's placeholder was grey while its own spine was amber.
+    public var status: BlockStatus {
+        if failed { return .failed }
+        return (outputStart != nil && exitStatus == nil && duration == nil) ? .running : .succeeded
+    }
+}
+
+/// How a command ended, or that it has not. `.succeeded` covers a command that reported nothing:
+/// a shell that emits `D` without a status has not said anything went wrong.
+public enum BlockStatus: Equatable {
+    case running, succeeded, failed
 }
 
 /// How a duration is written where a person will read it.

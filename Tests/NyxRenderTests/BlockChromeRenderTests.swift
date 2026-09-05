@@ -144,7 +144,7 @@ private let spineColor = RGB(0, 255, 0)
     let lines = display.map { entry -> Row in
         switch entry {
         case .row(let absolute): return t.absoluteRow(absolute) ?? Row(cols: cols)
-        case .fold(_, let hidden, let failed): return t.foldPlaceholderRow(hiddenRows: hidden, failed: failed)
+        case .fold(_, let hidden, let status): return t.foldPlaceholderRow(hiddenRows: hidden, status: status)
         }
     } + Array(repeating: Row(cols: cols), count: max(0, rows - display.count))
 

@@ -46,14 +46,14 @@ private func folded(_ ids: UInt32..., shape: FoldShape = .all) -> OutputFolding 
 @Test func aFullFoldReplacesTheOutputWithOnePlaceholder() {
     let rows = session().displayRows(from: 0, count: 6, folding: folded(2))
     #expect(rows[2] == .row(2))
-    #expect(rows[3] == .fold(commandID: 2, hiddenRows: 10, failed: true))
+    #expect(rows[3] == .fold(commandID: 2, hiddenRows: 10, status: .failed))
     #expect(rows[4] == .row(13))
 }
 
 @Test func aTailFoldKeepsTheLastLinesAfterThePlaceholder() {
     let rows = session().displayRows(from: 0, count: 8, folding: folded(2, shape: .tail(keep: 3)))
     #expect(rows[2] == .row(2))
-    #expect(rows[3] == .fold(commandID: 2, hiddenRows: 7, failed: true))
+    #expect(rows[3] == .fold(commandID: 2, hiddenRows: 7, status: .failed))
     #expect(rows[4] == .row(10))
     #expect(rows[5] == .row(11))
     #expect(rows[6] == .row(12))
@@ -63,7 +63,7 @@ private func folded(_ ids: UInt32..., shape: FoldShape = .all) -> OutputFolding 
 @Test func aViewportStartingInsideHiddenRowsStartsOnThePlaceholder() {
     let t = session()
     let rows = t.displayRows(from: 5, count: 4, folding: folded(2, shape: .tail(keep: 3)))
-    #expect(rows.first == .fold(commandID: 2, hiddenRows: 7, failed: true))
+    #expect(rows.first == .fold(commandID: 2, hiddenRows: 7, status: .failed))
     #expect(rows[1] == .row(10))
 }
 
@@ -78,10 +78,11 @@ private func folded(_ ids: UInt32..., shape: FoldShape = .all) -> OutputFolding 
 }
 
 /// Not dim: dimmed bright black reads as a comment the shell printed, and the placeholder is the
-/// button that puts the output back. It keeps the italic and takes the block's own status colour.
+/// button that puts the output back. It keeps the italic and takes the block's own status colour --
+/// the same three the spine uses, so a folded running build is amber on both.
 @Test func thePlaceholderRowIsItalicInTheBlocksStatusColour() {
     let t = session()
-    let row = t.foldPlaceholderRow(hiddenRows: 10, failed: false)
+    let row = t.foldPlaceholderRow(hiddenRows: 10, status: .succeeded)
     let text = String(row.cells.prefix(30).map { $0.content == 0 ? " " : Character(UnicodeScalar($0.content)!) })
         .trimmingCharacters(in: .whitespaces)
     #expect(text == OutputFolding.placeholder(hiddenRows: 10))
@@ -89,19 +90,38 @@ private func folded(_ ids: UInt32..., shape: FoldShape = .all) -> OutputFolding 
     #expect(!row.cells[0].attrs.contains(.dim))
     #expect(row.cells[0].attrs.contains(.italic))
 
-    let failed = t.foldPlaceholderRow(hiddenRows: 10, failed: true)
+    let failed = t.foldPlaceholderRow(hiddenRows: 10, status: .failed)
     #expect(failed.cells[0].fg == .indexed(1))
     #expect(!failed.cells[0].attrs.contains(.dim))
     #expect(failed.cells[0].attrs.contains(.italic))
+
+    let running = t.foldPlaceholderRow(hiddenRows: 10, status: .running)
+    #expect(running.cells[0].fg == .indexed(3))     // the amber the spine uses for the same state
+    #expect(running.cells[0].attrs.contains(.italic))
 }
 
 /// A fold placeholder carries its command's status, so the pane can colour the row without
 /// re-deriving the region on the render path.
-@Test func aPlaceholderKnowsWhetherItsCommandFailed() {
+@Test func aPlaceholderKnowsHowItsCommandEnded() {
     let rows = session().displayRows(from: 0, count: 6, folding: folded(2))
-    #expect(rows[3] == .fold(commandID: 2, hiddenRows: 10, failed: true))
+    #expect(rows[3] == .fold(commandID: 2, hiddenRows: 10, status: .failed))
     let ok = session().displayRows(from: 13, count: 3, folding: folded(3))
-    #expect(ok[1] == .fold(commandID: 3, hiddenRows: 8, failed: false))
+    #expect(ok[1] == .fold(commandID: 3, hiddenRows: 8, status: .succeeded))
+}
+
+/// A running command may be folded -- its tail is a live `tail -f` -- and the placeholder says so
+/// in the same amber as its spine.
+@Test func aFoldedRunningCommandsPlaceholderSaysItIsRunning() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "build\r\n" + mark("C"))
+    for i in 1...8 { t.feed("out \(i)\r\n") }
+    let id = t.command(containingAbsoluteRow: 0)!.id
+    var folding = OutputFolding()
+    folding.fold(id, .all)
+    let rows = t.displayRows(from: 0, count: 4, folding: folding)
+    // Nine, not eight: a running command's region reaches the end of the buffer, so the row the
+    // cursor is waiting on is hidden with the rest -- which is what makes a folded build a live tail.
+    #expect(rows[1] == .fold(commandID: id, hiddenRows: 9, status: .running))
 }
 
 // MARK: - Where the cursor goes when a fold is on screen

@@ -45,7 +45,7 @@ private func blocks() -> [CommandBlock] {
 /// and its kept tail resumes at slots 4-6 before wrapping to a fourth, unrelated row. The block's
 /// own placeholder counts as one of its rows.
 @Test func aFoldedBlocksHoverIsExpressedInDisplaySlots() {
-    let display: [DisplayRow] = [.row(0), .row(1), .row(2), .fold(commandID: 2, hiddenRows: 7, failed: false),
+    let display: [DisplayRow] = [.row(0), .row(1), .row(2), .fold(commandID: 2, hiddenRows: 7, status: .succeeded),
                                  .row(10), .row(11), .row(12), .row(13)]
     let hover = BlockHover(id: 2, rows: 2..<13, headerRow: 2)
     let placed = hover.placed(onDisplayRows: display, viewportTop: 0)
@@ -69,7 +69,7 @@ private func blocks() -> [CommandBlock] {
 // passing spine reads exactly the same rows a passing hover would.
 
 @Test func slotsCoveredMatchesThePlacedHoverForTheSameFold() {
-    let display: [DisplayRow] = [.row(0), .row(1), .row(2), .fold(commandID: 2, hiddenRows: 7, failed: false),
+    let display: [DisplayRow] = [.row(0), .row(1), .row(2), .fold(commandID: 2, hiddenRows: 7, status: .succeeded),
                                  .row(10), .row(11), .row(12), .row(13)]
     let slots = DisplayRows.slots(coveredBy: 2..<13, commandID: 2, in: display, viewportTop: 0)
     #expect(slots == 2..<7)

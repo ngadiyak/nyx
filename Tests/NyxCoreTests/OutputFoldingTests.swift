@@ -91,7 +91,7 @@ private func region(output: Int, id: UInt32 = 7) -> CommandRegion {
 /// is a crash in the renderer rather than a truncated line.
 @Test func thePlaceholderIsClampedToANarrowPane() {
     let t = makeTerminal(cols: 10, rows: 4)
-    let row = t.foldPlaceholderRow(hiddenRows: 1234, failed: false)
+    let row = t.foldPlaceholderRow(hiddenRows: 1234, status: .succeeded)
     #expect(row.cells.count == 10)
     #expect(row.cells.allSatisfy { $0.content != 0 })   // every column it could reach is written
     let text = String(String.UnicodeScalarView(row.cells.compactMap { Unicode.Scalar($0.content) }))

@@ -12,10 +12,10 @@ public enum FoldShape: Equatable {
 public enum DisplayRow: Equatable {
     case row(Int)
     /// A folded command's hidden output, standing in for `hiddenRows` rows. Carries the command's
-    /// id so clicking it can unfold the right block after the rows underneath have shifted, and
-    /// whether that command failed -- the placeholder is drawn in the block's own status colour,
-    /// and the region is in hand here, where the entry is built, rather than on the render path.
-    case fold(commandID: UInt32, hiddenRows: Int, failed: Bool)
+    /// id so clicking it can unfold the right block after the rows underneath have shifted, and its
+    /// status -- the placeholder is drawn in the block's own colour, and the region is in hand here,
+    /// where the entry is built, rather than on the render path.
+    case fold(commandID: UInt32, hiddenRows: Int, status: BlockStatus)
 }
 
 /// Which commands' output is collapsed, and how.
@@ -141,7 +141,7 @@ public extension Terminal {
         var out: [DisplayRow] = []
         var row = max(0, top)
         if let (region, hidden) = foldedCommand(containingOutputRow: row, folding: folding) {
-            out.append(.fold(commandID: region.id, hiddenRows: hidden.count, failed: region.failed))
+            out.append(.fold(commandID: region.id, hiddenRows: hidden.count, status: region.status))
             row = hidden.upperBound
         }
         while out.count < count && row < totalRows {
@@ -162,7 +162,7 @@ public extension Terminal {
                 next += 1
             }
             if out.count < count {
-                out.append(.fold(commandID: id, hiddenRows: hidden.count, failed: region.failed))
+                out.append(.fold(commandID: id, hiddenRows: hidden.count, status: region.status))
             }
             row = hidden.upperBound
         }
@@ -188,14 +188,19 @@ public extension Terminal {
     /// The placeholder as a row of cells, so it is drawn through the ordinary row path and nothing
     /// in NyxRender learns what a fold is.
     ///
-    /// Italic, and in the block's own status colour -- red for a command that failed, bright black
-    /// otherwise. It used to be dim as well, and dimmed bright black read as a comment the shell
-    /// had printed rather than as the one thing on that row you are meant to click; a folded
-    /// failure looked exactly like a folded success, which is the state you most want to spot.
-    func foldPlaceholderRow(hiddenRows: Int, failed: Bool) -> Row {
+    /// Italic, and in the block's own status colour -- the same three the spine uses: red for a
+    /// failure, amber while the command is still running (a folded build is a live tail, and grey
+    /// beside an amber spine said two different things about one block), bright black otherwise.
+    /// It used to be dim as well, and dimmed bright black read as a comment the shell had printed
+    /// rather than as the one thing on that row you are meant to click.
+    func foldPlaceholderRow(hiddenRows: Int, status: BlockStatus) -> Row {
         var row = Row(cols: cols)
         var cell = Cell()
-        cell.fg = failed ? .indexed(1) : .indexed(8)
+        switch status {
+        case .running: cell.fg = .indexed(3)
+        case .failed: cell.fg = .indexed(1)
+        case .succeeded: cell.fg = .indexed(8)
+        }
         cell.attrs = [.italic]
         for (column, scalar) in OutputFolding.placeholder(hiddenRows: hiddenRows).unicodeScalars.enumerated() {
             guard column < cols else { break }

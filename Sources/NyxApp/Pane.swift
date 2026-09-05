@@ -754,8 +754,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 lines = display.map { row in
                     switch row {
                     case .row(let absolute): return t.absoluteRow(absolute) ?? Row(cols: t.cols)
-                    case .fold(_, let hidden, let failed):
-                        return t.foldPlaceholderRow(hiddenRows: hidden, failed: failed)
+                    case .fold(_, let hidden, let status):
+                        return t.foldPlaceholderRow(hiddenRows: hidden, status: status)
                     }
                 } + Array(repeating: Row(cols: t.cols), count: max(0, t.rows - display.count))
                 selected = display.map { row in

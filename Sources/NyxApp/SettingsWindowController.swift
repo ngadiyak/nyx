@@ -121,8 +121,10 @@ final class SettingsWindowController: NSWindowController {
             row("Option key", popUp("option-as-meta", options: ["none", "left", "right", "both"])),
             row("Bell", popUp("bell", options: ["visual", "sound", "none"])),
             row("Multi-line paste", popUp("multiline-paste", options: ["edit", "confirm", "direct"])),
-            row("Folded output keeps", stepperField("fold-keep-lines", min: 0, max: 100, step: 1)),
-            row("Auto-fold output over", stepperField("fold-long-output", min: 0, max: 1_000_000, step: 50)),
+            row("Folded output keeps", stepperField("fold-keep-lines", min: 0, max: 100, step: 1),
+                unit: "lines"),
+            row("Auto-fold output over", stepperField("fold-long-output", min: 0, max: 1_000_000, step: 50),
+                unit: "lines (0 = never)"),
         ], note: "Letting programs read the clipboard is off by default: any program in the terminal could then see whatever you last copied.")
     }
 
@@ -211,16 +213,36 @@ final class SettingsWindowController: NSWindowController {
     /// connects the two for anyone else, so every control here reached VoiceOver as "pop up
     /// button" and "slider" with no indication of what they set. A checkbox is the exception: its
     /// title is already its name, which is why those rows are built with an empty label.
-    private func row(_ label: String, _ control: NSView) -> (NSView, NSView) {
-        if !label.isEmpty { describe(control, as: label) }
+    ///
+    /// `unit` is the word after the control -- "Folded output keeps [3] lines". A bare number in a
+    /// settings window says nothing about what it counts, and "Auto-fold output over [0]" said
+    /// neither the unit nor that zero means off. It goes into the control's accessibility name too,
+    /// so the same sentence reaches VoiceOver, and the label itself is not an element: announced on
+    /// its own between two numbers it reads as another value.
+    private func row(_ label: String, _ control: NSView, unit: String? = nil) -> (NSView, NSView) {
+        var control = control
+        if let unit {
+            let suffix = NSTextField(labelWithString: unit)
+            suffix.identifier = SettingsWindowController.unitLabelIdentifier
+            suffix.setAccessibilityElement(false)
+            let stack = NSStackView(views: [control, suffix])
+            stack.orientation = .horizontal
+            stack.spacing = 6
+            control = stack
+        }
+        if !label.isEmpty { describe(control, as: unit.map { "\(label), \($0)" } ?? label) }
         return (NSTextField(labelWithString: label.isEmpty ? "" : label + ":"), control)
     }
+
+    private static let unitLabelIdentifier = NSUserInterfaceItemIdentifier("unit-label")
 
     /// Names every control inside `view`. A slider comes with a readout beside it and a field with
     /// a stepper, and both of those are separate controls that would otherwise be announced as a
     /// nameless number next to a nameless one.
     private func describe(_ view: NSView, as label: String) {
         for control in SettingsWindowController.controls(in: view) {
+            // The unit beside a stepper is part of the control's own name, set above.
+            if control.identifier == SettingsWindowController.unitLabelIdentifier { continue }
             switch control {
             case let field as NSTextField where !field.isEditable:
                 control.describeForAccessibility("\(label), current value", role: .staticText)

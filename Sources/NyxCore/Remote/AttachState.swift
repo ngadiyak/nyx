@@ -160,6 +160,11 @@ public enum AttachFailure {
         "Relay refused this device (\(code))"
     }
 
+    /// The host's `attached` claimed a screen size no terminal can have. Not a network problem and
+    /// not the host's user's doing, so it says what happened rather than "The host could not be
+    /// reached": the numbers came over the relay unsigned, and this Mac refused them.
+    public static let badGeometry = "The host reported an impossible screen size"
+
     /// An attach the relay never answered at all -- neither `attached` nor `error`. Distinct from
     /// every code above because nothing on the far end has admitted to anything: the message may
     /// have been dropped, or the host may have gone between the presence update and the attach.

@@ -683,3 +683,30 @@ private final class Recorder {
     f.client.endAll(reason: AttachFailure.remoteSettingsChanged)
     #expect(attachment.state.stripText == "Remote settings changed")
 }
+
+/// A hostile or broken relay can put any integer in `attached`: nothing in that message is signed
+/// beyond the host's ephemeral key, and `RemoteSession` hands the two numbers straight to
+/// `Terminal.resize` on the thread that draws. The attachment refuses the whole round instead --
+/// no cipher, no snapshot, and `cols`/`rows` left where they were, so the mirror is never resized.
+@Test func anImpossibleHostScreenSizeFailsTheAttachAndLeavesTheMirrorAlone() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(cols: 1_000_000, rows: 24)
+    #expect(attachment.state.phase == .failed(AttachFailure.badGeometry))
+    #expect(attachment.cols == 0)
+    #expect(attachment.rows == 0)
+    // And it is over: a host that answers again, sanely, does not get a second chance to build a
+    // cipher into a tab that has already told the user why it is dead.
+    try f.acceptAttach(cols: 80, rows: 24)
+    #expect(attachment.state.phase == .failed(AttachFailure.badGeometry))
+    #expect(attachment.cols == 0)
+}
+
+@Test func anOrdinaryHostScreenSizeIsTakenAsTheMirrorSize() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(cols: 160, rows: 74)
+    #expect(attachment.state.phase == .snapshot)
+    #expect(attachment.cols == 160)
+    #expect(attachment.rows == 74)
+}

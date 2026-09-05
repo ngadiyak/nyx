@@ -238,6 +238,18 @@ public final class RemoteClient {
                 // `attaching`, rather than being decrypted by whoever sent it.
                 return
             }
+            // Checked before the cipher is built, and fatal to the attachment rather than merely
+            // ignored: the size is what the mirror `Terminal` is resized to on the main thread, and
+            // an `attached` this far outside the possible is not a host with an odd window -- it is
+            // a message this client has no reason to trust the rest of either.
+            guard AttachGeometry.isSane(cols: m.cols ?? 0, rows: m.rows ?? 0) else {
+                // The host still believes it has a viewer, and a stranded attachment holds the
+                // writer token; this side is leaving, so it says so before it stops listening.
+                link.send(.detach(to: hostID, sessionID: key))
+                end(reason: AttachFailure.badGeometry)
+                client?.forget(key)
+                return
+            }
             lock.lock()
             // `awaiting` is what makes this one round's answer rather than any round's: it is set
             // by `begin()` and cleared here, so a duplicate inside this round and an answer to the

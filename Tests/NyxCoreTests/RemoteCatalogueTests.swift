@@ -224,3 +224,58 @@ private func iso(secondsAgo: TimeInterval) -> String {
     #expect(items.count == 1)
     #expect(items[0].kind == .remoteSession(deviceID: "d1", sessionID: ""))
 }
+
+// MARK: - Finding a session by what you were doing in it
+
+/// A palette that matched only the machine name and the window title made the Remote section a
+/// list you scrolled rather than searched: what a person remembers about a session on another Mac
+/// is what they were doing in it, not what its title bar happened to say.
+@Test func aRemoteRowIsFoundByTheLastCommandRunInIt() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "Mac mini", online: true)])
+    c.applyCatalogue(deviceID: "d1", sessions: [
+        session(id: "s1", title: "zsh", cwd: "/Users/nik/projects/nyx", repo: "nyx",
+                branch: "feat/remote-sessions", process: "swift", lastCommand: "swift test"),
+        session(id: "s2", title: "zsh", cwd: "/Users/nik/notes", lastCommand: "ls"),
+    ])
+    var palette = CommandPalette(items: c.paletteItems(now: now))
+
+    palette.setQuery("swift test")
+
+    #expect(palette.results.count == 1)
+    #expect(palette.selected?.kind == .remoteSession(deviceID: "d1", sessionID: "s1"))
+}
+
+/// The other four fields, each on its own, because each of them is a thing somebody types: the
+/// directory, the repository, the branch, and what is running right now.
+@Test func aRemoteRowIsFoundByItsDirectoryRepoBranchOrProcess() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "Mac mini", online: true)])
+    c.applyCatalogue(deviceID: "d1", sessions: [
+        session(id: "s1", title: "zsh", cwd: "/Users/nik/projects/nyx", repo: "nyx",
+                branch: "feat/remote-sessions", process: "htop", lastCommand: ""),
+    ])
+    let items = c.paletteItems(now: now)
+
+    for query in ["projects/nyx", "nyx", "remote-sessions", "htop"] {
+        var palette = CommandPalette(items: items)
+        palette.setQuery(query)
+        #expect(palette.results.count == 1, "\(query) found nothing")
+    }
+}
+
+/// A row with nothing but a title still searches by title -- and does not pick up a trail of empty
+/// strings that would make it match a query of spaces.
+@Test func aSessionWithNoDetailsStillSearchesByItsTitle() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "Mac mini", online: true)])
+    c.applyCatalogue(deviceID: "d1", sessions: [session(id: "s1", title: "zsh", cwd: "")])
+    var palette = CommandPalette(items: c.paletteItems(now: now))
+
+    palette.setQuery("remote")
+
+    #expect(palette.results.count == 1)
+}

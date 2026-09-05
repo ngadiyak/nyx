@@ -113,7 +113,8 @@ public struct RemoteCatalogue: Equatable {
                     items.append(.remoteSession(deviceID: device.id, sessionID: session.sessionID,
                                                 title: "\(device.name) · \(session.title)",
                                                 detail: Self.detail(for: session, now: now,
-                                                                    home: home)))
+                                                                    home: home),
+                                                searchable: Self.searchable(session)))
                 }
             } else {
                 items.append(.remoteSession(deviceID: device.id, sessionID: "",
@@ -122,6 +123,13 @@ public struct RemoteCatalogue: Equatable {
             }
         }
         return items
+    }
+
+    /// Everything about a session a person might type to find it again, beyond its title: where it
+    /// is, what it is on, what is running, and what was last run. Not the relative time -- "3 h ago"
+    /// is not something anyone searches for, and it would make every row match a query of "ago".
+    public static func searchable(_ s: RemoteSessionInfo) -> [String] {
+        [s.cwd, s.repo, s.branch, s.process, s.lastCommand]
     }
 
     /// The palette row's second line. `home`, when it prefixes `cwd`, is collapsed to `~` the way a

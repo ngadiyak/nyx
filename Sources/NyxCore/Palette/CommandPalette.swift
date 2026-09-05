@@ -73,9 +73,17 @@ public struct PaletteItem: Equatable {
     /// formatted) rather than from raw `RemoteSessionInfo` fields here, because the formatting --
     /// relative time, `~` shortening -- needs `now` and the local home directory, neither of which
     /// this module should have to thread through.
+    /// `searchable` is everything about the session that is not in its title -- its directory, its
+    /// repository and branch, what is running in it and the last command typed. A palette that
+    /// matched only the machine name and the window title made the Remote section a list you
+    /// scrolled: the thing a person actually remembers about a session on another Mac is what they
+    /// were doing in it, and "swift test" has to find the tab that ran it.
     public static func remoteSession(deviceID: String, sessionID: String, title: String,
-                                     detail: String, isEnabled: Bool = true) -> PaletteItem {
-        PaletteItem(title: title, detail: detail, searchText: "\(title) remote",
+                                     detail: String, searchable: [String] = [],
+                                     isEnabled: Bool = true) -> PaletteItem {
+        let extras = searchable.filter { !$0.isEmpty }.joined(separator: " ")
+        return PaletteItem(title: title, detail: detail,
+                    searchText: extras.isEmpty ? "\(title) remote" : "\(title) remote \(extras)",
                     kind: .remoteSession(deviceID: deviceID, sessionID: sessionID),
                     isEnabled: isEnabled)
     }

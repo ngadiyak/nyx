@@ -108,11 +108,14 @@ reattach": the transcript is kept, input is refused, and the client re-attaches 
 host's catalogue lists the session again. A catalogue from that host *without* it — which can only
 arrive once presence says the host is back — ends the tab.
 
-Choosing a session that is already open in this window selects that tab rather than attaching twice:
-there is one attachment per session id, so a second attach would be the same stream in two tabs.
+Choosing a session that is already open **anywhere in the application** selects that tab, raising
+(and un-minimising) its window when it is not the current one, rather than attaching twice: there is
+one attachment per session id and it has one owner, so a second tab would take the stream and leave
+the first drawn, taking keystrokes, and never showing another byte.
 
-If the host's grid is larger than the pane, the strip says so ("Host's screen is 160×74 — showing
-96×30") rather than clipping in silence.
+If the host's grid is larger than the pane, the strip says so ("Host is 132×40 — the prompt and
+cursor may be off screen; enlarge the window") rather than clipping in silence. It is the clause the
+strip drops first when the window is too narrow for the whole sentence.
 
 ### 5.5 On the host
 
@@ -308,7 +311,8 @@ None of these stops the feature being used; each is a thing a person will notice
   `cols`/`rows` (§5.4: the person in front of the host owns that window size) and `resize` is a
   no-op, so a client on a smaller screen clips the right and bottom of the host's screen, and one on
   a larger screen leaves the rest of the pane in the background colour. Since 2026-09-06 the strip
-  at least *says* it is clipping ("Host's screen is 160×74 — showing 96×30"); a frame around the
+  at least *says* it is clipping ("Host is 132×40 — the prompt and cursor may be off screen; enlarge
+  the window"); a frame around the
   host's grid, or a scrollable viewport over it, is still the fix, and either changes what `Pane`
   believes its own size means. The note also appears for a difference of a row or two, which is
   honest but noisier than it needs to be -- a threshold is a product decision.

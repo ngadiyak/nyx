@@ -1340,6 +1340,9 @@ extension TabController: ActionTarget {
         case .commandPalette: toggleCommandPalette()
         case .foldCommand: if focusedPane?.toggleFoldOfCurrentCommand() != true { NSSound.beep() }
         case .foldAllLongOutput: if focusedPane?.foldAllLongOutput() != true { NSSound.beep() }
+        case .copyBlockMarkdown: if focusedPane?.copyLastCommandAsMarkdown() != true { NSSound.beep() }
+        case .saveCommandOutput: if focusedPane?.saveLastCommandOutput() != true { NSSound.beep() }
+        case .notifyWhenDone: if focusedPane?.armNotificationForRunningCommand() != true { NSSound.beep() }
         case .saveScrollback: saveScrollback()
 
         case .copy: focusedPane?.copy(nil)
@@ -1386,9 +1389,11 @@ extension TabController: ActionTarget {
             // Nothing to step through until ⌘F has been pressed and something typed.
             return focusedPane?.isSearching ?? false
         case .previousPrompt, .nextPrompt, .selectCommandOutput, .copyCommandOutput,
-             .foldCommand, .foldAllLongOutput:
+             .foldCommand, .foldAllLongOutput, .copyBlockMarkdown, .saveCommandOutput:
             // A shell with no integration emits no marks, and these do nothing without them.
             return focusedPane?.hasPromptMarks ?? false
+        case .notifyWhenDone:
+            return focusedPane?.hasRunningCommand ?? false
         case .focusLeft, .focusRight, .focusUp, .focusDown,
              .growLeft, .growRight, .growUp, .growDown, .toggleZoom:
             return (panes?.paneCount ?? 0) > 1

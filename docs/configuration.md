@@ -120,7 +120,10 @@ A user binding beats a default for the same chord; the last line in the file win
 | `edit_and_run_command` | ⌘E | Opens the command under the cursor in the editor |
 | `rename_tab` | ⌘⇧R | |
 | `group_tab` / `ungroup_tab` / `toggle_tab_group` | ⌘⌃G / — / — | |
-| `fold_command` / `fold_all_long_output` | — | Fold the current command's output to one line / every long one |
+| `fold_command` / `fold_all_long_output` | ⌘⇧↑ / — | Fold the current command's output, keeping its last lines / fold every long one |
+| `copy_block_markdown` | — | The last command and its output as a fenced Markdown block |
+| `save_command_output` | — | Writes the last command's output to a file the user chooses |
+| `notify_when_done` | — | Arm a notification for the command running now, however short it turns out |
 | `save_scrollback` | — | Writes the transcript to a file the user chooses |
 
 The menu is generated from `ActionCatalog.sections`, so every action is discoverable there with

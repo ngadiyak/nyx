@@ -105,3 +105,10 @@ private func table(_ lines: String...) -> KeyBindingTable {
     #expect(t.binding(for: .splitRight)?.modifiers == [.cmd, .ctrl])
     #expect(t.action(for: .char("d"), modifiers: [.cmd, .ctrl]) == .splitRight)
 }
+
+@Test func blockActionsSitTogetherInTheGoMenu() {
+    let go = ActionCatalog.sections.first { $0.title == "Go" }!
+    #expect(go.actions.contains(.copyBlockMarkdown))
+    #expect(go.actions.contains(.saveCommandOutput))
+    #expect(go.actions.contains(.notifyWhenDone))
+}

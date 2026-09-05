@@ -1858,6 +1858,65 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return true
     }
 
+    /// `copy_block_markdown`: the last finished command and its output, fenced, for a chat or a ticket.
+    @discardableResult
+    func copyLastCommandAsMarkdown() -> Bool {
+        let markdown: String? = session.withTerminal { t in
+            guard let region = t.lastFinishedCommand else { return nil }
+            return BlockExport.markdown(command: t.commandText(of: region), output: t.outputText(of: region))
+        }
+        guard let markdown else { return false }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(markdown, forType: .string)
+        return true
+    }
+
+    /// `save_command_output`: the last finished command's output to a file the user names.
+    @discardableResult
+    func saveLastCommandOutput() -> Bool {
+        let id: UInt32? = session.withTerminal { $0.lastFinishedCommand?.id }
+        guard let id else { return false }
+        saveOutput(ofCommand: id)
+        return true
+    }
+
+    /// The output of one block, through a save panel. Shared by the action and the ⋯ menu.
+    func saveOutput(ofCommand id: UInt32) {
+        guard let window else { return }
+        let text: String = session.withTerminal { t in
+            guard let row = t.promptRow(ofCommand: id), let region = t.command(containingAbsoluteRow: row)
+            else { return "" }
+            return t.outputText(of: region)
+        }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "output.txt"
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = []
+        panel.message = "Save this command\u{2019}s output."
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url else { return }
+            try? (text + "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    /// Commands whose end the user asked to be told about, by id. See `CommandNotificationRule`.
+    private var armedNotifications: Set<UInt32> = []
+
+    var hasRunningCommand: Bool { session.withTerminal { $0.runningCommand != nil } }
+
+    /// `notify_when_done`: arm a notification for the command running now. Returns false at a prompt.
+    @discardableResult
+    func armNotificationForRunningCommand() -> Bool {
+        guard let id: UInt32 = session.withTerminal({ $0.runningCommand?.id }) else { return false }
+        setNotification(armed: !armedNotifications.contains(id), forCommand: id)
+        return true
+    }
+
+    func setNotification(armed: Bool, forCommand id: UInt32) {
+        if armed { armedNotifications.insert(id) } else { armedNotifications.remove(id) }
+        markDirty()
+    }
+
     /// The whole buffer -- scrollback and screen -- as text. `Transcript` decides what "as text"
     /// means; the pane only holds the lock while it is written out.
     func scrollbackTranscript(options: Transcript.Options) -> String {

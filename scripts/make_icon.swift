@@ -80,15 +80,19 @@ func draw(size: Int) -> CGImage? {
     ctx.restoreGState()
 
     // The mark, as one group then centred as a whole: an "N" read from a cursor's own path (stem
-    // up, diagonal down-right) with its second stem finished as the block cursor. The amber block
-    // is a solid fill and reads heavier than the grey stroke next to it, so the group is nudged a
-    // few percent left of true centre -- otherwise the icon looks right-heavy next to others in
-    // the Dock even though the bounding box is centred.
+    // up, diagonal down-right) with its second stem finished as the block cursor. The stem's
+    // stroke extends stroke/2 to its own left, which the block's fill does not on its right, so
+    // centring the nominal path width (rather than the true stroke-inclusive bounding box) leaves
+    // the mark sitting stroke/4 left of true centre -- that correction, `+ stroke / 4`, is the
+    // fix for centring, not an aesthetic choice. `opticalNudge` is a separate, small, deliberate
+    // push toward the lighter (grey) side: the amber block is a solid fill and reads heavier than
+    // the stroke next to it, so without it the icon looks faintly right-heavy in the Dock even
+    // once the box is genuinely centred.
     let markWidth = rect.width * 0.50
     let markHeight = rect.height * 0.46
     let stroke = max(1, rect.width * 0.105)
-    let nudge = rect.width * 0.022
-    let originX = rect.midX - markWidth / 2 - nudge
+    let opticalNudge = rect.width * 0.006
+    let originX = rect.midX - markWidth / 2 + stroke / 4 - opticalNudge
     let baseline = rect.midY - markHeight / 2
     let top = baseline + markHeight
 
@@ -99,9 +103,12 @@ func draw(size: Int) -> CGImage? {
 
     // Left stem up, then the diagonal down to the right -- the path a cursor takes -- ending well
     // inside the amber block's silhouette. The block is drawn afterwards on top, so whatever the
-    // diagonal's stroke and its round cap cover there is hidden entirely; what stays visible is a
-    // clean cut exactly where the stroke crosses the block's top edge, with nothing poking out to
-    // the block's right.
+    // diagonal's stroke covers there is hidden entirely; what stays visible is a clean cut exactly
+    // where the stroke crosses the block's top edge, with nothing poking out to the block's right.
+    // The cap is `.butt`, not `.round`: a round cap on the stem's bottom would bulge stroke/2 below
+    // the baseline the block's flat bottom sits on, so the two legs would not share a floor. Butt
+    // cuts the stem off flat exactly at the baseline; the join at the top corner and the (hidden)
+    // end of the diagonal are unaffected, since line cap only touches the two ends of the path.
     let diagonalEndX = blockLeft + blockWidth * 0.5
     let diagonalEndY = blockBottom + blockHeight * 0.32
     let path = CGMutablePath()
@@ -110,7 +117,7 @@ func draw(size: Int) -> CGImage? {
     path.addLine(to: CGPoint(x: diagonalEndX, y: diagonalEndY))
     ctx.setStrokeColor(CGColor(colorSpace: space, components: [0.85, 0.87, 0.92, 1])!)
     ctx.setLineWidth(stroke)
-    ctx.setLineCap(.round)
+    ctx.setLineCap(.butt)
     ctx.setLineJoin(.round)
     ctx.addPath(path)
     ctx.strokePath()

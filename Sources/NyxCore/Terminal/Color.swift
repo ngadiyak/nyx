@@ -345,10 +345,11 @@ public struct Palette: Equatable {
 
     /// The tint behind every row of the block under the pointer: says "these rows are one thing"
     /// without competing with the selection colour, which is chosen to be seen. Background is the
-    /// dominant colour, blended toward the cursor a little and pushed further only in themes where
-    /// a little is invisible or too close to the selection.
+    /// dominant colour, blended toward `accent` a little and pushed further only in themes where a
+    /// little is invisible, too close to the selection, or too close to the foreground to read text
+    /// on top of.
     ///
-    /// Two mistakes this shape prevents:
+    /// Three mistakes this shape prevents:
     ///
     /// - `RGB.blend(a, into: b, amount:)` keeps mostly `a` at a small amount. `noteForeground`
     ///   above wants *text*, so it puts `foreground` first; a fill wants the opposite -- putting
@@ -357,17 +358,37 @@ public struct Palette: Equatable {
     /// - Blending toward `foreground` (correctly, as the minority colour this time) still fails
     ///   one-dark: its selection is a step of grey on the very foreground/background axis this
     ///   blend walks, so every amount is either too close to the background or too close to the
-    ///   selection -- there is no point on that line that clears both. The cursor is the foreground
-    ///   itself in most built-ins (no behaviour change there) but is free to carry its own hue, and
-    ///   that hue is what carries one-dark's tint off the selection's axis.
+    ///   selection -- there is no point on that line that clears both.
+    /// - Blending toward `cursor` fixes one-dark (`cursor == foreground` in most built-ins, so no
+    ///   behaviour change there; one-dark's cursor happens to carry its own hue, off the axis) but
+    ///   is not *vetted* -- a user theme is free to set a saturated `cursor` at the foreground's own
+    ///   luminance, which reads as black-on-black at 1:1 contrast for the loop's lower amounts. Only
+    ///   `accent`, already load-bearing for `panelSelectionBackground`, has been screened for chroma,
+    ///   distance from the foreground and contrast against the background, with a fallback to the
+    ///   theme's own blue when the cursor does not clear those.
+    ///
+    /// The loop checks all three floors together first (background, selection, foreground contrast)
+    /// and takes the first amount that clears every one. When no amount does, the selection floor is
+    /// the one to give up -- a tint that is merely readable but happens to sit near the selection's
+    /// colour is a smaller defect than a tint nobody can read text on. When even that combination
+    /// fails for every amount tried, the smallest one is still what ships: some tint, however faint,
+    /// beats none.
     public var blockHoverBackground: RGB {
-        var amount = 0.06
-        while amount < 0.30 {
-            let candidate = RGB.blend(background, into: cursor, amount: amount)
-            if RGB.distance(candidate, background) >= 4, RGB.distance(candidate, selectionBackground) >= 8 { break }
-            amount += 0.02
+        let amounts = Array(stride(from: 0.06, through: 0.20, by: 0.02))
+        func candidate(_ amount: Double) -> RGB { RGB.blend(background, into: accent, amount: amount) }
+        func clearsBackgroundAndContrast(_ c: RGB) -> Bool {
+            RGB.distance(c, background) >= 4 && RGB.contrast(foreground, c) >= 4.5
         }
-        return RGB.blend(background, into: cursor, amount: amount)
+        if let amount = amounts.first(where: { a in
+            let c = candidate(a)
+            return clearsBackgroundAndContrast(c) && RGB.distance(c, selectionBackground) >= 8
+        }) {
+            return candidate(amount)
+        }
+        if let amount = amounts.first(where: { clearsBackgroundAndContrast(candidate($0)) }) {
+            return candidate(amount)
+        }
+        return candidate(0.06)
     }
 
     public func resolve(_ c: Color, isForeground: Bool) -> RGB {

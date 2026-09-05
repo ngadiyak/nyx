@@ -21,13 +21,15 @@ private func render(cols: Int = 8, rows: Int = 3, padding: Int,
                     spines: [(rows: Range<Int>, color: RGB)] = [],
                     summaries: [(row: Int, text: String, color: RGB)] = [],
                     notes: [String?] = [],
-                    highlighted: Range<Int>? = nil) throws -> (FontSet, Int, (Int, Int) -> Pixel) {
+                    highlighted: Range<Int>? = nil,
+                    selection: [Range<Int>?] = []) throws -> (FontSet, Int, (Int, Int) -> Pixel) {
     let device = try #require(MTLCreateSystemDefaultDevice())
     let fonts = FontSet(family: "Menlo", pointSize: 12, scale: 1)
     let r = try Renderer(device: device, fonts: fonts)
     let lines = Array(repeating: Row(cols: cols), count: rows)
     let frame = RenderFrame(cols: cols, rows: rows, lines: lines, graphemes: [], palette: blockPalette(),
                             cursor: nil, cursorShape: .block, focused: true, preedit: nil,
+                            selection: selection,
                             rowNotes: notes, blockSpines: spines, blockSummaries: summaries,
                             highlightedRows: highlighted)
     let w = fonts.metrics.width * cols + padding * 2, h = fonts.metrics.height * rows + padding * 2
@@ -88,6 +90,21 @@ private let spineColor = RGB(0, 255, 0)
     let plain = px(mid, fonts.metrics.height * 2 + fonts.metrics.height / 2)
     #expect(tinted != Pixel(r: 0, g: 0, b: 0))
     #expect(plain == Pixel(r: 0, g: 0, b: 0))
+}
+
+/// A selection (or a search hit, or a coloured cell, or the block cursor) is a background instance
+/// on top of the tint, not under it: it must stay visible on a hovered row, and only the cells with
+/// nothing else painted on them show the tint through.
+@Test func theTintNeverHidesWhatIsPaintedOnTopOfIt() throws {
+    let (fonts, _, px) = try render(padding: 0, highlighted: 0..<1, selection: [0..<2])
+    let y = fonts.metrics.height / 2
+    let selectedX = fonts.metrics.width / 2
+    let plainX = fonts.metrics.width * 4 + fonts.metrics.width / 2
+    #expect(px(selectedX, y) == Pixel(r: blockPalette().selectionBackground.r,
+                                      g: blockPalette().selectionBackground.g,
+                                      b: blockPalette().selectionBackground.b))
+    let tint = blockPalette().blockHoverBackground
+    #expect(px(plainX, y) == Pixel(r: tint.r, g: tint.g, b: tint.b))
 }
 
 /// The chevron is a real glyph at the end of the summary, in the summary's colour.

@@ -307,3 +307,15 @@ import Foundation
             "the selection is \(light.selectionBackground.relativeLuminance) on a light theme")
     #expect(RGB.contrast(light.foreground, light.selectionBackground) >= 4)
 }
+
+/// A user theme is free to set a saturated cursor at roughly the foreground's own luminance --
+/// nothing in a theme file says the cursor has to be readable as a fill. Blending the hover tint
+/// toward the raw cursor (tried and dropped; see `blockHoverBackground`'s doc comment) would have
+/// put this at 1:1 contrast. `accent` is vetted first, so the tint still reads.
+@Test func aSaturatedCursorAtForegroundLuminanceStillGetsAReadableHoverTint() {
+    let p = Palette(ansi: [RGB](repeating: RGB(0, 0, 0), count: 16),
+                    foreground: RGB(hex: 0xC8C8C8), background: RGB(hex: 0x1E1E1E),
+                    cursor: RGB(hex: 0xFF4040))
+    #expect(RGB.contrast(p.foreground, p.blockHoverBackground) >= 4.5,
+            "a saturated cursor at the foreground's luminance is \(RGB.contrast(p.foreground, p.blockHoverBackground)):1")
+}

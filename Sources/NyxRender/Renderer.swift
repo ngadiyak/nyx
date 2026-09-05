@@ -479,15 +479,20 @@ public final class Renderer {
     private func buildChrome(_ f: RenderFrame, padding: Int, colors: FrameColors) {
         let m = fonts.metrics
         let cw = Float(m.width), ch = Float(m.height)
-        // The hovered block's tint: one translucent rect across the grid's width, under the glyphs
-        // (the background bucket draws first) and outside the row cache (nothing per row changed).
+        // The hovered block's tint: one translucent rect across the grid's width, outside the row
+        // cache (nothing per row changed). Inserted at the front of the background bucket, not
+        // appended -- `instances` already holds every row's backgrounds by the time chrome runs
+        // (the per-row loop in `assemble` ran first), and painting is last-instance-wins. A cell
+        // with the theme's own background emits no instance at all (`buildRow` only appends for a
+        // non-default background, a selection, a match or a block cursor), so those cells still
+        // show the tint underneath; a selected or matched or coloured cell paints over it and stays
+        // visible, which is the whole point of a tint that is chrome and not a cell.
         if let rows = f.highlightedRows, !rows.isEmpty {
             let top = Float(padding + max(0, rows.lowerBound) * m.height)
             let height = Float(min(rows.count, f.rows - max(0, rows.lowerBound)) * m.height)
             let width = Float(f.cols * m.width)
-            var tint = rect(Float(padding), top, width, height, f.palette.blockHoverBackground)
-            tint.color.w = 1
-            instances.append(tint)
+            let tint = rect(Float(padding), top, width, height, f.palette.blockHoverBackground)
+            instances.insert(tint, at: 0)
         }
 
         // A command's spine, drawn in the left padding: it says "these rows belong together"

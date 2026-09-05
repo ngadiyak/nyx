@@ -539,6 +539,13 @@ enum UISnapshot {
         let offlineAt = Date(timeIntervalSince1970: 1_757_082_720)
         var suspended = state(.suspended("Mac mini (office)", since: offlineAt), .writer)
         suspended.timeZone = TimeZone(identifier: "UTC")!
+        suspended.today = AttachState.startOfDay(offlineAt, in: suspended.timeZone)
+        // The same tab left open overnight, and one left open for a week: the sentence has to say
+        // which, because "since 14:32" is the same four characters either way.
+        var suspendedYesterday = suspended
+        suspendedYesterday.today = AttachState.startOfDay(offlineAt + 86_400, in: suspended.timeZone)
+        var suspendedDated = suspended
+        suspendedDated.today = AttachState.startOfDay(offlineAt + 6 * 86_400, in: suspended.timeZone)
         // The same state in a split tab: no "⌘W to close" -- ⌘W would take the other pane's tab
         // with it -- and the Close button carries the whole offer.
         var suspendedSplit = suspended
@@ -551,6 +558,8 @@ enum UISnapshot {
             ("observer", state(.live, .observer)),
             ("reconnecting", state(.reconnecting, .writer)),
             ("suspended", suspended),
+            ("suspended-yesterday", suspendedYesterday),
+            ("suspended-dated", suspendedDated),
             ("suspended-split", suspendedSplit),
             ("suspended-clipped", suspendedClipped),
             ("ended", state(.ended("Mac mini (office)"), .writer)),

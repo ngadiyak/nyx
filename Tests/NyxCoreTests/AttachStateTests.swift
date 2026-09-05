@@ -8,6 +8,15 @@ private let utc = TimeZone(identifier: "UTC")!
 
 private func suspended(_ host: String) -> AttachState.Phase { .suspended(host, since: offlineAt) }
 
+/// A state whose clock is pinned: the same zone the times below are written in, and a "today" that
+/// contains `offlineAt`, so the bare "14:32" is what a same-day suspension reads as.
+private func suspendedState(_ host: String = "iMac", now: Date = offlineAt) -> AttachState {
+    var s = state(phase: suspended(host), role: .writer)
+    s.timeZone = utc
+    s.today = AttachState.startOfDay(now, in: utc)
+    return s
+}
+
 private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachState {
     var s = AttachState(hostName: "iMac", title: "zsh")
     s.phase = phase
@@ -67,8 +76,7 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
 /// It carries the time because "will reattach" reads the same after five seconds and after five
 /// hours, and which of those it is, is the whole of what a person wants to know.
 @Test func stripTextSuspendedSaysSinceWhenAndThatItIsWaiting() {
-    var s = state(phase: suspended("iMac"), role: .writer)
-    s.timeZone = utc
+    let s = suspendedState()
     #expect(s.stripText
         == "iMac has been offline since 14:32 — waiting for it to come back · ⌘W to close")
     #expect(s.acceptsInput == false)
@@ -80,9 +88,45 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
 @Test func theOfflineTimeIsInTheReadersOwnZone() {
     var s = state(phase: suspended("iMac"), role: .writer)
     s.timeZone = TimeZone(secondsFromGMT: 3 * 3600)!
+    s.today = AttachState.startOfDay(offlineAt, in: s.timeZone)
     #expect(s.stripText?.contains("since 17:32") == true)
     s.timeZone = TimeZone(secondsFromGMT: -5 * 3600 - 1800)!
+    s.today = AttachState.startOfDay(offlineAt, in: s.timeZone)
     #expect(s.stripText?.contains("since 09:02") == true)
+}
+
+// MARK: - "since" on a Mac that was left overnight
+
+/// A bare "since 14:32" is the same four characters whether the host went five minutes ago or last
+/// Tuesday -- and a suspended tab is exactly the kind of thing that is still open in the morning.
+@Test func anOfflineTimeFromAnotherDayCarriesTheDay() {
+    let day: TimeInterval = 86_400
+    #expect(AttachState.offlineSince(offlineAt, today: offlineAt, in: utc) == "14:32")
+    #expect(AttachState.offlineSince(offlineAt, today: offlineAt + day, in: utc)
+        == "yesterday 14:32")
+    #expect(AttachState.offlineSince(offlineAt, today: offlineAt + 2 * day, in: utc)
+        == "5 Sep 14:32")
+    #expect(AttachState.offlineSince(offlineAt, today: offlineAt + 30 * day, in: utc)
+        == "5 Sep 14:32")
+}
+
+/// It is calendar days, not elapsed hours: 23:50 and 00:10 the next morning are twenty minutes
+/// apart and still "yesterday", which is how a person reads a clock.
+@Test func theDayBoundaryIsTheCalendarsNotTwentyFourHours() {
+    let lateLastNight = Date(timeIntervalSince1970: 1_757_115_000)   // 23:30 UTC, 5 Sep
+    let earlyToday = Date(timeIntervalSince1970: 1_757_119_800)      // 00:50 UTC, 6 Sep
+    #expect(AttachState.offlineSince(lateLastNight, today: earlyToday, in: utc)
+        == "yesterday 23:30")
+    // The same two moments read in a zone where they fall on one day are simply a time.
+    let west = TimeZone(secondsFromGMT: -6 * 3600)!
+    #expect(AttachState.offlineSince(lateLastNight, today: earlyToday, in: west) == "17:30")
+}
+
+/// The whole sentence, on a tab left open overnight.
+@Test func theStripSaysYesterdayOnATabLeftOvernight() {
+    let s = suspendedState(now: offlineAt + 86_400)
+    #expect(s.stripText
+        == "iMac has been offline since yesterday 14:32 — waiting for it to come back · ⌘W to close")
 }
 
 /// ⌘W closes the whole tab, so a pane sharing its tab with another must not offer it: the Close
@@ -128,7 +172,7 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
 @Test func onlyTheStatesThatKeepADeadTabTellYouHowToCloseIt() {
     for s in [state(phase: .ended("iMac"), role: .observer),
               state(phase: .failed("Host is offline"), role: .observer),
-              state(phase: suspended("iMac"), role: .observer)] {
+              suspendedState()] {
         #expect(s.stripText?.hasSuffix(" · ⌘W to close") == true)
     }
     for s in [state(phase: .attaching, role: .observer), state(phase: .snapshot, role: .observer),
@@ -253,8 +297,7 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
 /// front of it: a window that is too small is a thing the user can also simply see, and
 /// "Mac mini has been offline since 14:3…" would lose the part that cannot be seen any other way.
 @Test func aNarrowStripDropsTheGeometryNoteBeforeItTruncates() {
-    var s = state(phase: suspended("Mac mini"), role: .writer)
-    s.timeZone = utc
+    var s = suspendedState("Mac mini")
     s.geometryNote = "Host is 132×40 — the prompt and cursor may be off screen; enlarge the window"
     let options = s.stripLabelOptions
     #expect(options.count == 2)

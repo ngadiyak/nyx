@@ -74,12 +74,21 @@ public struct AttachState: Equatable {
     /// The clock the strip's "offline since" is read against. Injected so a test can pin it; the
     /// pane leaves it at the system's.
     public var timeZone = TimeZone.current
+    /// The start of the reader's current day, which is what turns "since 14:32" into "since
+    /// yesterday 14:32".
+    ///
+    /// A day rather than a moment, and stored rather than read from the clock inside `stripText`,
+    /// for one reason: this type is compared to decide whether anything changed, and a value that
+    /// moved every frame would make every layout pass look like a state change and re-title the tab
+    /// sixty times a second. The wording depends on nothing finer than the day anyway.
+    public var today: Date
 
     public init(hostName: String, title: String) {
         self.phase = .attaching
         self.role = .observer
         self.hostName = hostName
         self.title = title
+        self.today = AttachState.startOfDay(Date(), in: .current)
     }
 
     /// The words on a strip that has a Close button, for the three states that keep their tab.
@@ -121,7 +130,7 @@ public struct AttachState: Equatable {
         case .reconnecting:
             return "Reconnecting…"
         case .suspended(let host, let since):
-            return "\(host) has been offline since \(Self.clockTime(since, in: timeZone))"
+            return "\(host) has been offline since \(Self.offlineSince(since, today: today, in: timeZone))"
                 + " — waiting for it to come back" + closeHint
         case .ended(let host):
             return "Session ended on \(host)" + closeHint
@@ -138,6 +147,42 @@ public struct AttachState: Equatable {
         calendar.timeZone = zone
         let parts = calendar.dateComponents([.hour, .minute], from: date)
         return String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
+    }
+
+    /// When the suspension started, as a person reads a clock.
+    ///
+    /// A bare "since 14:32" is a lie by omission on a Mac left overnight: it is the same four
+    /// characters whether the host went five minutes ago or last Tuesday, and the tab is exactly
+    /// the kind of thing that is still open in the morning. The day is added as soon as it is not
+    /// today's, and named once it is further back than yesterday.
+    public static func offlineSince(_ since: Date, today: Date, in zone: TimeZone) -> String {
+        let time = clockTime(since, in: zone)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let day = calendar.startOfDay(for: since)
+        let start = calendar.startOfDay(for: today)
+        guard let elapsed = calendar.dateComponents([.day], from: day, to: start).day, elapsed != 0
+        else { return time }
+        if elapsed == 1 { return "yesterday \(time)" }
+        let parts = calendar.dateComponents([.day, .month], from: since)
+        guard let number = parts.day, let month = parts.month, (1...12).contains(month) else {
+            return time
+        }
+        return "\(number) \(AttachState.monthNames[month - 1]) \(time)"
+    }
+
+    /// Fixed rather than `DateFormatter`'s: every other word on this strip is English, and a month
+    /// that changed language with the system locale while the sentence around it did not would read
+    /// worse than one that did not change at all.
+    private static let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    /// Midnight at the start of `date` in `zone` -- what `today` wants, and the only part of "now"
+    /// the "offline since" wording depends on.
+    public static func startOfDay(_ date: Date, in zone: TimeZone) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        return calendar.startOfDay(for: date)
     }
 
     /// A state with nothing else to say still shows the note, which is why this is not simply an

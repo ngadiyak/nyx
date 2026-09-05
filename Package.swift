@@ -31,9 +31,10 @@ let package = Package(
             swiftSettings: releaseSettings,
             linkerSettings: [.linkedFramework("Metal"), .linkedFramework("CoreText"), .linkedFramework("QuartzCore")]
         ),
+        .target(name: "NyxRemote", dependencies: ["NyxCore"], path: "Sources/NyxRemote", swiftSettings: releaseSettings),
         .executableTarget(
             name: "Nyx",
-            dependencies: ["NyxCore", "NyxRender"],
+            dependencies: ["NyxCore", "NyxRender", "NyxRemote"],
             path: "Sources/NyxApp",
             swiftSettings: releaseSettings,
             linkerSettings: [.linkedFramework("AppKit")]
@@ -41,5 +42,6 @@ let package = Package(
         .executableTarget(name: "nyx-bench", dependencies: ["NyxCore"], path: "Sources/NyxBench", swiftSettings: releaseSettings),
         .testTarget(name: "NyxCoreTests", dependencies: ["NyxCore"], path: "Tests/NyxCoreTests"),
         .testTarget(name: "NyxRenderTests", dependencies: ["NyxRender"], path: "Tests/NyxRenderTests"),
+        .testTarget(name: "NyxRemoteTests", dependencies: ["NyxRemote"], path: "Tests/NyxRemoteTests"),
     ]
 )

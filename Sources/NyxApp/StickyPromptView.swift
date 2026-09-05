@@ -16,8 +16,11 @@ final class StickyPromptView: NSView {
     var onClick: (() -> Void)?
 
     private let label = NSTextField(labelWithString: "")
+    /// The right-aligned "exit 1 · 8.8s" -- the same summary the hover overlay shows for this
+    /// command, so scrolling to it after reading the strip finds the header saying the same thing.
+    private let note = NSTextField(labelWithString: "")
     /// The command currently pinned, so an unchanged frame does no work at all.
-    private var shown: (text: String, failed: Bool)?
+    private var shown: (text: String, summary: String, failed: Bool)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -25,10 +28,15 @@ final class StickyPromptView: NSView {
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
+        note.lineBreakMode = .byClipping
+        note.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(note)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -6),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: note.leadingAnchor, constant: -6),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            note.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            note.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
         isHidden = true
     }
@@ -44,17 +52,20 @@ final class StickyPromptView: NSView {
 
     /// nil hides the strip. Everything is compared before it is applied: this is called once per
     /// frame, and an unchanged strip must not relayout a text field sixty times a second.
-    func update(text: String?, failed: Bool, palette: Palette, font: NSFont) {
+    func update(text: String?, summary: String, failed: Bool, palette: Palette, font: NSFont) {
         guard let text, !text.isEmpty else {
             if !isHidden { isHidden = true; shown = nil }
             return
         }
-        guard shown?.text != text || shown?.failed != failed || label.font != font else {
+        guard shown?.text != text || shown?.summary != summary || shown?.failed != failed
+                || label.font != font else {
             isHidden = false
             return
         }
-        shown = (text, failed)
+        shown = (text, summary, failed)
         label.stringValue = text
+        note.stringValue = summary
+        note.isHidden = summary.isEmpty
         // A strip that means "this output belongs to that command", and clicking it goes there.
         // Whether the command failed is drawn in colour, which is exactly what a label has to say
         // in words instead.
@@ -63,11 +74,13 @@ final class StickyPromptView: NSView {
             ? "Failed command: \(text). Scroll to its prompt."
             : "Running command: \(text). Scroll to its prompt.")
         label.font = font
+        note.font = font
         // The theme's own red for a failure, its foreground otherwise, over a background lifted
         // just far enough off the terminal's to read as a different surface rather than as text.
         // `readable(1)` rather than `colors[1]`: gruvbox's red is 2.7:1 against its own background
         // and unreadable as a line of text; its bright red is 4.3:1.
         label.textColor = nsColor(failed ? palette.readable(1) : palette.foreground, alpha: 1)
+        note.textColor = nsColor(failed ? palette.readable(1) : palette.noteForeground, alpha: 1)
         layer?.backgroundColor = nsColor(palette.foreground, alpha: 0.10).cgColor
         layer?.borderWidth = 0
         isHidden = false

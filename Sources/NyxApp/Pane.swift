@@ -78,6 +78,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private let gutter = PromptGutterView(frame: .zero)
     /// The command line pinned over the top row while its output fills the viewport.
     private let stickyStrip = StickyPromptView(frame: .zero)
+    /// The hovered block's Copy/⋯/chevron strip, drawn over its command row the same way.
+    private let blockHeader = BlockHeaderView(frame: .zero)
     /// The prompt row the strip currently names, for its click.
     private var stickyPromptRow: Int?
     /// Which commands' output is collapsed. Empty for almost every pane that ever exists, which is
@@ -144,6 +146,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         addSubview(gutter)
         stickyStrip.onClick = { [weak self] in self?.scrollToStickyPrompt() }
         addSubview(stickyStrip)
+        blockHeader.onAction = { [weak self] action, id in self?.perform(action, on: id) }
+        blockHeader.onToggleFold = { [weak self] id, full in self?.toggleFold(ofCommand: id, full: full) }
+        addSubview(blockHeader)
         session.withTerminal { $0.setDefaultCursorShape(config.cursorStyle); $0.modes.cursorBlink = config.cursorBlink }
         session.onUpdate = { [weak self] in self?.sessionDidUpdate() }
         session.onEvent = { [weak self] e in DispatchQueue.main.async { self?.handle(e) } }
@@ -233,6 +238,26 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let top = terminal.viewportTopRow
             return terminal.transcript(rows: top..<(top + terminal.rows), options: .plainText)
         }
+    }
+
+    /// The subviews (gutter, sticky strip, block header overlay) plus one element per block's
+    /// chevron, which is drawn in Metal as a glyph and has nothing else in the view hierarchy to
+    /// report it. Without this the fold control is invisible to VoiceOver even while the mouse can
+    /// click it.
+    override func accessibilityChildren() -> [Any]? {
+        var children = subviews.filter { !$0.isHidden } as [Any]
+        let cell = cellSizePoints
+        for (row, columns) in summaryColumnsOnScreen {
+            guard let header = headersOnScreen[row], header.hasOutput else { continue }
+            let frame = NSRect(x: padding + CGFloat(columns.lowerBound) * cell.width,
+                               y: bounds.height - padding - CGFloat(row + 1) * cell.height,
+                               width: CGFloat(columns.count) * cell.width, height: cell.height)
+            children.append(DrawnControlElement.make(
+                label: "\(header.title(for: .toggleFold)) of the command on line \(row + 1)",
+                role: .button, frame: frame, in: self,
+                press: { [weak self] in self?.toggleFold(ofCommand: header.id, full: false) }))
+        }
+        return children
     }
 
     override func isAccessibilityEnabled() -> Bool { true }
@@ -606,7 +631,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         var notes: [String?] = []
         var spines: [(rows: Range<Int>, color: RGB)] = []
         var summaries: [(row: Int, text: String, color: RGB)] = []
-        var sticky: (text: String, failed: Bool, row: Int)?
+        var sticky: (text: String, failed: Bool, row: Int, summary: String)?
         var anyRunningOnScreen = false
         // What the buffer looked like when the frame was built. The dirty flags are cleared against
         // it once the frame is on screen, so a write that lands in between keeps its flags.
@@ -779,9 +804,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // Costs one flag test for a shell with no integration, which is the whole reason
             // `shellEmitsPromptMarks` exists.
             if let pinned = t.stickyPrompt(), let region = t.command(containingAbsoluteRow: pinned.row) {
+                // Same fields the hover overlay would show for this command, so the strip and the
+                // overlay never disagree about what a command's duration or exit status was.
+                let summary = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
+                    .header(now: t.now(), folding: self.folding, notifyArmed: false,
+                            anyFolds: !self.folding.isEmpty).summary
                 sticky = (StickyPromptLabel.text(command: t.commandText(of: region),
                                                  exitStatus: pinned.exitStatus, columns: t.cols),
-                          pinned.failed, pinned.row)
+                          pinned.failed, pinned.row, summary)
             }
             builtAtContentVersion = t.contentVersion
             return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
@@ -804,11 +834,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                       cellHeight: cellSizePoints.height, topPadding: padding)
         stickyPromptRow = sticky?.row
         let wasHidden = stickyStrip.isHidden
-        stickyStrip.update(text: sticky?.text, failed: sticky?.failed ?? false, palette: frame.palette,
+        stickyStrip.update(text: sticky?.text, summary: sticky?.summary ?? "", failed: sticky?.failed ?? false,
+                           palette: frame.palette,
                            font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
         // The strip claims the pointer only while it is up, so appearing or disappearing changes
         // which view the cursor over the top row belongs to.
         if wasHidden != stickyStrip.isHidden { window?.invalidateCursorRects(for: stickyStrip) }
+        // After the sticky strip so a running command's timer and a fold toggle -- both of which
+        // can change the header without a matching pointer move -- refresh the overlay's text too;
+        // `update` compares before it applies, so redrawing here every frame is cheap.
+        blockHeaderChanged()
         switch renderer.draw(frame, in: metalLayer, padding: Int(padding * metalLayer.contentsScale),
                              syncOutput: syncOutput) {
         case .presented:
@@ -1180,6 +1215,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func toggleFold(ofCommand id: UInt32, full: Bool) {
         if full { folding.toggleFull(id) } else { folding.toggle(id, keep: config.foldKeepLines) }
         onFocusRequested?()
+        // Folding reshuffles display slots under the pointer without a matching mouse-move, so the
+        // hover -- and the overlay it feeds -- would otherwise keep naming whatever slot the pointer
+        // used to be over rather than the block actually there now.
+        invalidateBlockHover()
         markDirty()
     }
 
@@ -1304,14 +1343,19 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             for _ in 0..<abs(lines) { all += bytes }
             session.send(all)
         } else {
-            session.withTerminal { t in
+            // Only when the viewport actually moved: a wheel tick at either end of the scrollback
+            // scrolls nothing, and invalidating the hover on every one of those would flicker the
+            // overlay off the block the pointer is still sitting on.
+            let moved = session.withTerminal { t -> Bool in
+                let before = t.viewportOffset
                 t.scrollViewport(by: lines)
                 // A fold hides every row it covers, so a viewport top inside one does not move on
                 // screen however far it is scrolled -- two thousand hidden rows would be two
                 // thousand wheel clicks. Step over the fold in the direction of travel instead.
                 t.snapViewportOutOfFold(movingUp: lines > 0, folding: folding)
+                return t.viewportOffset != before
             }
-            invalidateBlockHover()
+            if moved { invalidateBlockHover() }
             markDirty()
         }
     }
@@ -1326,21 +1370,32 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// do something different from the same item there, and both grey out by the same rule.
     private func contextMenu(at point: NSPoint? = nil) -> NSMenu {
         let menu = NSMenu()
+        menu.autoenablesItems = false
         // The command under the pointer, when there is one. This is the entry that turns the
         // scrollback into something you can act on rather than only read: the prompt marks say
-        // where each command began, so "that one, with a change" is answerable.
-        if let point, let row = commandRow(under: point) {
-            let rerun = NSMenuItem(title: "Edit and Run This Command…",
-                                   action: #selector(editAndRunFromMenu(_:)), keyEquivalent: "")
-            rerun.target = self
-            rerun.tag = row
-            menu.addItem(rerun)
-            let again = NSMenuItem(title: "Run This Command Again",
-                                   action: #selector(rerunFromMenu(_:)), keyEquivalent: "")
-            again.target = self
-            again.tag = row
-            menu.addItem(again)
-            menu.addItem(.separator())
+        // where each command began, so the whole block's actions -- not just rerun and edit -- are
+        // answerable from a right-click.
+        if let point, let id = commandID(under: point) {
+            let header: BlockHeader? = session.withTerminal { t in
+                guard let row = t.promptRow(ofCommand: id),
+                      let region = t.command(containingAbsoluteRow: row) else { return nil }
+                let block = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
+                return block.header(now: t.now(), folding: self.folding,
+                                    notifyArmed: self.armedNotifications.contains(id), anyFolds: !self.folding.isEmpty)
+            }
+            if let header {
+                for (index, entry) in header.actions.enumerated() {
+                    if index > 0 && entry.action.startsGroup { menu.addItem(.separator()) }
+                    let item = NSMenuItem(title: header.title(for: entry.action),
+                                          action: #selector(blockActionFromMenu(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = BlockMenuEntry(action: entry.action, id: id)
+                    item.isEnabled = entry.enabled
+                    if case .notifyWhenDone(let armed) = entry.action { item.state = armed ? .on : .off }
+                    menu.addItem(item)
+                }
+                menu.addItem(.separator())
+            }
         }
         let groups: [[TerminalAction]] = [
             [.copy, .paste],
@@ -1379,6 +1434,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(copy(_:)) { return hasSelection }
         if item.action == #selector(selectAll(_:)) { return session.withTerminal { $0.totalRows > 0 } }
+        // The block group sets its own `isEnabled` per action (`.copyOutput` needs output,
+        // `.editAndRun` needs the command to have finished); `autoenablesItems = false` on the
+        // context menu stops AppKit from re-deriving that from this method and flattening it back
+        // to "everything enabled", but the method still has to agree rather than contradict it.
+        if item.action == #selector(blockActionFromMenu(_:)) { return item.isEnabled }
         return true
     }
 
@@ -1499,8 +1559,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         for rect in hoveredRect { addCursorRect(rect, cursor: .pointingHand) }
     }
 
-    /// Filled in by Task 10, which draws the overlay; a hover change alone touches nothing else.
-    private func blockHeaderChanged() {}
+    /// Places the overlay over the hovered block's command row, or hides it.
+    private func blockHeaderChanged() {
+        guard let row = hoveredBlock?.headerRow, let header = headersOnScreen[row] else {
+            blockHeader.update(header: nil, palette: session.withTerminal { $0.palette },
+                               font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
+            return
+        }
+        blockHeader.update(header: header, palette: session.withTerminal { $0.palette },
+                           font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
+        let size = blockHeader.intrinsicContentSize
+        let origin = overlayOrigin(forHeaderRow: row)
+        blockHeader.frame = NSRect(x: origin.x - size.width, y: origin.y,
+                                   width: size.width, height: cellSizePoints.height)
+        window?.invalidateCursorRects(for: self)
+    }
 
     /// Every path that moves the viewport without a matching pointer move calls this. `hoveredBlock`
     /// is expressed in display slots, so scrolling and leaving it alone would keep tinting whatever
@@ -2298,31 +2371,27 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
     }
 
-    /// The absolute row of the command whose region covers a point, or nil where there is none --
-    /// above the first prompt, or with a shell that emits no marks.
-    private func commandRow(under point: NSPoint) -> Int? {
-        session.withTerminal { terminal in
-            guard terminal.shellEmitsPromptMarks else { return nil }
-            let position = self.position(topLeft(point), in: terminal)
-            return terminal.command(containingAbsoluteRow: position.row)?.promptRow
+    /// One entry of the context menu's block group: which action, on which command.
+    private final class BlockMenuEntry: NSObject {
+        let action: BlockAction
+        let id: UInt32
+        init(action: BlockAction, id: UInt32) { self.action = action; self.id = id }
+    }
+
+    /// The id of the command whose region covers a point, or nil where there is none -- above the
+    /// first prompt, or with a shell that emits no marks.
+    private func commandID(under point: NSPoint) -> UInt32? {
+        session.withTerminal { t in
+            guard t.shellEmitsPromptMarks else { return nil }
+            let position = self.position(topLeft(point), in: t)
+            let id = t.command(containingAbsoluteRow: position.row)?.id ?? 0
+            return id == 0 ? nil : id
         }
     }
 
-    @objc private func editAndRunFromMenu(_ sender: NSMenuItem) {
-        if !editAndRunCommand(atAbsoluteRow: sender.tag) { NSSound.beep() }
-    }
-
-    /// No editor, no confirmation: the command exactly as it ran.
-    @objc private func rerunFromMenu(_ sender: NSMenuItem) {
-        let command: String = session.withTerminal { terminal in
-            guard let region = terminal.command(containingAbsoluteRow: sender.tag) else { return "" }
-            return terminal.commandText(of: region)
-        }
-        guard !command.isEmpty else {
-            NSSound.beep()
-            return
-        }
-        send(Array((command + "\r").utf8))
+    @objc private func blockActionFromMenu(_ sender: NSMenuItem) {
+        guard let entry = sender.representedObject as? BlockMenuEntry else { return }
+        perform(entry.action, on: entry.id)
     }
 
     /// `⌘E`: the last command that ran, in the editor. From the keyboard there is no pointer to

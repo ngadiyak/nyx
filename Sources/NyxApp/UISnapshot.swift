@@ -86,6 +86,21 @@ enum UISnapshot {
         write(stickyPrompt(palette: palette, failed: true), named: "sticky-prompt-failed",
               into: directory, background: palette.background)
 
+        for (name, header) in blockHeaderStates() {
+            for appearance in [NSAppearance.Name.darkAqua, .aqua] {
+                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: 20))
+                view.appearance = NSAppearance(named: appearance)
+                view.update(header: header, palette: palette, font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+                let size = view.intrinsicContentSize
+                view.frame = NSRect(x: 0, y: 0, width: size.width, height: 20)
+                view.layoutSubtreeIfNeeded()
+                write(view, named: "block-header-\(name)-\(appearance == .aqua ? "light" : "dark")",
+                      into: directory, background: palette.background)
+            }
+        }
+        write(stickyPrompt(palette: palette, failed: true, summary: "exit 2 \u{b7} 8.8s"),
+              named: "sticky-prompt-summary", into: directory, background: palette.background)
+
         for name in Themes.builtin.keys.sorted() {
             var themed = config
             themed.themeName = name
@@ -295,10 +310,22 @@ enum UISnapshot {
         return result
     }
 
-    private static func stickyPrompt(palette: Palette, failed: Bool) -> NSView {
+    /// One `BlockHeader` per state the overlay can be in: the states nobody renders are the states
+    /// nobody has looked at.
+    private static func blockHeaderStates() -> [(String, BlockHeader)] {
+        [
+            ("finished", BlockHeader(id: 1, state: .finished, folded: false, hasOutput: true, anyFolds: false, notifyArmed: false, summary: "8.8s")),
+            ("failed", BlockHeader(id: 2, state: .failed(status: 1), folded: false, hasOutput: true, anyFolds: false, notifyArmed: false, summary: "exit 1 \u{b7} 8.8s")),
+            ("running", BlockHeader(id: 3, state: .running(elapsed: 12), folded: false, hasOutput: true, anyFolds: false, notifyArmed: true, summary: "12s")),
+            ("folded", BlockHeader(id: 4, state: .finished, folded: true, hasOutput: true, anyFolds: true, notifyArmed: false, summary: "8.8s")),
+            ("no-output", BlockHeader(id: 5, state: .finished, folded: false, hasOutput: false, anyFolds: false, notifyArmed: false, summary: "")),
+        ]
+    }
+
+    private static func stickyPrompt(palette: Palette, failed: Bool, summary: String = "") -> NSView {
         let view = StickyPromptView(frame: NSRect(x: 0, y: 0, width: 900, height: 22))
         view.update(text: failed ? "$ make test" : "$ ./deploy.sh --env production --wait",
-                    failed: failed, palette: palette,
+                    summary: summary, failed: failed, palette: palette,
                     font: .monospacedSystemFont(ofSize: 12, weight: .regular))
         view.layoutSubtreeIfNeeded()
         return view

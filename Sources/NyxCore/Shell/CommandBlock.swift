@@ -86,7 +86,11 @@ public extension Terminal {
                                            visibleRows: (first - top)..<(last - top + 1),
                                            showsHeader: region.promptRow >= top && region.promptRow < bottom))
             }
-            // Straight to the row after this command; a block covers every row it owns.
+            // Straight to the row after this command; a block covers every row it owns. The last
+            // command in the buffer is the end of the walk: its `endRow` is clamped to the last
+            // written row, and the unwritten rows below it map back to this same command, which
+            // would append it once per blank row.
+            if region.isLastInBuffer { break }
             row = max(row + 1, region.endRow + 1)
         }
         return blocks

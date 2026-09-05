@@ -33,8 +33,13 @@ public struct CommandRegion: Equatable {
     public let promptRow: Int
     /// Where the command's output begins, if the shell marked it.
     public let outputStart: Int?
-    /// The last row belonging to this command -- the row before the next prompt, or the end of the
-    /// buffer for the command still running.
+    /// The last row belonging to this command -- the row before the next prompt, or, for the last
+    /// command in the buffer, the last row anything has actually been written to.
+    ///
+    /// The clamp matters because "the end of the buffer" for a running command is the whole unwritten
+    /// screen below its cursor. `npm install` two lines in owned forty rows, so folding it reported
+    /// "… 38 lines hidden" for two real lines, and every further line it printed landed inside the
+    /// hidden range: the screen stopped changing.
     public let endRow: Int
     /// nil when the command is still running, or the shell reported no status.
     public let exitStatus: Int32?
@@ -48,8 +53,15 @@ public struct CommandRegion: Equatable {
     /// built before `runningCommand` existed to ask.
     public let startedAt: Double?
 
+    /// No prompt follows this command, so it is the last one in the buffer and `endRow` is a clamp
+    /// rather than a boundary: everything below it is unwritten screen that belongs to nobody. A
+    /// walk over the buffer's commands has to stop here rather than step past `endRow` and find
+    /// this same command again.
+    public let isLastInBuffer: Bool
+
     public init(promptRow: Int, outputStart: Int?, endRow: Int, exitStatus: Int32?,
-                duration: Double? = nil, id: UInt32 = 0, startedAt: Double? = nil) {
+                duration: Double? = nil, id: UInt32 = 0, startedAt: Double? = nil,
+                isLastInBuffer: Bool = false) {
         self.promptRow = promptRow
         self.outputStart = outputStart
         self.endRow = endRow
@@ -57,6 +69,7 @@ public struct CommandRegion: Equatable {
         self.duration = duration
         self.id = id
         self.startedAt = startedAt
+        self.isLastInBuffer = isLastInBuffer
     }
 
     /// The rows holding just the output, empty when the command produced none.
@@ -153,15 +166,36 @@ public extension Terminal {
         let start = promptMarks(atAbsoluteRow: row).contains(.promptStart) ? row : previousPrompt(before: row)
         guard let start else { return nil }
         let next = nextPrompt(after: start)
-        let end = (next ?? totalRows) - 1
+        // Where the marks may be looked for: the whole region as the buffer describes it. Kept
+        // unclamped so that "the shell said this command started" -- `outputStart != nil`, which the
+        // command watcher, the notifications and the spine all read -- means the same thing it
+        // always did for a command that has begun and printed nothing yet.
+        let searchEnd = (next ?? totalRows) - 1
+        // Where the command *ends*, which is a different question. The last command in the buffer
+        // ends at the last row anything has been written to, not at the end of the buffer: the rows
+        // below its cursor are unwritten screen. Counting them made a running command's region forty
+        // rows long two lines in, so folding it said "… 38 lines hidden" for two real lines and then
+        // swallowed everything it printed afterwards -- the screen stopped changing.
+        let end: Int
+        if let next {
+            end = next - 1
+        } else {
+            var last = min(totalRows - 1, scrollback.count + screen.cursor.y)
+            // The cursor sits on the row the *next* character will go on. While that row is still
+            // empty the command has not written it, and counting it would put one blank line inside
+            // every fold of a command that is between lines. Exactly one step back, because a
+            // command that printed blank lines really did print them.
+            if last > start, absoluteRow(last)?.isBlank ?? true { last -= 1 }
+            end = last
+        }
 
         // Searched strictly after the prompt row, for the same ownership reason as the status
         // below: a command that produced no output leaves its `C` on the row its successor's
         // prompt lands on, and counting it would give the new prompt an output region made of
         // everything below it.
         var outputStart: Int?
-        if start < end {
-            for r in (start + 1)...end where promptMarks(atAbsoluteRow: r).contains(.outputStart) {
+        if start < searchEnd {
+            for r in (start + 1)...searchEnd where promptMarks(atAbsoluteRow: r).contains(.outputStart) {
                 outputStart = r
                 break
             }
@@ -183,7 +217,8 @@ public extension Terminal {
         let id = absoluteRow(start)?.commandID ?? 0
         return CommandRegion(promptRow: start, outputStart: outputStart, endRow: max(start, end),
                              exitStatus: status, duration: absoluteRow(start)?.commandDuration,
-                             id: id, startedAt: runningCommand?.id == id ? runningCommand?.startedAt : nil)
+                             id: id, startedAt: runningCommand?.id == id ? runningCommand?.startedAt : nil,
+                             isLastInBuffer: next == nil)
     }
 
     /// The command whose region ends just above `region`'s prompt, or nil for the first command.

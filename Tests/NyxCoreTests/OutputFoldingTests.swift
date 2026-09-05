@@ -113,8 +113,9 @@ private func region(output: Int, id: UInt32 = 7) -> CommandRegion {
     t.feed(mark("A") + "$ " + mark("B") + "sleep 10\r\n" + mark("C"))
     let finished = t.command(containingAbsoluteRow: 0)!
     let running = t.command(containingAbsoluteRow: 27)!
-    // Both are "long" by row span; only one of them has printed anything.
-    #expect(running.outputRows.count > 10)                       // the blank screen below it
+    // The running command's region no longer swallows the unwritten screen, so it is not "long" by
+    // span either -- and it still has nothing on its output rows, which is the other guard.
+    #expect(running.outputRows.count <= 1)
     #expect(finished.outputRows.count > 10)
     #expect(!t.commandHasOutput(atAbsoluteRow: running.promptRow))
     #expect(t.commandHasOutput(atAbsoluteRow: finished.promptRow))

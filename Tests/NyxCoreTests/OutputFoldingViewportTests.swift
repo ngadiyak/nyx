@@ -119,9 +119,10 @@ private func folded(_ ids: UInt32..., shape: FoldShape = .all) -> OutputFolding 
     var folding = OutputFolding()
     folding.fold(id, .all)
     let rows = t.displayRows(from: 0, count: 4, folding: folding)
-    // Nine, not eight: a running command's region reaches the end of the buffer, so the row the
-    // cursor is waiting on is hidden with the rest -- which is what makes a folded build a live tail.
-    #expect(rows[1] == .fold(commandID: id, hiddenRows: 9, status: .running))
+    // Eight: the eight lines it printed. Its region stops at the last row it wrote, so neither the
+    // blank row the cursor waits on nor the unwritten screen below is counted -- the placeholder
+    // says what it hides.
+    #expect(rows[1] == .fold(commandID: id, hiddenRows: 8, status: .running))
 }
 
 // MARK: - Where the cursor goes when a fold is on screen
@@ -192,4 +193,92 @@ private func folded(_ ids: UInt32..., shape: FoldShape = .all) -> OutputFolding 
     f.foldLongOutput(in: t, longerThan: 9, keep: 3)
     #expect(f.isFolded(2))
     #expect(!f.isFolded(3))
+}
+
+// MARK: - A folded running command is a live tail, not a frozen screen
+
+// `command(containingAbsoluteRow:)` used to end the last command at the end of the *buffer*, which
+// for a running command is the whole unwritten screen below its cursor. `npm install` two lines in
+// owned forty rows: folding it said "… 38 lines hidden" for two real lines, and every further line
+// it printed landed inside the hidden range, so the screen stopped changing.
+
+/// Two real lines printed, in a 44-row pane.
+private func runningInATallPane() -> Terminal {
+    let t = makeTerminal(cols: 40, rows: 44, scrollback: 1000)
+    t.feed(mark("A") + "$ " + mark("B") + "echo done\r\n" + mark("C") + "done\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ " + mark("B") + "npm install\r\n" + mark("C")
+           + "added 2 packages\r\nauditing...\r\n")
+    return t
+}
+
+@Test func aRunningCommandsRegionStopsAtTheLastRowItWrote() throws {
+    let t = runningInATallPane()
+    let region = try #require(t.command(containingAbsoluteRow: 2))
+    #expect(region.isLastInBuffer)
+    #expect(region.outputRows.count == 2)          // the two lines, not the forty-row screen
+    #expect(region.endRow == 4)
+}
+
+@Test func foldingARunningCommandHidesOnlyWhatItPrinted() throws {
+    let t = runningInATallPane()
+    let region = try #require(t.command(containingAbsoluteRow: 2))
+    var folding = OutputFolding()
+    folding.fold(region.id, .tail(keep: 3))
+    // Two output rows behind a one-row placeholder is not a tail worth keeping, so the small-output
+    // rule makes it a full fold: both rows hidden.
+    let rows = t.displayRows(from: 0, count: 44, folding: folding)
+    #expect(rows[3] == .fold(commandID: region.id, hiddenRows: 2, status: .running))
+    // And what follows the placeholder is the rest of the buffer, not the blank screen the fold
+    // used to swallow.
+    #expect(rows[4] == .row(5))
+}
+
+@Test func aFoldedRunningCommandKeepsGrowing() throws {
+    let t = runningInATallPane()
+    let region = try #require(t.command(containingAbsoluteRow: 2))
+    var folding = OutputFolding()
+    folding.fold(region.id, .tail(keep: 3))
+    let before = t.displayRows(from: 0, count: 44, folding: folding)
+    for i in 1...5 { t.feed("progress line \(i)\r\n") }
+    let after = t.displayRows(from: 0, count: 44, folding: folding)
+    #expect(before != after)
+
+    let grown = try #require(t.command(containingAbsoluteRow: 2))
+    #expect(grown.outputRows.count == 7)
+    // A tail fold of seven rows keeping three hides four and shows the newest three.
+    #expect(after[3] == .fold(commandID: region.id, hiddenRows: 4, status: .running))
+    let tail = after[4...6].compactMap { entry -> String? in
+        guard case .row(let absolute) = entry else { return nil }
+        return t.rowText(absoluteRow: absolute).text.trimmingCharacters(in: .whitespaces)
+    }
+    #expect(tail == ["progress line 3", "progress line 4", "progress line 5"])
+}
+
+/// A finished command's region is unchanged: it still ends on the row before the next prompt.
+@Test func aFinishedCommandsRegionStillEndsAtTheNextPrompt() throws {
+    let t = runningInATallPane()
+    let finished = try #require(t.command(containingAbsoluteRow: 0))
+    #expect(!finished.isLastInBuffer)
+    #expect(finished.endRow == 1)
+    #expect(finished.outputRows == 1..<2)
+}
+
+/// ⌥-click on a running command's gutter mark selects what it printed, not the empty screen.
+@Test func selectingARunningCommandsOutputStopsAtTheLastWrittenRow() throws {
+    let t = runningInATallPane()
+    let region = try #require(t.command(containingAbsoluteRow: 2))
+    let selection = try #require(t.selectionForOutput(of: region))
+    #expect(selection.start.row == 3)
+    #expect(selection.end.row == 4)
+    #expect(t.text(in: selection).contains("auditing..."))
+    #expect(!t.text(in: selection).contains("\n\n\n"))
+}
+
+/// Every command on screen is one block. With the running command's region clamped, the rows below
+/// its cursor map back to it, and a walk that stepped past `endRow` found it again on each of them.
+@Test func aRunningCommandIsOneBlockNotOnePerBlankRow() {
+    let t = runningInATallPane()
+    let blocks = t.visibleBlocks(rows: 44)
+    #expect(blocks.count == 2)
+    #expect(blocks.map(\.region.promptRow) == [0, 2])
 }

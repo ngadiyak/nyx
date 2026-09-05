@@ -90,7 +90,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// The last frame's display rows, so a click can tell which visible row is a fold placeholder
     /// and which command it stands for. Empty whenever nothing is folded.
     private var foldRowsOnScreen: [DisplayRow] = []
-    /// The block under the pointer, resolved by `BlockHover` on each cell the pointer crosses.
+    /// What the buffer had evicted the last time folds and armed notifications were pruned. Nothing
+    /// else can retire a command id, so an unchanged pair means the walk to find the oldest one
+    /// would answer exactly what it answered last frame.
+    /// -1 so the first prune always runs.
+    private var lastPruneEvictedRows = -1
+    private var lastPruneGeneration: UInt64 = 0
+    /// The block under the pointer, re-resolved by `BlockHover` in every frame against that frame's
+    /// own blocks and display rows -- so it follows the rows when they scroll and disappears when a
+    /// TUI takes the screen.
     private(set) var hoveredBlock: BlockHover?
     /// The headers built for the last frame, by visible row, so a click on a summary can be resolved
     /// and the overlay can be fed without another walk.
@@ -638,6 +646,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         var summaries: [(row: Int, text: String, color: RGB)] = []
         var sticky: (text: String, failed: Bool, row: Int, summary: String)?
         var anyRunningOnScreen = false
+        // Set under the lock, acted on after it: the overlay and the cursor rects are AppKit calls.
+        var hoverChanged = false
         // What the buffer looked like when the frame was built. The dirty flags are cleared against
         // it once the frame is on screen, so a write that lands in between keeps its flags.
         var builtAtContentVersion: UInt64 = 0
@@ -653,6 +663,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             if hoveredLinkGeneration != t.scrollbackGeneration {
                 hoveredLinkGeneration = t.scrollbackGeneration
                 hoveredLink = nil
+                // A block hover is a range of rows in the same absolute space; a `clear` moves
+                // every one of them out from under it. Re-resolved below from the pointer's own
+                // position, so the very next frame puts it back if there is still a block there.
+                self.hoveredBlock = nil
             }
             // A fold is an absolute row, and a `clear` makes every absolute row mean something
             // else; keeping them would collapse whatever landed on those indices.
@@ -661,13 +675,24 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 self.folding.unfoldAll()
             }
             // Folds whose prompt has gone -- evicted from the ring, or overwritten -- are dropped
-            // here rather than accumulating over a session. Costs one row read per fold, and
-            // nothing at all when there are none.
-            if !self.folding.isEmpty { self.folding.prune(olderThan: t.oldestCommandID) }
-            // An id that has left the buffer can never finish, so a notification armed for it would
-            // wait forever; drop it the same moment folds for evicted commands are dropped.
-            if !self.armedNotifications.isEmpty {
-                self.armedNotifications = self.armedNotifications.filter { $0 >= t.oldestCommandID }
+            // here rather than accumulating over a session, and with them any notification armed
+            // for an id that can never finish now.
+            //
+            // Only when the buffer actually lost rows. `oldestCommandID` walks forward from the
+            // start of the ring looking for the first prompt, and doing that on every frame of a
+            // session that has one fold open -- under the session lock, on the render path -- was
+            // paying for a scan whose answer cannot have changed. Nothing else moves the oldest id:
+            // it changes when rows are evicted, or when the whole buffer is replaced.
+            let bufferMoved = t.evictedRows != self.lastPruneEvictedRows
+                || t.scrollbackGeneration != self.lastPruneGeneration
+            if bufferMoved, !(self.folding.isEmpty && self.armedNotifications.isEmpty) {
+                self.lastPruneEvictedRows = t.evictedRows
+                self.lastPruneGeneration = t.scrollbackGeneration
+                let oldest = t.oldestCommandID
+                if !self.folding.isEmpty { self.folding.prune(olderThan: oldest) }
+                if !self.armedNotifications.isEmpty {
+                    self.armedNotifications = self.armedNotifications.filter { $0 >= oldest }
+                }
             }
             let cursor: Cursor? = (t.modes.showCursor && t.viewportOffset == 0) ? t.screen.cursor : nil
             // Resolved here, inside the lock, so the highlighted columns belong to the same
@@ -736,17 +761,56 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 return foldRowsOnScreen.firstIndex { if case .row(absolute) = $0 { return true } else { return false } }
             }
 
-            gutterMarks = Pane.place(t.gutterMarks(rows: t.rows), from: max(0, t.viewportTopRow),
-                                     rows: t.rows, screenRow: screenRow)
-            notes = Pane.place(t.durationNotes(rows: t.rows), from: max(0, t.viewportTopRow),
-                               rows: t.rows, screenRow: screenRow)
+            // The window of absolute rows this frame actually shows. Without a fold it is
+            // `top ..< top + rows`; with one, hiding a thousand rows pulls rows from far below into
+            // the same slots, and a chrome window of `rows` absolute rows stopped above every block
+            // under the placeholder -- they lost their spine, their summary and their gutter mark.
+            let windowTop = max(0, t.viewportTopRow)
+            let lastRowOnScreen: Int = {
+                let plain = windowTop + t.rows - 1
+                guard !self.foldRowsOnScreen.isEmpty else { return plain }
+                let displayed = self.foldRowsOnScreen.compactMap { entry -> Int? in
+                    if case .row(let absolute) = entry { return absolute } else { return nil }
+                }
+                return displayed.max() ?? plain
+            }()
+
+            // Per display slot when a fold is on screen, per visible row otherwise. Not through a
+            // window of absolute rows reaching `lastRowOnScreen`: that window spans everything the
+            // fold hides, and a mark per row of it costs 3.3 ms a frame at a 10,000-row fold
+            // against 0.019 ms for the rows actually drawn. `visibleBlocks` below does take the
+            // window, because a block's own region spans the hidden rows and it walks commands
+            // rather than rows.
+            if self.foldRowsOnScreen.isEmpty {
+                gutterMarks = t.gutterMarks(rows: t.rows)
+                notes = t.durationNotes(rows: t.rows)
+            } else {
+                let pad = max(0, t.rows - self.foldRowsOnScreen.count)
+                gutterMarks = t.gutterMarks(onDisplayRows: self.foldRowsOnScreen)
+                    + Array(repeating: nil, count: pad)
+                notes = t.durationNotes(onDisplayRows: self.foldRowsOnScreen)
+                    + Array(repeating: nil, count: pad)
+            }
             // Blocks are chrome over an unmodified grid, so they step aside entirely when a
             // full-screen program owns the display or the mouse. This is the rule that keeps vim,
             // htop and tmux behaving exactly as they did.
-            let blocks = CommandBlockChrome.isAllowed(altScreen: t.modes.altScreen,
-                                                  mouseReporting: t.modes.mouse != .none,
-                                                  hasMarks: t.shellEmitsPromptMarks)
-                ? t.visibleBlocks(rows: t.rows) : []
+            let chromeAllowed = CommandBlockChrome.isAllowed(altScreen: t.modes.altScreen,
+                                                             mouseReporting: t.modes.mouse != .none,
+                                                             hasMarks: t.shellEmitsPromptMarks)
+            let blocks = chromeAllowed ? t.visibleBlocks(from: windowTop, through: lastRowOnScreen) : []
+            // Which block the pointer is on, decided here rather than in `mouseMoved`, against the
+            // very blocks and display rows this frame is about to draw.
+            //
+            // Recomputing it only on a pointer move meant the tint outlived what it was describing:
+            // it stayed on screen when a TUI took the display (nothing gated `highlightedRows` on
+            // `chromeAllowed`), and after a scroll it sat on whatever rows had moved into those
+            // slots. Doing it per frame makes the hover follow the rows the way the hovered link
+            // does (spec 4.2), and no scroll, fold, search reveal or autoscroll needs to remember
+            // to invalidate it.
+            let previousHover = self.hoveredBlock
+            self.hoveredBlock = self.resolveBlockHover(in: t, blocks: blocks, allowed: chromeAllowed,
+                                                       viewportTop: windowTop)
+            hoverChanged = self.hoveredBlock != previousHover
             // The three block colours, once per frame. `readable` picks between a colour and its
             // bright variant by contrast against the background -- a handful of Lab conversions --
             // and evaluating it per block, per frame, put that on the render path for nothing: the
@@ -792,8 +856,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 }
                 // The overlay draws its own copy of the summary while it covers this row.
                 if self.hoveredBlock?.headerRow == row { return nil }
+                // A running block used to differ from a finished one only by the digit in the
+                // elapsed time -- the same grey `12s ▾` a finished command's `12s ▾` shows. The
+                // theme's running colour is the one the spine already uses for the same state,
+                // so a glance down the screen says which command is still going.
                 return (row: row, text: text,
-                        color: block.failed ? failedColor : t.palette.noteForeground)
+                        color: block.failed ? failedColor
+                            : (block.isRunning ? runningColor : t.palette.noteForeground))
             }
             self.headersOnScreen = headers
             self.summaryColumnsOnScreen = summaryColumns
@@ -801,8 +870,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // The summary already carries the duration, and both draw right-aligned on the command's
             // row: left alone they paint the same glyphs twice in two colours, on the failure case
             // this feature exists to make obvious.
-            for summary in summaries where notes.indices.contains(summary.row) {
-                notes[summary.row] = nil
+            //
+            // Keyed off where a summary may actually be *drawn*, not off the list of summaries
+            // asked for: a command line long enough to reach the summary's columns means the
+            // renderer draws nothing there, and erasing the duration note as well left that row
+            // with neither. `summaryColumns` also covers the row the hover overlay took over,
+            // which draws its own summary.
+            for row in summaryColumns.keys where notes.indices.contains(row) {
+                notes[row] = nil
             }
             // Same pass, same lock, same viewport: the strip names the command whose output is on
             // screen *in this frame*, and reading it anywhere else would let the two disagree.
@@ -850,6 +925,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // `update` compares before it applies, so redrawing here every frame is cheap. `frame.palette`
         // was already read under the lock this frame; passing it on saves a second lock take.
         blockHeaderChanged(palette: frame.palette)
+        // Only when the block under the pointer actually changed: rebuilding cursor rects asks
+        // AppKit to re-run `resetCursorRects` for the view, which is not free per frame.
+        if hoverChanged { updateHoverCursor() }
         switch renderer.draw(frame, in: metalLayer, padding: Int(padding * metalLayer.contentsScale),
                              syncOutput: syncOutput) {
         case .presented:
@@ -1221,10 +1299,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func toggleFold(ofCommand id: UInt32, full: Bool) {
         if full { folding.toggleFull(id) } else { folding.toggle(id, keep: config.foldKeepLines) }
         onFocusRequested?()
-        // Folding reshuffles display slots under the pointer without a matching mouse-move, so the
-        // hover -- and the overlay it feeds -- would otherwise keep naming whatever slot the pointer
-        // used to be over rather than the block actually there now.
-        invalidateBlockHover()
+        // Folding reshuffles the display slots under the pointer without a matching mouse-move. The
+        // next frame re-resolves the hover against the new slots, so nothing to do here but ask
+        // for one.
         markDirty()
     }
 
@@ -1349,19 +1426,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             for _ in 0..<abs(lines) { all += bytes }
             session.send(all)
         } else {
-            // Only when the viewport actually moved: a wheel tick at either end of the scrollback
-            // scrolls nothing, and invalidating the hover on every one of those would flicker the
-            // overlay off the block the pointer is still sitting on.
-            let moved = session.withTerminal { t -> Bool in
-                let before = t.viewportOffset
+            session.withTerminal { t in
                 t.scrollViewport(by: lines)
                 // A fold hides every row it covers, so a viewport top inside one does not move on
                 // screen however far it is scrolled -- two thousand hidden rows would be two
                 // thousand wheel clicks. Step over the fold in the direction of travel instead.
                 t.snapViewportOutOfFold(movingUp: lines > 0, folding: folding)
-                return t.viewportOffset != before
             }
-            if moved { invalidateBlockHover() }
             markDirty()
         }
     }
@@ -1372,16 +1443,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         session.withTerminal { if selectionController.selectAll(in: $0) { markDirty() } }
     }
 
-    /// The right-click menu. Built from `TerminalAction` like the main menu, so an item here cannot
-    /// do something different from the same item there, and both grey out by the same rule.
+    /// The right-click menu, in two halves.
+    ///
+    /// The block group at the top comes from `BlockHeader.actions`, the same list the hover
+    /// overlay's ⋯ menu builds from, so the mouse route and the menu route cannot offer different
+    /// things or grey out differently. Everything below it is built from `TerminalAction` like the
+    /// main menu, so an item here cannot do something different from the same item there.
+    ///
+    /// Auto-enabling stays on: `validateMenuItem` greys out Copy, Paste and Select All, and passes
+    /// the block group's own `isEnabled` back through unchanged.
     private func contextMenu(at point: NSPoint? = nil) -> NSMenu {
         let menu = NSMenu()
-        // Left at the default (true): Copy, Paste, Toggle Zoom and the rest all rely on AppKit
-        // calling `validateMenuItem` before the menu opens to grey themselves out. Turning
-        // auto-enabling off for the whole menu to control the block group's items also silenced
-        // every other item's validation, so this menu opened with Copy enabled on an empty
-        // selection and Paste enabled on an empty clipboard. `validateMenuItem` below has an
-        // explicit case for the block group instead.
         // The command under the pointer, when there is one. This is the entry that turns the
         // scrollback into something you can act on rather than only read: the prompt marks say
         // where each command began, so the whole block's actions -- not just rerun and edit -- are
@@ -1446,9 +1518,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if item.action == #selector(copy(_:)) { return hasSelection }
         if item.action == #selector(selectAll(_:)) { return session.withTerminal { $0.totalRows > 0 } }
         // The block group sets its own `isEnabled` per action (`.copyOutput` needs output,
-        // `.editAndRun` needs the command to have finished); `autoenablesItems = false` on the
-        // context menu stops AppKit from re-deriving that from this method and flattening it back
-        // to "everything enabled", but the method still has to agree rather than contradict it.
+        // `.editAndRun` needs the command to have finished). This menu leaves auto-enabling on, so
+        // AppKit asks here as well; handing back what the item already decided is what keeps the
+        // two from contradicting each other. Turning auto-enabling off for the whole menu instead
+        // silenced Copy, Paste, Select All and Toggle Zoom, which have no such case here.
         if item.action == #selector(blockActionFromMenu(_:)) { return item.isEnabled }
         return true
     }
@@ -1471,11 +1544,45 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// one rect: a link and a block's summary can both want the pointing hand at once.
     private var hoveredRect: [NSRect] = []
 
+    /// Where the pointer last was, in view coordinates, or nil when it is outside the pane.
+    ///
+    /// Kept rather than acted on: which block it is over is answered in `render()`, against the
+    /// blocks and display rows of the frame being drawn. See `resolveBlockHover`.
+    private var lastPointerPoint: NSPoint?
+
+    /// Which block the pointer sits on -- for the tint and the overlay -- against one frame's
+    /// blocks. `resolve` answers in viewport-relative absolute space; `placed` re-expresses that in
+    /// the display slots actually on screen, which differ from absolute space only when a fold is
+    /// showing. Called under the session lock from `render()`.
+    private func resolveBlockHover(in t: Terminal, blocks: [CommandBlock], allowed: Bool,
+                                   viewportTop: Int) -> BlockHover? {
+        guard allowed, let point = lastPointerPoint, bounds.contains(point) else { return nil }
+        let visible = visibleRow(at: point)
+        let pointerRow: Int?
+        if let visible, foldRowsOnScreen.indices.contains(visible),
+           case .fold(let commandID, _) = foldRowsOnScreen[visible] {
+            // The pointer is on a fold placeholder, which has no absolute row of its own: it
+            // stands for the block whose output it hides, so hover that block directly.
+            pointerRow = blocks.first { $0.region.id == commandID }?.visibleRows.lowerBound
+        } else {
+            let absolute = visible.flatMap { self.absoluteRow(forVisibleRow: $0, in: t) }
+            pointerRow = absolute.map { $0 - viewportTop }
+        }
+        let resolved = BlockHover.resolve(pointerRow: pointerRow, blocks: blocks, allowed: allowed)
+        guard !foldRowsOnScreen.isEmpty else { return resolved }
+        return resolved?.placed(onDisplayRows: foldRowsOnScreen, viewportTop: viewportTop)
+    }
+
     private func updateHover(at point: NSPoint) {
         guard bounds.contains(point) else {
             clearHover()
             return
         }
+        // The block hover is not computed here: the pointer's position is all this knows, and which
+        // block is under it depends on the frame. Recorded on every move, including a move inside
+        // one cell -- the cheap comparison below is about the link hit test, and the block hover
+        // costs nothing until the next frame asks for it.
+        lastPointerPoint = point
         // A mouse-move that stays inside one cell cannot change what is under the pointer, and
         // hit-testing is not cheap: it tokenizes the row through five regular expressions and may
         // `stat` a path. Mouse-move events arrive far faster than cells change.
@@ -1485,37 +1592,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         guard lastHoverCell == nil || lastHoverCell! != cell else { return }
         lastHoverCell = cell
-
-        // Which block, if any, the pointer sits on -- for the tint and the overlay. `resolve`
-        // answers in viewport-relative absolute space; `placed` re-expresses that in the display
-        // slots actually on screen, which only differ from absolute space when a fold is showing.
-        let hover: BlockHover? = session.withTerminal { t in
-            let allowed = CommandBlockChrome.isAllowed(altScreen: t.modes.altScreen,
-                                                      mouseReporting: t.modes.mouse != .none,
-                                                      hasMarks: t.shellEmitsPromptMarks)
-            guard allowed else { return nil }
-            let blocks = t.visibleBlocks(rows: t.rows)
-            let visible = self.visibleRow(at: point)
-            let pointerRow: Int?
-            if let visible, self.foldRowsOnScreen.indices.contains(visible),
-               case .fold(let commandID, _) = self.foldRowsOnScreen[visible] {
-                // The pointer is on a fold placeholder, which has no absolute row of its own: it
-                // stands for the block whose output it hides, so hover that block directly.
-                pointerRow = blocks.first { $0.region.id == commandID }?.visibleRows.lowerBound
-            } else {
-                let absolute = visible.flatMap { self.absoluteRow(forVisibleRow: $0, in: t) }
-                pointerRow = absolute.map { $0 - max(0, t.viewportTopRow) }
-            }
-            let resolved = BlockHover.resolve(pointerRow: pointerRow, blocks: blocks, allowed: true)
-            guard !self.foldRowsOnScreen.isEmpty else { return resolved }
-            return resolved?.placed(onDisplayRows: self.foldRowsOnScreen, viewportTop: max(0, t.viewportTopRow))
-        }
-        if hover != hoveredBlock {
-            hoveredBlock = hover
-            blockHeaderChanged()
-            updateHoverCursor()
-            markDirty()
-        }
+        // The pointer moved to another cell, so the block under it may have changed even if nothing
+        // else did; the next frame is where that is decided.
+        markDirty()
 
         let hit = token(under: point)
         // Resolved *outside* the session lock: a path needs the pane's working directory, and
@@ -1530,9 +1609,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     private func clearHover() {
         lastHoverCell = nil
+        // The pointer has left the pane; with no point to resolve against, the next frame finds no
+        // block and takes the overlay and the tint down with it.
+        lastPointerPoint = nil
         let hadBlock = hoveredBlock != nil
-        hoveredBlock = nil
-        if hadBlock { blockHeaderChanged() }
         let hadLink = hoveredLink != nil
         hoveredLink = nil
         guard hadBlock || hadLink else { return }
@@ -1587,18 +1667,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         blockHeader.frame = NSRect(x: origin.x - size.width, y: origin.y,
                                    width: size.width, height: cellSizePoints.height)
         window?.invalidateCursorRects(for: self)
-    }
-
-    /// Every path that moves the viewport without a matching pointer move calls this. `hoveredBlock`
-    /// is expressed in display slots, so scrolling and leaving it alone would keep tinting whatever
-    /// slot the old block happened to occupy -- possibly a completely different block now sitting
-    /// under the pointer. `lastHoverCell` is cleared too, so the next `mouseMoved` recomputes rather
-    /// than seeing the same cell coordinates and assuming nothing changed.
-    private func invalidateBlockHover() {
-        hoveredBlock = nil
-        blockHeaderChanged()
-        updateHoverCursor()
-        lastHoverCell = nil
     }
 
     /// The token under a view point, if any. One row is read, and the lock is released before the
@@ -1878,10 +1946,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             _ = t.scrollToAbsoluteRow(row)
             return true
         }
-        if moved {
-            invalidateBlockHover()
-            markDirty()
-        }
+        if moved { markDirty() }
         return moved
     }
 
@@ -1909,7 +1974,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func scrollToStickyPrompt() {
         guard let row = stickyPromptRow else { return }
         session.withTerminal { t in _ = t.scrollToAbsoluteRow(row) }
-        invalidateBlockHover()
         onFocusRequested?()
         markDirty()
     }
@@ -1989,9 +2053,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         guard session.withTerminal({ $0.shellEmitsPromptMarks }) else { return false }
         guard folding.isEmpty else {
             folding.unfoldAll()
-            // Same reshuffle of display slots under the pointer as `toggleFold`, just for every
-            // block at once.
-            invalidateBlockHover()
             markDirty()
             return true
         }
@@ -1999,7 +2060,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             folding.foldLongOutput(in: t, longerThan: Pane.longOutputThreshold, keep: config.foldKeepLines)
         }
         guard !folding.isEmpty else { return false }
-        invalidateBlockHover()
         markDirty()
         return true
     }
@@ -2136,11 +2196,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         panel.canCreateDirectories = true
         panel.allowedContentTypes = []
         panel.message = "Save this command\u{2019}s output."
-        panel.beginSheetModal(for: window) { response in
+        panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            try? (text + "\n").write(to: url, atomically: true, encoding: .utf8)
+            do {
+                try (text + "\n").write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                // The user asked for a file and there is none. A `try?` here meant a full disk or a
+                // read-only folder looked exactly like a successful save.
+                self?.onSaveFailed?(error)
+            }
         }
     }
+
+    /// Told when writing a block's output failed, so the window that owns this pane can say so.
+    /// Set by `TabController`, which already has the alert for a failed scrollback save.
+    var onSaveFailed: ((Error) -> Void)?
 
     /// Commands whose end the user asked to be told about, by id. See `CommandNotificationRule`.
     private var armedNotifications: Set<UInt32> = []
@@ -2252,17 +2322,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// The last transcript built for a session snapshot, and the buffer state it described.
     private var cachedTranscript: (version: UInt64, generation: UInt64, text: String)?
-
-    /// Re-indexes anything produced per absolute row onto the screen rows actually being drawn.
-    private static func place<T>(_ values: [T?], from top: Int, rows: Int,
-                                 screenRow: (Int) -> Int?) -> [T?] {
-        var out = [T?](repeating: nil, count: max(0, rows))
-        for (offset, value) in values.enumerated() {
-            guard let value, let row = screenRow(top + offset), out.indices.contains(row) else { continue }
-            out[row] = value
-        }
-        return out
-    }
 
     /// The `font-family = system` case: macOS's own monospaced face, SF Mono.
     ///

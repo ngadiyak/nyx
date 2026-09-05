@@ -161,6 +161,58 @@ public enum CommandBlockChrome {
         }
         return chevronOnly
     }
+
+    /// Which row the hover strip goes on and how much of it fits there.
+    ///
+    /// The same ladder `summaryPlacement` walks, for the same reason and against the same rows: the
+    /// strip is chrome over a row of the user's own text, and the text wins. `stripColumns` is the
+    /// view's measured width per control set, in columns (the pane rounds up, so a strip right
+    /// aligned to the last column can never begin left of `lastUsedColumn + 1`). nil when not even
+    /// the ⋯ and the chevron fit anywhere on the command -- then there is no strip at all, and the
+    /// Metal chevron and the gutter mark are what fold the block.
+    public static func overlayPlacement(commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
+                                        stripColumns: [OverlayControls: Int],
+                                        cols: Int) -> OverlayPlacement? {
+        for row in commandRows.reversed() {
+            let free = cols - row.lastUsedColumn - 1
+            guard free > 0 else { continue }
+            for controls in OverlayControls.allCases {
+                guard let width = stripColumns[controls], width > 0, width <= free else { continue }
+                return OverlayPlacement(row: row.absoluteRow, controls: controls)
+            }
+        }
+        return nil
+    }
+}
+
+/// How much of the hover strip there is room for on a row.
+///
+/// The strip is opaque and its content decides its width, so a strip sized only from itself paints
+/// over whatever the row already holds: in a 28-column split, hovering `git status --short` covered
+/// `--short` and left `~ % git status` on screen -- a different, real command. The controls give way
+/// in the order of what they are worth: the summary first (it is also in the gutter and the note),
+/// then Copy (the ⋯ menu still copies), never the ⋯ menu or the chevron, which between them reach
+/// every action the block has.
+public enum OverlayControls: Equatable, Hashable, CaseIterable {
+    /// Summary, Copy, ⋯, chevron.
+    case full
+    /// Copy, ⋯, chevron.
+    case compact
+    /// ⋯ and the chevron.
+    case minimal
+
+    /// Richest first, which is the order `overlayPlacement` tries them in.
+    public static let allCases: [OverlayControls] = [.full, .compact, .minimal]
+}
+
+/// Which row of a command the hover strip goes on, and which controls it carries there.
+public struct OverlayPlacement: Equatable {
+    public let row: Int
+    public let controls: OverlayControls
+
+    public init(row: Int, controls: OverlayControls) {
+        self.row = row; self.controls = controls
+    }
 }
 
 /// Where a block's summary ended up: which row of the command, which columns, and whether the whole

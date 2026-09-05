@@ -105,6 +105,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private var headersOnScreen: [Int: BlockHeader] = [:]
     /// The cell range of each summary on its row, for the chevron click target.
     private var summaryColumnsOnScreen: [Int: Range<Int>] = [:]
+    /// How much of the hover strip fits on the row it was placed on. Decided in `render()` by
+    /// `CommandBlockChrome.overlayPlacement`; applied after the lock, where AppKit lives.
+    private var hoverOverlayControls: OverlayControls = .full
     /// Ticks once a second while a running command's row is on screen, so its elapsed time moves.
     private var runningTimer: Timer?
     /// Whether a command was running at the last check, to notice the moment a new one starts.
@@ -883,27 +886,22 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let now = t.now()
             var headers: [Int: BlockHeader] = [:]
             var summaryColumns: [Int: Range<Int>] = [:]
-            // Which display slot each block's chrome ended up on, so the hover overlay can be moved
-            // onto the same row -- and taken away entirely when there was nowhere to put it.
-            var headerSlots: [UInt32: Int] = [:]
+            // Which display slot the hover strip goes on. Only the hovered block ever sets it, so
+            // "no room for a strip anywhere on this command" comes out as no overlay at all.
+            var stripSlots: [UInt32: Int] = [:]
             // Every slot whose duration note the summary now speaks for, including the prompt row
             // when the summary moved off it onto a wrapped continuation.
             var notesSpokenFor: Set<Int> = []
+            let overlayFont = NSFont.monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular)
+            let cellWidth = self.cellSizePoints.width
             summaries = blocks.compactMap { block -> (row: Int, text: String, color: RGB)? in
                 guard block.showsHeader, let promptSlot = screenRow(block.region.promptRow) else { return nil }
                 let header = block.header(now: now, folding: self.folding,
                                           notifyArmed: self.armedNotifications.contains(block.region.id),
                                           anyFolds: !self.folding.isEmpty)
                 let text = header.summaryWithChevron
-                // Nothing to say and nothing to fold: a quick success with no output. The overlay
-                // still attaches to the command row -- Copy and the ⋯ menu are what it is for.
-                guard !text.isEmpty else {
-                    headers[promptSlot] = header
-                    headerSlots[block.region.id] = promptSlot
-                    return nil
-                }
                 // Every row of the command line is a candidate, not just the prompt row: a pasted
-                // `curl` wraps, and the row that has room for the chevron is usually the last one.
+                // `curl` wraps, and the row that has room is usually the last one.
                 let lastCommandRow = block.region.outputStart.map { $0 - 1 } ?? block.region.promptRow
                 var candidates: [(absoluteRow: Int, lastUsedColumn: Int)] = []
                 var slotOf: [Int: Int] = [:]
@@ -918,19 +916,51 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                         candidates.append((absoluteRow: absolute, lastUsedColumn: last))
                     }
                 }
+                // The hovered block's strip is placed by the same ladder against the same rows, from
+                // the view's own measured widths. Measured here, under the lock, because the answer
+                // decides what the Metal pass draws on those rows and the frame is built here; the
+                // widths are cached per header and font, so in steady state this is three dictionary
+                // lookups and no layout pass.
+                if self.hoveredBlock?.id == block.region.id, self.hoveredBlock?.headerRow != nil,
+                   cellWidth > 0 {
+                    var stripColumns: [OverlayControls: Int] = [:]
+                    for controls in OverlayControls.allCases {
+                        let width = self.blockHeader.width(for: controls, header: header, font: overlayFont)
+                        stripColumns[controls] = Int((width / cellWidth).rounded(.up))
+                    }
+                    if let overlay = CommandBlockChrome.overlayPlacement(commandRows: candidates,
+                                                                        stripColumns: stripColumns,
+                                                                        cols: t.cols),
+                       let slot = slotOf[overlay.row] {
+                        headers[slot] = header
+                        stripSlots[block.region.id] = slot
+                        self.hoverOverlayControls = overlay.controls
+                        notesSpokenFor.insert(slot)
+                        notesSpokenFor.insert(promptSlot)
+                        // The strip is the only chrome on the block while it is up: it carries the
+                        // chevron in every control set, so a second one drawn in Metal would be the
+                        // same control twice.
+                        return nil
+                    }
+                    // Nothing fits: no strip, and the Metal chevron below stays, so hovering never
+                    // takes the fold control away.
+                }
+                // Nothing to say and nothing to fold: a quick success with no output. No summary,
+                // and no click target either.
+                guard !text.isEmpty else {
+                    headers[promptSlot] = header
+                    return nil
+                }
                 // The same rule the renderer uses to decide what it draws and where, so the click
-                // target, the overlay and the pixels can never disagree.
+                // target and the pixels can never disagree.
                 guard let placement = CommandBlockChrome.summaryPlacement(
                         commandRows: candidates, textCount: text.count,
                         chevronCount: header.chevron.count, cols: t.cols),
                       let slot = slotOf[placement.row] else { return nil }
                 headers[slot] = header
                 summaryColumns[slot] = placement.columns
-                headerSlots[block.region.id] = slot
                 notesSpokenFor.insert(slot)
                 notesSpokenFor.insert(promptSlot)
-                // The overlay draws its own copy of the summary while it covers this row.
-                if self.hoveredBlock?.id == block.region.id, self.hoveredBlock?.headerRow != nil { return nil }
                 // A running block used to differ from a finished one only by the digit in the
                 // elapsed time -- the same grey `12s ▾` a finished command's `12s ▾` shows. The
                 // theme's running colour is the one the spine already uses for the same state,
@@ -939,14 +969,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                         color: block.failed ? failedColor
                             : (block.isRunning ? runningColor : t.palette.noteForeground))
             }
-            // The overlay goes where the summary went, not on the prompt row. With a wrapped
-            // command line those are different rows, and a strip placed from the prompt row alone
-            // painted over the command's own text on exactly the rows Core had refused a summary.
-            // No placement at all means no overlay: the tint and the context menu still say the
-            // block is there, and the gutter mark still folds it.
+            // The overlay goes where it fits, which is not always the prompt row: a strip placed
+            // from the prompt row alone and sized only from its own content painted over the end of
+            // the command it describes, and in a narrow split hid a word of it. No placement means
+            // no overlay: the tint, the Metal chevron, the gutter mark and the context menu remain.
             if let hover = self.hoveredBlock, hover.headerRow != nil,
-               headerSlots[hover.id] != hover.headerRow {
-                self.hoveredBlock = hover.attachingHeader(to: headerSlots[hover.id])
+               stripSlots[hover.id] != hover.headerRow {
+                self.hoveredBlock = hover.attachingHeader(to: stripSlots[hover.id])
             }
             hoverChanged = self.hoveredBlock != previousHover
             self.headersOnScreen = headers
@@ -1741,11 +1770,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func blockHeaderChanged(palette suppliedPalette: Palette? = nil) {
         let palette = suppliedPalette ?? session.withTerminal { $0.palette }
         guard let row = hoveredBlock?.headerRow, let header = headersOnScreen[row] else {
-            blockHeader.update(header: nil, palette: palette,
+            blockHeader.update(header: nil, controls: hoverOverlayControls, palette: palette,
                                font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
             return
         }
-        blockHeader.update(header: header, palette: palette,
+        blockHeader.update(header: header, controls: hoverOverlayControls, palette: palette,
                            font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
         let size = blockHeader.intrinsicContentSize
         let origin = overlayOrigin(forHeaderRow: row)

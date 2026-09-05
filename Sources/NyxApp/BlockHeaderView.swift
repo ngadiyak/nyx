@@ -21,7 +21,21 @@ final class BlockHeaderView: NSView {
     private let stack = NSStackView()
     private let hairline = NSView()
     private var header: BlockHeader?
+    private var controls: OverlayControls = .full
     private var palette = Palette.xtermDefault()
+
+    /// What one control set measures, for one header and one font. Measuring is an Auto Layout
+    /// pass; the pane asks for all three sets on every frame it hovers a block, and in steady state
+    /// nothing about the answer has changed.
+    private struct WidthKey: Hashable {
+        let controls: OverlayControls
+        let summary: String
+        let chevron: String
+        let hasOutput: Bool
+        let font: String
+        let size: CGFloat
+    }
+    private var widths: [WidthKey: CGFloat] = [:]
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -71,14 +85,49 @@ final class BlockHeaderView: NSView {
         return super.hitTest(point)
     }
 
+    /// The strip's width in points for one control set, so `CommandBlockChrome.overlayPlacement`
+    /// can be told what it is choosing between.
+    ///
+    /// Measured rather than estimated: the summary is a themed label in the pane's own font and the
+    /// buttons are system-font `.inline` bezels, so a guess would be wrong by the amount that
+    /// decides whether the strip covers a glyph. The configuration is put back afterwards, because
+    /// `update` skips its work when nothing changed and would otherwise leave the strip showing
+    /// whatever the last measurement configured.
+    func width(for controls: OverlayControls, header: BlockHeader, font: NSFont) -> CGFloat {
+        let key = WidthKey(controls: controls, summary: header.summary, chevron: header.chevron,
+                           hasOutput: header.hasOutput, font: font.fontName, size: font.pointSize)
+        if let cached = widths[key] { return cached }
+        let previousHeader = self.header
+        let previousControls = self.controls
+        configure(header: header, controls: controls, font: font)
+        let width = stack.fittingSize.width
+        // `configure` touches only the subviews, never `self.header`, so a measurement before the
+        // first `update` cannot make that `update` think nothing changed and skip its styling.
+        if let previousHeader { configure(header: previousHeader, controls: previousControls, font: font) }
+        widths[key] = width
+        return width
+    }
+
+    /// Which of the strip's parts are shown. Not a rule of its own: `overlayPlacement` decides, and
+    /// this obeys, so what is measured and what is drawn cannot come apart.
+    private func configure(header: BlockHeader, controls: OverlayControls, font: NSFont) {
+        summary.stringValue = header.summary
+        summary.font = font
+        summary.isHidden = controls != .full || header.summary.isEmpty
+        copyButton.isHidden = controls == .minimal
+        chevronButton.isHidden = !header.hasOutput
+    }
+
     /// nil hides the strip. Compared before applied: this is called once per frame.
-    func update(header: BlockHeader?, palette: Palette, font: NSFont) {
+    func update(header: BlockHeader?, controls: OverlayControls, palette: Palette, font: NSFont) {
         guard let header else {
             if !isHidden { isHidden = true; self.header = nil }
             return
         }
-        let changed = header != self.header || palette != self.palette || summary.font != font
+        let changed = header != self.header || controls != self.controls
+            || palette != self.palette || summary.font != font
         self.header = header
+        self.controls = controls
         self.palette = palette
         guard changed else { isHidden = false; return }
         // The strip is painted in the pane's theme, but two things inside it are drawn by AppKit and
@@ -88,16 +137,13 @@ final class BlockHeaderView: NSView {
         // landing at 1.13:1 against this strip's actual dark fill -- invisible. Telling the view
         // which appearance it is really sitting in makes both agree with the theme.
         appearance = NSAppearance(named: palette.isLight ? .aqua : .darkAqua)
-        summary.stringValue = header.summary
-        summary.font = font
+        configure(header: header, controls: controls, font: font)
         // A running block used to read exactly like a finished one apart from the digit. The
         // theme's running colour is the amber the spine already uses for the same state.
         let summaryColor: RGB = header.failed ? palette.readable(1)
             : (header.isRunning ? palette.readable(3) : palette.noteForeground)
         summary.textColor = nsColor(summaryColor, alpha: 1)
-        summary.isHidden = header.summary.isEmpty
         copyButton.isEnabled = header.hasOutput
-        chevronButton.isHidden = !header.hasOutput
         chevronButton.toolTip = header.folded ? "Unfold this command\u{2019}s output" : "Fold this command\u{2019}s output (\u{2325}: hide all of it)"
         chevronButton.setAccessibilityLabel(header.title(for: .toggleFold))
         // `contentTintColor` recolours a *symbol image*, not a titled button's text -- the title

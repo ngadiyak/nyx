@@ -255,3 +255,48 @@ private func foldedSession() -> (terminal: Terminal, folding: OutputFolding) {
     #expect(hover.attachingHeader(to: nil).headerRow == nil)
     #expect(hover.attachingHeader(to: nil).rows == 2..<6)
 }
+
+// MARK: - Where the hover strip goes, and how much of it there is room for
+
+// The strip is opaque and 20-odd columns wide. Placed from the summary's row and sized only from
+// its own content, it painted over the end of the command it describes: in a 28-column split,
+// hovering `git status --short` showed `~ % git status`, a different, real command.
+
+private let stripColumns: [OverlayControls: Int] = [.full: 20, .compact: 8, .minimal: 4]
+
+@Test func aWideRowCarriesTheWholeStrip() {
+    let placement = CommandBlockChrome.overlayPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 9)], stripColumns: stripColumns, cols: 40)
+    #expect(placement == OverlayPlacement(row: 4, controls: .full))
+}
+
+/// Eight free columns: the summary is what goes, because Copy and the chevron are the controls.
+@Test func aCrowdedRowDropsTheSummaryBeforeTheButtons() {
+    let placement = CommandBlockChrome.overlayPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 31)], stripColumns: stripColumns, cols: 40)
+    #expect(placement == OverlayPlacement(row: 4, controls: .compact))
+}
+
+/// Four free columns: only the ⋯ menu and the chevron, which between them still reach every action.
+@Test func aVeryCrowdedRowKeepsOnlyTheMenuAndTheChevron() {
+    let placement = CommandBlockChrome.overlayPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 35)], stripColumns: stripColumns, cols: 40)
+    #expect(placement == OverlayPlacement(row: 4, controls: .minimal))
+}
+
+/// One free column fits no strip at all, and no strip is drawn -- the Metal chevron and the gutter
+/// mark are what fold the block there.
+@Test func aRowWithNoRoomGetsNoStrip() {
+    let placement = CommandBlockChrome.overlayPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 38)], stripColumns: stripColumns, cols: 40)
+    #expect(placement == nil)
+}
+
+/// A wrapped command whose last row is full: the strip goes up to the row that has room rather than
+/// over the text of the one that has not.
+@Test func aStripMovesToWhicheverRowOfTheCommandHasRoom() {
+    let placement = CommandBlockChrome.overlayPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 9), (absoluteRow: 5, lastUsedColumn: 38)],
+        stripColumns: stripColumns, cols: 40)
+    #expect(placement == OverlayPlacement(row: 4, controls: .full))
+}

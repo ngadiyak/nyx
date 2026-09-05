@@ -100,12 +100,30 @@ enum UISnapshot {
             for appearance in [NSAppearance.Name.darkAqua, .aqua] {
                 let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
                 view.appearance = NSAppearance(named: appearance)
-                view.update(header: header, palette: palette, font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+                view.update(header: header, controls: .full, palette: palette,
+                            font: .monospacedSystemFont(ofSize: 12, weight: .regular))
                 let size = view.intrinsicContentSize
                 view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
                 view.layoutSubtreeIfNeeded()
                 write(view, named: "block-header-\(name)-\(appearance == .aqua ? "light" : "dark")",
                       into: directory, background: palette.background)
+            }
+        }
+        // The two narrower strips. A crowded command line leaves no room for a 20-column strip, and
+        // one drawn anyway covers the end of the command it describes -- so the summary goes first
+        // and then Copy, and the ⋯ menu and the chevron, which between them reach every action,
+        // never do. These are what `CommandBlockChrome.overlayPlacement` picks between.
+        if let failed = blockHeaderStates().first(where: { $0.0 == "failed" })?.1 {
+            for (name, controls) in [("compact", OverlayControls.compact), ("minimal", .minimal)] {
+                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
+                view.appearance = NSAppearance(named: .darkAqua)
+                view.update(header: failed, controls: controls, palette: palette,
+                            font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+                let size = view.intrinsicContentSize
+                view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
+                view.layoutSubtreeIfNeeded()
+                write(view, named: "block-header-\(name)-dark", into: directory,
+                      background: palette.background)
             }
         }
         // One state against the light built-in theme, in the aqua appearance: everything above
@@ -115,7 +133,8 @@ enum UISnapshot {
            let finished = blockHeaderStates().first(where: { $0.0 == "finished" })?.1 {
             let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
             view.appearance = NSAppearance(named: .aqua)
-            view.update(header: finished, palette: lightPalette, font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+            view.update(header: finished, controls: .full, palette: lightPalette,
+                        font: .monospacedSystemFont(ofSize: 12, weight: .regular))
             let size = view.intrinsicContentSize
             view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
             view.layoutSubtreeIfNeeded()

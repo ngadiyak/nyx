@@ -37,6 +37,12 @@ public struct Row: Equatable {
     /// The exit status from `OSC 133 ; D ; <status>`, on the row carrying the D mark. nil when the
     /// shell reported the end of a command without a status, or on any other row.
     public var exitStatus: Int32?
+    /// Which command this prompt row starts, numbered from 1 in the order prompts appeared; 0 on
+    /// every other row. Absolute row indices shift on every eviction once the scrollback ring is
+    /// full, so a fold or a pending notification keyed by row would drift onto whatever text moved
+    /// into that index. The id is the thing that stays put. Monotonic on purpose: "is this command
+    /// still in the buffer" is then a comparison against the oldest id, not a search.
+    public var commandID: UInt32 = 0
 
     public init(cols: Int, fill: Cell = Cell()) {
         cells = Array(repeating: fill, count: cols)
@@ -67,6 +73,7 @@ public struct Row: Equatable {
         commandStatus = nil
         inputStartColumn = nil
         commandDuration = nil
+        commandID = 0
     }
 
     public var isBlank: Bool { cells.allSatisfy { $0.content == 0 && $0.bg == .default } }

@@ -80,13 +80,14 @@ extension Terminal {
         let cursorPhysical = scrollback.count + s.cursor.y
 
         // 2. Logical lines.
-        struct Line { var cells: [Cell]; var mark: UInt8; var exitStatus: Int32?; var commandStatus: Int32?; var commandDuration: Double? }
+        struct Line { var cells: [Cell]; var mark: UInt8; var exitStatus: Int32?; var commandStatus: Int32?; var commandDuration: Double?; var commandID: UInt32 }
         var lines: [Line] = []
         var current: [Cell] = []
         var currentMark: UInt8 = 0
         var currentStatus: Int32?
         var currentCommandStatus: Int32?
         var currentDuration: Double?
+        var currentCommandID: UInt32 = 0
         var cursorLine = 0
         var cursorOffset = 0
         for (i, row) in physical.enumerated() {
@@ -97,6 +98,7 @@ extension Terminal {
             if currentStatus == nil { currentStatus = row.exitStatus }
             if currentCommandStatus == nil { currentCommandStatus = row.commandStatus }
             if currentDuration == nil { currentDuration = row.commandDuration }
+            if currentCommandID == 0 { currentCommandID = row.commandID }
             if i == cursorPhysical {
                 cursorLine = lines.count
                 cursorOffset = current.count + s.cursor.x
@@ -109,12 +111,14 @@ extension Terminal {
                 current.removeSubrange(keep...)
                 lines.append(Line(cells: current, mark: currentMark, exitStatus: currentStatus,
                                   commandStatus: currentCommandStatus,
-                                  commandDuration: currentDuration))
+                                  commandDuration: currentDuration,
+                                  commandID: currentCommandID))
                 current = []
                 currentMark = 0
                 currentStatus = nil
                 currentCommandStatus = nil
                 currentDuration = nil
+                currentCommandID = 0
             }
         }
 
@@ -125,6 +129,7 @@ extension Terminal {
         for (li, line) in lines.enumerated() {
             var row = Row(cols: newCols)
             row.promptMark = line.mark
+            row.commandID = line.commandID
             row.exitStatus = line.exitStatus
             row.commandStatus = line.commandStatus
             row.commandDuration = line.commandDuration

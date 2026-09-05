@@ -40,14 +40,18 @@ public struct CommandRegion: Equatable {
     public let exitStatus: Int32?
     /// How long it ran, in seconds. nil while it is still running, or without shell integration.
     public let duration: Double?
+    /// The prompt row's `Row.commandID`. 0 for a region built before ids existed, so an old call
+    /// site that does not pass one still compiles.
+    public let id: UInt32
 
     public init(promptRow: Int, outputStart: Int?, endRow: Int, exitStatus: Int32?,
-                duration: Double? = nil) {
+                duration: Double? = nil, id: UInt32 = 0) {
         self.promptRow = promptRow
         self.outputStart = outputStart
         self.endRow = endRow
         self.exitStatus = exitStatus
         self.duration = duration
+        self.id = id
     }
 
     /// The rows holding just the output, empty when the command produced none.
@@ -158,7 +162,8 @@ public extension Terminal {
             }
         }
         return CommandRegion(promptRow: start, outputStart: outputStart, endRow: max(start, end),
-                             exitStatus: status, duration: absoluteRow(start)?.commandDuration)
+                             exitStatus: status, duration: absoluteRow(start)?.commandDuration,
+                             id: absoluteRow(start)?.commandID ?? 0)
     }
 
     /// The most recently finished command -- what "copy the last command's output" means.

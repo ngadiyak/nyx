@@ -25,8 +25,9 @@ same facts.
 | Themes | Seven built-ins held to a contrast floor; user theme files, watched, symlinks followed, name collisions and empty files reported; interface colours derived from the palette |
 | Quick actions | `send` / `run` / `toggle` buttons on the bar, editable from the UI, written back to the file; per-project `.nyx` behind a digest-bound approval |
 | Sessions | Windows, tabs, splits, cwd and scrollback restored; corrupt or newer snapshot → one window |
+| Remote sessions | A paired Mac's shell as a tab: relay-based, end-to-end encrypted (X25519 per attach, signed by an Ed25519 device identity, ChaCha20-Poly1305 with a per-direction counter), six-character pairing code with a four-word fingerprint both people compare, palette Remote section, snapshot-then-live with the host's OSC 133 marks intact, one writer with take-control, an audit log on the host. Verified with two instances against the deployed relay |
 | Accessibility | Every drawn control is an accessibility element with role and state |
-| Verification | 1057 swift-testing tests, offscreen Metal pixel tests, UI snapshot renderer, CI with warning gate, bench floor, launch check and snapshot artifact |
+| Verification | 1380 swift-testing tests, offscreen Metal pixel tests, UI snapshot renderer, an opt-in run against a real relay binary (`NYX_RELAY_BIN`), CI with warning gate, bench floor, launch check and snapshot artifact |
 
 ## Not there yet
 
@@ -59,6 +60,7 @@ by name; so should every feature brief.
 | Tab groups | yes | no | no | no | no |
 | User buttons / project buttons with approval | yes | no | profiles/triggers | Lua | workflows |
 | Search across all tabs | yes | no | no | no | no |
+| Attach to another Mac's shell over a relay, end-to-end encrypted | yes | no | no | no | cloud sessions, but not this shape: Warp's are its own hosted blocks, not an attach to a shell already running on your other Mac |
 | Theme from a file, hot-reloaded, derived interface colours | yes | yes (many built-in) | yes | yes | limited |
 | Ligatures | no | yes | yes | yes | yes |
 | Kitty keyboard protocol | no | yes | partial | yes | no |

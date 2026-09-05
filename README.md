@@ -44,7 +44,9 @@ there. Paste several lines and they open in an editor first — a shell's line e
 to change one value in the middle of a long request. `⌘⇧V` opens the editor for any paste.
 
 **Finding things.** `⌘F` searches the buffer, with a toggle that widens it to every pane in every
-tab. `⌘⇧P` is a palette over actions, themes, tabs and your own buttons.
+tab. `⌘⇧P` is a palette over actions, themes, tabs, your own buttons and paired Macs' sessions.
+With nothing typed it lists them in menu order rather than shortest-name-first, so the sections
+you opened it to see are where you left them; length still breaks ties once you start typing.
 
 **Buttons for what you run constantly.** `quick = Caffeine | toggle | caffeinate -d` puts a button
 on the tab bar that starts a background process and stops it when pressed again — no tab spent
@@ -84,6 +86,52 @@ from a scheme you like should come out as that scheme.
 **Sessions.** Quitting remembers every window, tab and split, each pane's working directory and its
 scrollback; the next launch puts them back. `restore-session = no` turns it off. A snapshot that
 cannot be read — corrupt, or from a newer Nyx — opens one ordinary window rather than nothing.
+
+## Remote sessions
+
+A shell running on one of your Macs, in a tab on another, end-to-end encrypted through a relay that
+cannot read a byte of it.
+
+**Setting it up, on both Macs.** `⌘,` → Remote → tick "Enable remote sessions", give this Mac a
+name, and paste the relay token. The token is your relay's one shared secret: `deploy.sh` in the
+`nyx-server` repository generates it into `token` on first deploy and prints it, and the same
+string goes into every device you own. The config file does the same thing — `remote = on`,
+`remote-relay-token = …`, and `remote-relay` for the relay's URL (default
+`wss://nyx.agentforge.cc/v1/ws`). Nothing is published until both the switch and the token are set;
+the page's status line says which is missing.
+
+**Pairing** happens once per pair of Macs. On one: "Pair with another device…", which shows a
+six-character code good for five minutes. On the other: "Enter a code…", and type it. Both then
+show the same four words. Read them aloud; if they match, press Confirm on each. That comparison is
+the whole security of the pairing — the words are derived from both devices' public keys, so a
+relay that substituted a key of its own produces two different sets, and it is the person who
+refuses, not the software. Paired Macs are listed on the Remote page and can be removed there,
+which tears down anything that device still has open.
+
+**Attaching.** `⌘⇧P` has a Remote section (the `remote_sessions` action opens the palette on it)
+listing every shell open on every paired Mac: its directory, branch, what is running, what was last
+run and how long ago. Choose one and it opens as a tab titled `⟵ machine · title` — the last
+`remote-snapshot-lines` lines of that session's scrollback first, then the live stream. Command
+blocks, folds, `⌘↑`, the status gutter and the sticky prompt all work in it: the snapshot carries
+the host shell's own OSC 133 marks, not flattened text, so a remote tab is a Nyx tab rather than a
+picture of one. The grid is the host's — the person sitting in front of it owns that window size —
+so a larger window leaves space around it and a smaller one clips the right and the bottom.
+
+**Writer and observer.** The first Mac to attach is the writer and types into the session; every
+one after is an observer, with a strip over the top row saying so and a "Take control" button that
+swaps the two. An observer's keystrokes reach nothing at all. The host's own user is never blocked
+and never asked for permission — their keyboard always works — and closing a remote tab detaches
+without touching their session. The host records every event in `~/.config/nyx/remote/audit.log`:
+who paired, attached, took control, detached, and when a session ended. The last twenty lines are
+on the Remote page.
+
+**What the relay sees:** which of your devices are online, which of them are paired, and the
+catalogue rows the palette shows — session titles, directories, branches, the running process and
+the last command line. **What it cannot see:** terminal contents, in either direction. Each attach
+agrees a fresh X25519 key pair signed by the device's long-lived Ed25519 identity, and the bytes
+are ChaCha20-Poly1305 with a per-direction counter, so the relay routes ciphertext it can neither
+read nor replay. The identity and the paired list are files under `~/.config/nyx/remote/`; the
+identity is `0600` and never leaves the Mac.
 
 ## Configuration
 

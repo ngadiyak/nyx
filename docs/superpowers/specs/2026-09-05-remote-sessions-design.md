@@ -278,3 +278,33 @@ new target and module rows; `docs/status.md`; nyx-server README for operations.
   published, so attachments cannot chain.
 - Snapshot size counts rows, not bytes; a 2,000-row transcript with attributes is under 1 MB in
   practice.
+
+## 12. Left open for v1.1
+
+Gathered from the task reports and the rung-6 run of two instances against the deployed relay.
+None of these stops the feature being used; each is a thing a person will notice second.
+
+- **A larger host grid is neither letterboxed nor scrolled.** A remote pane takes the host's
+  `cols`/`rows` (§5.4: the person in front of the host owns that window size) and `resize` is a
+  no-op, so a client on a smaller screen clips the right and bottom of the host's screen with no
+  indication that it is doing so, and one on a larger screen leaves the rest of the pane in the
+  background colour. A frame around the host's grid, or a scrollable viewport over it, is the fix;
+  either changes what `Pane` believes its own size means.
+- **The palette's Remote rows are a snapshot of the catalogue as it opened.** §5.3 says they
+  "update live while the palette is open"; they do not, because re-ranking the list under the
+  cursor would move the row the user is about to press. Needs a product decision — probably
+  refreshing only the *text* of rows that are already there, never their order — rather than a fix.
+- **The snapshot does not say whether the host is on the alt screen.** A host running vim or htop is
+  transcribed as its primary scrollback followed by the alt screen's rows, and all of it is fed
+  into the client's *primary* buffer: what is a full-screen program on the host becomes ordinary
+  scrollback on the client, and the `DECRST 1049` that follows when the program exits has nothing
+  to restore there. Neither the wire nor `Transcript` has a way to say "the alt screen is up".
+- **`.failed` does not clear the catalogue.** When the relay refuses this device for good
+  (`bad_token`, `bad_signature`, `replaced`), open attachments are ended with a reason, but the
+  catalogue keeps the rows it last heard about; the palette then lists sessions on Macs this device
+  can no longer reach. `.offline` does clear it, which is what `.failed` should do too.
+- **Disabled palette rows are still selectable.** A Mac that is offline, one with nothing open, and
+  the relay's status line are drawn greyed and beep when run (§5.3), but `CommandPalette` knows
+  nothing about `isEnabled`: `moveSelection` walks onto them, and `selection = 0` after a rank
+  lands on one when it is the first row — so a palette opened on "Relay unreachable" has that row
+  selected, and ⏎ beeps.

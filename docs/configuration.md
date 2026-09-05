@@ -55,6 +55,12 @@ so that template and this page are the two places a new key must be added.
 
 Booleans accept `true`/`false`, `yes`/`no`, `1`/`0`.
 
+Remote sessions need both `remote = on` and a non-empty `remote-relay-token`: without the token the
+relay closes the socket before the handshake, so connecting would be a guaranteed failure reported
+as an outage. Changing any of the five keys rebuilds the connection and ends every open remote tab
+with a reason. The device identity, the paired list and the audit log live in `remote/` beside the
+config file; see the README's "Remote sessions".
+
 ## Themes
 
 Built in: `nyx-dark` (default), `nyx-light`, `solarized-dark`, `gruvbox-dark`, `dracula`,
@@ -164,7 +170,8 @@ never put a command behind a button on its own.
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `NYX_CONFIG` | app, tests | Path of the config file; the themes directory and `session.json` sit beside it |
+| `NYX_CONFIG` | app, tests | Path of the config file; the themes directory, `session.json` and `remote/` sit beside it. Two config directories is how two Nyx instances on one Mac get two identities |
+| `NYX_RELAY_BIN` | tests | Path of the `nyx-relay` binary; the relay integration tests launch it locally and skip without it |
 | `NYX_SESSION` | app | Path of the session file, overriding the one beside the config |
 | `NYX_UI_SNAPSHOT=<dir>` | app | Render every piece of chrome to PNGs in `<dir>` and exit. See `docs/testing.md` |
 | `NYX_RENDER_STATS=1` | app | Print row-cache statistics per pane |

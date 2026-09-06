@@ -417,6 +417,7 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
 
     // The anchor `send` left behind while the command was typed, before any lens existed.
     let stale = t.viewportCursor(anchor: DisplayCursor(row: 0), anchorTop: 0,
+                                 anchorIsDisplayBottom: false,
                                  folding: OutputFolding(), lenses: choices, viewportRows: 12,
                                  buffers: get)
     let fromStale = t.displayRows(from: stale, count: 12, folding: OutputFolding(),
@@ -424,7 +425,8 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
     #expect(!fromStale.contains(.row(promptRow)), "the symptom: no prompt row, so no caret")
 
     // Forgotten, the rule takes the display's bottom instead.
-    let fresh = t.viewportCursor(anchor: nil, anchorTop: -1, folding: OutputFolding(),
+    let fresh = t.viewportCursor(anchor: nil, anchorTop: -1, anchorIsDisplayBottom: false,
+                                 folding: OutputFolding(),
                                  lenses: choices, viewportRows: 12, buffers: get)
     let fromFresh = t.displayRows(from: fresh, count: 12, folding: OutputFolding(),
                                   lenses: choices, buffers: get)
@@ -442,7 +444,8 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
 @Test func aScrolledBackViewportKeepsItsTop() {
     let t = session()
     _ = t.scrollToAbsoluteRow(4, margin: 0)
-    let cursor = t.viewportCursor(anchor: nil, anchorTop: -1, folding: OutputFolding(),
+    let cursor = t.viewportCursor(anchor: nil, anchorTop: -1, anchorIsDisplayBottom: false,
+                                  folding: OutputFolding(),
                                   lenses: lensed(2), viewportRows: 6,
                                   buffers: buffers(2, lines: 40))
     #expect(cursor == DisplayCursor(row: 3, line: 1))
@@ -456,7 +459,8 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
 @Test func aScrolledBackViewportOutsideALensIsStillItsRow() {
     let t = session()
     _ = t.scrollToAbsoluteRow(15, margin: 0)
-    #expect(t.viewportCursor(anchor: nil, anchorTop: -1, folding: OutputFolding(),
+    #expect(t.viewportCursor(anchor: nil, anchorTop: -1, anchorIsDisplayBottom: false,
+                             folding: OutputFolding(),
                              lenses: lensed(2), viewportRows: 6,
                              buffers: buffers(2, lines: 40)) == DisplayCursor(row: 15))
 }
@@ -468,8 +472,8 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
     var folding = OutputFolding()
     folding.fold(2, .all)
     _ = t.scrollToAbsoluteRow(7, margin: 0)
-    let cursor = t.viewportCursor(anchor: nil, anchorTop: -1, folding: folding,
-                                  lenses: LensChoices(), viewportRows: 6)
+    let cursor = t.viewportCursor(anchor: nil, anchorTop: -1, anchorIsDisplayBottom: false,
+                                  folding: folding, lenses: LensChoices(), viewportRows: 6)
     #expect(cursor == DisplayCursor(row: 3))
 }
 
@@ -478,6 +482,7 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
 @Test func aLiveAnchorIsUsedAndClamped() {
     let t = session()
     let cursor = t.viewportCursor(anchor: DisplayCursor(row: 3, line: 99), anchorTop: t.viewportTopRow,
+                                  anchorIsDisplayBottom: false,
                                   folding: OutputFolding(), lenses: lensed(2), viewportRows: 6,
                                   buffers: buffers(2, lines: 5))
     #expect(cursor == DisplayCursor(row: 3, line: 4))
@@ -562,7 +567,9 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
 /// is recomputed instead: it is a pure function of the buffer, so it is right every frame and
 /// cannot go stale.
 @Test func aDisplayBottomAnchorIsRecomputedRatherThanTrusted() {
-    let t = makeTerminal(cols: 40, rows: 6, scrollback: 30)
+    // Small enough that the ring is full within a few steps: the whole defect only exists once
+    // rows are being evicted, so a test that never evicts passes against the broken semantics too.
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 8)
     t.feed(mark("A") + "$ " + mark("B") + "curl x\r\n" + mark("C"))
     t.feed("{\"a\":1}\r\n" + mark("D", 0))
     t.feed(mark("A") + "$ ")
@@ -573,11 +580,15 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
     var anchor = t.displayBottomCursor(folding: OutputFolding(), lenses: choices, viewportRows: 6,
                                        buffers: get)
     var anchorTop = t.viewportTopRow
+    #expect(t.isDisplayBottom(anchor, folding: OutputFolding(), lenses: choices, viewportRows: 6,
+                              buffers: get))
 
-    // Now something else prints, evicting rows once the ring is full.
-    for step in 1...12 {
+    var evictingSteps = 0
+    for step in 1...20 {
+        let before = t.evictedRows
         t.feed(mark("A") + "$ " + mark("B") + "echo \(step)\r\n" + mark("C") + "line \(step)\r\n"
                + mark("D", 0))
+        if t.evictedRows > before { evictingSteps += 1 }
         let cursor = t.viewportCursor(anchor: anchor, anchorTop: anchorTop,
                                       anchorIsDisplayBottom: true, folding: OutputFolding(),
                                       lenses: choices, viewportRows: 6, buffers: get)
@@ -589,15 +600,63 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
         let rows = t.displayRows(from: cursor, count: 6, folding: OutputFolding(), lenses: choices,
                                  buffers: get)
         #expect(rows.last == .row(t.totalRows - 1), "step \(step): \(rows)")
-        // The anchor is carried forward exactly as the pane carries it: shifted by the eviction,
-        // never re-recorded, because nothing scrolled.
+        // The anchor is carried forward exactly as the pane carries it: shifted by whatever the
+        // ring threw away, never re-recorded, because nothing scrolled.
         if let moved = DisplayCursor.shifted(anchor: anchor, anchorTop: anchorTop,
-                                             evictedBefore: 0, evictedAfter: 0,
+                                             evictedBefore: before, evictedAfter: t.evictedRows,
                                              viewportTopRow: t.viewportTopRow) {
             anchor = moved.anchor
             anchorTop = moved.anchorTop
         }
     }
+    // The regime the defect lives in was actually entered. Without this the test passes with the
+    // flag ignored: with nothing evicted `anchorTop == top` is false anyway and the fallback saves
+    // it, which is exactly how the first version of this test proved nothing.
+    #expect(t.evictedRows > 0)
+    #expect(evictingSteps >= 10, "\(evictingSteps) of 20 steps evicted")
+}
+
+/// The same, reached the way a *reader* reaches it: wheel back, then wheel down to the live edge.
+///
+/// This is the commonest way into the bug and it has nothing to do with lenses. `advance` clamps at
+/// the bottom, so a reader scrolling down lands on exactly the cursor `displayBottomCursor` returns
+/// -- and tagging that anchor by *who moved to it* called it "a place the reader chose". Once the
+/// ring is at capacity `viewportTopRow` freezes, `anchorTop == top` is true for ever, the anchor
+/// branch wins, and the window walks backwards through the buffer while the build prints below it:
+/// no newest row, no caret, until the next keystroke.
+@Test func aReaderWhoWheelsBackToTheBottomIsAtTheBottom() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 8)
+    for i in 1...10 { t.feed("line \(i)\r\n") }
+    let empty = OutputFolding()
+
+    // Wheel back three display lines, then down again past the edge: `advance` clamps.
+    let up = t.advance(t.displayBottomCursor(folding: empty, viewportRows: 6), by: -3,
+                       folding: empty, viewportRows: 6)
+    #expect(!t.isDisplayBottom(up, folding: empty, viewportRows: 6))
+    var anchor = t.advance(up, by: 10, folding: empty, viewportRows: 6)
+    #expect(t.isDisplayBottom(anchor, folding: empty, viewportRows: 6))
+    var anchorTop = t.viewportTopRow
+    let atBottom = t.isDisplayBottom(anchor, folding: empty, viewportRows: 6)
+
+    var evictingSteps = 0
+    for step in 1...20 {
+        let before = t.evictedRows
+        t.feed("build line \(step)\r\n")
+        if t.evictedRows > before { evictingSteps += 1 }
+        let cursor = t.viewportCursor(anchor: anchor, anchorTop: anchorTop,
+                                      anchorIsDisplayBottom: atBottom, folding: empty,
+                                      viewportRows: 6)
+        let rows = t.displayRows(from: cursor, count: 6, folding: empty)
+        #expect(rows.last == .row(t.totalRows - 1), "step \(step): \(rows)")
+        if let moved = DisplayCursor.shifted(anchor: anchor, anchorTop: anchorTop,
+                                             evictedBefore: before, evictedAfter: t.evictedRows,
+                                             viewportTopRow: t.viewportTopRow) {
+            anchor = moved.anchor
+            anchorTop = moved.anchorTop
+        }
+    }
+    #expect(t.evictedRows > 0)
+    #expect(evictingSteps >= 10, "\(evictingSteps) of 20 steps evicted")
 }
 
 /// And a reader's own anchor is still honoured, on the same buffer, in the same state.

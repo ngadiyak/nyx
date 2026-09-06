@@ -282,6 +282,27 @@ public extension Terminal {
         return cursor
     }
 
+    /// Whether `cursor` *is* the display bottom -- what a scroll that reached the live edge landed
+    /// on, whoever asked for it.
+    ///
+    /// The distinction `viewportCursor` needs is about the **position**, not about which gesture
+    /// produced it. Tagging by gesture missed the commonest case there is: a reader who has scrolled
+    /// back and then wheels down again lands exactly here, through `advance`'s own clamp, and was
+    /// tagged "a place the reader chose". Once the ring filled, `viewportTopRow` froze, the
+    /// staleness check stopped saving it, and the window walked backwards through the buffer while
+    /// output arrived below it -- with no lens and no fold anywhere, on any pane where somebody
+    /// scrolls up and back down during a long build.
+    ///
+    /// Asked once per scroll rather than once per frame: a wheel click can afford a walk of a
+    /// screenful, and the answer is stored with the anchor.
+    func isDisplayBottom(_ cursor: DisplayCursor, folding: OutputFolding,
+                         lenses: LensChoices = LensChoices(), viewportRows: Int? = nil,
+                         buffers: (UInt32) -> LensBuffer? = { _ in nil },
+                         memo: CommandRegionMemo? = nil) -> Bool {
+        cursor == displayBottomCursor(folding: folding, lenses: lenses, viewportRows: viewportRows,
+                                      buffers: buffers, memo: memo)
+    }
+
     /// Which display cursor a viewport should be drawn from, given the position its owner last
     /// chose and the row that position was chosen against.
     ///
@@ -302,8 +323,10 @@ public extension Terminal {
     /// Lenses only for the middle case: a fold can only make the display *shorter* than the rows it
     /// stands in for, so the terminal's own bottom is still the display's.
     ///
-    /// `anchorIsDisplayBottom` says the anchor is not a place a reader chose: it is what "go to the
-    /// live screen" recorded, which the pane does on every keystroke. Such an anchor is **ignored**
+    /// `anchorIsDisplayBottom` says the anchor *is* the display bottom -- `isDisplayBottom`, asked
+    /// when the anchor was recorded. That is what "go to the live screen" records on every
+    /// keystroke, and it is also where a reader who wheels down to the live edge lands. Such an
+    /// anchor is **ignored**
     /// and the bottom recomputed, because the bottom moves whenever anything prints and the
     /// staleness check cannot see that: once the ring is at capacity `viewportTopRow` stops moving
     /// -- `scrollback.count` is pinned at the cap and `viewportOffset` is zero -- so `anchorTop ==
@@ -313,8 +336,11 @@ public extension Terminal {
     ///
     /// Recomputing is cheap and cannot go stale -- `displayBottomCursor` is a pure function of the
     /// buffer, and one walk of a screenful with `CommandRegionMemo` in hand.
+    /// `anchorIsDisplayBottom` has no default on purpose: every call site has to say which of the
+    /// two kinds of anchor it is holding, because getting it wrong is silent and only shows up once
+    /// the ring is full.
     func viewportCursor(anchor: DisplayCursor?, anchorTop: Int,
-                        anchorIsDisplayBottom: Bool = false, folding: OutputFolding,
+                        anchorIsDisplayBottom: Bool, folding: OutputFolding,
                         lenses: LensChoices = LensChoices(), viewportRows: Int? = nil,
                         buffers: (UInt32) -> LensBuffer? = { _ in nil },
                         memo: CommandRegionMemo? = nil) -> DisplayCursor {

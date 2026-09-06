@@ -2853,8 +2853,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             _ = t.scrollToAbsoluteRow(to.row, margin: 0)
             self.viewportAnchor = to
             self.viewportAnchorTop = t.viewportTopRow
-            // A place the reader chose: kept, and followed across evictions.
-            self.viewportAnchorIsDisplayBottom = false
+            // By what the position *is*, not by who moved to it. Wheeling down to the live edge
+            // lands on the display bottom through `advance`'s own clamp, and an anchor tagged
+            // "a place the reader chose" there froze the pane the moment the ring filled -- with
+            // no lens and no fold anywhere. One walk per wheel click, which a wheel click can
+            // afford; the frame path only reads the flag.
+            self.viewportAnchorIsDisplayBottom = t.isDisplayBottom(to, folding: self.folding,
+                                                                   lenses: self.lenses,
+                                                                   viewportRows: t.rows,
+                                                                   buffers: { self.lensBuffers[$0] })
             return true
         }
     }

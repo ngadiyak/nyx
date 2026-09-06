@@ -403,7 +403,12 @@ public struct BlockHeader: Equatable {
     public let lensTooLarge: Bool
     /// Whether an earlier block ran the same request. Only `Diff with Previous Run` needs it, and
     /// only the pane's cache can answer it -- see `RequestSummaryCache.previousRun`.
-    public let hasPreviousRun: Bool
+    ///
+    /// `var` because it is answered *late*: finding the previous run parses every cached command
+    /// line, which is right once on a menu press and wrong sixty times a second, so the header the
+    /// frame builds leaves it false and whoever opens a menu fills it in. Left as a `let`, the row
+    /// was greyed on every hover strip whatever the pane knew, and the feature read as unbuilt.
+    public var hasPreviousRun: Bool
 
     /// `httpSummary`, when there is one, *replaces* `summary` rather than sitting beside it: a
     /// request's status and latency are what the user ran the command to find out, and two sources

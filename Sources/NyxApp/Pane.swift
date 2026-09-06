@@ -144,9 +144,25 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Serial, so two rebuilds of the same block cannot land out of order, and `.userInitiated`
     /// because someone is waiting for it -- they just chose the lens.
     private let lensQueue = DispatchQueue(label: "nyx.lens", qos: .userInitiated)
-    /// Rebuilds already in flight, so a burst of folds does not queue five renderings of the same
-    /// block. The value is the input's generation; a newer one supersedes.
+    /// Blocks whose lines are being built right now, and blocks whose input changed while that was
+    /// happening.
+    ///
+    /// A rendering is a JSON parse and a pretty-print of the whole body; a burst of fold clicks --
+    /// which is how anyone reads a large response -- would otherwise queue one per click and make
+    /// the reader wait for four answers they no longer want. One in flight, one remembered, and the
+    /// remembered one runs from the state as it is when the first lands.
     private var lensRebuilds: Set<UInt32> = []
+    private var lensRebuildsAgain: Set<UInt32> = []
+    /// The display position this pane last scrolled to, and the terminal viewport top it was chosen
+    /// against.
+    ///
+    /// Two numbers because the two can differ: a lens on the *live screen* can be longer than the
+    /// rows it replaced, and reading its tail means a display top below the last row the terminal
+    /// can be scrolled to (`viewportOffset` bottoms out at 0). The terminal clamps, this does not,
+    /// and the recorded top is how a viewport the terminal moved on its own -- new output, a resize,
+    /// a jump to a search match -- is told apart from one this pane chose. See `viewportCursor(in:)`.
+    private var viewportAnchor: DisplayCursor?
+    private var viewportAnchorTop = -1
     /// A drag over a lensed block's own lines. Not `Selection`: those are absolute rows and cells
     /// of the grid, and these lines exist nowhere in the buffer.
     private var lensSelection: LensSelection?
@@ -869,6 +885,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
            case .request(let earlier)? = requestCache.entry(for: previousID) {
             previous = earlier
         }
+        // One at a time per block. The follow-up is not queued with this input, it is re-derived
+        // when this one lands, so five folds in a second cost two renderings and the second one is
+        // of the folds as they finally stand.
+        guard !lensRebuilds.contains(id) else {
+            lensRebuildsAgain.insert(id)
+            return
+        }
         let input = LensInput(exchange: exchange, previous: previous, folded: lenses.folded(in: id))
         let version = session.withTerminal { $0.contentVersion }
         lensRebuilds.insert(id)
@@ -877,6 +900,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.lensRebuilds.remove(id)
+                // Before the guard below, and in a `defer`, because the commonest reason a rebuild
+                // was asked for mid-flight is that the *lens itself* changed -- and that is exactly
+                // the case the guard returns on. Draining afterwards would leave the new lens with
+                // nothing ever built for it.
+                let again = self.lensRebuildsAgain.remove(id) != nil
+                defer { if again { self.rebuildLens(for: id) } }
                 // The lens may have changed while this was in flight -- a fold, another lens, back
                 // to raw. The newest choice wins; this rendering is of a question nobody is asking.
                 guard self.lenses.lens(of: id) == lens else { return }
@@ -951,17 +980,46 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Over the block's command row when that row is on screen, and at the top of the pane when it
     /// is not: the field belongs to a response, and a response scrolled off the top is still the
     /// one being filtered.
+    ///
+    /// The slot comes from the display the last frame built, not from `promptRow - viewportTop`: a
+    /// lens or a fold on screen means those are different numbers, and the field would sit over
+    /// somebody else's command.
     private func lensFieldFrame(for id: UInt32, height: CGFloat) -> NSRect {
         let width: CGFloat = 360
         let cell = cellSizePoints
         var row = 0
         if let promptRow = session.withTerminal({ $0.promptRow(ofCommand: id) }) {
-            let top = session.withTerminal { $0.viewportTopRow }
-            row = max(0, min(rows - 1, promptRow - top))
+            let top = session.withTerminal { max(0, $0.viewportTopRow) }
+            row = max(0, min(rows - 1, displaySlot(ofAbsoluteRow: promptRow, viewportTop: top) ?? 0))
         }
         let y = bounds.height - padding - CGFloat(row + 1) * cell.height - height
         return NSRect(x: max(padding, bounds.width - padding - width),
                       y: max(padding, y), width: width, height: height)
+    }
+
+    /// Which visible slot an absolute row is drawn in, through whatever folds and lenses the last
+    /// frame applied. nil when that row is not on screen at all.
+    private func displaySlot(ofAbsoluteRow absolute: Int, viewportTop top: Int) -> Int? {
+        guard !foldRowsOnScreen.isEmpty else {
+            let index = absolute - top
+            return (0..<rows).contains(index) ? index : nil
+        }
+        return foldRowsOnScreen.firstIndex {
+            if case .row(absolute) = $0 { return true } else { return false }
+        }
+    }
+
+    /// Keeps the field over the command row it belongs to as the view scrolls under it.
+    ///
+    /// It used to be placed once, when it opened, and never again: three wheel clicks left a filter
+    /// box floating over an unrelated command, still filtering the block it could no longer point
+    /// at. **On scroll it follows, and when its block leaves the top of the screen it pins to the
+    /// first row** rather than being dismissed -- a response scrolled past is still the one being
+    /// filtered, and taking the box away mid-word would lose what was typed.
+    private func repositionLensField() {
+        guard let view = lensField, let id = lensFieldBlock else { return }
+        let frame = lensFieldFrame(for: id, height: view.intrinsicContentSize.height)
+        if view.frame != frame { view.frame = frame }
     }
 
     /// The response body as a JSON document, for the field's own error message.
@@ -1174,6 +1232,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         var hint: (slot: Int, text: String)?
         // Set under the lock, acted on after it: the overlay and the cursor rects are AppKit calls.
         var hoverChanged = false
+        /// The block the filter field belongs to has been cleared away or evicted; see below.
+        var dismissField = false
         // What the buffer looked like when the frame was built. The dirty flags are cleared against
         // it once the frame is on screen, so a write that lands in between keeps its flags.
         var builtAtContentVersion: UInt64 = 0
@@ -1205,6 +1265,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 self.lenses = LensChoices()
                 self.lensBuffers.removeAll()
                 self.lensSelection = nil
+                // And the field, which is a filter on a response that no longer exists. Flagged
+                // rather than done: this runs under the session lock and dismissing touches AppKit.
+                if self.lensFieldBlock != nil { dismissField = true }
             }
             // Folds whose prompt has gone -- evicted from the ring, or overwritten -- are dropped
             // here rather than accumulating over a session, and with them any notification armed
@@ -1233,6 +1296,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     self.lenses.prune(olderThan: oldest)
                     self.lensBuffers = self.lensBuffers.filter { $0.key >= oldest }
                 }
+                if let field = self.lensFieldBlock, field < oldest { dismissField = true }
             }
             // Screen coordinates: `cursor.y` counts from the top of the live screen. The renderer
             // takes it as an index into the lines it is handed, which are display slots, so with a
@@ -1265,8 +1329,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // by visible row has to be placed through the display rows rather than by
                 // subtracting the viewport top -- otherwise a highlight lands on whichever row the
                 // fold pulled up into that slot.
-                let display = t.displayRows(from: top, count: t.rows, folding: self.folding,
-                                            lenses: self.lenses,
+                // From the display cursor, not from `top`: a lens is taller or shorter than the rows
+                // it replaces, so which of its lines is at the top of the screen is the pane's own
+                // state and cannot be recovered from an absolute row. See `DisplayCursor`.
+                let display = t.displayRows(from: self.viewportCursor(in: t), count: t.rows,
+                                            folding: self.folding, lenses: self.lenses,
                                             buffers: { self.lensBuffers[$0] })
                 self.foldRowsOnScreen = display
                 // The caret goes through the same map as the text under it. Without this it was
@@ -1614,6 +1681,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // `update` compares before it applies, so redrawing here every frame is cheap. `frame.palette`
         // was already read under the lock this frame; passing it on saves a second lock take.
         blockHeaderChanged(palette: frame.palette)
+        if dismissField { dismissLensField() } else { repositionLensField() }
         workbenchHint.update(text: hint?.text, palette: frame.palette)
         if let hint {
             let size = workbenchHint.intrinsicContentSize
@@ -1945,6 +2013,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     // MARK: - Mouse
 
     override func mouseDown(with event: NSEvent) {
+        // Any click that reaches the pane is a click *outside* the filter field -- AppKit routes the
+        // ones inside it to the field itself -- and this handler takes first responder away from it
+        // on the next line, which would otherwise leave a live-looking box that nothing types into.
+        if lensField != nil { dismissLensField() }
         window?.makeFirstResponder(self)
         onFocusRequested?()
         // ⌘-click opens whatever is under the pointer, before the click can become a selection or
@@ -1964,6 +2036,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // transcript clears any lens selection: two visible selections is one too many, and only
         // one of them can be what ⌘C means.
         if let hit = lensLine(at: lastMousePoint!) {
+            // The terminal's own highlight goes now, not when the lens drag ends: two selections
+            // drawn at once, with ⌘C silently preferring the lens one, is the pane telling the user
+            // two different things about what they are about to copy.
+            _ = selectionController.clear()
             lensSelection = LensSelection(commandID: hit.id,
                                           anchor: .init(line: hit.line, character: hit.character),
                                           head: .init(line: hit.line, character: hit.character))
@@ -2146,11 +2222,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let lines = point.y > bounds.maxY ? 1 : (point.y < bounds.minY ? -1 : 0)
         guard lines != 0 else { return }
         let head = topLeft(point)
+        // Through the display, like the wheel: a drag off the top of a lensed block would otherwise
+        // scroll by rows the lens has replaced and extend the selection over rows nobody can see.
+        guard scrollDisplay(by: -lines) else { return }
         let changed = session.withTerminal { t -> Bool in
-            let before = t.viewportOffset
-            t.scrollViewport(by: lines)
-            guard t.viewportOffset != before else { return false }
-            return selectionController.drag(to: position(head, in: t), in: t, separators: config.wordSeparators)
+            selectionController.drag(to: position(head, in: t), in: t, separators: config.wordSeparators)
         }
         if changed { markDirty() }
     }
@@ -2191,15 +2267,44 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             for _ in 0..<abs(lines) { all += bytes }
             session.send(all)
         } else {
-            session.withTerminal { t in
-                t.scrollViewport(by: lines)
-                // A fold hides every row it covers, so a viewport top inside one does not move on
-                // screen however far it is scrolled -- two thousand hidden rows would be two
-                // thousand wheel clicks. Step over the fold in the direction of travel instead.
-                t.snapViewportOutOfFold(movingUp: lines > 0, folding: folding)
-            }
+            scrollDisplay(by: -lines)
             markDirty()
         }
+    }
+
+    /// Moves the viewport `lines` **display lines** towards newer content (negative: older), which
+    /// is what a wheel click means. Returns whether anything moved.
+    ///
+    /// Not `scrollViewport(by:)`: a fold is one display line covering a thousand rows and a lens is
+    /// as many lines as it has, so a scroll measured in rows either sticks or skips. `advance` walks
+    /// the display sequence itself; the row it lands on goes to the terminal, and the line within
+    /// that row's lens stays here, because a lens is the pane's own state and the terminal knows
+    /// nothing about it.
+    @discardableResult
+    private func scrollDisplay(by lines: Int) -> Bool {
+        session.withTerminal { t in
+            let from = self.viewportCursor(in: t)
+            let to = t.advance(from, by: lines, folding: self.folding, lenses: self.lenses,
+                               buffers: { self.lensBuffers[$0] })
+            guard to != from else { return false }
+            _ = t.scrollToAbsoluteRow(to.row, margin: 0)
+            self.viewportAnchor = to
+            self.viewportAnchorTop = t.viewportTopRow
+            return true
+        }
+    }
+
+    /// Where the top of the viewport is in the display sequence: the terminal's own row plus how far
+    /// into that row's lens we are. The line is dropped whenever the row moved without us -- new
+    /// output at the bottom, a resize, a scroll to a search match, a jump to a prompt -- because it
+    /// describes a position this pane chose and that row is no longer it.
+    private func viewportCursor(in t: Terminal) -> DisplayCursor {
+        let top = max(0, t.viewportTopRow)
+        guard let anchor = viewportAnchor, viewportAnchorTop == top else {
+            return DisplayCursor(row: top)
+        }
+        return t.canonicalised(anchor, folding: folding, lenses: lenses,
+                               buffers: { self.lensBuffers[$0] })
     }
 
     // MARK: - Menu actions
@@ -2973,7 +3078,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Which absolute row a visible row is showing, through whatever folds are in force. nil for a
     /// row that is showing a fold placeholder rather than a row of the buffer.
     private func absoluteRow(forVisibleRow row: Int, in t: Terminal) -> Int? {
-        guard !folding.isEmpty else { return t.viewportTopRow + row }
+        // Keyed off the display the last frame actually built, not off `folding`: a pane with a lens
+        // open and nothing folded also draws through the display map, and subtracting the viewport
+        // top there answers with a row the lens replaced.
+        guard !foldRowsOnScreen.isEmpty else { return t.viewportTopRow + row }
         guard foldRowsOnScreen.indices.contains(row) else { return nil }
         guard case .row(let absolute) = foldRowsOnScreen[row] else { return nil }
         return absolute
@@ -3406,7 +3514,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     /// Whether ⌘C has anything to copy, so the menu item can grey out.
+    ///
+    /// A lens selection counts. Both Copy validators -- the Edit menu's and `TabController`'s
+    /// `canPerform` -- gate on this, and a disabled menu item means AppKit never dispatches the ⌘C
+    /// key equivalent either: a drag over a pretty-printed response could be made, was drawn, and
+    /// then could not be copied by any route at all.
     var hasSelection: Bool {
+        if let lensSelection, let buffer = lensBuffers[lensSelection.commandID],
+           !lensSelection.text(from: buffer).isEmpty {
+            return true
+        }
         guard let selection else { return false }
         return !session.withTerminal { $0.text(in: selection) }.isEmpty
     }

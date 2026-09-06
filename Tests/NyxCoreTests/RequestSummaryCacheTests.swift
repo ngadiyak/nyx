@@ -119,3 +119,25 @@ private func exchange(status: Int) -> HTTPExchange? {
         #expect(!old)
     }
 }
+
+/// The bool behind `BlockHeader.isHTTP` and the ⋯ menu's Request group. False for a block nobody
+/// has read -- one still running, or one whose prompt row has never been on screen -- because that
+/// is the honest answer: nothing has looked at it, and a menu is not the place to start parsing.
+@Test func isRequestAnswersFromWhatWasFound() {
+    var cache = RequestSummaryCache()
+    #expect(!cache.isRequest(id: 1))
+    cache.remember(.notARequest, for: 1)
+    #expect(!cache.isRequest(id: 1))
+    cache.remember(.request(nil), for: 2)
+    #expect(cache.isRequest(id: 2))
+    cache.remember(.request(HTTPExchange(redirects: [],
+                                         final: HTTPExchange.Head(version: "1.1", status: 200,
+                                                                  reason: "OK", headers: []),
+                                         bodyLines: [], bodyKind: .json, timing: nil)), for: 3)
+    #expect(cache.isRequest(id: 3))
+    // And it forgets with the entry, so a block whose rows have been evicted is not still claimed
+    // to be a request by a menu built after the fact.
+    cache.prune(olderThan: 3)
+    #expect(!cache.isRequest(id: 2))
+    #expect(cache.isRequest(id: 3))
+}

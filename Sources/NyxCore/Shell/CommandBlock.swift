@@ -174,21 +174,27 @@ public enum CommandBlockChrome {
     /// aligned to the last column can never begin left of `lastUsedColumn + 1`). nil when not even
     /// the ⋯ and the chevron fit anywhere on the command.
     ///
-    /// When no row of the command has room for even the ⋯ and the chevron, the minimal strip goes
-    /// over the tail of the **last** row anyway. That is a deliberate exception to "the text wins",
-    /// and it is here because the command it covers is the one that needs the strip most: a request
-    /// run from the workbench is a single line hundreds of characters long, it fills every row it
-    /// touches, and its ⋯ menu is the only place "Open in Workbench", the four exports and "Save as
-    /// Button" are. Four cells of it are hidden while the pointer is on the block and come back the
-    /// moment it leaves; a menu that could not be opened at all would not come back. The *static*
-    /// summary keeps the old rule and is skipped, so nothing is painted over text unhovered.
+    /// `fallbackToTail` decides what happens when no row has room for even the ⋯ and the chevron.
     ///
-    /// A pane narrower than the smallest strip is the one case that still gets nothing: the strip
-    /// would begin off the left edge. The chevron on the command row, the status mark in the
-    /// gutter, ⌘⇧↑ and the right-click menu all still fold the block.
+    /// The hover strip passes true: the minimal strip then goes over the tail of the **last** row
+    /// anyway, because the command it covers is the one that needs it most -- a request run from
+    /// the workbench is a single line hundreds of characters long, it fills every row it touches,
+    /// and its ⋯ menu is the only place "Open in Workbench", the four exports and "Save as Button"
+    /// are. Four cells are hidden *while the pointer is on the block* and come back the moment it
+    /// leaves; a menu that could not be opened at all would not come back.
+    ///
+    /// Everything else passes false, and the workbench pill is why the parameter exists. The pill
+    /// appears on its own, with no pointer anywhere near it, and covering four cells of a command
+    /// somebody is still typing -- to advertise a feature they did not ask for -- is not a trade
+    /// anyone agreed to. No room, no pill.
+    ///
+    /// A pane narrower than the smallest strip gets nothing either way: the strip would begin off
+    /// the left edge. The chevron on the command row, the status mark in the gutter, ⌘⇧↑ and the
+    /// right-click menu all still fold the block.
     public static func overlayPlacement(commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
                                         stripColumns: [OverlayControls: Int],
-                                        cols: Int) -> OverlayPlacement? {
+                                        cols: Int,
+                                        fallbackToTail: Bool) -> OverlayPlacement? {
         for row in commandRows.reversed() {
             let free = cols - row.lastUsedColumn - 1
             guard free > 0 else { continue }
@@ -197,7 +203,7 @@ public enum CommandBlockChrome {
                 return OverlayPlacement(row: row.absoluteRow, controls: controls)
             }
         }
-        guard let last = commandRows.last, let minimal = stripColumns[.minimal],
+        guard fallbackToTail, let last = commandRows.last, let minimal = stripColumns[.minimal],
               minimal > 0, minimal <= cols else { return nil }
         return OverlayPlacement(row: last.absoluteRow, controls: .minimal)
     }
@@ -318,15 +324,25 @@ public enum SummaryTone: Equatable {
     /// A non-zero exit, or a 4xx/5xx.
     case failure
 
-    /// `readable` rather than `colors[n]`: gruvbox's red is 2.7:1 against its own background and
-    /// unreadable as a line of text, and this is text.
+    /// `Palette.readable(n)` rather than `colors[n]`: gruvbox's red is 2.7:1 against its own
+    /// background and unreadable as a line of text, and this is text.
+    ///
+    /// And then `RGB.readable` on top of it, because picking is not enough. `Palette.readable`
+    /// chooses between a colour and its bright variant; where *neither* reaches 4.5:1 it hands
+    /// back the better of two unreadable colours, and nine of the built-in theme/tone pairs are in
+    /// exactly that position -- Solarized Dark's red pair is 3.25:1 and 3.26:1, so a failed
+    /// request's `404 · 12 ms` was drawn at 3.25:1, *worse* than the body text around it, on the
+    /// one line that exists to be noticed. Lifting towards the theme's own foreground keeps the
+    /// hue as far as the floor allows and only moves a colour that could not be read.
     public func color(in palette: Palette) -> RGB {
+        let picked: RGB
         switch self {
-        case .plain: return palette.noteForeground
-        case .running, .redirect: return palette.readable(3)
-        case .success: return palette.readable(2)
-        case .failure: return palette.readable(1)
+        case .plain: picked = palette.noteForeground
+        case .running, .redirect: picked = palette.readable(3)
+        case .success: picked = palette.readable(2)
+        case .failure: picked = palette.readable(1)
         }
+        return RGB.readable(picked, on: palette.background, towards: palette.foreground)
     }
 }
 

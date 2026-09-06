@@ -266,7 +266,8 @@ private let stripColumns: [OverlayControls: Int] = [.full: 20, .noCopy: 8, .mini
 
 @Test func aWideRowCarriesTheWholeStrip() {
     let placement = CommandBlockChrome.overlayPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 9)], stripColumns: stripColumns, cols: 40)
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 9)], stripColumns: stripColumns, cols: 40,
+        fallbackToTail: true)
     #expect(placement == OverlayPlacement(row: 4, controls: .full))
 }
 
@@ -274,14 +275,16 @@ private let stripColumns: [OverlayControls: Int] = [.full: 20, .noCopy: 8, .mini
 /// the only place the exit status is left, the strip having suppressed the Metal one and the note.
 @Test func aCrowdedRowDropsCopyBeforeTheSummary() {
     let placement = CommandBlockChrome.overlayPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 31)], stripColumns: stripColumns, cols: 40)
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 31)], stripColumns: stripColumns, cols: 40,
+        fallbackToTail: true)
     #expect(placement == OverlayPlacement(row: 4, controls: .noCopy))
 }
 
 /// Four free columns: only the ⋯ menu and the chevron, which between them still reach every action.
 @Test func aVeryCrowdedRowKeepsOnlyTheMenuAndTheChevron() {
     let placement = CommandBlockChrome.overlayPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 35)], stripColumns: stripColumns, cols: 40)
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 35)], stripColumns: stripColumns, cols: 40,
+        fallbackToTail: true)
     #expect(placement == OverlayPlacement(row: 4, controls: .minimal))
 }
 
@@ -291,7 +294,8 @@ private let stripColumns: [OverlayControls: Int] = [.full: 20, .noCopy: 8, .mini
 /// whole Request group. The static summary still gives way rather than painting over the text.
 @Test func aRowWithNoRoomGetsTheMinimalStripOverItsTail() {
     let placement = CommandBlockChrome.overlayPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 38)], stripColumns: stripColumns, cols: 40)
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 38)], stripColumns: stripColumns, cols: 40,
+        fallbackToTail: true)
     #expect(placement == OverlayPlacement(row: 4, controls: .minimal))
 }
 
@@ -301,7 +305,7 @@ private let stripColumns: [OverlayControls: Int] = [.full: 20, .noCopy: 8, .mini
     let placement = CommandBlockChrome.overlayPlacement(
         commandRows: [(absoluteRow: 4, lastUsedColumn: 39), (absoluteRow: 5, lastUsedColumn: 39),
                       (absoluteRow: 6, lastUsedColumn: 37)],
-        stripColumns: stripColumns, cols: 40)
+        stripColumns: stripColumns, cols: 40, fallbackToTail: true)
     #expect(placement == OverlayPlacement(row: 6, controls: .minimal))
 }
 
@@ -310,14 +314,15 @@ private let stripColumns: [OverlayControls: Int] = [.full: 20, .noCopy: 8, .mini
 /// all still reach the block.
 @Test func aPaneNarrowerThanTheStripGetsNoStrip() {
     let placement = CommandBlockChrome.overlayPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 2)], stripColumns: stripColumns, cols: 3)
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 2)], stripColumns: stripColumns, cols: 3,
+        fallbackToTail: true)
     #expect(placement == nil)
 }
 
 /// And a command with no rows on screen has nowhere to put one.
 @Test func noCommandRowsMeansNoStrip() {
     #expect(CommandBlockChrome.overlayPlacement(commandRows: [], stripColumns: stripColumns,
-                                                cols: 40) == nil)
+                                                cols: 40, fallbackToTail: true) == nil)
 }
 
 /// A wrapped command whose last row is full: the strip goes up to the row that has room rather than
@@ -325,7 +330,7 @@ private let stripColumns: [OverlayControls: Int] = [.full: 20, .noCopy: 8, .mini
 @Test func aStripMovesToWhicheverRowOfTheCommandHasRoom() {
     let placement = CommandBlockChrome.overlayPlacement(
         commandRows: [(absoluteRow: 4, lastUsedColumn: 9), (absoluteRow: 5, lastUsedColumn: 38)],
-        stripColumns: stripColumns, cols: 40)
+        stripColumns: stripColumns, cols: 40, fallbackToTail: true)
     #expect(placement == OverlayPlacement(row: 4, controls: .full))
 }
 
@@ -348,4 +353,71 @@ private let stripColumns: [OverlayControls: Int] = [.full: 20, .noCopy: 8, .mini
     let loud = block.header(now: 5, folding: OutputFolding(), notifyArmed: false, anyFolds: false,
                             hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow))
     #expect(loud.chevron == "\u{25BE}")
+}
+
+/// The pill asks with `fallbackToTail: false`, and this is the difference that makes: chrome that
+/// arrives on its own, with no pointer anywhere near it, must never paint over a command somebody
+/// is still typing. No room, no pill.
+@Test func withoutTheTailFallbackAFullRowGetsNothing() {
+    let full = [(absoluteRow: 4, lastUsedColumn: 38)]
+    #expect(CommandBlockChrome.overlayPlacement(commandRows: full, stripColumns: [.minimal: 14],
+                                                cols: 40, fallbackToTail: false) == nil)
+    // The same rows, asked the way the hover strip asks: the strip goes over the tail.
+    #expect(CommandBlockChrome.overlayPlacement(commandRows: full, stripColumns: [.minimal: 14],
+                                                cols: 40, fallbackToTail: true)
+        == OverlayPlacement(row: 4, controls: .minimal))
+}
+
+/// And a row with room answers the same either way -- the flag only ever decides the last resort.
+@Test func theTailFallbackChangesNothingWhereThereIsRoom() {
+    let rows = [(absoluteRow: 4, lastUsedColumn: 9)]
+    let withFallback = CommandBlockChrome.overlayPlacement(commandRows: rows,
+                                                           stripColumns: [.minimal: 14], cols: 40,
+                                                           fallbackToTail: true)
+    let without = CommandBlockChrome.overlayPlacement(commandRows: rows,
+                                                      stripColumns: [.minimal: 14], cols: 40,
+                                                      fallbackToTail: false)
+    #expect(withFallback == OverlayPlacement(row: 4, controls: .minimal))
+    #expect(without == withFallback)
+}
+
+// MARK: - Marks through a reflow
+
+/// Resizing the window must not turn every command in the buffer back into a line of prompt.
+///
+/// `Row.inputStartColumn` -- the shell's `B` mark, which says where the prompt ends -- was the one
+/// mark the reflow did not carry, so after any resize `commandLine(of:)` fell back to
+/// `commandText(of:)` and every block's command line came back as `nik@host ~ % curl …`. Run
+/// Again then sent the prompt to the shell, Copy Command copied it, and "is this a request" said
+/// no for every `curl` in the scrollback, which took the whole Request group with it. A terminal
+/// is resized constantly; this held until the *next* command was run.
+@Test func aResizeKeepsTheColumnTheCommandStartsAt() {
+    let t = makeTerminal(cols: 40, rows: 10, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "curl https://example.com/x\r\n" + mark("C")
+           + "body\r\n" + mark("D", 0))
+    let before = t.command(containingAbsoluteRow: 0).map { t.commandLine(of: $0) }
+    #expect(before == "curl https://example.com/x")
+
+    // Narrower, so the command wraps: the `B` lands on the first row of the wrap.
+    t.resize(cols: 30, rows: 10)
+    let narrow = t.command(containingAbsoluteRow: 0).map { t.commandLine(of: $0) }
+    #expect(narrow == "curl https://example.com/x")
+
+    // And wider again, where the wrap is undone.
+    t.resize(cols: 60, rows: 10)
+    let wide = t.command(containingAbsoluteRow: 0).map { t.commandLine(of: $0) }
+    #expect(wide == "curl https://example.com/x")
+}
+
+/// The same for a command long enough that the prompt and the command end up on different rows
+/// after the resize: the `B` has to travel to the row the text actually starts on.
+@Test func aResizeMovesTheColumnWithTheTextItMarks() {
+    let t = makeTerminal(cols: 20, rows: 10, scrollback: 100)
+    t.feed(mark("A") + "user@host very-long-prompt ~ % " + mark("B")
+           + "curl https://example.com/a/b/c\r\n" + mark("C") + "ok\r\n" + mark("D", 0))
+    #expect(t.command(containingAbsoluteRow: 0).map { t.commandLine(of: $0) }
+        == "curl https://example.com/a/b/c")
+    t.resize(cols: 100, rows: 10)
+    #expect(t.command(containingAbsoluteRow: 0).map { t.commandLine(of: $0) }
+        == "curl https://example.com/a/b/c")
 }

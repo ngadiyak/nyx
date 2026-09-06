@@ -149,19 +149,30 @@ public extension Terminal {
     /// Falls back to `commandText` when the shell emitted no `B`: without it there is no way to say
     /// where the prompt ends, and the wider answer beats an empty one.
     func commandLine(of region: CommandRegion) -> String {
-        guard let inputStart = absoluteRow(region.promptRow)?.inputStartColumn else {
-            return commandText(of: region)
-        }
         let last = min(region.outputStart.map { $0 - 1 } ?? region.promptRow, totalRows - 1)
         guard last >= region.promptRow else { return "" }
+        // The `B` is not always on the prompt row. A prompt long enough to wrap -- a narrow split,
+        // or the two-line prompts starship and powerlevel10k draw -- puts it on a continuation row,
+        // and looking only at the first row found nothing and handed back the whole prompt as the
+        // command. Searched forwards, so the first `B` in the command wins.
+        var inputStart: Int?
+        var start = region.promptRow
+        for row in region.promptRow...last {
+            if let column = absoluteRow(row)?.inputStartColumn {
+                inputStart = column
+                start = row
+                break
+            }
+        }
+        guard let inputStart else { return commandText(of: region) }
 
         var text = ""
-        for row in region.promptRow...last {
+        for row in start...last {
             let line = rowText(absoluteRow: row)
             let characters = Array(line.text)
             // The `B` column is a terminal column; `columnOf` maps it to a character index, which is
             // not the same number once a wide glyph sits in the prompt.
-            let from = row == region.promptRow
+            let from = row == start
                 ? (line.columnOf.firstIndex { $0 >= inputStart } ?? characters.count)
                 : 0
             guard from < characters.count else { continue }

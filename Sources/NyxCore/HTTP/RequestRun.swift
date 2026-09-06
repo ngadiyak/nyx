@@ -70,9 +70,13 @@ public enum RequestRun {
     /// words -- `shellLine` merges every set `Flags` bit into one string already, so a command
     /// that already has `-L` gets `-sSL` back, not a second `-s` group beside it.
     public static func commandLine(for command: CurlCommand) -> String {
-        var run = command
-        let add = additions(for: command)
+        applying(additions(for: command), to: command).shellLine(masking: .none, layout: .oneLine)
+    }
 
+    /// `command` with `add` applied. Split out of `commandLine(for:)` because `stripAdditions`
+    /// has to ask what a run *would* look like without building a string and parsing it back.
+    private static func applying(_ add: Additions, to command: CurlCommand) -> CurlCommand {
+        var run = command
         if add.silent {
             run.flags.insert(.silent)
             run.flags.insert(.showError)
@@ -83,8 +87,37 @@ public enum RequestRun {
         if add.writeOut {
             run.output.writeOut = ShellWord(writeOutArgument)
         }
+        return run
+    }
 
-        return run.shellLine(masking: .none, layout: .oneLine)
+    /// The inverse of `commandLine(for:)`: the command as the user wrote it, with Nyx's own
+    /// additions taken back off. Anything that was not put there by `commandLine(for:)` comes back
+    /// untouched.
+    ///
+    /// This exists because a block that the workbench ran holds `curl -sSi -w '<sentinel>' …` in
+    /// the grid, and *that* is what "Copy as HTTPie", "Save as Button", "Save to Project" and
+    /// "Open in Workbench" would otherwise hand back: a button whose command carries Nyx's
+    /// measurement flags, an export with a `-w` no other tool has, a form showing `-i` the user
+    /// never asked for. The flags are Nyx's private business; nothing outside a run should ever
+    /// see them.
+    ///
+    /// The rule is an equality rather than a list of flags to delete, and that is the whole
+    /// safety of it: strip the candidates, ask what `commandLine(for:)` *would* add to what is
+    /// left, and keep the strip only if that reproduces exactly what came in. So `curl -sS URL`
+    /// (whose addition set would also carry `-i` and the sentinel) is somebody's own command and
+    /// survives, while `curl -sSi -w '<sentinel>' URL` is one of ours and does not.
+    ///
+    /// The one place it strips something a user may have typed is a command whose additions happen
+    /// to be exactly what they wrote -- `curl -sS URL | jq`, where the pipeline rules `-i` and the
+    /// sentinel out. Nothing can tell those apart, and losing a `-sS` from a copied line is a far
+    /// smaller wrong than leaking the sentinel into a saved button.
+    public static func stripAdditions(from command: CurlCommand) -> CurlCommand {
+        var stripped = command
+        // Only *our* `-w`. Someone else's write-out format is data the command needs.
+        if stripped.output.writeOut?.text == writeOutArgument { stripped.output.writeOut = nil }
+        stripped.flags.remove([.include, .silent, .showError])
+        guard applying(additions(for: stripped), to: stripped) == command else { return command }
+        return stripped
     }
 
     /// A pipe hands curl's stdout to another program that still receives it whole -- `-i` or the

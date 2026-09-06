@@ -524,6 +524,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         displayLink = nil
         runningTimer?.invalidate()
         runningTimer = nil
+        // The pill's expiry timer retains this pane until it fires; a tab closed inside its eight
+        // seconds would otherwise keep a whole terminal alive waiting to hide a label.
+        hintTimer?.invalidate()
+        hintTimer = nil
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
         // Before the session goes: everyone attached is told the session ended, and the palette row
@@ -541,6 +545,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         displayLink = nil
         runningTimer?.invalidate()
         runningTimer = nil
+        // The pill's expiry timer retains this pane until it fires; a tab closed inside its eight
+        // seconds would otherwise keep a whole terminal alive waiting to hide a label.
+        hintTimer?.invalidate()
+        hintTimer = nil
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
         guard let window else { return }
@@ -818,9 +826,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // is a default, and a config that has moved it must not be told to press it.
         let text = WorkbenchHint.text(chord: bindings.binding(for: .editAndRunCommand)?.displayName ?? "")
         let columns = Int((workbenchHint.width(for: text) / cellWidth).rounded(.up))
+        // `fallbackToTail: false`: the pill shows itself, with the pointer nowhere near it, so a
+        // command line with no room simply gets no pill. The hover strip is the only chrome that
+        // may cover text, and only because a pointer is deliberately on it.
         guard let placement = CommandBlockChrome.overlayPlacement(commandRows: candidates,
                                                                   stripColumns: [.minimal: columns],
-                                                                  cols: t.cols),
+                                                                  cols: t.cols,
+                                                                  fallbackToTail: false),
               let slot = slotOf[placement.row] else { return nil }
         return (slot: slot, text: text)
     }
@@ -1176,7 +1188,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     }
                     if let overlay = CommandBlockChrome.overlayPlacement(commandRows: candidates,
                                                                         stripColumns: stripColumns,
-                                                                        cols: t.cols),
+                                                                        cols: t.cols,
+                                                                        fallbackToTail: true),
                        let slot = slotOf[overlay.row] {
                         headers[slot] = header
                         stripSlots[block.region.id] = slot
@@ -1302,17 +1315,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // `update` compares before it applies, so redrawing here every frame is cheap. `frame.palette`
         // was already read under the lock this frame; passing it on saves a second lock take.
         blockHeaderChanged(palette: frame.palette)
-        let hintWasHidden = workbenchHint.isHidden
         workbenchHint.update(text: hint?.text, palette: frame.palette)
         if let hint {
             let size = workbenchHint.intrinsicContentSize
             let origin = overlayOrigin(forHeaderRow: hint.slot)
+            // Right-aligned on the row the placement chose. Nothing to invalidate when it appears
+            // or goes: the pill is a subview, so AppKit resolves both the click and the cursor
+            // through it while it is up (`hitTest` returns nil when it is hidden) -- the pane's own
+            // cursor rects, which are the pointing hands over links, are unaffected either way.
             workbenchHint.frame = NSRect(x: origin.x - size.width, y: origin.y,
                                          width: size.width, height: cellSizePoints.height)
         }
-        // The pill claims the pointer only while it is up, so appearing or disappearing changes
-        // which view owns the cell it covers -- and with it, whether the I-beam or the arrow shows.
-        if hintWasHidden != workbenchHint.isHidden { window?.invalidateCursorRects(for: self) }
         // Only when the block under the pointer actually changed: rebuilding cursor rects asks
         // AppKit to re-run `resetCursorRects` for the view, which is not free per frame.
         if hoverChanged { updateHoverCursor() }
@@ -2862,6 +2875,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// command the menu was built from -- a `clear` between opening the menu and choosing from it.
     private func requestCommand(of region: CommandRegion) -> CurlCommand? {
         CurlCommand.parse(session.withTerminal { $0.commandLine(of: region) })
+            .map(RequestRun.stripAdditions(from:))
     }
 
     /// The button sheet, prefilled from a request, on this pane's window.
@@ -2873,7 +2887,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func presentQuickActionEditor(for command: CurlCommand,
                                           then keep: @escaping (QuickAction) -> Void) -> Bool {
         guard let window else { return false }
-        let editor = QuickActionEditor(editing: RequestEditorModel(command: command).quickActionDraft)
+        let editor = QuickActionEditor(editing: RequestEditorModel(command: command).quickActionDraft,
+                                       heading: "New Button", verb: "Save")
         let size = editor.view.frame.size == .zero ? NSSize(width: 420, height: 260) : editor.view.frame.size
         let sheet = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                              styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
@@ -3227,6 +3242,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             return terminal.commandLine(of: region)
         }
         guard !command.isEmpty else { return false }
+        // A block the workbench ran holds `curl -sSi -w '<sentinel>' …` in the grid. Editing it
+        // again must show what was asked for, not what Nyx measured it with -- otherwise `-i` and
+        // a nine-variable write-out format appear in the form the second time round, and stay in
+        // the line if the user runs it from there.
+        if let request = CurlCommand.parse(command) {
+            let stripped = RequestRun.stripAdditions(from: request)
+            return editAndRun(command: stripped.shellLine(masking: .none, layout: .oneLine))
+        }
         return editAndRun(command: command)
     }
 
@@ -3272,9 +3295,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// still shown as a command line, because a user who asked to edit a request must never be
     /// answered with nothing at all.
     ///
-    /// Nothing calls this yet -- the snapshots build the sheet directly, without a pane. Task 10
-    /// is what makes it reachable: the paste hint, `⌘⇧V` on a curl, the block menu's "Open in
-    /// Workbench", the palette's request rows and the New Request action all land here.
+    /// Reached from the paste pill, `⌘E`, `⌘⇧V`, the block menu's "Open in Workbench", the
+    /// palette's request rows and the New Request action.
     @discardableResult
     func presentRequestEditor(command: CurlCommand, then run: @escaping (String) -> Void) -> Bool {
         let text = command.shellLine(masking: .none, layout: .multiline)

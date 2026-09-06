@@ -53,7 +53,7 @@ so that template and this page are the two places a new key must be added.
 | `remote-relay-token` | — | The relay's shared secret, checked before pairing is even possible. Not comment-stripped, so `#` is allowed |
 | `remote-snapshot-lines` | `2000` | Lines of scrollback a host sends a client as the initial snapshot before switching to the live stream. Clamped to 100–20000 |
 | `http-lens` | `pretty` | `pretty` (reformat a JSON response body), `raw` (exactly as received). `toggle_http_lens` flips it for one response |
-| `http-hint` | `true` | Offer the request-workbench hint when a curl command is typed |
+| `http-hint` | `true` | Show the `⌘E Workbench` pill at the end of a `curl` that has just been **pasted**, for eight seconds or until the next key press. Typing one by hand does not raise it |
 | `http-watch-interval` | `5` | Seconds between polls while a `--watch` request is running. Clamped to 1–3600 |
 | `http-history` | `50` | How many requests the palette's Requests section remembers. `0` turns the feature off. Clamped to 0–500 |
 

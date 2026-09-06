@@ -9,12 +9,15 @@ public enum RequestRun {
     /// exact prefix to find the sentinel among whatever the response body printed.
     public static let sentinelPrefix = "--nyx-http-- "
 
-    /// What goes inside the `-w` argument's quotes. These are curl's own `\n` escapes and
-    /// `%{json}` variable, written as the literal two-character sequences -- not Swift's actual
-    /// newline -- because curl is the one that expands them; if this were a real newline here,
-    /// `ShellWords.quote` would switch to `$'...'` quoting and the argument would no longer be the
-    /// plain `'...'` curl users expect to see.
-    public static let writeOutArgument = "\\n--nyx-http-- %{json}\\n"
+    /// What goes inside the `-w` argument's quotes: nine named variables, not `%{json}` -- curl
+    /// 8.2 put the certificate chain into `%{json}`, several kilobytes per request, right there in
+    /// the transcript. `content_type` is last because it is the one value that may itself contain
+    /// spaces; the other eight are split on single spaces (see the sentinel parser). These are
+    /// curl's own `\n` escapes, written as the literal two-character sequences -- not Swift's
+    /// actual newline -- because curl is the one that expands them; if this were a real newline
+    /// here, `ShellWords.quote` would switch to `$'...'` quoting and the argument would no longer
+    /// be the plain `'...'` curl users expect to see.
+    public static let writeOutArgument = "\\n--nyx-http-- %{http_code} %{time_total} %{time_namelookup} %{time_connect} %{time_appconnect} %{time_starttransfer} %{size_download} %{num_redirects} %{content_type}\\n"
 
     /// Which of Nyx's three additions apply. A field being `false` means the command already
     /// does that job itself (an explicit `-w`, a `-v` that would make `-sS` redundant) or that

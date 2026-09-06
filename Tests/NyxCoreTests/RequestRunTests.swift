@@ -9,7 +9,7 @@ import Testing
     let line = RequestRun.commandLine(for: command)
     // The `-w` argument must be curl's own escapes, quoted exactly as a person would type them --
     // not Swift's actual newline -- or curl never expands them into the sentinel line.
-    #expect(line.contains("-w '\\n--nyx-http-- %{json}\\n'"), "\(line)")
+    #expect(line.contains("-w '\\n--nyx-http-- %{http_code} %{time_total} %{time_namelookup} %{time_connect} %{time_appconnect} %{time_starttransfer} %{size_download} %{num_redirects} %{content_type}\\n'"), "\(line)")
     #expect(line.hasSuffix("https://example.com"), "URL should still be last: \(line)")
 
     let reparsed = try #require(CurlCommand.parse(line))
@@ -17,6 +17,12 @@ import Testing
     #expect(reparsed.flags.contains(.showError))
     #expect(reparsed.flags.contains(.include))
     #expect(reparsed.output.writeOut?.text == RequestRun.writeOutArgument)
+
+    // The word `-w` hands the shell is the exact value curl will expand -- not something a quoting
+    // bug turned into two words, or curl's argv[1] would already be wrong before it ever runs.
+    let words = try #require(ShellWords.split(line))
+    let flagIndex = try #require(words.firstIndex { $0.text == "-w" })
+    #expect(words[flagIndex + 1].text == RequestRun.writeOutArgument)
 }
 
 @Test func verboseSkipsSilent() throws {

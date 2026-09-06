@@ -814,10 +814,20 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         guard !pendingDefaultLens.isEmpty else { return }
         let ids = pendingDefaultLens
         pendingDefaultLens.removeAll()
+        var armed = false
         for id in ids where lenses.lens(of: id) == nil {
             lenses.set(.pretty, for: id)
             rebuildLens(for: id)
+            armed = true
         }
+        // The display just became a different height under a viewport nobody moved. In a window the
+        // session has never scrolled, `viewportTopRow` is 0 from the first keystroke to the last, so
+        // the anchor `send` stored while the command was being typed -- row 0, back when there were
+        // no lenses at all -- is still "valid" and would be used: the frame draws from the prompt
+        // down, the response fills the window, and the shell's own prompt is a hundred display lines
+        // below the last row. No caret, no echo, until the reader scrolls by hand. Forgetting it
+        // here is what sends the next frame to `displayBottomCursor`.
+        if armed { forgetViewportAnchor() }
     }
 
     /// Whether anything in this pane could be shown through a lens: a finished request that has
@@ -1980,6 +1990,27 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         (Double(p.x), Double(bounds.height - p.y))
     }
 
+    /// The cell under a point, or nil when there is no cell there.
+    ///
+    /// The character-level twin of `position(_:in:)`: a fold placeholder and a lens line are not
+    /// rows of the buffer, so a question about the *character* under the pointer has no answer on
+    /// one. Answering it with the block's own row instead -- which `position` does, correctly, for
+    /// questions about the block -- read the command line's characters from a hundred lines away:
+    /// a pointer at column 15 of any lens line landed inside the URL of `$ curl -s https://…`, drew
+    /// a stray underline on the command row, and made ⌘-click on the body of a response open the
+    /// request.
+    private func characterPosition(_ p: (x: Double, y: Double), in t: Terminal) -> AbsolutePosition? {
+        let cell = cellSizePoints
+        let hit = PointerMap.position(x: p.x, y: p.y, cellWidth: Double(cell.width), cellHeight: Double(cell.height),
+                                      padding: Double(padding), viewportTop: t.viewportTopRow,
+                                      cols: t.cols, totalRows: t.totalRows)
+        guard !foldRowsOnScreen.isEmpty else { return hit }
+        guard let absolute = absoluteRow(forVisibleRow: hit.row - t.viewportTopRow, in: t) else {
+            return nil
+        }
+        return AbsolutePosition(row: absolute, col: hit.col)
+    }
+
     private func position(_ p: (x: Double, y: Double), in t: Terminal) -> AbsolutePosition {
         let cell = cellSizePoints
         let hit = PointerMap.position(x: p.x, y: p.y, cellWidth: Double(cell.width), cellHeight: Double(cell.height),
@@ -2340,28 +2371,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
     }
 
-    /// Where the top of the viewport is in the display sequence: the terminal's own row plus how far
-    /// into that row's lens we are. The line is dropped whenever the row moved without us -- new
-    /// output at the bottom, a resize, a scroll to a search match, a jump to a prompt -- because it
-    /// describes a position this pane chose and that row is no longer it.
-    ///
-    /// With no anchor and the terminal already at its own bottom, the answer is the *display*
-    /// bottom rather than the terminal's top row. That is the case every time output arrives while
-    /// the reader is pinned to the live screen, and it is the case the frame after a finished `curl`
-    /// opens its lens: without it a response taller than the window pushed the shell prompt off the
-    /// end and the pane stopped showing what was being typed.
+    /// Where the top of the viewport is in the display sequence. The rule is
+    /// `Terminal.viewportCursor(anchor:anchorTop:…)` in NyxCore, where it can be tested; this hands
+    /// it the two numbers only the pane knows.
     private func viewportCursor(in t: Terminal) -> DisplayCursor {
-        let top = max(0, t.viewportTopRow)
-        guard let anchor = viewportAnchor, viewportAnchorTop == top else {
-            // Lenses only. A fold can only make the display *shorter* than the rows it stands in
-            // for, so the terminal's own bottom is still the display's; a lens is the one thing that
-            // can put lines below the last row of the buffer.
-            guard t.viewportOffset == 0, !lenses.isEmpty else { return DisplayCursor(row: top) }
-            return t.displayBottomCursor(folding: folding, lenses: lenses, viewportRows: t.rows,
-                                         buffers: { self.lensBuffers[$0] })
-        }
-        return t.canonicalised(anchor, folding: folding, lenses: lenses,
-                               buffers: { self.lensBuffers[$0] })
+        t.viewportCursor(anchor: viewportAnchor, anchorTop: viewportAnchorTop, folding: folding,
+                         lenses: lenses, viewportRows: t.rows,
+                         buffers: { self.lensBuffers[$0] })
     }
 
     // MARK: - Menu actions
@@ -2540,8 +2556,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // A mouse-move that stays inside one cell cannot change what is under the pointer, and
         // hit-testing is not cheap: it tokenizes the row through five regular expressions and may
         // `stat` a path. Mouse-move events arrive far faster than cells change.
+        // The *character* under the pointer, so a slot with no character in it -- a lens line, a
+        // fold placeholder -- is its own key rather than the block's prompt row shared by all of
+        // them, which deduped every lens line in a column down to one hit test.
         let cell: (row: Int, col: Int) = session.withTerminal { t in
-            let p = self.position(topLeft(point), in: t)
+            guard let p = self.characterPosition(topLeft(point), in: t) else {
+                return (Int.min, self.visibleRow(at: point) ?? -1)
+            }
             return (p.row, p.col)
         }
         guard lastHoverCell == nil || lastHoverCell! != cell else { return }
@@ -2581,9 +2602,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let cell = cellSizePoints
         var rects: [NSRect] = []
         if let link = hoveredLink {
-            let top = session.withTerminal { $0.viewportTopRow }
-            let row = link.row - top
-            if row >= 0 {
+            // Through the display, not `row - viewportTop`: with a fold or a lens on screen those
+            // are different numbers, and the hand would have been placed on whichever slot the
+            // replacement pulled into that index.
+            let top = session.withTerminal { max(0, $0.viewportTopRow) }
+            if let row = displaySlot(ofAbsoluteRow: link.row, viewportTop: top) {
                 let width = CGFloat(link.columns.count) * cell.width
                 rects.append(NSRect(x: padding + CGFloat(link.columns.lowerBound) * cell.width,
                                     y: bounds.height - padding - CGFloat(row + 1) * cell.height,
@@ -2638,7 +2661,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// answer is looked at.
     private func token(under point: NSPoint) -> (row: Int, token: TextToken)? {
         session.withTerminal { t in
-            let position = self.position(topLeft(point), in: t)
+            guard let position = self.characterPosition(topLeft(point), in: t) else { return nil }
             guard let token = t.token(atAbsoluteRow: position.row, column: position.col,
                                       separators: config.wordSeparators) else { return nil }
             return (position.row, token)
@@ -3145,9 +3168,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// The absolute row a *pointer* on this slot should be taken to mean.
     ///
     /// The same as `absoluteRow(forVisibleRow:)` for a slot that is a row, and the block's own
-    /// prompt row for one that is not: a fold placeholder and a lens line stand for a block, and
-    /// everything asking this -- the right-click menu, a drag, a link hit test -- wants the block
-    /// they stand for rather than the row that would have been there without them.
+    /// prompt row for one that is not: a fold placeholder and a lens line stand for a block, and the
+    /// questions asked through this one -- which command was right-clicked, which block a drag
+    /// started in -- want the block they stand for rather than the row that would have been there
+    /// without them.
+    ///
+    /// **Not for anything that reads characters.** A hit test wants the text under the pointer, and
+    /// on a replaced slot there is none; `characterPosition(_:in:)` is that question and answers nil.
     private func pointerRow(forVisibleRow row: Int, in t: Terminal) -> Int? {
         guard !foldRowsOnScreen.isEmpty else { return t.viewportTopRow + row }
         guard foldRowsOnScreen.indices.contains(row) else { return nil }

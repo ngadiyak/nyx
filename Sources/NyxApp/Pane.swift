@@ -189,6 +189,20 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// anchor left over from a lens read earlier would be re-homed by `canonicalised` onto whatever
     /// block now occupies that row. `⌘K`, a new `curl`, and the fresh response opened sixty lines
     /// down. Anything that makes an absolute row mean something else calls this.
+    /// The display is about to be a different height -- a lens opened or closed, a watch run
+    /// lensed, a fold moved -- and the anchor may or may not still mean anything.
+    ///
+    /// `DisplayCursor.survivesDisplayChange` is the rule, in Core where it is tested: only the
+    /// live-bottom anchor goes. Forgetting every anchor here threw a reader who had opened an
+    /// *earlier* block out of it whenever a *later* one changed -- which is once every five seconds
+    /// while a watch runs.
+    private func forgetViewportAnchorIfItIsOnlyTheLiveBottom() {
+        guard !DisplayCursor.survivesDisplayChange(anchor: viewportAnchor,
+                                                   isDisplayBottom: viewportAnchorIsDisplayBottom)
+        else { return }
+        forgetViewportAnchor()
+    }
+
     private func forgetViewportAnchor() {
         viewportAnchor = nil
         viewportAnchorTop = -1
@@ -886,7 +900,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // down, the response fills the window, and the shell's own prompt is a hundred display lines
         // below the last row. No caret, no echo, until the reader scrolls by hand. Forgetting it
         // here is what sends the next frame to `displayBottomCursor`.
-        if armed { forgetViewportAnchor() }
+        if armed { forgetViewportAnchorIfItIsOnlyTheLiveBottom() }
     }
 
     /// Whether anything in this pane could be shown through a lens: a finished request that has
@@ -929,9 +943,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         lenses.set(chosen, for: id)
         if chosen == nil { lensBuffers[id] = nil }
         if lensSelection?.commandID == id { lensSelection = nil }
-        // The display under the viewport is about to be a different height: a line offset chosen
-        // against the old one would put the reader somewhere they did not ask to be.
-        forgetViewportAnchor()
+        // The display under the viewport is about to be a different height. A line offset chosen
+        // against the old one would put the reader somewhere they did not ask to be -- but only if
+        // it was chosen against *this* block, and `canonicalised` clamps it either way. What has to
+        // go is the live-bottom anchor, which was never a place anyone chose.
+        forgetViewportAnchorIfItIsOnlyTheLiveBottom()
         rebuildLens(for: id)
         markDirty()
     }
@@ -1446,7 +1462,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             setLens(.diff(previousCommandID: previous), on: finish.id)
         }
         updateWatchTimer()
-        if moved { forgetViewportAnchor() }
+        if moved { forgetViewportAnchorIfItIsOnlyTheLiveBottom() }
         markDirty()
     }
 
@@ -2421,8 +2437,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         // Typing both jumps the viewport back to the live screen and drops the selection: the text
         // it pointed at is about to move, and every terminal drops it here.
-        clearSelection()
-        scrollDisplayToBottom()
+        //
+        // Not for the watch's own runs. `send` is also how a series types its request, and doing
+        // this there yanked the reader to the live screen every interval -- the loudest half of
+        // "a watch throws you out of the run you are reading", and the half the forget rule does
+        // not touch. `isSendingWatchRun` is the distinction the file already draws for the rule
+        // that stops a series when the user types; the user's own keystrokes still come through
+        // here with it false.
+        if !isSendingWatchRun {
+            clearSelection()
+            scrollDisplayToBottom()
+        }
         session.send(bytes)
         markDirty()
     }

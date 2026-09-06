@@ -668,3 +668,81 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
                                   lenses: lensed(2), viewportRows: 6, buffers: buffers(2, lines: 40))
     #expect(cursor == DisplayCursor(row: 3, line: 7))
 }
+
+
+// MARK: - A display change under a reader
+
+/// Which anchors survive the display changing height under them.
+///
+/// A watch completes a run every five seconds, and each one opens a diff lens on the newest block.
+/// The pane forgot the anchor every time, which threw a reader who had opened run 7 by hand and
+/// parked seventy lines into it: scrolled back they landed on the raw row offset -- line 70 became
+/// about line 0 -- and reading on the live screen they landed on the prompt. Every five seconds,
+/// for as long as the watch ran.
+///
+/// The unconditional forget was protecting one real case, and only one: the anchor `send` records
+/// while a command is typed, which is the display bottom and is stale the moment a lens opens
+/// under it. That is the case the flag names, so the rule can name it too.
+@Test func onlyTheLiveBottomAnchorIsForgottenWhenTheDisplayChanges() {
+    #expect(!DisplayCursor.survivesDisplayChange(anchor: nil, isDisplayBottom: false))
+    #expect(!DisplayCursor.survivesDisplayChange(anchor: DisplayCursor(row: 3, line: 70),
+                                                 isDisplayBottom: true))
+    #expect(DisplayCursor.survivesDisplayChange(anchor: DisplayCursor(row: 3, line: 70),
+                                                isDisplayBottom: false))
+}
+
+/// And end to end: a reader parked at line 70 of an earlier run is still there after a later run
+/// gets a lens of its own.
+@Test func aReaderStaysInTheRunTheyOpenedWhenALaterRunIsLensed() {
+    // Two runs of the same request, one after the other, each with output of its own.
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 200)
+    for run in 1...2 {
+        t.feed(mark("A") + "$ " + mark("B") + "curl https://example.com/health\r\n" + mark("C"))
+        t.feed("{\"n\":\(run)}\r\n" + mark("D", 0))
+    }
+    t.feed(mark("A") + "$ ")
+    let rows = t.promptRows
+    let older = try! #require(t.command(containingAbsoluteRow: rows[0]))
+    let newer = try! #require(t.command(containingAbsoluteRow: rows[1]))
+    let olderStart = try! #require(older.outputStart)
+
+    var choices = LensChoices()
+    choices.set(.pretty, for: older.id)
+    var buffers: [UInt32: LensBuffer] = [
+        older.id: LensBuffer(commandID: older.id, lens: .pretty,
+                             lines: (0..<126).map { LensLine("  \"key\($0)\": 1,") },
+                             contentVersion: 0),
+    ]
+    let get: (UInt32) -> LensBuffer? = { buffers[$0] }
+
+    // The reader has opened the older run by hand and scrolled seventy lines into it.
+    _ = t.scrollToAbsoluteRow(olderStart, margin: 0)
+    let anchor = DisplayCursor(row: olderStart, line: 70)
+    let anchorTop = t.viewportTopRow
+    #expect(t.viewportCursor(anchor: anchor, anchorTop: anchorTop, anchorIsDisplayBottom: false,
+                             folding: OutputFolding(), lenses: choices, viewportRows: 6,
+                             buffers: get) == anchor)
+
+    // The watch finishes the newer run and opens a diff lens on it. Nothing about the older run's
+    // buffer changed, so neither does where the reader is.
+    choices.set(.diff(previousCommandID: older.id), for: newer.id)
+    buffers[newer.id] = LensBuffer(commandID: newer.id, lens: .diff(previousCommandID: older.id),
+                                   lines: (0..<8).map { LensLine("+ line \($0)") },
+                                   contentVersion: 0)
+    let after = t.viewportCursor(anchor: anchor, anchorTop: anchorTop, anchorIsDisplayBottom: false,
+                                 folding: OutputFolding(), lenses: choices, viewportRows: 6,
+                                 buffers: get)
+    #expect(after == DisplayCursor(row: olderStart, line: 70))
+    let drawn = t.displayRows(from: after, count: 6, folding: OutputFolding(), lenses: choices,
+                              buffers: get)
+    #expect(drawn.first == .lens(commandID: older.id, line: 70))
+
+    // A buffer that came back shorter is clamped rather than trusted, which is the other half of
+    // what `canonicalised` is for.
+    buffers[older.id] = LensBuffer(commandID: older.id, lens: .pretty,
+                                   lines: (0..<12).map { LensLine("  \"key\($0)\": 1,") },
+                                   contentVersion: 1)
+    #expect(t.viewportCursor(anchor: anchor, anchorTop: anchorTop, anchorIsDisplayBottom: false,
+                             folding: OutputFolding(), lenses: choices, viewportRows: 6,
+                             buffers: get) == DisplayCursor(row: olderStart, line: 11))
+}

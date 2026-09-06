@@ -509,7 +509,9 @@ public struct RequestEditorModel: Equatable {
             // -- the page itself shows whether there is one. The counts that earn a badge are the
             // ones nobody can see at a glance: how many headers, how many parameters.
             .body: 0,
-            .auth: command.auth == .none ? 0 : 1,
+            // Auth is the same rule: a request authenticates one way or it does not, so the only
+            // number this could ever show is `1`, and the page itself says which scheme.
+            .auth: 0,
             // Only what the Options tab actually has a control for. Counting every flag made the
             // badge say `1` for a `-s` nothing on the tab could show, let alone turn off.
             .options: Self.optionFlags.filter { command.flags.contains($0) }.count

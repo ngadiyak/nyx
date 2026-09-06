@@ -158,11 +158,11 @@ final class SettingsWindowController: NSWindowController {
             row("Response body", comingSoon(popUp("http-lens", titled: [
                 ("Pretty JSON", "pretty"),
                 ("Raw", "raw"),
-            ]), key: "http-lens")),
+            ]), key: "http-lens"), greyed: true),
             row("", checkbox("http-hint", title: "Offer the workbench when a curl is pasted")),
             row("Watch every", comingSoon(stepperField("http-watch-interval", min: 1, max: 3600, step: 1),
                                           key: "http-watch-interval", stepper: true),
-                unit: "seconds"),
+                unit: "seconds", greyed: true),
             row("Remember", stepperField("http-history", min: 0, max: 500, step: 5),
                 unit: "requests (0 = off)"),
         ], note: "")
@@ -611,19 +611,27 @@ final class SettingsWindowController: NSWindowController {
     /// neither the unit nor that zero means off. It goes into the control's accessibility name too,
     /// so the same sentence reaches VoiceOver, and the label itself is not an element: announced on
     /// its own between two numbers it reads as another value.
-    private func row(_ label: String, _ control: NSView, unit: String? = nil) -> (NSView, NSView) {
+    /// `greyed` is for a row whose control is disabled: AppKit greys the control itself and leaves
+    /// every label around it in full contrast, so a disabled row read as an ordinary one whose
+    /// value happened to be uneditable. The label and the unit are what a person actually scans
+    /// down the left edge, so they are what has to say "not yet".
+    private func row(_ label: String, _ control: NSView, unit: String? = nil,
+                     greyed: Bool = false) -> (NSView, NSView) {
         var control = control
         if let unit {
             let suffix = NSTextField(labelWithString: unit)
             suffix.identifier = SettingsWindowController.unitLabelIdentifier
             suffix.setAccessibilityElement(false)
+            if greyed { suffix.textColor = .disabledControlTextColor }
             let stack = NSStackView(views: [control, suffix])
             stack.orientation = .horizontal
             stack.spacing = 6
             control = stack
         }
         if !label.isEmpty { describe(control, as: unit.map { "\(label), \($0)" } ?? label) }
-        return (NSTextField(labelWithString: label.isEmpty ? "" : label + ":"), control)
+        let title = NSTextField(labelWithString: label.isEmpty ? "" : label + ":")
+        if greyed { title.textColor = .disabledControlTextColor }
+        return (title, control)
     }
 
     private static let unitLabelIdentifier = NSUserInterfaceItemIdentifier("unit-label")

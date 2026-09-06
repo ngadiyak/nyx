@@ -165,28 +165,65 @@ public struct RequestHistory: Equatable {
         entries.compactMap { entry in
             guard let command = CurlCommand.parse(entry.line) else { return nil }
             let host = RequestHistory.displayHost(command.url.host, masking: masking)
-            let path = command.url.path
-            let title = "\(command.effectiveMethod) \(host)\(RequestHistory.shortened(path))"
-            // The *whole* path, not the truncated one, and the method and host on their own: a row
-            // is found by the segment that was cut off the end at least as often as by the part
-            // that fits.
+                + RequestHistory.displayPort(command.url)
+            let tail = command.url.path + RequestHistory.displayQuery(command.url, masking: masking)
+            let title = "\(command.effectiveMethod) \(host)\(RequestHistory.shortened(tail))"
+            // The *whole* path and query, not the truncated one, and the method and host on their
+            // own: a row is found by the segment that was cut off the end at least as often as by
+            // the part that fits.
             // "Request · 2 min ago": the kind first, then the age. Every other section's rows name
             // what they are in this column ("Theme", "Tab", "Quick Action"), and a bare age made
             // the Requests section the one place the column meant something else.
             return PaletteItem(title: title,
                                detail: "Request \u{b7} " + RelativeAge.text(from: entry.at, to: now),
-                               searchText: "\(title) \(host) \(path) \(command.effectiveMethod)"
+                               searchText: "\(title) \(host) \(tail) \(command.effectiveMethod)"
                                    + " request curl",
                                kind: .request(id: RequestHistory.identifier(for: entry.line)))
         }
     }
 
     /// A palette row is one line of a list, not a URL bar: the age has to stay readable at the
-    /// right-hand edge. Forty characters of path, the ellipsis included, so a cut row is visibly
-    /// cut rather than looking like a request to a shorter path than the one that ran.
-    private static func shortened(_ path: String, limit: Int = 40) -> String {
-        guard path.count > limit else { return path }
-        return String(path.prefix(limit - 1)) + "\u{2026}"
+    /// right-hand edge. Forty characters of path *and query*, the ellipsis included, so a cut row
+    /// is visibly cut rather than looking like a request to a shorter path than the one that ran.
+    /// The query is inside the budget rather than beside it because the query is where the length
+    /// is: cutting only the path let a row with a signed URL run far past the age column.
+    private static func shortened(_ tail: String, limit: Int = 40) -> String {
+        guard tail.count > limit else { return tail }
+        return String(tail.prefix(limit - 1)) + "\u{2026}"
+    }
+
+    /// The port, when it is not the one the scheme already implies.
+    ///
+    /// Three services on `127.0.0.1` are the everyday case this list exists for, and rows reading
+    /// `POST 127.0.0.1/users.json` three times could not be told apart. `:443` on an `https` URL
+    /// is the opposite problem -- noise on every row -- so it is dropped. A port with no scheme to
+    /// judge it against is always shown: guessing would hide the only distinguishing part.
+    private static func displayPort(_ url: CurlCommand.URLParts) -> String {
+        guard let port = url.port else { return "" }
+        let implied: Int?
+        switch url.scheme?.lowercased() {
+        case "http", "ws": implied = 80
+        case "https", "wss": implied = 443
+        default: implied = nil
+        }
+        return port == implied ? "" : ":\(port)"
+    }
+
+    /// The query as written, with any parameter whose *name* says it is a credential bulleted when
+    /// the row is for reading.
+    ///
+    /// `GET api.example.com/search` twice tells the reader nothing about which search, which is the
+    /// whole reason this is on the row. `?` with nothing after it is kept, because it is part of
+    /// the URL that ran -- `emptyQuery` exists for exactly that distinction.
+    private static func displayQuery(_ url: CurlCommand.URLParts, masking: Masking) -> String {
+        guard !url.query.isEmpty else { return url.emptyQuery ? "?" : "" }
+        return "?" + url.query.map { item in
+            guard let value = item.value else { return item.name }
+            let shown = masking == .display && SecretMasking.isSecretParameter(item.name)
+                ? SecretMasking.masked(value)
+                : value
+            return "\(item.name)=\(shown)"
+        }.joined(separator: "&")
     }
 
     /// Bullets the password in a `user:password@host` URL when the row is for reading.

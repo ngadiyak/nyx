@@ -156,9 +156,10 @@ enum UISnapshot {
         write(remotePalettePanel(palette: palette, mixed: false), named: "command-palette-remote",
               into: directory, background: palette.background)
         // The Requests section, under the everyday rows, so it can be read as a section rather than
-        // as three loose lines: three requests of three different ages, one of them long enough to
-        // be cut and one carrying a password in its URL. Against both built-in themes, because this
-        // is the first section whose right-hand column is neither a chord nor a word.
+        // as four loose lines: four requests of four different ages, one of them long enough to be
+        // cut, one carrying a password in its URL and one a port and a query. Against both built-in
+        // themes, because this is the first section whose right-hand column is neither a chord nor
+        // a word.
         write(requestPalettePanel(palette: palette), named: "command-palette-requests-dark",
               into: directory, background: palette.background)
         if let lightPalette = Themes.builtin["nyx-light"] {
@@ -910,6 +911,10 @@ enum UISnapshot {
                        at: now.addingTimeInterval(-86_400 * 3))
         history.record("curl https://admin:hunter2secret@staging.example.com/v1/health",
                        at: now.addingTimeInterval(-7_200))
+        // The localhost row: a port and a query, which are what tell two otherwise identical rows
+        // apart on the machine where this list gets the most use.
+        history.record("curl -X POST -d '{\"name\":\"nik\"}' 'http://127.0.0.1:8000/users.json?debug=1'",
+                       at: now.addingTimeInterval(-1_800))
         history.record("curl -X POST -H 'Authorization: Bearer $TOKEN' -d '{\"ref\":\"main\"}' "
                        + "https://api.example.com/v2/deployments",
                        at: now.addingTimeInterval(-90))

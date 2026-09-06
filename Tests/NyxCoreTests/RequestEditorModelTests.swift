@@ -285,6 +285,7 @@ import Testing
     #expect(model.tabBadges[.headers] == 14)
     // The body is deliberately not counted; see `theBodyTabCarriesNoCount`.
     #expect(model.tabBadges[.body] == 0)
+    // Nor is auth; see `theAuthTabCarriesNoCount`.
     #expect(model.tabBadges[.auth] == 0)
     #expect(model.tabBadges[.options] == 1, "--compressed is the only option set")
 
@@ -292,7 +293,8 @@ import Testing
     #expect(github.tabBadges[.params] == 2)
     #expect(github.tabBadges[.headers] == 2)
     #expect(github.tabBadges[.body] == 0)
-    #expect(github.tabBadges[.auth] == 1)
+    // Auth is deliberately not counted either; see `theAuthTabCarriesNoCount`.
+    #expect(github.tabBadges[.auth] == 0)
     #expect(github.tabBadges[.options] == 1, "-L")
 
     // `-s` has no checkbox on the tab, so counting it would put a number on a tab that shows
@@ -481,6 +483,22 @@ import Testing
     let model = RequestEditorModel(command: command)
     #expect(model.tabBadges[.body] == 0)
     #expect(model.tabLabel(.body).trimmingCharacters(in: .whitespaces) == "Body")
+    // The countable ones are untouched.
+    #expect(model.tabBadges[.headers] == 1)
+    #expect(model.tabBadges[.params] == 1)
+}
+
+/// Auth is the body's case again: a request authenticates one way or it does not, so `Auth 1` says
+/// nothing `Auth` does not, and the tab's own page shows which scheme it is. The badge was also the
+/// only one that could change without the user touching that tab -- pasting a command with a
+/// bearer token in it -- so the segmented control twitched for a number nobody had asked for.
+@Test func theAuthTabCarriesNoCount() throws {
+    let command = try #require(CurlCommand.parse(
+        "curl -H 'a: 1' -u nik:hunter2 'https://example.com/x?q=1'"))
+    let model = RequestEditorModel(command: command)
+    #expect(model.command.auth != .none)
+    #expect(model.tabBadges[.auth] == 0)
+    #expect(model.tabLabel(.auth).trimmingCharacters(in: .whitespaces) == "Auth")
     // The countable ones are untouched.
     #expect(model.tabBadges[.headers] == 1)
     #expect(model.tabBadges[.params] == 1)

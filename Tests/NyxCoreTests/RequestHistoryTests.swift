@@ -353,3 +353,58 @@ private func at(_ secondsAgo: TimeInterval) -> Date { epoch.addingTimeInterval(-
     #expect(read.entries.count == 1)
     #expect(read.entries.first?.line == stored)
 }
+
+// MARK: - What a row says about where the request went
+
+/// Two requests to the same path on two ports are two different requests, and a row that showed
+/// only `127.0.0.1/users.json` for both made the list useless on the one machine where it matters
+/// most -- a laptop running three services on localhost. The query goes on for the same reason:
+/// `GET api.example.com/search` twice tells you nothing about which search.
+@Test func aRowShowsANonDefaultPortAndTheQuery() {
+    var history = RequestHistory(limit: 10)
+    history.record("curl -X POST -d '{}' 'http://127.0.0.1:8000/users.json?debug=1'", at: epoch)
+    #expect(history.paletteItems(now: epoch)[0].title == "POST 127.0.0.1:8000/users.json?debug=1")
+}
+
+/// The port a scheme implies is noise: `https://api.example.com:443/x` is `api.example.com/x`.
+@Test func aDefaultPortIsNotShown() {
+    var history = RequestHistory(limit: 10)
+    history.record("curl https://api.example.com:443/x", at: epoch)
+    history.record("curl http://api.example.com:80/y", at: epoch)
+    #expect(history.paletteItems(now: epoch).map(\.title) == ["GET api.example.com/y",
+                                                              "GET api.example.com/x"])
+}
+
+/// A `?` with nothing after it is part of the URL that was run, and dropping it made the row say
+/// a request the user never made.
+@Test func anEmptyQueryKeepsItsQuestionMark() {
+    var history = RequestHistory(limit: 10)
+    history.record("curl 'https://api.example.com/x?'", at: epoch)
+    #expect(history.paletteItems(now: epoch)[0].title == "GET api.example.com/x?")
+}
+
+/// A token in the query is the second credential that can reach a row's title, and the palette is
+/// the surface a screenshot catches. The line the row runs is still the real one.
+@Test func aSecretQueryParameterIsMaskedOnTheRow() {
+    var history = RequestHistory(limit: 10)
+    history.record("curl 'https://api.example.com/x?page=2&access_token=sk_live_9f2a'", at: epoch)
+    #expect(history.paletteItems(now: epoch)[0].title
+            == "GET api.example.com/x?page=2&access_token=\u{2022}\u{2022}\u{2022}\u{2022}9f2a")
+    #expect(history.paletteItems(now: epoch, masking: .none)[0].title
+            == "GET api.example.com/x?page=2&access_token=sk_live_9f2a")
+    // And the masked value is not what the row is searched by either.
+    #expect(!history.paletteItems(now: epoch)[0].searchText.contains("sk_live_9f2a"))
+}
+
+/// The forty characters are the whole tail -- path *and* query -- because a query is where the
+/// length is: truncating only the path let a row run three hundred characters past the age.
+@Test func theQueryIsPartOfWhatGetsTruncated() {
+    var history = RequestHistory(limit: 10)
+    history.record("curl 'https://api.example.com/search?q=a-very-long-search-phrase&page=42'",
+                   at: epoch)
+    let item = history.paletteItems(now: epoch)[0]
+    #expect(item.title == "GET api.example.com/search?q=a-very-long-search-phrase&pag\u{2026}")
+    #expect(item.title.dropFirst("GET api.example.com".count).count == 40)
+    // The part that was cut is still what finds the row.
+    #expect(item.searchText.contains("page=42"))
+}

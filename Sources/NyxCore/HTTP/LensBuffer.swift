@@ -145,8 +145,11 @@ public struct LensBuffer: Equatable {
             if width == 2 {
                 cell.attrs.insert(.wide)
                 row.cells[column] = cell
-                // The follower carries the lead's colours -- it is what the renderer fills the
-                // second column's background from -- and none of its content.
+                // The follower carries the lead's colours for parity with the terminal's own
+                // spacers, not because anything draws them: the renderer skips a `.wideSpacer`
+                // outright and paints both columns from the lead cell's double-width rect. Code
+                // that reads rows rather than drawing them -- selection, transcript, reflow --
+                // sees the same shape it sees everywhere else.
                 var spacer = cell
                 spacer.content = 0
                 spacer.attrs.remove(.wide)

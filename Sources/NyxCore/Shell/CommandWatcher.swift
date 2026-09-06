@@ -175,14 +175,17 @@ public extension Terminal {
             let from = row == start
                 ? (line.columnOf.firstIndex { $0 >= inputStart } ?? characters.count)
                 : 0
-            guard from < characters.count else { continue }
             // `rowText` pads every empty cell with a space so a column stays a column; a command
             // line has no columns to preserve, and the padding would otherwise land in the middle
-            // of a multi-row command.
-            var piece = String(characters[from...])
-            while piece.hasSuffix(" ") { piece.removeLast() }
-            guard !piece.isEmpty else { continue }
-            if !text.isEmpty { text += (absoluteRow(row - 1)?.wrapped ?? false) ? "" : " " }
+            // of a multi-row command. Only an unwrapped row has padding: a wrapped one is full to
+            // its last column, so a space at the end of it is one the user typed.
+            let wrapped = absoluteRow(row)?.wrapped ?? false
+            var piece = from < characters.count ? String(characters[from...]) : ""
+            if !wrapped { while piece.hasSuffix(" ") { piece.removeLast() } }
+            // A newline where the shell ended a row, nothing where the terminal wrapped one. It was
+            // a *space* for the shell's rows, which welded `\` + newline into `\` + space -- an
+            // escaped space, and a junk argument -- for every multi-line command in the buffer.
+            if row > start, !(absoluteRow(row - 1)?.wrapped ?? false) { text += "\n" }
             text += piece
         }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)

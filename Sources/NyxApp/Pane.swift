@@ -2853,7 +2853,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // `nik@host ~ % make test`, which is not a command.
             let command = session.withTerminal { $0.commandLine(of: region) }
             guard !command.isEmpty else { NSSound.beep(); return }
-            send(Array((command + "\r").utf8))
+            // As a bracketed paste and then a return, not as raw bytes: a `\`-continued command
+            // read back off the grid has real newlines in it, and sent raw the shell would start
+            // running it a fragment at a time. Inside the brackets it is one command.
+            let bracketed = session.withTerminal { $0.modes.bracketedPaste }
+            performPaste(command, bracketed: bracketed)
+            send([0x0D])
         case .editAndRun:
             if !editAndRunCommand(atAbsoluteRow: region.promptRow) { NSSound.beep() }
         case .openInWorkbench:
@@ -3048,10 +3053,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if PasteGuard.lineCount(text) > 1 {
             switch config.multilinePaste {
             case .edit:
-                let shown = presentCommandEditor(text: text, heading: "Edit before pasting",
-                                                 runTitle: "Paste") { [weak self] edited in
-                    self?.performPaste(edited, bracketed: bracketed)
-                }
+                let shown = presentEditorForPaste(text, bracketed: bracketed)
                 // If the editor could not be shown, paste anyway. A feature that intercepts a core
                 // action has to degrade to that action, never to nothing at all.
                 if !shown { performPaste(text, bracketed: bracketed) }
@@ -3170,11 +3172,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         dismissWorkbenchHint()
         if let command = CurlCommand.parse(text),
            presentRequestEditor(command: command, then: { [weak self] line in
-               // The line on screen is the one being replaced, so it goes before the new one is
-               // typed. `^E` then `^U` covers both common line editors: zsh's `^U` kills the whole
-               // line, bash's kills back from the cursor, so moving to the end first makes them
-               // agree.
-               self?.send([0x05, 0x15])
+               self?.abandonCurrentLine()
                self?.runFromWorkbench(line)
            }) {
             return
@@ -3182,10 +3180,24 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         presentCommandEditor(text: text, heading: "Edit the command line", runTitle: "Run") {
             [weak self] edited in
             guard let self else { return }
-            self.send([0x05, 0x15])
+            self.abandonCurrentLine()
             let bracketed = self.session.withTerminal { $0.modes.bracketedPaste }
             self.performPaste(edited, bracketed: bracketed)
         }
+    }
+
+    /// Throws away whatever is on the shell's line editor, so an edited command replaces it rather
+    /// than being appended to it.
+    ///
+    /// `^C`, not `^E^U`. `^U` kills a *line*, and the buffer this feature exists for is a
+    /// multi-line one: a five-line `curl` pasted from a browser left four of its lines behind, and
+    /// the edited command was appended to them -- the shell then ran
+    /// `--compressed curl --compressed …`, which reported `Could not resolve host: curl`. Every
+    /// common shell abandons the whole buffer on `^C` and draws a fresh prompt, which is exactly
+    /// what "replace what is on the line" means. It costs a visible `^C` in the scrollback, which
+    /// is honest: something *was* discarded.
+    private func abandonCurrentLine() {
+        send([0x03])
     }
 
     /// Runs what the workbench finished with, and remembers it.
@@ -3239,7 +3251,25 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// Opens the paste in the command editor, and pastes whatever comes back.
     private func editThenPaste(_ text: String, bracketed: Bool) {
-        presentCommandEditor(text: text, heading: "Edit before pasting", runTitle: "Paste") {
+        _ = presentEditorForPaste(text, bracketed: bracketed)
+    }
+
+    /// The sheet a paste is shown in before it lands: the workbench when the text is a request,
+    /// the plain editor otherwise.
+    ///
+    /// `multiline-paste = edit` exists because a multi-line command is very hard to change once the
+    /// shell's line editor has it -- and a `curl` copied out of a browser is the multi-line paste
+    /// people actually make. Sending it to a text box when there is a form for it is the feature
+    /// not being where it is needed most.
+    @discardableResult
+    private func presentEditorForPaste(_ text: String, bracketed: Bool) -> Bool {
+        if let command = CurlCommand.parse(text).map(RequestRun.stripAdditions(from:)),
+           presentRequestEditor(command: command, then: { [weak self] line in
+               self?.runFromWorkbench(line)
+           }) {
+            return true
+        }
+        return presentCommandEditor(text: text, heading: "Edit before pasting", runTitle: "Paste") {
             [weak self] edited in
             self?.performPaste(edited, bracketed: bracketed)
         }

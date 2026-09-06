@@ -441,3 +441,79 @@ private let stripColumns: [OverlayControls: Int] = [.full: 20, .noCopy: 8, .mini
     t.resize(cols: 60, rows: 10)
     #expect(t.currentInput == "curl https://example.com")
 }
+
+// MARK: - A multi-line command line, read back
+
+/// The whole of fixture 01 as a person pastes it: five `\`-continued lines.
+private let multiLineCurl = """
+curl 'https://api.example.com/v1/messages' \\
+  -H 'accept: */*' \\
+  -H 'content-type: application/json' \\
+  --compressed \\
+  --data-raw '{"text":"hello"}'
+"""
+
+/// The one-line spelling of the same request, for comparing models.
+private let oneLineCurl = "curl 'https://api.example.com/v1/messages' -H 'accept: */*' "
+    + "-H 'content-type: application/json' --compressed --data-raw '{\"text\":\"hello\"}'"
+
+/// Feeds a command line to a terminal the way a bracketed paste at a prompt does: the shell echoes
+/// each row and moves to the next with a real line break, so the rows are *not* soft-wrapped.
+private func typed(_ command: String, cols: Int) -> Terminal {
+    let t = makeTerminal(cols: cols, rows: 24, scrollback: 200)
+    t.feed(mark("A") + "$ " + mark("B"))
+    var first = true
+    for line in command.split(separator: "\n", omittingEmptySubsequences: false) {
+        if !first { t.feed("\r\n") }
+        first = false
+        t.feed(String(line))
+    }
+    return t
+}
+
+/// `currentInput` on a multi-line paste must give back something that parses to the same request.
+///
+/// Every physical row is padded to the full width by `rowText`, and the rows were being joined with
+/// that padding still on and no line break at all -- so `\` + newline became `\` + spaces, which is
+/// an *escaped space*: a junk argument per line. The preview ended in `' ' ' '`, and running it
+/// printed `curl: (3) URL rejected` once per line.
+@Test func aMultiLinePasteReadsBackAsTheSameRequest() throws {
+    let t = typed(multiLineCurl, cols: 100)
+    let input = try #require(t.currentInput)
+    #expect(!input.contains("\\ "), "\(input)")
+    let fromScreen = try #require(CurlCommand.parse(input))
+    let fromText = try #require(CurlCommand.parse(oneLineCurl))
+    #expect(fromScreen == fromText)
+}
+
+/// And the same through `commandLine(of:)`, which is what every block action reads.
+@Test func aMultiLineCommandBlockReadsBackAsTheSameRequest() throws {
+    let t = typed(multiLineCurl, cols: 100)
+    t.feed("\r\n" + mark("C") + "ok\r\n" + mark("D", 0))
+    let region = try #require(t.command(containingAbsoluteRow: 0))
+    let line = t.commandLine(of: region)
+    #expect(!line.contains("\\ "), "\(line)")
+    let fromScreen = try #require(CurlCommand.parse(line))
+    let fromText = try #require(CurlCommand.parse(oneLineCurl))
+    #expect(fromScreen == fromText)
+    #expect(CurlDetection.isCurl(line))
+}
+
+/// A single long line that the *terminal* wrapped is one line: joined with nothing between the
+/// rows, never a space and never a newline. Breaking a soft wrap would cut a word -- or a URL -- in
+/// half.
+@Test func aSoftWrappedLineJoinsWithNothing() throws {
+    let long = "curl 'https://api.example.com/v1/organisations/acme/projects/nyx/deployments?page=2'"
+    let t = typed(long, cols: 40)
+    #expect(t.currentInput == long)
+    t.feed("\r\n" + mark("C") + "ok\r\n" + mark("D", 0))
+    let region = try #require(t.command(containingAbsoluteRow: 0))
+    #expect(t.commandLine(of: region) == long)
+}
+
+/// A genuinely multi-line command that is not a continuation -- two commands typed on two lines --
+/// keeps its line break rather than being welded into one word.
+@Test func twoLinesStayTwoLines() throws {
+    let t = typed("echo one\necho two", cols: 40)
+    #expect(t.currentInput == "echo one\necho two")
+}

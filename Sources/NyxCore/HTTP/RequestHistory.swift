@@ -82,7 +82,10 @@ public struct RequestHistory: Equatable {
         guard limit > 0, line.count <= RequestHistory.maximumLineLength else { return }
         guard let parsed = CurlCommand.parse(line) else { return }
         let command = RequestRun.stripAdditions(from: parsed)
-        let stored = command == parsed
+        // The file is one entry per line, so a `\`-continued command read back off the grid --
+        // which has real newlines in it now -- has to be written out as one line or it would come
+        // back as several broken entries. Otherwise the text is kept exactly as it was.
+        let stored = command == parsed && !line.contains(where: \.isNewline)
             ? line
             : command.shellLine(masking: .none, layout: .oneLine)
         entries.removeAll { CurlCommand.parse($0.line) == command }

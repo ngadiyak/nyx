@@ -332,3 +332,24 @@ private func at(_ secondsAgo: TimeInterval) -> Date { epoch.addingTimeInterval(-
     history.record(line, at: at(0))
     #expect(history.entries.first?.line == line)
 }
+
+/// The file is one entry per line, and a command read back off the grid can now hold real
+/// newlines -- a `\`-continued `curl` pasted from a browser. Stored as it stands it would come
+/// back on the next launch as five broken entries, none of which parses.
+@Test func aMultiLineRequestIsStoredOnOneLine() throws {
+    let multi = """
+    curl 'https://api.example.com/v1/messages' \\
+      -H 'accept: */*' \\
+      --data-raw '{"text":"hello"}'
+    """
+    var history = RequestHistory(limit: 10)
+    history.record(multi, at: at(0))
+    let stored = try #require(history.entries.first?.line)
+    let oneLine = !stored.contains(where: \.isNewline)
+    #expect(oneLine, "\(stored)")
+    #expect(CurlCommand.parse(stored) == CurlCommand.parse(multi))
+    // And it survives the round trip through the file.
+    let read = RequestHistory.parse(history.serialised(), limit: 10)
+    #expect(read.entries.count == 1)
+    #expect(read.entries.first?.line == stored)
+}

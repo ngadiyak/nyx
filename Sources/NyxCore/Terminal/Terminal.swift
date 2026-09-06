@@ -1241,16 +1241,34 @@ public final class Terminal: TerminalActions {
         }
         guard let startColumn, row <= cursorRow else { return nil }
 
+        // Rows joined the way the shell meant them, not the way the grid stores them.
+        //
+        // `rowText` pads every unwritten cell with a space so a column stays a column, and the rows
+        // used to be concatenated with that padding still on and nothing between them. For a
+        // multi-line paste -- which is exactly how a `curl` copied out of a browser arrives -- that
+        // turned every `\` + newline into `\` followed by fifty spaces: an *escaped space*, which
+        // is a junk argument. The preview ended in `' ' ' '`, running it printed
+        // `curl: (3) URL rejected` once per line, and the corrupted text went into the history.
+        //
+        // A row the *terminal* wrapped is a different thing from a row the shell ended: the first
+        // is the middle of one line and joins with nothing, the second is a line of its own and
+        // joins with a newline. Only an unwrapped row has padding to strip, because a wrapped one
+        // is full to its last column by definition -- so a space at the end of one is a space the
+        // user typed.
         var text = ""
         for absolute in row...cursorRow {
             let line = rowText(absoluteRow: absolute)
-            let from = absolute == row ? startColumn : 0
             let characters = Array(line.text)
+            let from = absolute == row ? startColumn : 0
             let to = absolute == cursorRow ? min(characters.count, screen.cursor.x) : characters.count
-            guard from < to else { continue }
-            text += String(characters[from..<to])
+            var piece = from < to ? String(characters[from..<to]) : ""
+            if !(absoluteRow(absolute)?.wrapped ?? false) {
+                while piece.hasSuffix(" ") { piece.removeLast() }
+            }
+            if absolute > row, !(absoluteRow(absolute - 1)?.wrapped ?? false) { text += "\n" }
+            text += piece
         }
-        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 

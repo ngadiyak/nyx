@@ -181,6 +181,41 @@ public extension Terminal {
         return current
     }
 
+    /// The display cursor that puts the **last** display line on the last row of the window: what
+    /// "scroll to the bottom" means once the display is not the rows.
+    ///
+    /// `viewportOffset = 0` used to be the whole answer, and it is still the answer whenever nothing
+    /// is replaced. It stops being one when a lens is taller than the rows it stands in for and
+    /// those rows are on the *live screen*: the display from the terminal's own bottom is then the
+    /// prompt, the command, and a hundred and twenty-six lines of response, and the shell prompt
+    /// underneath the block falls off the end of the window. Typing went to a caret nobody could
+    /// see, and the echo arrived somewhere below the glass.
+    ///
+    /// **The prompt wins.** A freshly finished `curl` shows its prompt at the bottom with the tail
+    /// of the response above it, and the reader scrolls up for the head of it. The other choice --
+    /// the response from its first line, prompt off-screen -- reads better for exactly one second
+    /// and then stops being a terminal: you cannot see what you are typing.
+    func displayBottomCursor(folding: OutputFolding, lenses: LensChoices = LensChoices(),
+                             viewportRows: Int? = nil,
+                             buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> DisplayCursor {
+        let screenful = max(1, viewportRows ?? rows)
+        // Nothing replaced: the display is the rows and the bottom is where it always was, with no
+        // walk at all. This is the path every ordinary frame takes.
+        guard !folding.isEmpty || !lenses.isEmpty else {
+            return DisplayCursor(row: max(0, scrollback.count))
+        }
+        // The display line the very last row of the buffer produces, whatever stands in for it.
+        var cursor = previousDisplayCursor(before: DisplayCursor(row: totalRows), folding: folding,
+                                           lenses: lenses, buffers: buffers)
+            ?? DisplayCursor(row: 0)
+        for _ in 1..<screenful {
+            guard let previous = previousDisplayCursor(before: cursor, folding: folding,
+                                                       lenses: lenses, buffers: buffers) else { break }
+            cursor = previous
+        }
+        return cursor
+    }
+
     /// Whether `n` display lines start at `cursor`. Walks at most `n` of them, so it costs what it
     /// is asked about and not the size of the buffer.
     internal func hasDisplayLines(from cursor: DisplayCursor, atLeast n: Int,

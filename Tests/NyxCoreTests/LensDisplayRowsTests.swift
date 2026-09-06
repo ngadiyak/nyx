@@ -337,3 +337,62 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
     #expect(t.advance(DisplayCursor(row: 5), by: 4, folding: OutputFolding()) == DisplayCursor(row: 9))
     #expect(t.advance(DisplayCursor(row: 5), by: -4, folding: OutputFolding()) == DisplayCursor(row: 1))
 }
+
+// MARK: - Where "the bottom" is
+
+/// With nothing replaced, the bottom is what `viewportOffset = 0` always meant, and it is reached
+/// without walking anything.
+@Test func theBottomWithoutALensIsTheTerminalsOwn() {
+    let t = session()
+    #expect(t.displayBottomCursor(folding: OutputFolding()) == DisplayCursor(row: t.scrollback.count))
+}
+
+/// A lens taller than the rows it replaces, on a block still on the live screen, puts more display
+/// lines below the terminal's own bottom than the window has rows. The bottom is then the cursor
+/// that keeps the *last* line -- the shell's prompt -- on the last row, not the terminal's top row.
+@Test func theBottomKeepsThePromptOnScreenUnderATallLens() {
+    let t = makeTerminal(cols: 40, rows: 10, scrollback: 200)
+    t.feed(mark("A") + "$ " + mark("B") + "curl x\r\n" + mark("C"))
+    t.feed("{\"a\":1}\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    let region = t.command(containingAbsoluteRow: 0)
+    let id = region?.id ?? 0
+    let choices = lensed(id)
+    let get = buffers(id, lines: 60)
+
+    let plain = DisplayCursor(row: max(0, t.viewportTopRow))
+    let fromPlain = t.displayRows(from: plain, count: 10, folding: OutputFolding(),
+                                  lenses: choices, buffers: get)
+    // From the terminal's own bottom the window fills with lens lines and runs out before the rows
+    // that follow the block -- the shell's prompt among them.
+    if case .lens = fromPlain[9] {} else { Issue.record("the window should still be inside the lens") }
+    #expect(!fromPlain.contains(.row(t.totalRows - 1)))
+
+    let bottom = t.displayBottomCursor(folding: OutputFolding(), lenses: choices, viewportRows: 10,
+                                       buffers: get)
+    #expect(bottom != plain)
+    let fromBottom = t.displayRows(from: bottom, count: 10, folding: OutputFolding(),
+                                   lenses: choices, buffers: get)
+    #expect(fromBottom.count == 10)
+    // The last display line is the last row of the buffer -- the row the shell is prompting on.
+    #expect(fromBottom.last == .row(t.totalRows - 1))
+    // And what is above it is the tail of the response, not its head.
+    if case .lens(_, let line) = fromBottom[0] { #expect(line > 0) } else { Issue.record("not a lens") }
+}
+
+/// Scrolling forward from anywhere lands on exactly that cursor and goes no further, so "the bottom"
+/// is one place however it is reached.
+@Test func advancingToTheEndLandsOnTheDisplayBottom() {
+    let t = makeTerminal(cols: 40, rows: 10, scrollback: 200)
+    t.feed(mark("A") + "$ " + mark("B") + "curl x\r\n" + mark("C"))
+    t.feed("{\"a\":1}\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    let id = t.command(containingAbsoluteRow: 0)?.id ?? 0
+    let choices = lensed(id)
+    let get = buffers(id, lines: 60)
+    let bottom = t.displayBottomCursor(folding: OutputFolding(), lenses: choices, viewportRows: 10,
+                                       buffers: get)
+    let walked = t.advance(DisplayCursor(row: 0), by: 500, folding: OutputFolding(),
+                           lenses: choices, viewportRows: 10, buffers: get)
+    #expect(walked == bottom)
+}

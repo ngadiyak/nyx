@@ -40,20 +40,23 @@ public extension Terminal {
     /// gutter's own comment in `Pane` warns about.
     func displayEntry(at cursor: DisplayCursor, folding: OutputFolding,
                       lenses: LensChoices = LensChoices(),
-                      buffers: (UInt32) -> LensBuffer? = { _ in nil })
+                      buffers: (UInt32) -> LensBuffer? = { _ in nil },
+                      memo: CommandRegionMemo? = nil)
         -> (row: DisplayRow, next: DisplayCursor)? {
+        let memo = memo ?? CommandRegionMemo()
         let row = cursor.row
         guard row >= 0, row < totalRows else { return nil }
         let plain = (DisplayRow.row(row), DisplayCursor(row: row + 1))
         guard !folding.isEmpty || !lenses.isEmpty else { return plain }
         // A folded block shows its fold, not its lens: both say "show me less", and the fold is the
         // one whose placeholder the reader can click to undo.
-        if let (region, hidden) = foldedCommand(containingOutputRow: row, folding: folding) {
+        if let (region, hidden) = foldedCommand(containingOutputRow: row, folding: folding,
+                                                memo: memo) {
             return (.fold(commandID: region.id, hiddenRows: hidden.count, status: region.status),
                     DisplayCursor(row: hidden.upperBound))
         }
         if let (region, buffer) = lensedCommand(containingOutputRow: row, lenses: lenses,
-                                                buffers: buffers) {
+                                                buffers: buffers, memo: memo) {
             // Clamped rather than trusted: the buffer is rebuilt on another queue and can be
             // shorter than it was when this cursor was made.
             let line = min(max(0, cursor.line), buffer.lineCount - 1)
@@ -72,19 +75,23 @@ public extension Terminal {
     /// scrollback on every wheel click.
     func previousDisplayCursor(before cursor: DisplayCursor, folding: OutputFolding,
                                lenses: LensChoices = LensChoices(),
-                               buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> DisplayCursor? {
+                               buffers: (UInt32) -> LensBuffer? = { _ in nil },
+                               memo: CommandRegionMemo? = nil) -> DisplayCursor? {
+        let memo = memo ?? CommandRegionMemo()
         if cursor.line > 0,
-           lensedCommand(containingOutputRow: cursor.row, lenses: lenses, buffers: buffers) != nil {
+           lensedCommand(containingOutputRow: cursor.row, lenses: lenses, buffers: buffers,
+                         memo: memo) != nil {
             return DisplayCursor(row: cursor.row, line: cursor.line - 1)
         }
         let above = cursor.row - 1
         guard above >= 0 else { return nil }
         guard !folding.isEmpty || !lenses.isEmpty else { return DisplayCursor(row: above) }
-        if let (_, hidden) = foldedCommand(containingOutputRow: above, folding: folding) {
+        if let (_, hidden) = foldedCommand(containingOutputRow: above, folding: folding,
+                                           memo: memo) {
             return DisplayCursor(row: hidden.lowerBound)
         }
         if let (region, buffer) = lensedCommand(containingOutputRow: above, lenses: lenses,
-                                                buffers: buffers) {
+                                                buffers: buffers, memo: memo) {
             // Entering a lens from below lands on its *last* line, which is what "the line above
             // the row after the block" means.
             return DisplayCursor(row: region.outputRows.lowerBound, line: buffer.lineCount - 1)
@@ -95,18 +102,22 @@ public extension Terminal {
     /// The cursor an absolute row names: the first display line that shows any part of it.
     ///
     /// This is the bridge for everything that still scrolls by row -- a search match, the sticky
-    /// prompt, a jump to a prompt mark, the terminal scrolling itself to the bottom on new output.
-    /// A row inside a lens keeps its proportional position rather than snapping to the top of the
-    /// block, so scrolling to a match does not move the reader further than they asked.
+    /// prompt, a jump to a prompt mark, and above all `viewportCursor` when the anchor has been
+    /// forgotten. A row inside a lens keeps its offset into the block rather than snapping to the
+    /// top of it: answering `DisplayCursor(row: top)` there meant line 0, so a reader parked inside
+    /// a pretty-printed response was thrown back to the first line of it every time the ring
+    /// evicted a row -- continuously, for as long as anything else was printing.
     func displayCursor(atAbsoluteRow row: Int, folding: OutputFolding,
                        lenses: LensChoices = LensChoices(),
-                       buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> DisplayCursor {
+                       buffers: (UInt32) -> LensBuffer? = { _ in nil },
+                       memo: CommandRegionMemo? = nil) -> DisplayCursor {
         guard !folding.isEmpty || !lenses.isEmpty else { return DisplayCursor(row: row) }
-        if let (_, hidden) = foldedCommand(containingOutputRow: row, folding: folding) {
+        let memo = memo ?? CommandRegionMemo()
+        if let (_, hidden) = foldedCommand(containingOutputRow: row, folding: folding, memo: memo) {
             return DisplayCursor(row: hidden.lowerBound)
         }
         if let (region, buffer) = lensedCommand(containingOutputRow: row, lenses: lenses,
-                                                buffers: buffers) {
+                                                buffers: buffers, memo: memo) {
             let offset = row - region.outputRows.lowerBound
             return DisplayCursor(row: region.outputRows.lowerBound,
                                  line: min(max(0, offset), buffer.lineCount - 1))
@@ -119,9 +130,10 @@ public extension Terminal {
     /// or a lens being closed can name a line that no longer exists.
     func canonicalised(_ cursor: DisplayCursor, folding: OutputFolding,
                        lenses: LensChoices = LensChoices(),
-                       buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> DisplayCursor {
+                       buffers: (UInt32) -> LensBuffer? = { _ in nil },
+                       memo: CommandRegionMemo? = nil) -> DisplayCursor {
         guard let (region, buffer) = lensedCommand(containingOutputRow: cursor.row, lenses: lenses,
-                                                   buffers: buffers) else {
+                                                   buffers: buffers, memo: memo) else {
             return DisplayCursor(row: cursor.row)
         }
         return DisplayCursor(row: region.outputRows.lowerBound,
@@ -144,8 +156,11 @@ public extension Terminal {
     func advance(_ cursor: DisplayCursor, by delta: Int, folding: OutputFolding,
                  lenses: LensChoices = LensChoices(),
                  viewportRows: Int? = nil,
-                 buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> DisplayCursor {
-        var current = canonicalised(cursor, folding: folding, lenses: lenses, buffers: buffers)
+                 buffers: (UInt32) -> LensBuffer? = { _ in nil },
+                 memo: CommandRegionMemo? = nil) -> DisplayCursor {
+        let memo = memo ?? CommandRegionMemo()
+        var current = canonicalised(cursor, folding: folding, lenses: lenses, buffers: buffers,
+                                    memo: memo)
         guard delta != 0 else { return current }
         let limit = max(0, scrollback.count)
         // Nothing replaced anywhere means the display is the rows, and a scroll is arithmetic: the
@@ -157,7 +172,7 @@ public extension Terminal {
         if delta > 0 {
             for _ in 0..<delta {
                 guard let (_, next) = displayEntry(at: current, folding: folding, lenses: lenses,
-                                                   buffers: buffers) else { break }
+                                                   buffers: buffers, memo: memo) else { break }
                 // Below the terminal's own bottom this is exactly the clamp `viewportOffset` has,
                 // and it is free.
                 if next.row > limit {
@@ -167,14 +182,16 @@ public extension Terminal {
                     // the window. Keep going while a full screen of display lines is still below,
                     // which is the same thing the offset clamp guarantees everywhere else.
                     guard hasDisplayLines(from: next, atLeast: screenful, folding: folding,
-                                          lenses: lenses, buffers: buffers) else { break }
+                                          lenses: lenses, buffers: buffers,
+                                          memo: memo) else { break }
                 }
                 current = next
             }
         } else {
             for _ in 0..<(-delta) {
                 guard let previous = previousDisplayCursor(before: current, folding: folding,
-                                                           lenses: lenses, buffers: buffers) else { break }
+                                                           lenses: lenses, buffers: buffers,
+                                                           memo: memo) else { break }
                 current = previous
             }
         }
@@ -197,7 +214,8 @@ public extension Terminal {
     /// and then stops being a terminal: you cannot see what you are typing.
     func displayBottomCursor(folding: OutputFolding, lenses: LensChoices = LensChoices(),
                              viewportRows: Int? = nil,
-                             buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> DisplayCursor {
+                             buffers: (UInt32) -> LensBuffer? = { _ in nil },
+                             memo: CommandRegionMemo? = nil) -> DisplayCursor {
         let screenful = max(1, viewportRows ?? rows)
         // Nothing replaced: the display is the rows and the bottom is where it always was, with no
         // walk at all. This is the path every ordinary frame takes.
@@ -205,12 +223,14 @@ public extension Terminal {
             return DisplayCursor(row: max(0, scrollback.count))
         }
         // The display line the very last row of the buffer produces, whatever stands in for it.
+        let memo = memo ?? CommandRegionMemo()
         var cursor = previousDisplayCursor(before: DisplayCursor(row: totalRows), folding: folding,
-                                           lenses: lenses, buffers: buffers)
+                                           lenses: lenses, buffers: buffers, memo: memo)
             ?? DisplayCursor(row: 0)
         for _ in 1..<screenful {
             guard let previous = previousDisplayCursor(before: cursor, folding: folding,
-                                                       lenses: lenses, buffers: buffers) else { break }
+                                                       lenses: lenses, buffers: buffers,
+                                                       memo: memo) else { break }
             cursor = previous
         }
         return cursor
@@ -227,32 +247,42 @@ public extension Terminal {
     ///   own bottom -- which is every frame after new output arrives while the reader is pinned to
     ///   the live screen, and the frame a finished request opens its lens on. Without it a response
     ///   taller than the window pushed the shell's prompt past the last row and the caret with it;
-    /// - the plain top otherwise, which is what a viewport scrolled up into the scrollback wants and
-    ///   is exactly the behaviour there has always been.
+    /// - the display cursor that top row names otherwise, which is what a viewport scrolled up into
+    ///   the scrollback wants. It is the row itself everywhere except inside a fold or a lens, where
+    ///   it is that block's own display position -- see `displayCursor(atAbsoluteRow:)` for what
+    ///   answering the bare row cost a reader inside a lens.
     ///
     /// Lenses only for the middle case: a fold can only make the display *shorter* than the rows it
     /// stands in for, so the terminal's own bottom is still the display's.
     func viewportCursor(anchor: DisplayCursor?, anchorTop: Int, folding: OutputFolding,
                         lenses: LensChoices = LensChoices(), viewportRows: Int? = nil,
-                        buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> DisplayCursor {
+                        buffers: (UInt32) -> LensBuffer? = { _ in nil },
+                        memo: CommandRegionMemo? = nil) -> DisplayCursor {
+        let memo = memo ?? CommandRegionMemo()
         let top = max(0, viewportTopRow)
         if let anchor, anchorTop == top {
-            return canonicalised(anchor, folding: folding, lenses: lenses, buffers: buffers)
+            return canonicalised(anchor, folding: folding, lenses: lenses, buffers: buffers,
+                                 memo: memo)
         }
-        guard viewportOffset == 0, !lenses.isEmpty else { return DisplayCursor(row: top) }
+        guard viewportOffset == 0, !lenses.isEmpty else {
+            return displayCursor(atAbsoluteRow: top, folding: folding, lenses: lenses,
+                                 buffers: buffers, memo: memo)
+        }
         return displayBottomCursor(folding: folding, lenses: lenses, viewportRows: viewportRows,
-                                   buffers: buffers)
+                                   buffers: buffers, memo: memo)
     }
 
     /// Whether `n` display lines start at `cursor`. Walks at most `n` of them, so it costs what it
     /// is asked about and not the size of the buffer.
     internal func hasDisplayLines(from cursor: DisplayCursor, atLeast n: Int,
                                   folding: OutputFolding, lenses: LensChoices,
-                                  buffers: (UInt32) -> LensBuffer?) -> Bool {
+                                  buffers: (UInt32) -> LensBuffer?,
+                                  memo: CommandRegionMemo? = nil) -> Bool {
         var position = cursor
+        let memo = memo ?? CommandRegionMemo()
         for _ in 0..<n {
             guard let (_, next) = displayEntry(at: position, folding: folding, lenses: lenses,
-                                               buffers: buffers) else { return false }
+                                               buffers: buffers, memo: memo) else { return false }
             position = next
         }
         return true

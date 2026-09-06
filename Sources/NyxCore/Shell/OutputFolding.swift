@@ -154,10 +154,11 @@ public struct OutputFolding: Equatable {
 public extension Terminal {
     /// The folded command whose *hidden* rows cover `row`, and those rows. A prompt row and a kept
     /// tail row are never inside a fold.
-    func foldedCommand(containingOutputRow row: Int, folding: OutputFolding)
+    func foldedCommand(containingOutputRow row: Int, folding: OutputFolding,
+                       memo: CommandRegionMemo? = nil)
         -> (region: CommandRegion, hidden: Range<Int>)? {
         guard !folding.isEmpty, shellEmitsPromptMarks,
-              let region = command(containingAbsoluteRow: row),
+              let region = region(containing: row, memo: memo ?? CommandRegionMemo()),
               let shape = folding.shape(of: region.id) else { return nil }
         let hidden = OutputFolding.hiddenRange(of: region, shape: shape)
         return hidden.contains(row) ? (region, hidden) : nil
@@ -171,9 +172,10 @@ public extension Terminal {
     /// nothing in its place reads as a command that printed nothing -- or when the command has
     /// printed nothing for a lens to replace.
     func lensedCommand(containingOutputRow row: Int, lenses: LensChoices,
-                       buffers: (UInt32) -> LensBuffer?) -> (region: CommandRegion, buffer: LensBuffer)? {
+                       buffers: (UInt32) -> LensBuffer?,
+                       memo: CommandRegionMemo? = nil) -> (region: CommandRegion, buffer: LensBuffer)? {
         guard !lenses.isEmpty, shellEmitsPromptMarks,
-              let region = command(containingAbsoluteRow: row),
+              let region = region(containing: row, memo: memo ?? CommandRegionMemo()),
               lenses.lens(of: region.id) != nil,
               region.outputRows.contains(row),
               let buffer = buffers(region.id), buffer.lineCount > 0 else { return nil }
@@ -196,11 +198,13 @@ public extension Terminal {
     /// the hole is gone by construction.
     func displayRows(from cursor: DisplayCursor, count: Int, folding: OutputFolding,
                      lenses: LensChoices = LensChoices(),
-                     buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> [DisplayRow] {
+                     buffers: (UInt32) -> LensBuffer? = { _ in nil },
+                     memo: CommandRegionMemo? = nil) -> [DisplayRow] {
         guard count > 0 else { return [] }
         guard !folding.isEmpty || !lenses.isEmpty else {
             return (0..<count).map { .row(max(0, cursor.row) + $0) }
         }
+        let memo = memo ?? CommandRegionMemo()
         var out: [DisplayRow] = []
         var position = DisplayCursor(row: max(0, cursor.row), line: cursor.line)
         // The entry. A display cursor may sit anywhere inside a block -- halfway down a lens, on a
@@ -208,11 +212,11 @@ public extension Terminal {
         // position. It costs a scan back to the block's prompt each step, which inside the block is
         // the length of its command line and outside it is the length of the block, so the walk uses
         // it exactly until it is past the block it started in and then hands over to the loop below.
-        if let region = command(containingAbsoluteRow: position.row),
+        if let region = region(containing: position.row, memo: memo),
            folding.shape(of: region.id) != nil || lenses.lens(of: region.id) != nil {
             while out.count < count, position.row <= region.endRow,
                   let (entry, next) = displayEntry(at: position, folding: folding, lenses: lenses,
-                                                   buffers: buffers) {
+                                                   buffers: buffers, memo: memo) {
                 out.append(entry)
                 position = next
             }
@@ -226,7 +230,7 @@ public extension Terminal {
             let shape = folding.shape(of: id)
             let lensed = lenses.lens(of: id) != nil
             guard shape != nil || lensed,
-                  let region = command(containingAbsoluteRow: row), region.promptRow == row else {
+                  let region = region(containing: row, memo: memo), region.promptRow == row else {
                 row += 1
                 continue
             }
@@ -270,13 +274,15 @@ public extension Terminal {
     /// `displayCursor(atAbsoluteRow:)`.
     func displayRows(from top: Int, count: Int, folding: OutputFolding,
                      lenses: LensChoices = LensChoices(),
-                     buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> [DisplayRow] {
+                     buffers: (UInt32) -> LensBuffer? = { _ in nil },
+                     memo: CommandRegionMemo? = nil) -> [DisplayRow] {
         guard count > 0 else { return [] }
         guard !folding.isEmpty || !lenses.isEmpty else { return (0..<count).map { .row(top + $0) } }
+        let memo = memo ?? CommandRegionMemo()
         let cursor = displayCursor(atAbsoluteRow: max(0, top), folding: folding, lenses: lenses,
-                                   buffers: buffers)
+                                   buffers: buffers, memo: memo)
         return displayRows(from: cursor, count: count, folding: folding, lenses: lenses,
-                           buffers: buffers)
+                           buffers: buffers, memo: memo)
     }
 
     /// The rows to draw for a range of the buffer; used where a fixed count is not wanted.

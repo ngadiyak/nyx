@@ -1783,9 +1783,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // From the display cursor, not from `top`: a lens is taller or shorter than the rows
                 // it replaces, so which of its lines is at the top of the screen is the pane's own
                 // state and cannot be recovered from an absolute row. See `DisplayCursor`.
-                let display = t.displayRows(from: self.viewportCursor(in: t), count: t.rows,
+                // One memo for the whole frame: finding the cursor and drawing from it both walk
+                // the same blocks, and the terminal is locked between them, so nothing can have
+                // moved the rows it remembers. See `CommandRegionMemo`.
+                let memo = CommandRegionMemo()
+                let display = t.displayRows(from: self.viewportCursor(in: t, memo: memo),
+                                            count: t.rows,
                                             folding: self.folding, lenses: self.lenses,
-                                            buffers: { self.lensBuffers[$0] })
+                                            buffers: { self.lensBuffers[$0] }, memo: memo)
                 self.foldRowsOnScreen = display
                 // The caret goes through the same map as the text under it. Without this it was
                 // drawn at `cursor.y` -- as many rows below the prompt as the folds above had
@@ -2805,10 +2810,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Where the top of the viewport is in the display sequence. The rule is
     /// `Terminal.viewportCursor(anchor:anchorTop:…)` in NyxCore, where it can be tested; this hands
     /// it the two numbers only the pane knows.
-    private func viewportCursor(in t: Terminal) -> DisplayCursor {
+    private func viewportCursor(in t: Terminal, memo: CommandRegionMemo? = nil) -> DisplayCursor {
         t.viewportCursor(anchor: viewportAnchor, anchorTop: viewportAnchorTop, folding: folding,
                          lenses: lenses, viewportRows: t.rows,
-                         buffers: { self.lensBuffers[$0] })
+                         buffers: { self.lensBuffers[$0] }, memo: memo)
     }
 
     // MARK: - Menu actions

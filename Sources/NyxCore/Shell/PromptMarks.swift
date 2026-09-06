@@ -125,6 +125,38 @@ public enum DurationText {
     }
 }
 
+/// One walk's memory of which command owns the row it last asked about.
+///
+/// A reference type on purpose: it is threaded through a walk that is otherwise made of
+/// non-mutating functions on `Terminal`, and every step of that walk has to see what the step
+/// before it learned. Make one per walk and throw it away — it caches absolute row numbers, so a
+/// memo kept across anything that feeds the terminal, evicts rows or changes the prompt marks will
+/// answer for rows that have moved. Nothing here holds a `Terminal`, so it cannot notice.
+public final class CommandRegionMemo {
+    /// How many times the walk actually had to scan the buffer. The point of the memo, and what the
+    /// cost tests assert on: it is the number of blocks a walk crosses, not the number of rows.
+    public internal(set) var resolutions = 0
+
+    /// The rows `region` is the answer for. Empty until the first resolution.
+    private var covered: Range<Int> = 0..<0
+    private var region: CommandRegion?
+
+    public init() {}
+
+    /// Whether the last answer covers this row. A remembered *absence* — above the first prompt —
+    /// is as worth caching as a hit, because finding it out is a scan to row zero, so this is asked
+    /// separately from reading `remembered` rather than folded into a nested optional.
+    func covers(_ row: Int) -> Bool { covered.contains(row) }
+
+    /// The last answer. Meaningless unless `covers(row)` said so.
+    var remembered: CommandRegion? { region }
+
+    func remember(_ region: CommandRegion?, covering rows: Range<Int>) {
+        self.region = region
+        covered = rows
+    }
+}
+
 public extension Terminal {
     /// The marks on an absolute row -- empty for a row past the ends.
     func promptMarks(atAbsoluteRow row: Int) -> PromptMarks {
@@ -157,10 +189,42 @@ public extension Terminal {
         return ((row + 1)..<totalRows).first { promptMarks(atAbsoluteRow: $0).contains(.promptStart) }
     }
 
+    /// `command(containingAbsoluteRow:)` with the answer to the previous row still in hand.
+    ///
+    /// Every row of a block resolves to the same region, and resolving it costs a scan to the
+    /// prompt above and the prompt below — the length of the block. A walk that asks per row
+    /// therefore costs `rows × blockLength`: one screenful stepped backwards through a
+    /// five-thousand-row `cat` re-derived the same region twenty to fifty times, on the frame path,
+    /// inside `session.withTerminal`, so the PTY reader waited for it too. Passing one memo through
+    /// the walk turns that back into one resolution per block the walk actually crosses.
+    ///
+    /// nil is memoised as well: above the first prompt there is no region and finding that out is
+    /// itself a scan to row zero.
+    func region(containing row: Int, memo: CommandRegionMemo) -> CommandRegion? {
+        guard row >= 0, row < totalRows else { return nil }
+        if memo.covers(row) { return memo.remembered }
+        let region = command(containingAbsoluteRow: row)
+        memo.resolutions += 1
+        if let region {
+            // Exactly the rows this region answers for: from its prompt to the row before the next
+            // prompt, and for the last command in the buffer to the end of it — `endRow` stops at
+            // the last row *written*, but the unwritten screen below still resolves here.
+            let upper = region.isLastInBuffer ? totalRows : region.endRow + 1
+            memo.remember(region, covering: region.promptRow..<max(region.promptRow + 1, upper))
+        } else {
+            // No prompt at or before `row`, so no prompt at or before anything above it either.
+            memo.remember(nil, covering: 0..<(row + 1))
+        }
+        return region
+    }
+
     /// The command whose region contains `row`, or nil when `row` is above the first prompt.
     ///
     /// The region runs from its own prompt to the row before the next one, so clicking anywhere in
     /// a command's output -- or on its prompt -- identifies the same command.
+    ///
+    /// A **scan** every time. Anything that asks about more than one row in a row wants
+    /// `region(containing:memo:)`; see that for what the repeated scan cost on the frame path.
     func command(containingAbsoluteRow row: Int) -> CommandRegion? {
         guard row >= 0, row < totalRows else { return nil }
         let start = promptMarks(atAbsoluteRow: row).contains(.promptStart) ? row : previousPrompt(before: row)

@@ -432,15 +432,45 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
     #expect(fromFresh.last == .row(promptRow))
 }
 
-/// A viewport scrolled up into the scrollback keeps the plain top: the bottom rule is for a reader
-/// pinned to the live screen and must not drag anyone else down to it.
+/// A viewport scrolled up into the scrollback keeps its top: the bottom rule is for a reader pinned
+/// to the live screen and must not drag anyone else down to it.
+///
+/// The top it keeps is the *display* cursor that row names, not the row: `build`'s output starts on
+/// row 3, so a viewport whose top row is 4 is one line into the lens. Answering `DisplayCursor(row:
+/// 4)` sent that reader back to line 0 of the response -- on every eviction, which is continuously
+/// while anything else prints.
 @Test func aScrolledBackViewportKeepsItsTop() {
     let t = session()
     _ = t.scrollToAbsoluteRow(4, margin: 0)
     let cursor = t.viewportCursor(anchor: nil, anchorTop: -1, folding: OutputFolding(),
                                   lenses: lensed(2), viewportRows: 6,
                                   buffers: buffers(2, lines: 40))
-    #expect(cursor == DisplayCursor(row: 4))
+    #expect(cursor == DisplayCursor(row: 3, line: 1))
+    // Not the display bottom, which is what the live-screen branch would have answered.
+    #expect(cursor != t.displayBottomCursor(folding: OutputFolding(), lenses: lensed(2),
+                                            viewportRows: 6, buffers: buffers(2, lines: 40)))
+}
+
+/// The same rule outside a lens is the row itself, unchanged: an ordinary scrolled-back viewport
+/// must not start costing a walk.
+@Test func aScrolledBackViewportOutsideALensIsStillItsRow() {
+    let t = session()
+    _ = t.scrollToAbsoluteRow(15, margin: 0)
+    #expect(t.viewportCursor(anchor: nil, anchorTop: -1, folding: OutputFolding(),
+                             lenses: lensed(2), viewportRows: 6,
+                             buffers: buffers(2, lines: 40)) == DisplayCursor(row: 15))
+}
+
+/// A fold under the same branch: the top row inside a fold is the fold's own first hidden row, so
+/// the viewport starts on the placeholder rather than a row the display does not contain.
+@Test func aScrolledBackViewportInsideAFoldStartsOnThePlaceholder() {
+    let t = session()
+    var folding = OutputFolding()
+    folding.fold(2, .all)
+    _ = t.scrollToAbsoluteRow(7, margin: 0)
+    let cursor = t.viewportCursor(anchor: nil, anchorTop: -1, folding: folding,
+                                  lenses: LensChoices(), viewportRows: 6)
+    #expect(cursor == DisplayCursor(row: 3))
 }
 
 /// And an anchor that still describes this viewport is what is used, clamped to what the buffer

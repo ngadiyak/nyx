@@ -1592,6 +1592,10 @@ extension TabController: ActionTarget {
             // Only on a remote pane that is observing. On a local pane, or one already writing,
             // there is nothing to take.
             return focusedPane?.remote?.state.stripAction == .takeControl
+        // `newRequest`, `toggleHTTPLens` and `stopWatch` fall through to here rather than getting
+        // their own case: real state to gate on -- a shown response, a running watch -- arrives
+        // with the response plan. Until then they are enabled whenever any other pane-scoped
+        // action is, which is a tracked gap, not an oversight.
         default:
             return focusedPane != nil
         }

@@ -145,6 +145,16 @@ final class SettingsWindowController: NSWindowController {
                 unit: "lines"),
             row("Auto-fold output over", stepperField("fold-long-output", min: 0, max: 1_000_000, step: 50),
                 unit: "lines (0 = never)"),
+            row("", sectionHeader("Requests")),
+            row("Response body", popUp("http-lens", titled: [
+                ("Pretty JSON", "pretty"),
+                ("Raw", "raw"),
+            ])),
+            row("", checkbox("http-hint", title: "Offer the workbench when a curl is pasted")),
+            row("Watch every", stepperField("http-watch-interval", min: 1, max: 3600, step: 1),
+                unit: "seconds"),
+            row("Remember", stepperField("http-history", min: 0, max: 500, step: 5),
+                unit: "requests (0 = off)"),
         ], note: "Letting programs read the clipboard is off by default: any program in the terminal could then see whatever you last copied.")
     }
 
@@ -644,6 +654,32 @@ final class SettingsWindowController: NSWindowController {
         return button
     }
 
+    /// A popup whose menu text isn't the config spelling itself -- `pretty`/`raw` says less on its
+    /// own in a menu than "Pretty JSON"/"Raw" does. `value(of:for:)` and `set(_:_:)` consult
+    /// `popUpTitledValues` for a key registered here instead of writing the title straight through.
+    private func popUp(_ key: String, titled options: [(title: String, value: String)]) -> NSPopUpButton {
+        let button = NSPopUpButton()
+        button.addItems(withTitles: options.map(\.title))
+        button.target = self
+        button.action = #selector(controlChanged(_:))
+        button.identifier = NSUserInterfaceItemIdentifier(key)
+        controls[key] = button
+        popUpTitledValues[key] = options
+        return button
+    }
+
+    private var popUpTitledValues: [String: [(title: String, value: String)]] = [:]
+
+    /// A small caption row, e.g. "Requests" above the four curl-workbench settings: this page mixes
+    /// several unrelated toggles in one flat list, and a group of keys that arrived together reads
+    /// as an unexplained jump without something naming what changed.
+    private func sectionHeader(_ title: String) -> NSTextField {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
+
     private func checkbox(_ key: String, title: String) -> NSButton {
         let button = NSButton(checkboxWithTitle: title, target: self, action: #selector(controlChanged(_:)))
         button.identifier = NSUserInterfaceItemIdentifier(key)
@@ -753,6 +789,9 @@ final class SettingsWindowController: NSWindowController {
         switch sender {
         case let button as NSPopUpButton:
             let title = button.titleOfSelectedItem ?? ""
+            if let mapped = popUpTitledValues[key] {
+                return mapped.first { $0.title == title }?.value ?? ""
+            }
             // "none" for a theme override means "no override", which is an absent line rather than
             // a value -- but the file may already carry one, so write the empty string, which the
             // parser reads back as unset.
@@ -822,6 +861,10 @@ final class SettingsWindowController: NSWindowController {
         set("multiline-paste", c.multilinePaste.rawValue)
         set("fold-keep-lines", Double(c.foldKeepLines), decimals: 0)
         set("fold-long-output", Double(c.foldLongOutput), decimals: 0)
+        set("http-lens", c.httpLens.rawValue)
+        set("http-hint", c.httpHint)
+        set("http-watch-interval", c.httpWatchInterval, decimals: 0)
+        set("http-history", Double(c.httpHistory), decimals: 0)
 
         set("remote", c.remote == .on)
         set("remote-device-name", c.remoteDeviceName)
@@ -857,6 +900,11 @@ final class SettingsWindowController: NSWindowController {
     private func set(_ key: String, _ title: String?) {
         guard let button = controls[key] as? NSPopUpButton else {
             if let field = controls[key] as? NSTextField { field.stringValue = title ?? "" }
+            return
+        }
+        if let mapped = popUpTitledValues[key] {
+            let wantedTitle = mapped.first { $0.value == title }?.title ?? mapped.first?.title ?? ""
+            if button.itemTitles.contains(wantedTitle) { button.selectItem(withTitle: wantedTitle) }
             return
         }
         let wanted = title ?? SettingsWindowController.noneTitle

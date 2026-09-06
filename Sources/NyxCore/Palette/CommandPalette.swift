@@ -12,6 +12,10 @@ public enum PaletteItemKind: Equatable {
     /// A session on a paired device: attach to it. `sessionID` is empty for the placeholder row an
     /// offline device shows, which nothing can attach to.
     case remoteSession(deviceID: String, sessionID: String)
+    /// A request from `RequestHistory`, by its index in `entries`. The index rather than the line:
+    /// the row is a handle, and what the palette shows is masked while what gets run must not be,
+    /// so the caller reads the real line back from the history it built these from.
+    case request(index: Int)
 }
 
 /// One row of the command palette.
@@ -151,13 +155,16 @@ public struct CommandPalette: Equatable {
 
 /// Building the palette's list out of what a window knows.
 ///
-/// Here rather than in the app so the order -- actions, quick actions, themes, then tabs -- and the
-/// way each kind is labelled are pinned by a test instead of by whoever last edited the view.
+/// Here rather than in the app so the order -- actions, quick actions, themes, tabs, remote
+/// sessions, then requests -- and the way each kind is labelled are pinned by a test instead of by
+/// whoever last edited the view. Each new section goes on the end: a row that moves is a habit
+/// broken, and the sections people reach for blind are the oldest ones.
 public enum PaletteSource {
     public static func items(actions: [TerminalAction], chord: (TerminalAction) -> String?,
                              quickActions: [(action: QuickAction, isRunning: Bool)] = [],
                              themes: [String], tabTitles: [String],
-                             remote: [PaletteItem] = []) -> [PaletteItem] {
+                             remote: [PaletteItem] = [],
+                             requests: [PaletteItem] = []) -> [PaletteItem] {
         actions.map { PaletteItem.action($0, chord: chord($0)) }
             + quickActions.enumerated().map {
                 PaletteItem.quickAction($0.element.action, index: $0.offset,
@@ -166,5 +173,6 @@ public enum PaletteSource {
             + themes.map(PaletteItem.theme)
             + tabTitles.enumerated().map { PaletteItem.tab($0.offset, title: $0.element) }
             + remote
+            + requests
     }
 }

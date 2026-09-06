@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import NyxCore
 
@@ -152,4 +153,31 @@ private func palette(_ titles: [String]) -> CommandPalette {
     var p = CommandPalette(items: [PaletteItem.quickAction(toggle, index: 0, isRunning: true)])
     p.setQuery("caffeine")
     #expect(p.selected?.kind == .quickAction(0))
+}
+
+// MARK: - Requests
+
+/// Newest category last, again: the Requests section goes after Remote, so nothing a user already
+/// reaches by muscle memory moves when it appears.
+@Test func requestsComeAfterRemote() {
+    let remote = PaletteItem.remoteSession(deviceID: "d", sessionID: "s", title: "iMac · zsh",
+                                           detail: "")
+    var history = RequestHistory(limit: 10)
+    history.record("curl https://api.example.com/users", at: Date(timeIntervalSince1970: 1_000))
+    let requests = history.paletteItems(now: Date(timeIntervalSince1970: 1_030))
+    let items = PaletteSource.items(actions: [.newTab], chord: { _ in nil },
+                                    themes: ["dracula"], tabTitles: ["zsh"], remote: [remote],
+                                    requests: requests)
+    #expect(items.map(\.kind) == [.action(.newTab), .theme("dracula"), .tab(0),
+                                  .remoteSession(deviceID: "d", sessionID: "s"), .request(index: 0)])
+    #expect(items.last?.title == "GET api.example.com/users")
+    #expect(items.last?.detail == "just now")
+}
+
+/// A window with no history is the ordinary palette: the parameter defaults to nothing, so no
+/// caller has to pass an empty list to keep the list it already had.
+@Test func aWindowWithNoRequestsGetsNoSection() {
+    let items = PaletteSource.items(actions: [.newTab], chord: { _ in nil },
+                                    themes: [], tabTitles: [])
+    #expect(items.map(\.kind) == [.action(.newTab)])
 }

@@ -729,10 +729,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         guard id != 0, !block.isRunning, block.region.outputStart != nil else { return nil }
 
         if requestCache.shouldParse(id: id) {
-            guard CurlDetection.isCurl(t.commandLine(of: block.region)) else {
+            let line = t.commandLine(of: block.region)
+            guard CurlDetection.isCurl(line) else {
                 requestCache.remember(.notARequest, for: id)
                 return nil
             }
+            // The one moment a request is known to have been *run*: this block is finished, it is a
+            // curl, and it has not been read before. Recorded here rather than when the command is
+            // typed, because what the user re-runs from the palette must be a line that ran, and
+            // recorded for a failed connection too -- "the deploy call that could not reach the
+            // host" is exactly the one somebody wants back.
+            (NSApp.delegate as? AppDelegate)?.requests?.record(line)
             // A response big enough to fill the scrollback is not one whose body kind is worth
             // joining into a single string under the session lock. The head and the sentinel are
             // in the first and last rows of it, but reading only those would still walk the whole
@@ -2977,7 +2984,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             return terminal.commandLine(of: region)
         }
         guard !command.isEmpty else { return false }
-        presentCommandEditor(text: command, heading: "Edit and run", runTitle: "Run") {
+        return editAndRun(command: command)
+    }
+
+    /// The same editor, on a line that did not come from this pane's scrollback -- a row of the
+    /// palette's Requests section, which may well have been run in another tab.
+    @discardableResult
+    func editAndRun(command: String) -> Bool {
+        guard !command.isEmpty else { return false }
+        return presentCommandEditor(text: command, heading: "Edit and run", runTitle: "Run") {
             [weak self] edited in
             guard let self else { return }
             // Sent as a paste so a multi-line edit arrives as one command rather than as several
@@ -2985,7 +3000,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let bracketed = self.session.withTerminal { $0.modes.bracketedPaste }
             self.performPaste(edited, bracketed: bracketed)
         }
-        return true
     }
 
     @discardableResult

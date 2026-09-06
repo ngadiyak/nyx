@@ -869,7 +869,8 @@ final class TabController: NSViewController, NSMenuItemValidation {
                                         },
                                         themes: Pane.themes.names,
                                         tabTitles: tabs.map(\.title),
-                                        remote: appDelegate?.remote?.paletteItems() ?? [])
+                                        remote: appDelegate?.remote?.paletteItems() ?? [],
+                                        requests: appDelegate?.requests?.paletteItems() ?? [])
         openPalette(items: items)
     }
 
@@ -936,6 +937,15 @@ final class TabController: NSViewController, NSMenuItemValidation {
             let described = coordinator.describe(deviceID: deviceID, sessionID: sessionID)
             openRemote(deviceID: deviceID, sessionID: sessionID, hostName: described.hostName,
                        title: described.title)
+        case .request(let index):
+            // The row carries an index, not the line: what it shows is masked and what runs must
+            // not be, so the real line is read back here.
+            guard let line = appDelegate?.requests?.line(at: index), let pane = focusedPane else {
+                NSSound.beep()
+                return
+            }
+            // Task 9 replaces this with the request editor.
+            if !pane.editAndRun(command: line) { NSSound.beep() }
         }
     }
 

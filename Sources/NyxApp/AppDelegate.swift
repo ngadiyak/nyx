@@ -11,6 +11,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// question. Windows reach it through `NSApp.delegate`, the way they already reach everything
     /// else that is the application's rather than a window's.
     private(set) var remote: RemoteCoordinator?
+    /// The requests this Mac has run, behind the palette's Requests section. One per application
+    /// for the same reason the remote coordinator is: it is one file, and two stores would each
+    /// rewrite the other's list. nil in a snapshot run, which must not write anything.
+    private(set) var requests: RequestHistoryStore?
     /// The session file, beside the config. See `SessionStore`.
     private let sessionStore = SessionStore.standard()
     /// A save is already queued; see `sessionChanged`.
@@ -52,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let coordinator = RemoteCoordinator(config: configStore.config)
         coordinator.onChange = { [weak self] in self?.remoteChanged() }
         remote = coordinator
+        requests = RequestHistoryStore.standard()
         configStore.startWatching()
         openInitialWindows()
         NSApp.activate(ignoringOtherApps: true)

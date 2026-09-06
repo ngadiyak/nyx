@@ -115,6 +115,16 @@ enum UISnapshot {
               named: "command-palette-mixed-remote", into: directory, background: palette.background)
         write(remotePalettePanel(palette: palette, mixed: false), named: "command-palette-remote",
               into: directory, background: palette.background)
+        // The Requests section, under the everyday rows, so it can be read as a section rather than
+        // as three loose lines: three requests of three different ages, one of them long enough to
+        // be cut and one carrying a password in its URL. Against both built-in themes, because this
+        // is the first section whose right-hand column is neither a chord nor a word.
+        write(requestPalettePanel(palette: palette), named: "command-palette-requests-dark",
+              into: directory, background: palette.background)
+        if let lightPalette = Themes.builtin["nyx-light"] {
+            write(requestPalettePanel(palette: lightPalette), named: "command-palette-requests-light",
+                  into: directory, background: lightPalette.background)
+        }
         write(stickyPrompt(palette: palette, failed: false), named: "sticky-prompt", into: directory,
               background: palette.background)
         write(stickyPrompt(palette: palette, failed: true), named: "sticky-prompt-failed",
@@ -664,6 +674,30 @@ enum UISnapshot {
             items = offline.paletteItems(now: now, home: NSHomeDirectory())
         }
 
+        let view = CommandPaletteView(palette: palette, items: items)
+        view.frame = NSRect(x: 0, y: 0, width: CommandPaletteView.width, height: view.preferredHeight)
+        view.layoutSubtreeIfNeeded()
+        return view
+    }
+
+    /// The palette as a person with a day's requests behind them opens it: the window's own verbs
+    /// first, then the Requests section. Ages are relative to `now`, so the picture reads the same
+    /// whenever it is taken.
+    private static func requestPalettePanel(palette: Palette) -> NSView {
+        let now = Date()
+        var history = RequestHistory(limit: RequestHistory.defaultLimit)
+        history.record("curl -sS https://api.example.com/v1/organisations/acme/projects/nyx/deployments",
+                       at: now.addingTimeInterval(-86_400 * 3))
+        history.record("curl https://admin:hunter2secret@staging.example.com/v1/health",
+                       at: now.addingTimeInterval(-7_200))
+        history.record("curl -X POST -H 'Authorization: Bearer $TOKEN' -d '{\"ref\":\"main\"}' "
+                       + "https://api.example.com/v2/deployments",
+                       at: now.addingTimeInterval(-90))
+        let bindings = KeyBindingTable(user: [])
+        let items = PaletteSource.items(actions: Array(ActionCatalog.allMenuActions.prefix(4)),
+                                        chord: { bindings.binding(for: $0).map(chordText) },
+                                        themes: ["dracula"], tabTitles: ["nyx — zsh"],
+                                        requests: history.paletteItems(now: now))
         let view = CommandPaletteView(palette: palette, items: items)
         view.frame = NSRect(x: 0, y: 0, width: CommandPaletteView.width, height: view.preferredHeight)
         view.layoutSubtreeIfNeeded()

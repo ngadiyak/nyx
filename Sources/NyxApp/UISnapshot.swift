@@ -544,8 +544,10 @@ enum UISnapshot {
             ("http-failure", header(8, "500 \u{b7} 1.4 s \u{b7} 2.0 KB \u{b7} json", .failure)),
             // The server answered and the command still failed -- `-o` could not write the file,
             // the transfer was cut short. Red, because a failed command is never green, and the
-            // status is kept because "which request was it that failed" is the next question.
-            ("http-exit", header(9, "200 \u{b7} 245 ms \u{b7} exit 56 \u{b7} connection reset", .failure)),
+            // status is kept because "which request was it that failed" is the next question. The
+            // code has no words beside it: curl's reasons are all about connecting, which this
+            // request evidently did.
+            ("http-exit", header(9, "200 \u{b7} 245 ms \u{b7} exit 56", .failure)),
         ]
     }
 

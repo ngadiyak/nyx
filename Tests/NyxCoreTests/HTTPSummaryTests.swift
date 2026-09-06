@@ -111,13 +111,18 @@ private func exchange(status: Int, total: Double, size: Int, type: String, body:
     #expect(failed.tone == .failure)
 }
 
-/// And when curl's code has a meaning, the summary says it -- "exit 28" alone is a number to look
-/// up, "timed out" is the answer.
-@Test func aKnownExitReasonIsAppendedAfterTheStatus() throws {
+/// The reason words are for the case they were written for: curl never reached a server, and
+/// "exit 7" alone is a number to look up. Once there *is* a status the row already says the
+/// request happened, and the reasons -- all seven of them about connecting -- describe the wrong
+/// thing: a `-o` that could not write its file exits 56, whose reason reads "connection reset".
+@Test func aCurlReasonIsNotAppendedWhenThereIsAStatus() throws {
     let ok = exchange(status: 200, total: 2.0, size: 0, type: "text/plain", body: "")
     let failed = try #require(HTTPSummary.make(exchange: ok, exitStatus: 28, duration: 2.1))
-    #expect(failed.text == "200 \u{b7} 2.0 s \u{b7} exit 28 \u{b7} timed out")
+    #expect(failed.text == "200 \u{b7} 2.0 s \u{b7} exit 28")
     #expect(failed.tone == .failure)
+    // Without a status the reason is still the whole point of the line.
+    let unreachable = try #require(HTTPSummary.make(exchange: nil, exitStatus: 28, duration: 2.1))
+    #expect(unreachable.text == "exit 28 \u{b7} timed out")
 }
 
 /// A 3xx with a non-zero exit is a failure too: the tone follows the command, not the class.

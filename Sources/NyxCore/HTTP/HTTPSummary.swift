@@ -40,12 +40,13 @@ public struct HTTPSummary: Equatable {
             // (18), the timeout fired part way through the body (28). Showing only the 200 -- in
             // green -- said the request worked when the command did not. A failed command is never
             // green, whatever the status class says.
-            if let exitStatus, failed {
-                text += " \u{b7} exit \(exitStatus)"
-                if let reason = HTTPExchange.curlFailureReason(exitStatus: exitStatus) {
-                    text += " \u{b7} " + reason
-                }
-            }
+            //
+            // The code without its words, here only. `curlFailureReason`'s seven strings are all
+            // about *connecting*, which is what the exit code means when nothing else happened; once
+            // a status is on the row the connection plainly succeeded and the reason describes the
+            // wrong thing -- a `-o` that could not write its file exits 56, and "connection reset"
+            // beside a 200 is a sentence that is not true.
+            if let exitStatus, failed { text += " \u{b7} exit \(exitStatus)" }
             return HTTPSummary(text: text, tone: failed ? .failure : tone(forStatus: status))
         }
         // curl never got an answer. The exit code is the only thing that says why, and on its own

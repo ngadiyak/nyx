@@ -89,3 +89,65 @@ private func block(_ region: CommandRegion) -> CommandBlock {
     #expect(h.title(for: .toggleFold) == "Unfold Output")
     #expect(h.title(for: .toggleFoldAll) == "Unfold Everything")
 }
+
+// MARK: - The HTTP summary
+
+private func httpSummary(_ text: String, _ tone: HTTPSummary.Tone) -> HTTPSummary {
+    HTTPSummary(text: text, tone: tone)
+}
+
+/// The whole point of the request workbench's first visible piece: after a curl, the row says what
+/// the server said, not how long the process took.
+@Test func httpSummaryReplacesDuration() {
+    let plain = block(region()).header(now: 100, folding: OutputFolding(), notifyArmed: false,
+                                       anyFolds: false, hasOutput: true)
+    #expect(plain.summary == "8.8s")
+    #expect(plain.tone == .plain)
+
+    let http = block(region()).header(now: 100, folding: OutputFolding(), notifyArmed: false,
+                                      anyFolds: false, hasOutput: true,
+                                      httpSummary: httpSummary("200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json", .success))
+    #expect(http.summary == "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json")
+    #expect(http.summaryWithChevron == "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json \u{25BE}")
+    #expect(http.tone == .success)
+}
+
+/// A 3xx and a 4xx are two different things and must not be the same colour, which is the reason
+/// `tone` exists at all rather than the view switching on `failed`.
+@Test func theToneFollowsTheStatusClass() {
+    func tone(_ summary: HTTPSummary?) -> SummaryTone {
+        block(region()).header(now: 100, folding: OutputFolding(), notifyArmed: false,
+                               anyFolds: false, hasOutput: true, httpSummary: summary).tone
+    }
+    #expect(tone(httpSummary("301 \u{b7} 12 ms", .redirect)) == .redirect)
+    #expect(tone(httpSummary("500 \u{b7} 12 ms", .failure)) == .failure)
+    #expect(tone(nil) == .plain)
+}
+
+/// A curl that returned 404 exits 0, so the block itself is a success and only the summary says
+/// otherwise. Without this the row would be grey and read as fine.
+@Test func aFailedRequestInASucceedingCommandIsStillColouredAsAFailure() {
+    let h = block(region(status: 0)).header(now: 100, folding: OutputFolding(), notifyArmed: false,
+                                            anyFolds: false, hasOutput: true,
+                                            httpSummary: httpSummary("404 \u{b7} 31 ms", .failure))
+    #expect(!h.failed)
+    #expect(h.tone == .failure)
+}
+
+/// A running block has no HTTP summary yet -- the transcript is half written -- and must keep the
+/// amber the spine already uses for the same state.
+@Test func aRunningBlockKeepsTheRunningTone() {
+    let h = block(region(status: nil, duration: nil)).header(now: 12, folding: OutputFolding(),
+                                                             notifyArmed: false, anyFolds: false,
+                                                             hasOutput: true)
+    #expect(h.tone == .running)
+}
+
+@Test func eachToneTakesItsColourFromTheTheme() {
+    let palette = Palette.xtermDefault()
+    #expect(SummaryTone.success.color(in: palette) == palette.readable(2))
+    #expect(SummaryTone.redirect.color(in: palette) == palette.readable(3))
+    #expect(SummaryTone.running.color(in: palette) == palette.readable(3))
+    #expect(SummaryTone.failure.color(in: palette) == palette.readable(1))
+    #expect(SummaryTone.plain.color(in: palette) == palette.noteForeground)
+}

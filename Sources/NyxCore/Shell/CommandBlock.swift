@@ -280,6 +280,36 @@ public enum BlockAction: Equatable {
     }
 }
 
+/// What colour a block's summary is drawn in, as a meaning rather than as an index.
+///
+/// One ladder for the three places a summary appears -- the glyphs Metal draws at the end of the
+/// command row, the hover strip's label, and the pinned sticky strip's note. Each of them used to
+/// pick its own colour from `failed`/`isRunning`, which is three chances to disagree, and the HTTP
+/// summary adds a fourth state that none of them would have known about.
+public enum SummaryTone: Equatable {
+    /// A finished command with nothing remarkable to say -- the duration alone.
+    case plain
+    /// Still going.
+    case running
+    /// 2xx.
+    case success
+    /// 3xx.
+    case redirect
+    /// A non-zero exit, or a 4xx/5xx.
+    case failure
+
+    /// `readable` rather than `colors[n]`: gruvbox's red is 2.7:1 against its own background and
+    /// unreadable as a line of text, and this is text.
+    public func color(in palette: Palette) -> RGB {
+        switch self {
+        case .plain: return palette.noteForeground
+        case .running, .redirect: return palette.readable(3)
+        case .success: return palette.readable(2)
+        case .failure: return palette.readable(1)
+        }
+    }
+}
+
 /// Everything the command row and the hover overlay say about one block, decided once.
 public struct BlockHeader: Equatable {
     public enum State: Equatable {
@@ -299,11 +329,36 @@ public struct BlockHeader: Equatable {
     /// and nothing for a quick success -- a status that appears the instant you press return is
     /// noise. Computed by `CommandBlock.header(now:...)`, stored here so the view compares one value.
     public let summary: String
+    /// What the block's curl said, when the block was one. nil for everything else, which is almost
+    /// every block.
+    public let httpSummary: HTTPSummary?
 
+    /// `httpSummary`, when there is one, *replaces* `summary` rather than sitting beside it: a
+    /// request's status and latency are what the user ran the command to find out, and two sources
+    /// for one string is two ways for the command row, the hover strip and the sticky strip to
+    /// disagree about what a block did.
     public init(id: UInt32, state: State, folded: Bool, hasOutput: Bool, anyFolds: Bool,
-                notifyArmed: Bool, summary: String) {
+                notifyArmed: Bool, summary: String, httpSummary: HTTPSummary? = nil) {
         self.id = id; self.state = state; self.folded = folded; self.hasOutput = hasOutput
-        self.anyFolds = anyFolds; self.notifyArmed = notifyArmed; self.summary = summary
+        self.anyFolds = anyFolds; self.notifyArmed = notifyArmed
+        self.summary = httpSummary?.text ?? summary
+        self.httpSummary = httpSummary
+    }
+
+    /// The colour meaning for this block's summary: the request's, when it made one, and otherwise
+    /// what the command's own state says. One property, so the three places that draw a summary
+    /// cannot pick three different colours for the same block.
+    public var tone: SummaryTone {
+        if let httpSummary {
+            switch httpSummary.tone {
+            case .success: return .success
+            case .redirect: return .redirect
+            case .failure: return .failure
+            }
+        }
+        if failed { return .failure }
+        if isRunning { return .running }
+        return .plain
     }
 
     public var isRunning: Bool { if case .running = state { return true } else { return false } }
@@ -355,8 +410,12 @@ public extension CommandBlock {
     /// gutter's actionability and `toggleFold`'s precondition also use. Not `region.outputRows`:
     /// a command whose `C` has arrived but which has printed nothing has output rows and nothing in
     /// them, and a chevron there folds blank lines.
+    ///
+    /// `httpSummary` defaults to nil because almost no block has one and the caller that does --
+    /// the pane, which parses a finished curl's transcript at most once -- is the only one that can
+    /// afford to look.
     func header(now: Double, folding: OutputFolding, notifyArmed: Bool, anyFolds: Bool,
-                hasOutput: Bool) -> BlockHeader {
+                hasOutput: Bool, httpSummary: HTTPSummary? = nil) -> BlockHeader {
         let state: BlockHeader.State
         let summary: String
         if isRunning {
@@ -372,7 +431,7 @@ public extension CommandBlock {
         }
         return BlockHeader(id: region.id, state: state, folded: folding.isFolded(region.id),
                            hasOutput: hasOutput, anyFolds: anyFolds,
-                           notifyArmed: notifyArmed, summary: summary)
+                           notifyArmed: notifyArmed, summary: summary, httpSummary: httpSummary)
     }
 }
 

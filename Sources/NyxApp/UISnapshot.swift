@@ -126,7 +126,7 @@ enum UISnapshot {
         // its fitting size breaks a required constraint every frame.
         let defaultFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         let rowHeight = ceil(defaultFont.ascender - defaultFont.descender + defaultFont.leading)
-        for (name, header) in blockHeaderStates() {
+        for (name, header) in blockHeaderStates() + httpBlockHeaderStates() {
             // The `-light` and `-dark` pair is now the *same* picture on purpose: `update` sets the
             // view's appearance from the palette, so the system's has no say. That is the fix for
             // the disabled Copy reading at 1.13:1 in Light Mode over the dark theme; a pair that
@@ -200,6 +200,11 @@ enum UISnapshot {
         }
         write(stickyPrompt(palette: palette, failed: true, summary: "exit 2 \u{b7} 8.8s"),
               named: "sticky-prompt-summary", into: directory, background: palette.background)
+        // The strip over a curl whose output is filling the screen. The command exited 0, so the
+        // command line is not red; the note is green because the *response* was a 200.
+        write(stickyPrompt(palette: palette, failed: false,
+                           summary: "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json", tone: .success),
+              named: "sticky-prompt-http", into: directory, background: palette.background)
 
         for name in Themes.builtin.keys.sorted() {
             var themed = config
@@ -520,6 +525,26 @@ enum UISnapshot {
         ]
     }
 
+    /// The three answers a request can give, each in the colour that says which it was. The command
+    /// itself exited 0 in all three -- that is the whole reason the header needs a tone of its own:
+    /// a 404 in the same grey as a 200 reads as "fine".
+    ///
+    /// `summary` is deliberately the *duration* here, the thing the block would have said without
+    /// a request: if any of these three pictures shows `8.8s` the HTTP summary is not reaching the
+    /// view.
+    private static func httpBlockHeaderStates() -> [(String, BlockHeader)] {
+        func header(_ id: UInt32, _ text: String, _ tone: HTTPSummary.Tone) -> BlockHeader {
+            BlockHeader(id: id, state: .finished, folded: false, hasOutput: true, anyFolds: false,
+                        notifyArmed: false, summary: "8.8s",
+                        httpSummary: HTTPSummary(text: text, tone: tone))
+        }
+        return [
+            ("http-success", header(6, "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json", .success)),
+            ("http-redirect", header(7, "301 \u{b7} 31 ms \u{b7} 178 B", .redirect)),
+            ("http-failure", header(8, "500 \u{b7} 1.4 s \u{b7} 2.0 KB \u{b7} json", .failure)),
+        ]
+    }
+
     /// One picture per state the remote strip can be in. The live *writer* is deliberately not
     /// here: that state has no strip at all, which is the point of it -- from the writer's side an
     /// attached session looks exactly like a local one.
@@ -639,11 +664,12 @@ enum UISnapshot {
         return view
     }
 
-    private static func stickyPrompt(palette: Palette, failed: Bool, summary: String = "") -> NSView {
+    private static func stickyPrompt(palette: Palette, failed: Bool, summary: String = "",
+                                     tone: SummaryTone? = nil) -> NSView {
         let view = StickyPromptView(frame: NSRect(x: 0, y: 0, width: 900, height: 22))
         view.update(text: failed ? "$ make test" : "$ ./deploy.sh --env production --wait",
-                    summary: summary, failed: failed, palette: palette,
-                    font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+                    summary: summary, tone: tone ?? (failed ? .failure : .plain), failed: failed,
+                    palette: palette, font: .monospacedSystemFont(ofSize: 12, weight: .regular))
         view.layoutSubtreeIfNeeded()
         return view
     }

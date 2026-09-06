@@ -124,6 +124,27 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private var headersOnScreen: [Int: BlockHeader] = [:]
     /// The cell range of each summary on its row, for the chevron click target.
     private var summaryColumnsOnScreen: [Int: Range<Int>] = [:]
+    /// What a finished curl block's transcript said, by command id. A key is present only for a
+    /// block whose command line *is* a curl; a nil value is a curl whose output held neither a
+    /// status line nor a sentinel (a failed connection, a `-o` into a file with an explicit `-w`).
+    ///
+    /// Parsing means building the block's whole output as a string and walking it -- far too much
+    /// to do per frame. A finished block's output cannot change, so one entry answers forever;
+    /// `exchangesContentVersion` is what keeps even the *attempt* off the frame path while the
+    /// buffer is still.
+    private var exchanges: [UInt32: HTTPExchange?] = [:]
+    /// The blocks already found not to be curl, so `CurlCommand.parse` and the string build behind
+    /// `Terminal.commandLine(of:)` run once per block rather than once per content change. This is
+    /// the common case: on a screen of ordinary commands the request workbench costs one set
+    /// lookup per block.
+    private var notRequestBlocks: Set<UInt32> = []
+    /// The content version the caches were last allowed to grow at. Equal means nothing has been
+    /// written to the buffer since, so no block can have finished and there is nothing new to
+    /// parse -- the whole feature costs a `UInt64` comparison on a still screen.
+    private var exchangesContentVersion: UInt64 = .max
+    /// Only visible finished blocks are ever parsed, so this grows by the handful; the cap is for
+    /// a session that scrolls through thousands of requests without ever clearing.
+    private static let exchangeCacheLimit = 512
     /// How much of the hover strip fits on the row it was placed on. Decided in `render()` by
     /// `CommandBlockChrome.overlayPlacement`; applied after the lock, where AppKit lives.
     private var hoverOverlayControls: OverlayControls = .full
@@ -708,6 +729,55 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         renderer.resetStats()
     }
 
+    /// What a finished block's request said, for its header -- nil for every block that is not a
+    /// curl, which is almost all of them.
+    ///
+    /// `mayParse` is false on a frame whose `contentVersion` has not moved: nothing has been written
+    /// to the buffer, so no block can have finished and no cached answer can have become wrong.
+    /// That, and `blocks` being empty for a shell with no prompt marks, are what keep this off the
+    /// render path -- the bench must not know this feature exists.
+    ///
+    /// Only *finished* blocks: a half-written transcript would parse to a head with no body and put
+    /// a status on the row that the response has not actually finished delivering.
+    private func requestSummary(for block: CommandBlock, in t: Terminal, mayParse: Bool) -> HTTPSummary? {
+        let id = block.region.id
+        guard id != 0, !block.isRunning, block.region.outputStart != nil,
+              !notRequestBlocks.contains(id) else { return nil }
+
+        let exchange: HTTPExchange?
+        if let cached = exchanges[id] {
+            exchange = cached
+        } else {
+            guard mayParse else { return nil }
+            guard CurlDetection.isCurl(t.commandLine(of: block.region)) else {
+                notRequestBlocks.insert(id)
+                return nil
+            }
+            // A response big enough to fill the scrollback is not one whose body kind is worth
+            // joining into a single string under the session lock. The head and the sentinel are
+            // in the first and last rows of it, but reading only those would still walk the whole
+            // region, so a run this large simply gets the ordinary summary.
+            let rows = block.region.outputRows
+            exchange = rows.count > Pane.requestOutputRowLimit
+                ? nil
+                : HTTPExchange.parse(lines: t.outputText(of: block.region).components(separatedBy: "\n"))
+            if exchanges.count >= Pane.exchangeCacheLimit {
+                exchanges.removeAll(keepingCapacity: true)
+                notRequestBlocks.removeAll(keepingCapacity: true)
+            }
+            exchanges[id] = exchange
+        }
+        // `exchange` may be nil and still produce a summary: a curl that could not connect prints
+        // no head and no sentinel, and "exit 7 · connection refused" is the entire point of it.
+        return HTTPSummary.make(exchange: exchange, exitStatus: block.region.exitStatus,
+                                duration: block.region.duration)
+    }
+
+    /// Above this many output rows a block keeps its ordinary summary. 20,000 rows is twice the
+    /// default scrollback: a response that long is a download, not something anyone reads a status
+    /// line for.
+    private static let requestOutputRowLimit = 20_000
+
     private func render() {
         // Asked before the frame is built, not after: while an application is inside a synchronised
         // update (DECSET 2026) the frame would be thrown away, and building one walks the grid, the
@@ -734,7 +804,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         var notes: [String?] = []
         var spines: [(rows: Range<Int>, color: RGB)] = []
         var summaries: [(row: Int, text: String, color: RGB)] = []
-        var sticky: (text: String, failed: Bool, row: Int, summary: String)?
+        var sticky: (text: String, failed: Bool, row: Int, summary: String, tone: SummaryTone)?
         var anyRunningOnScreen = false
         // Set under the lock, acted on after it: the overlay and the cursor rects are AppKit calls.
         var hoverChanged = false
@@ -775,13 +845,20 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // it changes when rows are evicted, or when the whole buffer is replaced.
             let bufferMoved = t.evictedRows != self.lastPruneEvictedRows
                 || t.scrollbackGeneration != self.lastPruneGeneration
-            if bufferMoved, !(self.folding.isEmpty && self.armedNotifications.isEmpty) {
+            if bufferMoved, !(self.folding.isEmpty && self.armedNotifications.isEmpty
+                                && self.exchanges.isEmpty && self.notRequestBlocks.isEmpty) {
                 self.lastPruneEvictedRows = t.evictedRows
                 self.lastPruneGeneration = t.scrollbackGeneration
                 let oldest = t.oldestCommandID
                 if !self.folding.isEmpty { self.folding.prune(olderThan: oldest) }
                 if !self.armedNotifications.isEmpty {
                     self.armedNotifications = self.armedNotifications.filter { $0 >= oldest }
+                }
+                // A parsed exchange outlives the rows it was read from by exactly nothing: once the
+                // block is evicted its id can never come back, and the entry is a leak.
+                if !self.exchanges.isEmpty { self.exchanges = self.exchanges.filter { $0.key >= oldest } }
+                if !self.notRequestBlocks.isEmpty {
+                    self.notRequestBlocks = self.notRequestBlocks.filter { $0 >= oldest }
                 }
             }
             // Screen coordinates: `cursor.y` counts from the top of the live screen. The renderer
@@ -969,12 +1046,20 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             var notesSpokenFor: Set<Int> = []
             let overlayFont = NSFont.monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular)
             let cellWidth = self.cellSizePoints.width
+            // A finished curl's transcript is read at most once per block, and only on a frame
+            // where something was actually written to the buffer. On a still screen -- which is
+            // every frame of a scroll, a resize, a hover or a blinking cursor -- this is false and
+            // nothing below it does any work at all.
+            let mayParseRequests = t.contentVersion != self.exchangesContentVersion
+            self.exchangesContentVersion = t.contentVersion
             summaries = blocks.compactMap { block -> (row: Int, text: String, color: RGB)? in
                 guard block.showsHeader, let promptSlot = screenRow(block.region.promptRow) else { return nil }
                 let header = block.header(now: now, folding: self.folding,
                                           notifyArmed: self.armedNotifications.contains(block.region.id),
                                           anyFolds: !self.folding.isEmpty,
-                                          hasOutput: t.commandHasOutput(atAbsoluteRow: block.region.promptRow))
+                                          hasOutput: t.commandHasOutput(atAbsoluteRow: block.region.promptRow),
+                                          httpSummary: self.requestSummary(for: block, in: t,
+                                                                           mayParse: mayParseRequests))
                 let text = header.summaryWithChevron
                 // Every row of the command line is a candidate, not just the prompt row: a pasted
                 // `curl` wraps, and the row that has room is usually the last one.
@@ -1040,10 +1125,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // A running block used to differ from a finished one only by the digit in the
                 // elapsed time -- the same grey `12s ▾` a finished command's `12s ▾` shows. The
                 // theme's running colour is the one the spine already uses for the same state,
-                // so a glance down the screen says which command is still going.
+                // so a glance down the screen says which command is still going. `tone` is the same
+                // ladder the hover strip and the sticky strip use, so a 404 is red in all three.
                 return (row: slot, text: placement.text == .full ? text : header.chevron,
-                        color: block.failed ? failedColor
-                            : (block.isRunning ? runningColor : t.palette.noteForeground))
+                        color: header.tone.color(in: t.palette))
             }
             // The overlay goes where it fits, which is not always the prompt row: a strip placed
             // from the prompt row alone and sized only from its own content painted over the end of
@@ -1075,14 +1160,18 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // `shellEmitsPromptMarks` exists.
             if let pinned = t.stickyPrompt(), let region = t.command(containingAbsoluteRow: pinned.row) {
                 // Same fields the hover overlay would show for this command, so the strip and the
-                // overlay never disagree about what a command's duration or exit status was.
-                let summary = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
-                    .header(now: t.now(), folding: self.folding, notifyArmed: false,
-                            anyFolds: !self.folding.isEmpty,
-                            hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow)).summary
+                // overlay never disagree about what a command's duration, exit status or HTTP
+                // response was. The block is the pinned one, which is on screen by definition of
+                // there being a strip, so its exchange is the one already parsed for the header.
+                let block = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
+                let header = block.header(now: t.now(), folding: self.folding, notifyArmed: false,
+                                          anyFolds: !self.folding.isEmpty,
+                                          hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow),
+                                          httpSummary: self.requestSummary(for: block, in: t,
+                                                                           mayParse: mayParseRequests))
                 sticky = (StickyPromptLabel.text(command: t.commandText(of: region),
                                                  exitStatus: pinned.exitStatus, columns: t.cols),
-                          pinned.failed, pinned.row, summary)
+                          pinned.failed, pinned.row, header.summary, header.tone)
             }
             builtAtContentVersion = t.contentVersion
             return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
@@ -1112,8 +1201,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         stickyPromptRow = sticky?.row
         let wasHidden = stickyStrip.isHidden
-        stickyStrip.update(text: sticky?.text, summary: sticky?.summary ?? "", failed: sticky?.failed ?? false,
-                           palette: frame.palette,
+        stickyStrip.update(text: sticky?.text, summary: sticky?.summary ?? "", tone: sticky?.tone ?? .plain,
+                           failed: sticky?.failed ?? false, palette: frame.palette,
                            font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
         // The strip claims the pointer only while it is up, so appearing or disappearing changes
         // which view the cursor over the top row belongs to.

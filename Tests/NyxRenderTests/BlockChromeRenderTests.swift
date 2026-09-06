@@ -164,3 +164,44 @@ private let spineColor = RGB(0, 255, 0)
     #expect(cursorCell(slot) == Pixel(r: 0, g: 0, b: 255))            // the palette's cursor colour
     #expect(cursorCell(t.screen.cursor.y) != Pixel(r: 0, g: 0, b: 255))
 }
+
+/// A request's summary reaches the grid in the colour its status class earns.
+///
+/// The colour travels from `BlockHeader.tone` through `RenderFrame.blockSummaries`, which is the
+/// only channel the Metal pass has for it -- a tone the pane forgot to convert would draw the same
+/// grey a plain `8.8s` draws, and a 404 that reads as "fine" is the defect this whole summary
+/// exists to prevent. Checked in pixels rather than in the model for exactly that reason.
+@Test func aRequestSummaryIsDrawnInItsStatusColour() throws {
+    let palette = blockPalette()
+    func inkAt(row: Int, text: String, tone: SummaryTone) throws -> (red: Int, green: Int, yellow: Int) {
+        let (fonts, w, px) = try render(cols: 20, rows: 2, padding: 0,
+                                        summaries: [(row: row, text: text,
+                                                     color: tone.color(in: palette))])
+        var red = 0, green = 0, yellow = 0
+        for x in 0..<w {
+            for y in (row * fonts.metrics.height)..<((row + 1) * fonts.metrics.height) {
+                let p = px(x, y)
+                // The palette's 1/2/3 are pure primaries, so one channel pattern names each.
+                if p.r > 100 && p.g > 100 { yellow += 1 } else if p.r > 100 { red += 1 } else if p.g > 100 { green += 1 }
+            }
+        }
+        return (red, green, yellow)
+    }
+
+    // Palette index 3 -- amber -- for a redirect.
+    let redirect = try inkAt(row: 0, text: "301 \u{b7} 31 ms \u{25BE}", tone: .redirect)
+    #expect(redirect.yellow > 20)
+    #expect(redirect.red == 0)
+    #expect(redirect.green == 0)
+
+    // Palette index 1 -- red -- for a failed request, even though the command itself exited 0.
+    let failure = try inkAt(row: 0, text: "500 \u{b7} 1.4 s \u{25BE}", tone: .failure)
+    #expect(failure.red > 20)
+    #expect(failure.green == 0)
+    #expect(failure.yellow == 0)
+
+    // And index 2 for a 2xx, which is what makes the other two mean anything.
+    let success = try inkAt(row: 0, text: "200 \u{b7} 142 ms \u{25BE}", tone: .success)
+    #expect(success.green > 20)
+    #expect(success.red == 0)
+}

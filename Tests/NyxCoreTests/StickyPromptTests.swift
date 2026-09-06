@@ -232,3 +232,60 @@ private func session() -> Terminal {
     t.feed("\u{1b}c")
     #expect(t.shellEmitsPromptMarks == false)
 }
+
+// MARK: - The strip over a request
+
+/// A curl scrolled far enough that its command line is off screen, with a real transcript under it.
+private func requestSession() -> Terminal {
+    let t = makeTerminal(cols: 80, rows: 6, scrollback: 200)
+    t.feed(mark("A") + "$ " + mark("B") + "curl -sSi https://nyx.agentforge.cc/healthz\r\n" + mark("C"))
+    for line in ["HTTP/2 200",
+                 "content-type: application/json",
+                 "content-length: 61",
+                 "",
+                 "{\"online\":0,\"pairings\":0,\"attachments\":0,\"dropped_binary\":0}",
+                 "",
+                 "--nyx-http-- 200 0.142 0.003208 0.049189 0.106052 0.140538 1229 0 application/json"] {
+        t.feed(line + "\r\n")
+    }
+    t.feed(mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    return t
+}
+
+/// The strip is the only thing on screen naming the command whose output fills the viewport, so
+/// what it says about a request has to be what the block's own header says -- built from the same
+/// `BlockHeader`, so the two cannot come apart.
+@Test func stripShowsHTTPSummary() throws {
+    let t = requestSession()
+    let pinned = try #require(t.stickyPrompt(viewportTop: 4))
+    let region = try #require(t.command(containingAbsoluteRow: pinned.row))
+    #expect(CurlDetection.isCurl(t.commandLine(of: region)))
+
+    let lines = t.outputText(of: region).components(separatedBy: "\n")
+    let exchange = HTTPExchange.parse(lines: lines)
+    let summary = HTTPSummary.make(exchange: exchange, exitStatus: region.exitStatus,
+                                   duration: region.duration)
+    let header = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
+        .header(now: 100, folding: OutputFolding(), notifyArmed: false, anyFolds: false,
+                hasOutput: true, httpSummary: summary)
+
+    #expect(header.summary == "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json")
+    #expect(header.tone == .success)
+    // The command line itself is still what the strip's left-hand side reads.
+    #expect(StickyPromptLabel.text(command: t.commandText(of: region), exitStatus: pinned.exitStatus,
+                                   columns: 80).hasPrefix("$ curl -sSi"))
+}
+
+/// The strip over an ordinary command keeps saying what it always said. Nothing about the request
+/// workbench may cost a non-curl block its duration.
+@Test func stripOverAnOrdinaryCommandIsUnchanged() throws {
+    let t = session()
+    let pinned = try #require(t.stickyPrompt(viewportTop: 8))
+    let region = try #require(t.command(containingAbsoluteRow: pinned.row))
+    #expect(!CurlDetection.isCurl(t.commandLine(of: region)))
+    let header = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
+        .header(now: 100, folding: OutputFolding(), notifyArmed: false, anyFolds: false, hasOutput: true)
+    #expect(header.summary == "exit 1")
+    #expect(header.tone == .failure)
+}

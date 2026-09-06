@@ -20,7 +20,7 @@ final class StickyPromptView: NSView {
     /// command, so scrolling to it after reading the strip finds the header saying the same thing.
     private let note = NSTextField(labelWithString: "")
     /// The command currently pinned, so an unchanged frame does no work at all.
-    private var shown: (text: String, summary: String, failed: Bool)?
+    private var shown: (text: String, summary: String, tone: SummaryTone, failed: Bool)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -52,17 +52,21 @@ final class StickyPromptView: NSView {
 
     /// nil hides the strip. Everything is compared before it is applied: this is called once per
     /// frame, and an unchanged strip must not relayout a text field sixty times a second.
-    func update(text: String?, summary: String, failed: Bool, palette: Palette, font: NSFont) {
+    /// `tone` colours the right-hand note. Not derived from `failed` here: a curl that returned
+    /// 404 exited 0, so the command did not fail and the response did -- `BlockHeader.tone` is the
+    /// one place that distinction is made, and this obeys it.
+    func update(text: String?, summary: String, tone: SummaryTone, failed: Bool, palette: Palette,
+                font: NSFont) {
         guard let text, !text.isEmpty else {
             if !isHidden { isHidden = true; shown = nil }
             return
         }
-        guard shown?.text != text || shown?.summary != summary || shown?.failed != failed
-                || label.font != font else {
+        guard shown?.text != text || shown?.summary != summary || shown?.tone != tone
+                || shown?.failed != failed || label.font != font else {
             isHidden = false
             return
         }
-        shown = (text, summary, failed)
+        shown = (text, summary, tone, failed)
         label.stringValue = text
         note.stringValue = summary
         note.isHidden = summary.isEmpty
@@ -80,7 +84,9 @@ final class StickyPromptView: NSView {
         // `readable(1)` rather than `colors[1]`: gruvbox's red is 2.7:1 against its own background
         // and unreadable as a line of text; its bright red is 4.3:1.
         label.textColor = nsColor(failed ? palette.readable(1) : palette.foreground, alpha: 1)
-        note.textColor = nsColor(failed ? palette.readable(1) : palette.noteForeground, alpha: 1)
+        // The note follows the block's tone rather than the command line's: `curl` reporting 404
+        // exited 0, so the command is not a failure and the response is.
+        note.textColor = nsColor(tone.color(in: palette), alpha: 1)
         layer?.backgroundColor = nsColor(palette.foreground, alpha: 0.10).cgColor
         layer?.borderWidth = 0
         isHidden = false

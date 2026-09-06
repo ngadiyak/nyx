@@ -149,10 +149,10 @@ final class BlockHeaderView: NSView {
         appearance = NSAppearance(named: palette.isLight ? .aqua : .darkAqua)
         configure(header: header, controls: controls, font: font)
         // A running block used to read exactly like a finished one apart from the digit. The
-        // theme's running colour is the amber the spine already uses for the same state.
-        let summaryColor: RGB = header.failed ? palette.readable(1)
-            : (header.isRunning ? palette.readable(3) : palette.noteForeground)
-        summary.textColor = nsColor(summaryColor, alpha: 1)
+        // theme's running colour is the amber the spine already uses for the same state, and a
+        // request's own colour comes down the same ladder: 2xx green, 3xx amber, 4xx/5xx red, so
+        // the strip, the glyphs on the command row and the sticky strip cannot disagree.
+        summary.textColor = nsColor(header.tone.color(in: palette), alpha: 1)
         copyButton.isEnabled = header.hasOutput
         chevronButton.toolTip = header.folded ? "Unfold this command\u{2019}s output" : "Fold this command\u{2019}s output (\u{2325}: hide all of it)"
         chevronButton.setAccessibilityLabel(header.title(for: .toggleFold))

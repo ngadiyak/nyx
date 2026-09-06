@@ -216,6 +216,34 @@ public extension Terminal {
         return cursor
     }
 
+    /// Which display cursor a viewport should be drawn from, given the position its owner last
+    /// chose and the row that position was chosen against.
+    ///
+    /// Three answers, in the order that makes the ordinary session free:
+    ///
+    /// - the anchor, when it still describes this viewport (`anchorTop == viewportTopRow`), clamped
+    ///   to what the buffers hold now;
+    /// - the **display** bottom, when there is no usable anchor and the terminal is already at its
+    ///   own bottom -- which is every frame after new output arrives while the reader is pinned to
+    ///   the live screen, and the frame a finished request opens its lens on. Without it a response
+    ///   taller than the window pushed the shell's prompt past the last row and the caret with it;
+    /// - the plain top otherwise, which is what a viewport scrolled up into the scrollback wants and
+    ///   is exactly the behaviour there has always been.
+    ///
+    /// Lenses only for the middle case: a fold can only make the display *shorter* than the rows it
+    /// stands in for, so the terminal's own bottom is still the display's.
+    func viewportCursor(anchor: DisplayCursor?, anchorTop: Int, folding: OutputFolding,
+                        lenses: LensChoices = LensChoices(), viewportRows: Int? = nil,
+                        buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> DisplayCursor {
+        let top = max(0, viewportTopRow)
+        if let anchor, anchorTop == top {
+            return canonicalised(anchor, folding: folding, lenses: lenses, buffers: buffers)
+        }
+        guard viewportOffset == 0, !lenses.isEmpty else { return DisplayCursor(row: top) }
+        return displayBottomCursor(folding: folding, lenses: lenses, viewportRows: viewportRows,
+                                   buffers: buffers)
+    }
+
     /// Whether `n` display lines start at `cursor`. Walks at most `n` of them, so it costs what it
     /// is asked about and not the size of the buffer.
     internal func hasDisplayLines(from cursor: DisplayCursor, atLeast n: Int,

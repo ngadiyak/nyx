@@ -396,3 +396,59 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
                            lenses: choices, viewportRows: 10, buffers: get)
     #expect(walked == bottom)
 }
+
+// MARK: - Which cursor a viewport draws from
+
+/// A window the session has never scrolled: `viewportTopRow` is 0 from the first keystroke to the
+/// last, so an anchor stored while the command was being typed -- row 0, back when there were no
+/// lenses -- still matches. Used, it draws from the prompt down and puts the shell's own prompt a
+/// hundred display lines below the window; the caret is nowhere and typing has no echo. This is the
+/// rule the pane follows once the anchor is forgotten.
+@Test func aNeverScrolledSessionLandsWithThePromptOnScreen() {
+    let t = makeTerminal(cols: 40, rows: 12, scrollback: 200)
+    t.feed(mark("A") + "$ " + mark("B") + "curl x\r\n" + mark("C"))
+    t.feed("{\"a\":1}\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    #expect(t.viewportTopRow == 0, "nothing has scrolled")
+    let id = t.command(containingAbsoluteRow: 0)?.id ?? 0
+    let choices = lensed(id)
+    let get = buffers(id, lines: 40)
+    let promptRow = t.totalRows - 1
+
+    // The anchor `send` left behind while the command was typed, before any lens existed.
+    let stale = t.viewportCursor(anchor: DisplayCursor(row: 0), anchorTop: 0,
+                                 folding: OutputFolding(), lenses: choices, viewportRows: 12,
+                                 buffers: get)
+    let fromStale = t.displayRows(from: stale, count: 12, folding: OutputFolding(),
+                                  lenses: choices, buffers: get)
+    #expect(!fromStale.contains(.row(promptRow)), "the symptom: no prompt row, so no caret")
+
+    // Forgotten, the rule takes the display's bottom instead.
+    let fresh = t.viewportCursor(anchor: nil, anchorTop: -1, folding: OutputFolding(),
+                                 lenses: choices, viewportRows: 12, buffers: get)
+    let fromFresh = t.displayRows(from: fresh, count: 12, folding: OutputFolding(),
+                                  lenses: choices, buffers: get)
+    #expect(fromFresh.contains(.row(promptRow)), "the prompt row is on screen")
+    #expect(fromFresh.last == .row(promptRow))
+}
+
+/// A viewport scrolled up into the scrollback keeps the plain top: the bottom rule is for a reader
+/// pinned to the live screen and must not drag anyone else down to it.
+@Test func aScrolledBackViewportKeepsItsTop() {
+    let t = session()
+    _ = t.scrollToAbsoluteRow(4, margin: 0)
+    let cursor = t.viewportCursor(anchor: nil, anchorTop: -1, folding: OutputFolding(),
+                                  lenses: lensed(2), viewportRows: 6,
+                                  buffers: buffers(2, lines: 40))
+    #expect(cursor == DisplayCursor(row: 4))
+}
+
+/// And an anchor that still describes this viewport is what is used, clamped to what the buffer
+/// holds now.
+@Test func aLiveAnchorIsUsedAndClamped() {
+    let t = session()
+    let cursor = t.viewportCursor(anchor: DisplayCursor(row: 3, line: 99), anchorTop: t.viewportTopRow,
+                                  folding: OutputFolding(), lenses: lensed(2), viewportRows: 6,
+                                  buffers: buffers(2, lines: 5))
+    #expect(cursor == DisplayCursor(row: 3, line: 4))
+}

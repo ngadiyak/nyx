@@ -25,6 +25,11 @@ public struct RequestSummaryCache: Equatable {
     }
 
     private var entries: [UInt32: Entry] = [:]
+    /// The command line each block ran, when it was one. Kept beside the entry rather than inside
+    /// it so that "is there an earlier run of this same request" can be answered without walking
+    /// the grid again -- the line was in hand when the block was read, and asking the buffer for it
+    /// a second time means rebuilding a string out of cells for every block below this one.
+    private var lines: [UInt32: String] = [:]
     /// The highest block id ever offered to the request history. See `shouldRecord`.
     private var highestRecorded: UInt32 = 0
 
@@ -52,13 +57,54 @@ public struct RequestSummaryCache: Equatable {
         return false
     }
 
-    public mutating func remember(_ entry: Entry, for id: UInt32) { entries[id] = entry }
+    public mutating func remember(_ entry: Entry, line: String? = nil, for id: UInt32) {
+        entries[id] = entry
+        if let line { lines[id] = line }
+    }
+
+    /// The command line this block ran, as it was read off the grid.
+    public func commandLine(of id: UInt32) -> String? { lines[id] }
+
+    /// The nearest earlier block that ran the same request, or nil when there is not one. This is
+    /// what `Diff with Previous Run` is enabled by, and what it diffs against.
+    ///
+    /// Nearest rather than oldest: a watched endpoint polled ten times should diff against the
+    /// ninth, not the first. Parsing happens here rather than at `remember` time because this runs
+    /// when a menu opens and that runs on every finished block.
+    public func previousRun(before id: UInt32, matching command: CurlCommand) -> UInt32? {
+        for candidate in lines.keys.filter({ $0 < id }).sorted(by: >) {
+            guard case .request = entries[candidate], let line = lines[candidate],
+                  let parsed = CurlCommand.parse(line) else { continue }
+            if RequestSummaryCache.sameRequest(parsed, command) { return candidate }
+        }
+        return nil
+    }
+
+    /// Whether two command lines are the same *request*.
+    ///
+    /// The workbench's own run flags come off first (`RequestRun.stripAdditions`), because a
+    /// request run from the sheet and the same one typed by hand are one request -- the request
+    /// history draws the same line. Then the options this model keeps verbatim, the shell prefix
+    /// and any trailing pipeline: a `--resolve`, a proxy or a `| jq` is how the call was made, not
+    /// what was asked for, and two polls of one endpoint through different proxies are still worth
+    /// diffing.
+    public static func sameRequest(_ a: CurlCommand, _ b: CurlCommand) -> Bool {
+        func core(_ command: CurlCommand) -> CurlCommand {
+            var stripped = RequestRun.stripAdditions(from: command)
+            stripped.other = []
+            stripped.prefix = []
+            stripped.trailingPipeline = ""
+            return stripped
+        }
+        return core(a) == core(b)
+    }
 
     /// Drops everything the buffer has evicted. Command ids only ever increase, so `oldest` is a
     /// clean cut: an id below it names rows that are gone and a block that can never come back.
     public mutating func prune(olderThan oldest: UInt32) {
         guard !entries.isEmpty else { return }
         entries = entries.filter { $0.key >= oldest }
+        lines = lines.filter { $0.key >= oldest }
     }
 
     /// Whether this block's command should be written to the request history -- true once per
@@ -86,5 +132,6 @@ public struct RequestSummaryCache: Equatable {
         guard entries.count > limit else { return }
         let survivors = Set(entries.keys.sorted().suffix(limit))
         entries = entries.filter { survivors.contains($0.key) }
+        lines = lines.filter { survivors.contains($0.key) }
     }
 }

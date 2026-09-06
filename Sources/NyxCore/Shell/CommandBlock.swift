@@ -273,6 +273,16 @@ public enum BlockAction: Equatable {
     /// `BlockHeader.isHTTP`. These are the four things you can do to a *request* that mean nothing
     /// for `make test`: open it as a form, take it to another tool, keep it as a button.
     case openInWorkbench, copyAs(ExportFormat), saveAsButton, saveToProject
+    /// The Lens group, on the same blocks. `setLens` carries the lens the row stands for -- an
+    /// empty `filter`/`grep` string means "open the field", and the id in `diff` is a placeholder
+    /// the pane fills in from its own cache, which is the only thing that knows which run came
+    /// before this one.
+    case setLens(ResponseLens), toggleLens, copyBody, copyHeaders
+    /// What the Lens group becomes when the body is too large to re-lay-out: one row that says so
+    /// and still does the thing that works. A case of its own rather than a second `.saveOutput`,
+    /// because a menu row's title and its group break are properties of the action, and the two
+    /// occurrences would have had to share them.
+    case lensUnavailable
     case toggleFold, toggleFoldAll
     case notifyWhenDone(armed: Bool)
 
@@ -291,6 +301,13 @@ public enum BlockAction: Equatable {
         case .copyAs(let format): return "Copy as \(format.title)"
         case .saveAsButton: return "Save as Button\u{2026}"
         case .saveToProject: return "Save to Project\u{2026}"
+        // The lens names itself: the menu row, the `⌘⇧J` menu item and the palette row are the
+        // same words for the same thing.
+        case .setLens(let lens): return lens.title
+        case .toggleLens: return "Toggle Pretty Response"
+        case .copyBody: return "Copy Body"
+        case .copyHeaders: return "Copy Headers"
+        case .lensUnavailable: return "Body too large for lenses \u{2014} Save Output\u{2026}"
         case .toggleFold: return "Fold Output"
         case .toggleFoldAll: return "Fold Everything Long"
         case .notifyWhenDone: return "Notify When Done"
@@ -300,7 +317,8 @@ public enum BlockAction: Equatable {
     /// Where a separator goes in the menu: before the first action of each group after the first.
     public var startsGroup: Bool {
         switch self {
-        case .runAgain, .openInWorkbench, .toggleFold, .notifyWhenDone: return true
+        case .runAgain, .openInWorkbench, .toggleFold, .notifyWhenDone, .lensUnavailable: return true
+        case .setLens(.raw): return true
         default: return false
         }
     }
@@ -377,6 +395,15 @@ public struct BlockHeader: Equatable {
     /// costs a `CurlCommand.parse` of a string built from the grid; the pane keeps it beside the
     /// exchange in `RequestSummaryCache` so it is decided once per block rather than once per frame.
     public let isHTTP: Bool
+    /// Which lens this block's response is being read through. nil is raw -- the rows as the
+    /// terminal has them -- which is what every block starts as and what most stay as.
+    public let lens: ResponseLens?
+    /// The body is past `LensRendering`'s limits, so there is nothing to show through a lens and
+    /// the group says so instead of offering seven rows that would each do nothing.
+    public let lensTooLarge: Bool
+    /// Whether an earlier block ran the same request. Only `Diff with Previous Run` needs it, and
+    /// only the pane's cache can answer it -- see `RequestSummaryCache.previousRun`.
+    public let hasPreviousRun: Bool
 
     /// `httpSummary`, when there is one, *replaces* `summary` rather than sitting beside it: a
     /// request's status and latency are what the user ran the command to find out, and two sources
@@ -384,9 +411,11 @@ public struct BlockHeader: Equatable {
     /// disagree about what a block did.
     public init(id: UInt32, state: State, folded: Bool, hasOutput: Bool, anyFolds: Bool,
                 notifyArmed: Bool, summary: String, httpSummary: HTTPSummary? = nil,
-                isHTTP: Bool = false) {
+                isHTTP: Bool = false, lens: ResponseLens? = nil, lensTooLarge: Bool = false,
+                hasPreviousRun: Bool = false) {
         self.id = id; self.state = state; self.folded = folded; self.hasOutput = hasOutput
         self.anyFolds = anyFolds; self.notifyArmed = notifyArmed
+        self.lens = lens; self.lensTooLarge = lensTooLarge; self.hasPreviousRun = hasPreviousRun
         self.summary = httpSummary?.text ?? summary
         self.httpSummary = httpSummary
         // A block that produced a response is a request whatever the caller says: the summary could
@@ -448,6 +477,17 @@ public struct BlockHeader: Equatable {
             list.append((.openInWorkbench, true))
             list += ExportFormat.allCases.map { (.copyAs($0), true) }
             list += [(.saveAsButton, true), (.saveToProject, true)]
+            if lensTooLarge {
+                list.append((.lensUnavailable, hasOutput))
+            } else {
+                list += [(.setLens(.raw), true), (.setLens(.pretty), true),
+                         (.setLens(.headers), true), (.setLens(.body), true),
+                         (.setLens(.filter("")), true), (.setLens(.grep("")), true),
+                         // The id is filled in by whoever performs it; what this row carries is
+                         // "diff", and whether it can be pressed at all.
+                         (.setLens(.diff(previousCommandID: 0)), hasPreviousRun),
+                         (.copyBody, true), (.copyHeaders, true)]
+            }
         }
         list += [(.toggleFold, hasOutput), (.toggleFoldAll, true)]
         if isRunning { list.append((.notifyWhenDone(armed: notifyArmed), true)) }
@@ -459,6 +499,22 @@ public struct BlockHeader: Equatable {
         case .toggleFold: return folded ? "Unfold Output" : "Fold Output"
         case .toggleFoldAll: return anyFolds ? "Unfold Everything" : "Fold Everything Long"
         default: return action.title
+        }
+    }
+
+    /// Whether a menu row should carry a checkmark. The lens rows are a radio group -- one of them
+    /// is what you are looking at -- and `Raw` is ticked when no lens is set, because raw is not
+    /// the absence of a choice, it is one of the choices.
+    ///
+    /// A filter or a find is ticked by its *kind*: the row opens the field, and `Filter…` with
+    /// `.a.b` in it is still the filter row. Titles are unique per case, which is why they are what
+    /// is compared -- a `case` match would have to spell out the payload it is deliberately
+    /// ignoring.
+    public func isChecked(_ action: BlockAction) -> Bool {
+        switch action {
+        case .setLens(let candidate): return (lens ?? .raw).title == candidate.title
+        case .notifyWhenDone(let armed): return armed
+        default: return false
         }
     }
 }
@@ -476,7 +532,8 @@ public extension CommandBlock {
     /// afford to look.
     func header(now: Double, folding: OutputFolding, notifyArmed: Bool, anyFolds: Bool,
                 hasOutput: Bool, httpSummary: HTTPSummary? = nil,
-                isHTTP: Bool = false) -> BlockHeader {
+                isHTTP: Bool = false, lens: ResponseLens? = nil, lensTooLarge: Bool = false,
+                hasPreviousRun: Bool = false) -> BlockHeader {
         let state: BlockHeader.State
         let summary: String
         if isRunning {
@@ -493,7 +550,8 @@ public extension CommandBlock {
         return BlockHeader(id: region.id, state: state, folded: folding.isFolded(region.id),
                            hasOutput: hasOutput, anyFolds: anyFolds,
                            notifyArmed: notifyArmed, summary: summary, httpSummary: httpSummary,
-                           isHTTP: isHTTP)
+                           isHTTP: isHTTP, lens: lens, lensTooLarge: lensTooLarge,
+                           hasPreviousRun: hasPreviousRun)
     }
 }
 

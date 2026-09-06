@@ -141,3 +141,55 @@ private func exchange(status: Int) -> HTTPExchange? {
     #expect(!cache.isRequest(id: 2))
     #expect(cache.isRequest(id: 3))
 }
+
+// MARK: - Finding the previous run of the same request
+
+/// "Diff with Previous Run" needs a previous run, and what makes a run *the same request* is the
+/// request -- not the text. A re-run typed with the flags in another order, or run from the
+/// workbench with its `-sSi -w` additions, is the same call and worth diffing against.
+@Test func theSameRequestRunEarlierIsFound() throws {
+    var cache = RequestSummaryCache()
+    cache.remember(.request(exchange(status: 200)), line: "curl -sS https://api.example.com/users",
+                   for: 2)
+    cache.remember(.notARequest, line: "make test", for: 3)
+    cache.remember(.request(exchange(status: 200)), line: "curl https://api.example.com/other",
+                   for: 4)
+    cache.remember(.request(exchange(status: 200)),
+                   line: "curl --silent -S https://api.example.com/users", for: 5)
+
+    let current = try #require(CurlCommand.parse("curl -sS https://api.example.com/users"))
+    #expect(cache.previousRun(before: 6, matching: current) == 5)
+    // The nearest one below, not the oldest.
+    #expect(cache.previousRun(before: 5, matching: current) == 2)
+    // Nothing below it is the same request.
+    #expect(cache.previousRun(before: 2, matching: current) == nil)
+    // A different URL is a different request, however similar the line reads.
+    let other = try #require(CurlCommand.parse("curl https://api.example.com/nothing"))
+    #expect(cache.previousRun(before: 9, matching: other) == nil)
+}
+
+/// A proxy or a `--resolve` is not what the request *is*: two runs that differ only in the options
+/// this model keeps verbatim are still the same call, and Nyx's own run flags never count.
+@Test func theComparisonIgnoresTheOptionsItKeepsVerbatim() throws {
+    let plain = try #require(CurlCommand.parse("curl https://x/y"))
+    let proxied = try #require(CurlCommand.parse("curl -x http://p:3128 https://x/y"))
+    let run = try #require(CurlCommand.parse(RequestRun.commandLine(for: plain)))
+    #expect(RequestSummaryCache.sameRequest(plain, proxied))
+    #expect(RequestSummaryCache.sameRequest(plain, run))
+    let different = try #require(CurlCommand.parse("curl -X POST https://x/y"))
+    #expect(!RequestSummaryCache.sameRequest(plain, different))
+}
+
+/// The lines go when the entries go: neither map may grow over a session.
+@Test func pruningAndTrimmingTakeTheLinesToo() throws {
+    var cache = RequestSummaryCache()
+    for id in UInt32(1)...10 {
+        cache.remember(.request(nil), line: "curl https://x/\(id)", for: id)
+    }
+    cache.prune(olderThan: 5)
+    #expect(cache.commandLine(of: 4) == nil)
+    #expect(cache.commandLine(of: 5) == "curl https://x/5")
+    cache.trim(to: 2)
+    #expect(cache.commandLine(of: 8) == nil)
+    #expect(cache.commandLine(of: 10) == "curl https://x/10")
+}

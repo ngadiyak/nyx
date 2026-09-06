@@ -180,6 +180,39 @@ public struct LensBuffer: Equatable {
         return CharWidth.width(of: String(character))
     }
 
+    /// Which Character a click at `column` landed on, clamped: the second cell of a wide glyph is
+    /// still that glyph, and anything past the end of the line is the end of the line. The mouse
+    /// arrives in cells and the text is measured in Characters, so something has to convert.
+    public func characterOffset(atColumn column: Int, line index: Int) -> Int {
+        guard let text = line(index)?.text else { return 0 }
+        guard column > 0 else { return 0 }
+        var cells = 0
+        for (offset, character) in text.enumerated() {
+            let width = LensBuffer.width(of: character)
+            if column < cells + max(width, 1) { return offset }
+            cells += width
+        }
+        return text.count
+    }
+
+    /// The cells a run of Characters occupies, for drawing a selection over them.
+    public func columnRange(ofCharacters characters: Range<Int>, line index: Int) -> Range<Int> {
+        guard let text = line(index)?.text else { return 0 ..< 0 }
+        var start = 0
+        var width = 0
+        for (offset, character) in text.enumerated() {
+            let cells = LensBuffer.width(of: character)
+            if offset < characters.lowerBound {
+                start += cells
+            } else if offset < characters.upperBound {
+                width += cells
+            } else {
+                break
+            }
+        }
+        return start ..< (start + width)
+    }
+
     /// The text of a range of lines, for copying. Clamped rather than trapped: a selection outlives
     /// the buffer it was made on, and a re-render between the drag and the ⌘C is ordinary.
     public func text(lines range: Range<Int>) -> String {

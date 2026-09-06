@@ -184,10 +184,16 @@ private func httpSummary(_ text: String, _ tone: HTTPSummary.Tone) -> HTTPSummar
         .runAgain, .editAndRun,
         .openInWorkbench, .copyAs(.httpie), .copyAs(.fetch), .copyAs(.pythonRequests), .copyAs(.go),
         .saveAsButton, .saveToProject,
+        // The Lens group follows it; `lensGroupForHTTPBlocks` is where its own rules live.
+        .setLens(.raw), .setLens(.pretty), .setLens(.headers), .setLens(.body),
+        .setLens(.filter("")), .setLens(.grep("")), .setLens(.diff(previousCommandID: 0)),
+        .copyBody, .copyHeaders,
         .toggleFold, .toggleFoldAll,
     ])
     // Hoisted: `allSatisfy` inside the macro is a throwing call the expansion cannot handle.
-    let allEnabled = h.actions.allSatisfy(\.enabled)
+    // Everything but the diff, which needs a previous run of the same request to compare against.
+    let allEnabled = h.actions.filter { $0.action != .setLens(.diff(previousCommandID: 0)) }
+        .allSatisfy(\.enabled)
     #expect(allEnabled)
     // The separator before the group: the menu builders draw one wherever this is true.
     #expect(BlockAction.openInWorkbench.startsGroup)
@@ -242,4 +248,87 @@ private func httpSummary(_ text: String, _ tone: HTTPSummary.Tone) -> HTTPSummar
     if RGB.contrast(picked, palette.background) >= 4.5 {
         #expect(SummaryTone.success.color(in: palette) == picked)
     }
+}
+
+// MARK: - The Lens group
+
+private func httpHeader(lens: ResponseLens? = nil, tooLarge: Bool = false,
+                        hasPrevious: Bool = false) -> BlockHeader {
+    block(region()).header(now: 100, folding: OutputFolding(), notifyArmed: false, anyFolds: false,
+                           hasOutput: true, isHTTP: true, lens: lens, lensTooLarge: tooLarge,
+                           hasPreviousRun: hasPrevious)
+}
+
+@Test func lensGroupForHTTPBlocks() {
+    let actions = httpHeader().actions.map(\.action)
+    #expect(actions == [
+        .copyCommand, .copyOutput, .copyMarkdown, .saveOutput,
+        .runAgain, .editAndRun,
+        .openInWorkbench, .copyAs(.httpie), .copyAs(.fetch), .copyAs(.pythonRequests), .copyAs(.go),
+        .saveAsButton, .saveToProject,
+        .setLens(.raw), .setLens(.pretty), .setLens(.headers), .setLens(.body),
+        .setLens(.filter("")), .setLens(.grep("")), .setLens(.diff(previousCommandID: 0)),
+        .copyBody, .copyHeaders,
+        .toggleFold, .toggleFoldAll,
+    ])
+    // The group's own separator.
+    #expect(BlockAction.setLens(.raw).startsGroup)
+    #expect(!BlockAction.setLens(.pretty).startsGroup)
+    // A block that is not a request has no lens group at all: an action that cannot apply is
+    // absent, not greyed.
+    let plain = block(region()).header(now: 100, folding: OutputFolding(), notifyArmed: false,
+                                       anyFolds: false, hasOutput: true)
+    #expect(!plain.actions.contains { if case .setLens = $0.action { return true } else { return false } })
+}
+
+/// Diffing needs something to diff against. Offered and refused is worse than offered greyed: the
+/// row says the feature exists and that this block cannot use it yet.
+@Test func diffNeedsAPreviousRun() {
+    let without = httpHeader().actions.first { $0.action == .setLens(.diff(previousCommandID: 0)) }
+    #expect(without?.enabled == false)
+    let with = httpHeader(hasPrevious: true).actions.first { $0.action == .setLens(.diff(previousCommandID: 0)) }
+    #expect(with?.enabled == true)
+}
+
+@Test func activeLensIsChecked() {
+    // Raw is the state a block starts in, and nil is how it is spelled.
+    #expect(httpHeader().isChecked(.setLens(.raw)))
+    #expect(!httpHeader().isChecked(.setLens(.pretty)))
+    #expect(httpHeader(lens: .pretty).isChecked(.setLens(.pretty)))
+    #expect(!httpHeader(lens: .pretty).isChecked(.setLens(.raw)))
+    // A filter with a path in it still ticks the row that opens the field: the row is the *kind*
+    // of lens, not the expression.
+    #expect(httpHeader(lens: .filter(".a.b")).isChecked(.setLens(.filter(""))))
+    #expect(httpHeader(lens: .grep("nope")).isChecked(.setLens(.grep(""))))
+    #expect(!httpHeader(lens: .grep("nope")).isChecked(.setLens(.filter(""))))
+    // And the checkmark is not a fold state: nothing else in the menu is ticked.
+    #expect(!httpHeader(lens: .pretty).isChecked(.toggleFold))
+}
+
+/// A body too large to re-lay-out has no lens, and the menu says why rather than offering seven
+/// rows that would all do nothing.
+@Test func tooLargeReplacesTheGroup() {
+    let actions = httpHeader(tooLarge: true).actions.map(\.action)
+    #expect(!actions.contains { if case .setLens = $0 { return true } else { return false } })
+    #expect(actions.contains(.lensUnavailable))
+    #expect(!actions.contains(.copyBody))
+    #expect(BlockAction.lensUnavailable.title
+            == "Body too large for lenses \u{2014} Save Output\u{2026}")
+    #expect(BlockAction.lensUnavailable.startsGroup)
+    // It is a live item: it saves the output, which is the thing that still works.
+    let entry = httpHeader(tooLarge: true).actions.first { $0.action == .lensUnavailable }
+    #expect(entry?.enabled == true)
+}
+
+@Test func theLensActionsAreTitledForAMenu() {
+    #expect(BlockAction.setLens(.raw).title == "Raw")
+    #expect(BlockAction.setLens(.pretty).title == "Pretty JSON")
+    #expect(BlockAction.setLens(.headers).title == "Headers")
+    #expect(BlockAction.setLens(.body).title == "Body")
+    #expect(BlockAction.setLens(.filter("")).title == "Filter\u{2026}")
+    #expect(BlockAction.setLens(.grep("")).title == "Find in Body\u{2026}")
+    #expect(BlockAction.setLens(.diff(previousCommandID: 0)).title == "Diff with Previous Run")
+    #expect(BlockAction.copyBody.title == "Copy Body")
+    #expect(BlockAction.copyHeaders.title == "Copy Headers")
+    #expect(BlockAction.toggleLens.title == "Toggle Pretty Response")
 }

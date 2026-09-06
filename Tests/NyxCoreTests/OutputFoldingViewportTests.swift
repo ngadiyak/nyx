@@ -156,26 +156,29 @@ private func folded(_ ids: UInt32..., shape: FoldShape = .all) -> OutputFolding 
     #expect(ranges[4] == [0..<4])           // row 13 landed in slot 4
 }
 
-@Test func scrollingDownOutOfAFoldLandsPastTheHiddenRows() {
+/// A fold is one display line whichever way you step over it, which is what `snapViewportOutOfFold`
+/// used to arrange after the fact: a viewport top can no longer land inside the hidden rows because
+/// nothing steps into them.
+@Test func advancingDownStepsOverAFoldInOneLine() {
     let t = session()
-    _ = t.scrollToAbsoluteRow(6, margin: 0)
-    let moved = t.snapViewportOutOfFold(movingUp: false, folding: folded(2, shape: .tail(keep: 3)))
-    #expect(moved)
-    #expect(t.viewportTopRow == 10)
+    let f = folded(2, shape: .tail(keep: 3))
+    // Row 2 is the block's prompt; one line down is the fold placeholder, one more is the first
+    // kept row of the tail.
+    let placeholder = t.advance(DisplayCursor(row: 2), by: 1, folding: f)
+    #expect(placeholder == DisplayCursor(row: 3))
+    #expect(t.advance(placeholder, by: 1, folding: f) == DisplayCursor(row: 10))
 }
 
-@Test func scrollingUpOutOfAFoldLandsOnTheCommand() {
+@Test func advancingUpStepsBackOverAFoldInOneLine() {
     let t = session()
-    _ = t.scrollToAbsoluteRow(6, margin: 0)
-    let moved = t.snapViewportOutOfFold(movingUp: true, folding: folded(2))
-    #expect(moved)
-    #expect(t.viewportTopRow == 2)
+    let f = folded(2, shape: .tail(keep: 3))
+    #expect(t.advance(DisplayCursor(row: 10), by: -1, folding: f) == DisplayCursor(row: 3))
+    #expect(t.advance(DisplayCursor(row: 10), by: -2, folding: f) == DisplayCursor(row: 2))
 }
 
-@Test func aViewportNotInsideAFoldDoesNotMove() {
+@Test func advancingStopsAtTheOldestRow() {
     let t = session()
-    _ = t.scrollToAbsoluteRow(11, margin: 0)
-    #expect(!t.snapViewportOutOfFold(movingUp: false, folding: folded(2, shape: .tail(keep: 3))))
+    #expect(t.advance(DisplayCursor(row: 3), by: -50, folding: folded(2)) == DisplayCursor(row: 0))
 }
 
 @Test func foldedCommandCoversHiddenRowsOnly() {

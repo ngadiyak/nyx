@@ -166,45 +166,49 @@ public extension Terminal {
         return (region, buffer)
     }
 
-    /// Exactly what a viewport `count` rows tall shows from absolute row `top`. With nothing folded
-    /// and nothing lensed it is the plain range and no buffer walk, which is the path every
-    /// ordinary frame takes.
+    /// Exactly what a viewport `count` rows tall shows from `cursor`. With nothing folded and
+    /// nothing lensed it is the plain range and no buffer walk, which is the path every ordinary
+    /// frame takes.
     ///
     /// A lensed block's output rows are replaced by its buffer's lines: the prompt and the command
     /// line stay, then every line of the lens, then the row after the block. **A lens is not the
-    /// same height as what it replaces**, and viewport arithmetic here is still in absolute rows --
-    /// so scrolling into the middle of a lensed block shows the lens from line `top - outputStart`,
-    /// clamped to what the buffer has. The consequence, and it is a real one: scrolling by rows
-    /// through a lens longer than its output moves faster than the eye expects, and through a
-    /// shorter one it stops early and jumps to the next block. Fixing that properly means a display
-    /// height that is not the row count -- the same change a soft-wrapped scrollback would need --
-    /// and it is not this task.
-    func displayRows(from top: Int, count: Int, folding: OutputFolding,
+    /// same height as what it replaces**, which is why the viewport is addressed by `DisplayCursor`
+    /// rather than by an absolute row -- see that type for what addressing it by row cost.
+    ///
+    /// One walk for every case, `displayEntry` per display line. The earlier version replaced a
+    /// block's output only where the walk passed its *prompt* row, which left a hole one row wide:
+    /// a viewport whose top was a wrapped continuation of the command line showed the whole block
+    /// raw, fold and lens alike. Entering a block at any of its rows is the same question now, so
+    /// the hole is gone by construction.
+    func displayRows(from cursor: DisplayCursor, count: Int, folding: OutputFolding,
                      lenses: LensChoices = LensChoices(),
                      buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> [DisplayRow] {
         guard count > 0 else { return [] }
-        guard !folding.isEmpty || !lenses.isEmpty else { return (0..<count).map { .row(top + $0) } }
-
-        var out: [DisplayRow] = []
-        var row = max(0, top)
-        if let (region, hidden) = foldedCommand(containingOutputRow: row, folding: folding) {
-            out.append(.fold(commandID: region.id, hiddenRows: hidden.count, status: region.status))
-            row = hidden.upperBound
-        } else if let (region, buffer) = lensedCommand(containingOutputRow: row, lenses: lenses,
-                                                       buffers: buffers) {
-            var line = min(max(0, row - region.outputRows.lowerBound), buffer.lineCount)
-            while line < buffer.lineCount && out.count < count {
-                out.append(.lens(commandID: region.id, line: line))
-                line += 1
-            }
-            row = region.endRow + 1
+        guard !folding.isEmpty || !lenses.isEmpty else {
+            return (0..<count).map { .row(max(0, cursor.row) + $0) }
         }
+        var out: [DisplayRow] = []
+        var position = DisplayCursor(row: max(0, cursor.row), line: cursor.line)
+        // The entry. A display cursor may sit anywhere inside a block -- halfway down a lens, on a
+        // wrapped command line, inside a fold -- and only `displayEntry` answers from an arbitrary
+        // position. It costs a scan back to the block's prompt each step, which inside the block is
+        // the length of its command line and outside it is the length of the block, so the walk uses
+        // it exactly until it is past the block it started in and then hands over to the loop below.
+        if let region = command(containingAbsoluteRow: position.row),
+           folding.shape(of: region.id) != nil || lenses.lens(of: region.id) != nil {
+            while out.count < count, position.row <= region.endRow,
+                  let (entry, next) = displayEntry(at: position, folding: folding, lenses: lenses,
+                                                   buffers: buffers) {
+                out.append(entry)
+                position = next
+            }
+        }
+        var row = position.row
         while out.count < count && row < totalRows {
             out.append(.row(row))
-            let line = absoluteRow(row)
-            // Two dictionary lookups before the region walk, which is the expensive part: a
-            // viewport with nothing folded or lensed on it must not pay for one per prompt row.
-            guard let id = line?.commandID, id != 0 else { row += 1; continue }
+            // Two dictionary lookups before any region walk: `commandID` is stamped on prompt rows
+            // only, so this is also what limits the walk to entering a block where it begins.
+            guard let id = absoluteRow(row)?.commandID, id != 0 else { row += 1; continue }
             let shape = folding.shape(of: id)
             let lensed = lenses.lens(of: id) != nil
             guard shape != nil || lensed,
@@ -219,12 +223,6 @@ public extension Terminal {
                 guard !hidden.isEmpty else { row += 1; continue }
                 // A wrapped command line lies between the prompt and its output; it belongs to the
                 // command, not to what it printed, and stays on screen.
-                //
-                // A viewport whose *top* is one of those continuation rows is a known hole, in both
-                // this branch and the lens one below: neither the fold nor the lens is applied,
-                // because the replacement only happens when the walk passes the block's prompt row,
-                // and the rows below come out raw. It is one row wide, it has always been here, and
-                // the scroll snapping is what keeps a viewport off it.
                 var next = row + 1
                 while next < hidden.lowerBound && out.count < count {
                     out.append(.row(next))
@@ -253,6 +251,20 @@ public extension Terminal {
         return out
     }
 
+    /// The same, from an absolute row: what everything that still scrolls to a *place* rather than
+    /// by an amount asks for. A row inside a lens keeps its proportional position; see
+    /// `displayCursor(atAbsoluteRow:)`.
+    func displayRows(from top: Int, count: Int, folding: OutputFolding,
+                     lenses: LensChoices = LensChoices(),
+                     buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> [DisplayRow] {
+        guard count > 0 else { return [] }
+        guard !folding.isEmpty || !lenses.isEmpty else { return (0..<count).map { .row(top + $0) } }
+        let cursor = displayCursor(atAbsoluteRow: max(0, top), folding: folding, lenses: lenses,
+                                   buffers: buffers)
+        return displayRows(from: cursor, count: count, folding: folding, lenses: lenses,
+                           buffers: buffers)
+    }
+
     /// The rows to draw for a range of the buffer; used where a fixed count is not wanted.
     func displayRows(in range: Range<Int>, folding: OutputFolding,
                      lenses: LensChoices = LensChoices(),
@@ -263,22 +275,12 @@ public extension Terminal {
             .filter { if case .row(let r) = $0 { return range.contains(r) } else { return true } }
     }
 
-    /// Moves the viewport off hidden rows in the direction the user was scrolling, so a fold of two
-    /// thousand rows is not two thousand wheel clicks. Returns whether it moved.
-    @discardableResult
-    func snapViewportOutOfFold(movingUp: Bool, folding: OutputFolding,
-                               lenses: LensChoices = LensChoices(),
-                               buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> Bool {
-        if let (region, hidden) = foldedCommand(containingOutputRow: viewportTopRow, folding: folding) {
-            return scrollToAbsoluteRow(movingUp ? region.promptRow : hidden.upperBound, margin: 0)
-        }
-        // The same treatment for a lens: its output rows are not on screen either, so scrolling
-        // through them one wheel click at a time would be a hundred clicks past a response the
-        // reader is already looking at.
-        guard let (region, _) = lensedCommand(containingOutputRow: viewportTopRow, lenses: lenses,
-                                              buffers: buffers) else { return false }
-        return scrollToAbsoluteRow(movingUp ? region.promptRow : region.endRow + 1, margin: 0)
-    }
+    // `snapViewportOutOfFold` used to live here: after a scroll by rows it dragged a viewport top
+    // that had landed inside a fold back out of it, so two thousand hidden rows were not two
+    // thousand wheel clicks. `Terminal.advance(_:by:)` makes the whole idea unnecessary -- a fold is
+    // one display line to step over and a lens is as many lines as it has -- and its lens branch was
+    // actively wrong: it jumped the reader *past* a lensed block, which is precisely the content
+    // they were trying to scroll through.
 
     /// The placeholder as a row of cells, so it is drawn through the ordinary row path and nothing
     /// in NyxRender learns what a fold is.

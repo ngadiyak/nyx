@@ -100,12 +100,14 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
                      .lens(commandID: 2, line: 5)])
 }
 
-/// Past the end of the lens the viewport carries on with what follows the block, rather than
-/// showing nothing.
-@Test func aViewportPastTheEndOfAShortLensIsOrdinary() {
+/// An absolute row past the end of a shorter lens clamps to the lens's last line and then carries
+/// on with what follows the block. It used to show nothing of the block at all and jump straight to
+/// the next one, which is how a search match inside a lensed response scrolled somewhere the match
+/// was not.
+@Test func aViewportPastTheEndOfAShortLensClampsToItsLastLine() {
     let rows = session().displayRows(from: 11, count: 3, folding: OutputFolding(),
                                      lenses: lensed(2), buffers: buffers(2, lines: 2))
-    #expect(rows == [.row(13), .row(14), .row(15)])
+    #expect(rows == [.lens(commandID: 2, line: 1), .row(13), .row(14)])
 }
 
 @Test func aViewportStartingAfterALensedBlockIsOrdinary() {
@@ -193,28 +195,6 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
             == 6..<8)
 }
 
-// MARK: - Scrolling out
-
-@Test func snapOutOfLens() {
-    let t = session()
-    _ = t.scrollToAbsoluteRow(6, margin: 0)
-    #expect(t.snapViewportOutOfFold(movingUp: true, folding: OutputFolding(), lenses: lensed(2),
-                                    buffers: buffers(2, lines: 3)))
-    #expect(t.viewportTopRow == 2)
-
-    _ = t.scrollToAbsoluteRow(6, margin: 0)
-    #expect(t.snapViewportOutOfFold(movingUp: false, folding: OutputFolding(), lenses: lensed(2),
-                                    buffers: buffers(2, lines: 3)))
-    #expect(t.viewportTopRow == 13)
-}
-
-@Test func aViewportNotInsideALensDoesNotMove() {
-    let t = session()
-    _ = t.scrollToAbsoluteRow(14, margin: 0)
-    #expect(!t.snapViewportOutOfFold(movingUp: false, folding: OutputFolding(), lenses: lensed(2),
-                                     buffers: buffers(2, lines: 3)))
-}
-
 @Test func lensedCommandCoversOutputRowsOnly() {
     let t = session()
     let choices = lensed(2)
@@ -239,11 +219,11 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
                             buffers: { $0 == 2 ? empty : nil }) == nil)
 }
 
-/// A viewport that starts on a *wrapped command line* -- between the prompt and the output --
-/// shows the raw rows rather than the lens, because the mapping only replaces output when it walks
-/// past the block's own prompt row. The fold path has the same hole and has always had it. Written
-/// down here rather than discovered later; the scroll snapping keeps a viewport off that row.
-@Test func aViewportOnAWrappedCommandLineShowsRaw() {
+/// A viewport that starts on a *wrapped command line* -- between the prompt and the output -- used
+/// to show the whole block raw, because the mapping only replaced output where it walked past the
+/// block's own prompt row. The cursor walk asks the same question of every row, so entering a block
+/// one row below its prompt applies the lens exactly as entering it at the prompt does.
+@Test func aViewportOnAWrappedCommandLineStillShowsTheLens() {
     let t = makeTerminal(cols: 10, rows: 6, scrollback: 100)
     t.feed(mark("A") + "$ " + mark("B") + "curl a-long-url\r\n" + mark("C"))
     t.feed("{\"a\":1}\r\nsecond\r\n" + mark("D", 0))
@@ -258,8 +238,102 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
     #expect(fromTop.prefix(4) == [.row(0), .row(1),
                                   .lens(commandID: 1, line: 0), .lens(commandID: 1, line: 1)])
 
-    // From the continuation row: raw, and the lens is not applied at all.
+    // From the continuation row: the row itself, then the lens.
     let fromWrap = t.displayRows(from: 1, count: 3, folding: OutputFolding(), lenses: lensed(1),
                                  buffers: buffers(1, lines: 2))
-    #expect(fromWrap == [.row(1), .row(2), .row(3)])
+    #expect(fromWrap == [.row(1), .lens(commandID: 1, line: 0), .lens(commandID: 1, line: 1)])
+}
+
+// MARK: - Scrolling a lens, line by line
+
+/// The defect this whole type exists for. A twenty-user JSON response is fourteen rows of
+/// transcript and a hundred and twenty-six lines pretty-printed; addressed by absolute row, the only
+/// lines a reader could reach were the first `outputRows.count + viewportRows` of them, and from
+/// user nine onwards the response did not exist. Every line is reachable now, by advancing.
+@Test func everyLineOfALongLensIsReachable() {
+    let t = makeTerminal(cols: 100, rows: 40, scrollback: 500)
+    t.feed(mark("A") + "$ " + mark("B") + "curl -s https://api.test/users\r\n" + mark("C"))
+    for i in 1...14 { t.feed("transcript row \(i)\r\n") }
+    t.feed(mark("D", 0) + mark("A") + "$ ")
+    let region = t.command(containingAbsoluteRow: 0)
+    #expect(region?.outputRows.count == 14)
+    let id = region?.id ?? 0
+
+    let choices = lensed(id)
+    let get = buffers(id, lines: 126)
+    // Scroll from the top, a wheel click at a time, and collect every lens line that was ever on
+    // screen. Before `DisplayCursor` this reached 53 of 126.
+    var cursor = DisplayCursor(row: 0)
+    var seen: Set<Int> = []
+    for _ in 0..<200 {
+        for entry in t.displayRows(from: cursor, count: 40, folding: OutputFolding(),
+                                   lenses: choices, buffers: get) {
+            if case .lens(_, let line) = entry { seen.insert(line) }
+        }
+        cursor = t.advance(cursor, by: 3, folding: OutputFolding(), lenses: choices, buffers: get)
+    }
+    #expect(seen.count == 126, "saw \(seen.count) of 126 lens lines")
+}
+
+/// And backwards: from below the block, every line again, ending on the command row above it.
+@Test func advancingBackThroughALensReachesThePromptRow() {
+    let t = session()                                   // block 2, output rows 3...12
+    let choices = lensed(2)
+    let get = buffers(2, lines: 30)
+    var cursor = DisplayCursor(row: 13)                 // the next command's prompt
+    var lines: [Int] = []
+    for _ in 0..<31 {
+        cursor = t.advance(cursor, by: -1, folding: OutputFolding(), lenses: choices, buffers: get)
+        if case .lens(_, let line)? = t.displayEntry(at: cursor, folding: OutputFolding(),
+                                                     lenses: choices, buffers: get)?.row {
+            lines.append(line)
+        }
+    }
+    #expect(lines == Array((0..<30).reversed()))
+    #expect(cursor == DisplayCursor(row: 2), "one more step lands on the block's own command row")
+}
+
+/// A lens *shorter* than the rows it replaces does not skip what follows: stepping off its last
+/// line lands on the row after the block, not somewhere past the next one.
+@Test func aShortLensDoesNotJumpPastTheNextBlock() {
+    let t = session()
+    let choices = lensed(2)
+    let get = buffers(2, lines: 2)
+    var cursor = DisplayCursor(row: 2)                  // the block's command row
+    var rows: [DisplayRow] = []
+    for _ in 0..<5 {
+        if let entry = t.displayEntry(at: cursor, folding: OutputFolding(), lenses: choices,
+                                      buffers: get) {
+            rows.append(entry.row)
+        }
+        cursor = t.advance(cursor, by: 1, folding: OutputFolding(), lenses: choices, buffers: get)
+    }
+    #expect(rows == [.row(2), .lens(commandID: 2, line: 0), .lens(commandID: 2, line: 1),
+                     .row(13), .row(14)])
+}
+
+/// Stepping forwards stops at the newest row the viewport can be set to, so the cursor is always one
+/// the terminal can actually be scrolled to.
+@Test func advancingForwardStopsAtTheLiveScreen() {
+    let t = session()
+    let cursor = t.advance(DisplayCursor(row: 0), by: 10_000, folding: OutputFolding(),
+                           lenses: lensed(2), buffers: buffers(2, lines: 30))
+    #expect(cursor.row == t.scrollback.count)
+    #expect(cursor.line == 0)
+}
+
+/// A cursor whose line is past the end of a rebuilt, shorter buffer is clamped rather than trusted.
+@Test func aCursorPastAShrunkenBufferIsClamped() {
+    let t = session()
+    let cursor = t.canonicalised(DisplayCursor(row: 3, line: 99), folding: OutputFolding(),
+                                 lenses: lensed(2), buffers: buffers(2, lines: 4))
+    #expect(cursor == DisplayCursor(row: 3, line: 3))
+}
+
+/// Without a lens or a fold the cursor is the row, and advancing is the row arithmetic it always
+/// was -- the path every ordinary frame takes must not have changed.
+@Test func advancingWithNoLensIsRowArithmetic() {
+    let t = session()
+    #expect(t.advance(DisplayCursor(row: 5), by: 4, folding: OutputFolding()) == DisplayCursor(row: 9))
+    #expect(t.advance(DisplayCursor(row: 5), by: -4, folding: OutputFolding()) == DisplayCursor(row: 1))
 }

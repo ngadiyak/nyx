@@ -496,38 +496,40 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
 /// at all.
 @Test func anAnchorSurvivesAnEvictionByMovingWithTheRows() {
     let shifted = DisplayCursor.shifted(anchor: DisplayCursor(row: 120, line: 70), anchorTop: 118,
-                                        evictedBefore: 40, evictedAfter: 55)
+                                        evictedBefore: 40, evictedAfter: 55, viewportTopRow: 103)
     #expect(shifted?.anchor == DisplayCursor(row: 105, line: 70))
-    // And the top is *not* shifted: it is the key compared against `viewportTopRow`, which is
-    // `scrollback.count - viewportOffset` and does not move when a full ring evicts a row. See
-    // `DisplayCursor.shifted`.
-    #expect(shifted?.anchorTop == 118)
+    // The top comes back as the terminal's current one rather than being derived: a scrolled-back
+    // viewport has already followed the same rows down by growing `viewportOffset`.
+    #expect(shifted?.anchorTop == 103)
 }
 
 @Test func anAnchorWhoseOwnRowWasEvictedIsForgotten() {
     // The block it pointed at has left the ring; there is nothing to move it to.
     #expect(DisplayCursor.shifted(anchor: DisplayCursor(row: 10, line: 70), anchorTop: 8,
-                                  evictedBefore: 0, evictedAfter: 11) == nil)
+                                  evictedBefore: 0, evictedAfter: 11, viewportTopRow: 0) == nil)
     // Exactly at the edge: row 11 with eleven rows gone is row 0, which is still in the buffer.
     let edge = DisplayCursor.shifted(anchor: DisplayCursor(row: 11, line: 2), anchorTop: 11,
-                                     evictedBefore: 0, evictedAfter: 11)
+                                     evictedBefore: 0, evictedAfter: 11, viewportTopRow: 0)
     #expect(edge?.anchor == DisplayCursor(row: 0, line: 2))
-    #expect(edge?.anchorTop == 11)
+    #expect(edge?.anchorTop == 0)
 }
 
 @Test func nothingEvictedLeavesTheAnchorExactlyWhereItWas() {
     let same = DisplayCursor.shifted(anchor: DisplayCursor(row: 12, line: 3), anchorTop: 10,
-                                     evictedBefore: 7, evictedAfter: 7)
+                                     evictedBefore: 7, evictedAfter: 7, viewportTopRow: 99)
     #expect(same?.anchor == DisplayCursor(row: 12, line: 3))
+    // Nothing moved, so nothing is re-read either.
     #expect(same?.anchorTop == 10)
     // No anchor to move, and a counter that has gone backwards (it never does, but a caller that
     // read the two numbers in the wrong order must not shift rows upwards).
-    #expect(DisplayCursor.shifted(anchor: nil, anchorTop: 10, evictedBefore: 0, evictedAfter: 5) == nil)
+    #expect(DisplayCursor.shifted(anchor: nil, anchorTop: 10, evictedBefore: 0, evictedAfter: 5,
+                                  viewportTopRow: 0) == nil)
     #expect(DisplayCursor.shifted(anchor: DisplayCursor(row: 12), anchorTop: 10,
-                                  evictedBefore: 9, evictedAfter: 4)?.anchor == DisplayCursor(row: 12))
+                                  evictedBefore: 9, evictedAfter: 4,
+                                  viewportTopRow: 0)?.anchor == DisplayCursor(row: 12))
     // An anchor that was never given a top -- `viewportAnchorTop` starts at -1 -- is not an anchor.
     #expect(DisplayCursor.shifted(anchor: DisplayCursor(row: 12), anchorTop: -1,
-                                  evictedBefore: 0, evictedAfter: 1) == nil)
+                                  evictedBefore: 0, evictedAfter: 1, viewportTopRow: 0) == nil)
 }
 
 /// End to end, against a real buffer: the display the shifted anchor produces is the display the
@@ -541,9 +543,69 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
                              buffers: get)
     // Three rows fall out of the top of the ring.
     let after = try? #require(DisplayCursor.shifted(anchor: before, anchorTop: 3,
-                                                    evictedBefore: 0, evictedAfter: 3))
+                                                    evictedBefore: 0, evictedAfter: 3,
+                                                    viewportTopRow: 0))
     #expect(after?.anchor == DisplayCursor(row: 0, line: 12))
     // The same lens lines, which is what the reader is looking at.
     let lines = seen.compactMap { if case .lens(_, let line) = $0 { return line } else { return nil } }
     #expect(lines == Array(12..<18))
+}
+
+/// An anchor recorded *as* the display bottom is not a place a reader chose, and must not outlive
+/// the bottom moving.
+///
+/// The pane records one on every keystroke (`send` scrolls to the live screen first), and once the
+/// ring is at capacity `viewportTopRow` stops moving -- `scrollback.count` is pinned at the cap and
+/// `viewportOffset` is zero -- so the staleness check `anchorTop == top` keeps saying "still yours"
+/// while the content underneath scrolls away. The pane then drew a frozen screen with no caret
+/// while `make build` printed below the window, resyncing for one frame per keystroke. The bottom
+/// is recomputed instead: it is a pure function of the buffer, so it is right every frame and
+/// cannot go stale.
+@Test func aDisplayBottomAnchorIsRecomputedRatherThanTrusted() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 30)
+    t.feed(mark("A") + "$ " + mark("B") + "curl x\r\n" + mark("C"))
+    t.feed("{\"a\":1}\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    let id = t.command(containingAbsoluteRow: 0)?.id ?? 0
+    let choices = lensed(id)
+    let get = buffers(id, lines: 20)
+    // What `send` records: the display bottom, and the viewport top it was taken at.
+    var anchor = t.displayBottomCursor(folding: OutputFolding(), lenses: choices, viewportRows: 6,
+                                       buffers: get)
+    var anchorTop = t.viewportTopRow
+
+    // Now something else prints, evicting rows once the ring is full.
+    for step in 1...12 {
+        t.feed(mark("A") + "$ " + mark("B") + "echo \(step)\r\n" + mark("C") + "line \(step)\r\n"
+               + mark("D", 0))
+        let cursor = t.viewportCursor(anchor: anchor, anchorTop: anchorTop,
+                                      anchorIsDisplayBottom: true, folding: OutputFolding(),
+                                      lenses: choices, viewportRows: 6, buffers: get)
+        let bottom = t.displayBottomCursor(folding: OutputFolding(), lenses: choices,
+                                           viewportRows: 6, buffers: get)
+        #expect(cursor == bottom, "step \(step)")
+        // …and what it draws really does reach the last row of the buffer, which is where the
+        // caret is and the whole reason the display bottom exists.
+        let rows = t.displayRows(from: cursor, count: 6, folding: OutputFolding(), lenses: choices,
+                                 buffers: get)
+        #expect(rows.last == .row(t.totalRows - 1), "step \(step): \(rows)")
+        // The anchor is carried forward exactly as the pane carries it: shifted by the eviction,
+        // never re-recorded, because nothing scrolled.
+        if let moved = DisplayCursor.shifted(anchor: anchor, anchorTop: anchorTop,
+                                             evictedBefore: 0, evictedAfter: 0,
+                                             viewportTopRow: t.viewportTopRow) {
+            anchor = moved.anchor
+            anchorTop = moved.anchorTop
+        }
+    }
+}
+
+/// And a reader's own anchor is still honoured, on the same buffer, in the same state.
+@Test func aReadersAnchorIsStillUsedWhileRowsAreEvicted() {
+    let t = session()
+    _ = t.scrollToAbsoluteRow(4, margin: 0)
+    let cursor = t.viewportCursor(anchor: DisplayCursor(row: 3, line: 7), anchorTop: t.viewportTopRow,
+                                  anchorIsDisplayBottom: false, folding: OutputFolding(),
+                                  lenses: lensed(2), viewportRows: 6, buffers: buffers(2, lines: 40))
+    #expect(cursor == DisplayCursor(row: 3, line: 7))
 }

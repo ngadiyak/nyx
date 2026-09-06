@@ -176,6 +176,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// a jump to a search match -- is told apart from one this pane chose. See `viewportCursor(in:)`.
     private var viewportAnchor: DisplayCursor?
     private var viewportAnchorTop = -1
+    /// Whether the anchor is what "go to the live screen" recorded rather than a place the reader
+    /// scrolled to. `send` does that on every keystroke, and such an anchor must not outlive the
+    /// bottom moving -- see `Terminal.viewportCursor`.
+    private var viewportAnchorIsDisplayBottom = false
 
     /// Forgets where in the display the viewport was, so the next frame takes the terminal's own
     /// row and line 0.
@@ -188,6 +192,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func forgetViewportAnchor() {
         viewportAnchor = nil
         viewportAnchorTop = -1
+        viewportAnchorIsDisplayBottom = false
     }
     /// A drag over a lensed block's own lines. Not `Selection`: those are absolute rows and cells
     /// of the grid, and these lines exist nowhere in the buffer.
@@ -1763,7 +1768,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     if let moved = DisplayCursor.shifted(anchor: self.viewportAnchor,
                                                          anchorTop: self.viewportAnchorTop,
                                                          evictedBefore: previous,
-                                                         evictedAfter: t.evictedRows) {
+                                                         evictedAfter: t.evictedRows,
+                                                         viewportTopRow: t.viewportTopRow) {
                         self.viewportAnchor = moved.anchor
                         self.viewportAnchorTop = moved.anchorTop
                     } else {
@@ -2847,6 +2853,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             _ = t.scrollToAbsoluteRow(to.row, margin: 0)
             self.viewportAnchor = to
             self.viewportAnchorTop = t.viewportTopRow
+            // A place the reader chose: kept, and followed across evictions.
+            self.viewportAnchorIsDisplayBottom = false
             return true
         }
     }
@@ -2861,6 +2869,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                         viewportRows: t.rows,
                                                         buffers: { self.lensBuffers[$0] })
             self.viewportAnchorTop = t.viewportTopRow
+            // Not a place anybody chose. Flagged so the next frame recomputes the bottom instead of
+            // trusting this value: the bottom moves whenever anything prints, and with the ring at
+            // capacity nothing the staleness check compares moves with it. See
+            // `Terminal.viewportCursor`.
+            self.viewportAnchorIsDisplayBottom = true
         }
     }
 
@@ -2868,7 +2881,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// `Terminal.viewportCursor(anchor:anchorTop:…)` in NyxCore, where it can be tested; this hands
     /// it the two numbers only the pane knows.
     private func viewportCursor(in t: Terminal, memo: CommandRegionMemo? = nil) -> DisplayCursor {
-        t.viewportCursor(anchor: viewportAnchor, anchorTop: viewportAnchorTop, folding: folding,
+        t.viewportCursor(anchor: viewportAnchor, anchorTop: viewportAnchorTop,
+                         anchorIsDisplayBottom: viewportAnchorIsDisplayBottom, folding: folding,
                          lenses: lenses, viewportRows: t.rows,
                          buffers: { self.lensBuffers[$0] }, memo: memo)
     }

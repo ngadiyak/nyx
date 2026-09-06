@@ -43,12 +43,17 @@ public extension DisplayCursor {
     /// move at all: it indexes a lens buffer, which is Nyx's own text and has not been renumbered
     /// by anything.
     ///
-    /// **`anchorTop` is returned unchanged, and that is not an oversight.** It is not a position in
-    /// the buffer, it is the key `Terminal.viewportCursor` compares against `viewportTopRow` to
-    /// decide the anchor is still about this viewport -- and `viewportTopRow` is `scrollback.count
-    /// - viewportOffset`, neither term of which moves when a *full* ring evicts a row. Shifting it
-    /// would make every anchor read as stale for exactly the frames this function exists for, and
-    /// the fallback would take over: the bug, one indirection further down.
+    /// The **row** is the only thing that needs arithmetic. `anchorTop` comes back as the
+    /// terminal's current `viewportTopRow`, because the terminal has already done its own half of
+    /// this: a scrolled-back viewport grows `viewportOffset` as rows leave the ring, so
+    /// `scrollback.count - viewportOffset` follows the same content down by the same amount. Taking
+    /// the current value is right in both regimes -- scrolled back, where the top moved with the
+    /// rows; and at the live bottom, where nothing moved and it is the number it already was.
+    ///
+    /// Deriving it instead (`anchorTop - delta`, or leaving it alone) is wrong in one regime or the
+    /// other, and both mistakes look identical from here: the staleness check fails, the fallback
+    /// takes over, and the reader is thrown out of the lens by the very function that exists to
+    /// keep them in it. Both were tried; the second is what a built-app probe caught.
     ///
     /// nil in the two cases where there is nothing to keep: no anchor at all (`anchorTop` below
     /// zero is the pane's "none yet" marker), or the anchor's own row has left the ring, which
@@ -58,14 +63,14 @@ public extension DisplayCursor {
     /// can read the two numbers in the wrong order -- shifts nothing rather than moving rows
     /// upwards into indices that were never theirs.
     static func shifted(anchor: DisplayCursor?, anchorTop: Int,
-                        evictedBefore: Int, evictedAfter: Int)
+                        evictedBefore: Int, evictedAfter: Int, viewportTopRow: Int)
         -> (anchor: DisplayCursor, anchorTop: Int)? {
         guard let anchor, anchorTop >= 0 else { return nil }
         let delta = max(0, evictedAfter - evictedBefore)
         guard delta > 0 else { return (anchor, anchorTop) }
         let row = anchor.row - delta
         guard row >= 0 else { return nil }
-        return (DisplayCursor(row: row, line: anchor.line), anchorTop)
+        return (DisplayCursor(row: row, line: anchor.line), max(0, viewportTopRow))
     }
 }
 
@@ -282,8 +287,9 @@ public extension Terminal {
     ///
     /// Three answers, in the order that makes the ordinary session free:
     ///
-    /// - the anchor, when it still describes this viewport (`anchorTop == viewportTopRow`), clamped
-    ///   to what the buffers hold now;
+    /// - the anchor, when it still describes this viewport (`anchorTop == viewportTopRow`) *and* it
+    ///   is a place the reader chose rather than the live bottom, clamped to what the buffers hold
+    ///   now;
     /// - the **display** bottom, when there is no usable anchor and the terminal is already at its
     ///   own bottom -- which is every frame after new output arrives while the reader is pinned to
     ///   the live screen, and the frame a finished request opens its lens on. Without it a response
@@ -295,13 +301,26 @@ public extension Terminal {
     ///
     /// Lenses only for the middle case: a fold can only make the display *shorter* than the rows it
     /// stands in for, so the terminal's own bottom is still the display's.
-    func viewportCursor(anchor: DisplayCursor?, anchorTop: Int, folding: OutputFolding,
+    ///
+    /// `anchorIsDisplayBottom` says the anchor is not a place a reader chose: it is what "go to the
+    /// live screen" recorded, which the pane does on every keystroke. Such an anchor is **ignored**
+    /// and the bottom recomputed, because the bottom moves whenever anything prints and the
+    /// staleness check cannot see that: once the ring is at capacity `viewportTopRow` stops moving
+    /// -- `scrollback.count` is pinned at the cap and `viewportOffset` is zero -- so `anchorTop ==
+    /// top` goes on saying "still yours" while the content underneath scrolls away. With a lens or
+    /// a fold open that froze the pane: `make build` printed below the window, the screen stopped
+    /// changing, the caret had no slot, and one keystroke resynced it for exactly one frame.
+    ///
+    /// Recomputing is cheap and cannot go stale -- `displayBottomCursor` is a pure function of the
+    /// buffer, and one walk of a screenful with `CommandRegionMemo` in hand.
+    func viewportCursor(anchor: DisplayCursor?, anchorTop: Int,
+                        anchorIsDisplayBottom: Bool = false, folding: OutputFolding,
                         lenses: LensChoices = LensChoices(), viewportRows: Int? = nil,
                         buffers: (UInt32) -> LensBuffer? = { _ in nil },
                         memo: CommandRegionMemo? = nil) -> DisplayCursor {
         let memo = memo ?? CommandRegionMemo()
         let top = max(0, viewportTopRow)
-        if let anchor, anchorTop == top {
+        if let anchor, anchorTop == top, !anchorIsDisplayBottom {
             return canonicalised(anchor, folding: folding, lenses: lenses, buffers: buffers,
                                  memo: memo)
         }

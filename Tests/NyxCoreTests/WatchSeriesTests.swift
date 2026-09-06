@@ -231,9 +231,10 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
     }
     #expect(running.headerText == "watch every 5 s \u{b7} run 12 \u{b7} 200 \u{b7} 142 ms")
 
-    // While the next run is in flight there is no status to report yet.
+    // While the next run is in flight the last answer stays: dropping it shrank the strip and
+    // re-laid it out every interval. See `theHeaderKeepsTheLastAnswerWhileTheNextRunIsInFlight`.
     running.runStarted(id: 13, at: 200)
-    #expect(running.headerText == "watch every 5 s \u{b7} run 13")
+    #expect(running.headerText == "watch every 5 s \u{b7} run 13 \u{b7} 200 \u{b7} 142 ms")
 
     var finished = watchSeries(interval: 1, startedAt: 0)
     watchRun(&finished, id: 1, status: 200, timeTotal: 0.1, start: 0, end: 0.1)
@@ -314,4 +315,53 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
     // A pane with nothing behind it at all: floor zero, and the first block is still the run.
     series = watchSeries(interval: 5, startedAt: 0)
     #expect(series.owns(finishedBlock: 1, outstanding: true, typedAfter: 0))
+}
+
+/// The sentence keeps the last answer while the next run is in flight.
+///
+/// `run 12 · 200 · 142 ms` lost its status and its latency the moment run 13 was typed, so the
+/// strip shrank and re-laid itself out every interval -- a header that flickers between two widths
+/// for as long as the watch lasts. The number a reader wants is the last one that came back.
+@Test func theHeaderKeepsTheLastAnswerWhileTheNextRunIsInFlight() {
+    var series = watchSeries(interval: 5, startedAt: 0)
+    watchRun(&series, id: 1, status: 200, timeTotal: 0.142, start: 0, end: 0.2)
+    #expect(series.headerText == "watch every 5 s \u{b7} run 1 \u{b7} 200 \u{b7} 142 ms")
+
+    series.runStarted(id: 2, at: 5)
+    #expect(series.headerText == "watch every 5 s \u{b7} run 2 \u{b7} 200 \u{b7} 142 ms")
+
+    // And the new answer replaces it once it is in.
+    series.runFinished(id: 2, status: 503, exitStatus: 0, timeTotal: 0.31, body: "", at: 5.3)
+    #expect(series.headerText == "watch every 5 s \u{b7} run 2 \u{b7} 503 \u{b7} 310 ms")
+
+    // Nothing has come back yet: there is nothing to keep.
+    var fresh = watchSeries(interval: 5, startedAt: 0)
+    fresh.runStarted(id: 1, at: 0)
+    #expect(fresh.headerText == "watch every 5 s \u{b7} run 1")
+}
+
+/// The sentence describes the *series*, so its colour has to as well.
+///
+/// `11 runs · p50 150 ms · p95 200 ms · 1 failure` took its tone from the latest run and was drawn
+/// in success green -- a sentence whose last three words say something failed.
+@Test func aSeriesWithAFailureInItIsNotGreen() {
+    var series = watchSeries(interval: 1, startedAt: 0)
+    #expect(series.tone == .plain)
+
+    watchRun(&series, id: 1, status: 200, start: 0, end: 0.1)
+    #expect(series.tone == .success)
+
+    watchRun(&series, id: 2, status: 503, start: 2, end: 2.1)
+    #expect(series.tone == .failure)
+
+    // A later success does not clear it: the failure happened and the sentence still counts it.
+    watchRun(&series, id: 3, status: 200, start: 4, end: 4.1)
+    #expect(series.tone == .failure)
+    #expect(series.header().tone == .failure)
+
+    // A run in flight does not decide the tone either way.
+    var redirects = watchSeries(interval: 1, startedAt: 0)
+    watchRun(&redirects, id: 1, status: 301, start: 0, end: 0.1)
+    redirects.runStarted(id: 2, at: 2)
+    #expect(redirects.tone == .redirect)
 }

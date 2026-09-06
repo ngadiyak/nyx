@@ -344,6 +344,24 @@ public struct WatchSeries: Equatable {
                      failures: failures)
     }
 
+    /// The newest run that has actually come back. nil while the first one is still in flight.
+    var lastCompletedRun: Run? { runs.last { $0.id != runningRunID } }
+
+    /// The colour for a sentence that describes the **series** rather than its latest run.
+    ///
+    /// Any failure among the runs makes it a failure: `11 runs · p50 150 ms · p95 200 ms ·
+    /// 1 failure` took its tone from the newest run and was drawn in success green -- a sentence
+    /// whose last three words say something failed. Otherwise it is the last answer that came
+    /// back, and `.plain` while nothing has.
+    public var tone: SummaryTone {
+        let completed = runs.filter { $0.id != runningRunID }
+        if completed.contains(where: {
+            WatchSeries.dot(status: $0.status, exitStatus: $0.exitStatus) == .failure
+        }) { return .failure }
+        guard let last = completed.last else { return .plain }
+        return WatchSeries.dot(status: last.status, exitStatus: last.exitStatus).tone
+    }
+
     /// The newest `n` runs, oldest first -- the order the dots are drawn in, which is the order
     /// they happened in.
     public func timeline(last n: Int) -> [Dot] {
@@ -368,7 +386,11 @@ public struct WatchSeries: Equatable {
         }
         var parts = ["watch " + plan.title]
         if !runs.isEmpty { parts.append("run \(runs.count)") }
-        if let last = runs.last, last.id != runningRunID {
+        // The last run that *came back*, not `runs.last`. While the next run is in flight
+        // `runs.last` is that run, with no status and no timing yet, so the sentence lost
+        // `· 200 · 142 ms` every interval and the strip shrank and re-laid itself out with it --
+        // for as long as the watch lasted. The number a reader wants is the last one that arrived.
+        if let last = lastCompletedRun {
             if let status = last.status { parts.append("\(status)") }
             if let time = HTTPSummary.timeText(last.timeTotal) { parts.append(time) }
             // A curl that failed is news even beside a status, and the only news when there is no
@@ -435,9 +457,12 @@ public struct WatchHeader: Equatable {
     public let dots: [WatchSeries.Dot]
     /// A series that has stopped has nothing to stop; the header stays to show the statistics.
     public let showsStop: Bool
+    /// What colour the sentence is drawn in. `WatchSeries.tone` -- the series', not the newest
+    /// run's, because the sentence is about the series.
+    public let tone: SummaryTone
 
-    public init(text: String, dots: [WatchSeries.Dot], showsStop: Bool) {
-        self.text = text; self.dots = dots; self.showsStop = showsStop
+    public init(text: String, dots: [WatchSeries.Dot], showsStop: Bool, tone: SummaryTone = .plain) {
+        self.text = text; self.dots = dots; self.showsStop = showsStop; self.tone = tone
     }
 }
 
@@ -449,7 +474,7 @@ public extension WatchSeries {
     /// command line. The caller may ask for fewer; nothing may ask for more without the strip
     /// growing past the row it is drawn on.
     func header(dots n: Int = 30) -> WatchHeader {
-        WatchHeader(text: headerText, dots: timeline(last: n), showsStop: !isFinished)
+        WatchHeader(text: headerText, dots: timeline(last: n), showsStop: !isFinished, tone: tone)
     }
 }
 

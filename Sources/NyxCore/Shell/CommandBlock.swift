@@ -463,6 +463,10 @@ public struct BlockHeader: Equatable {
     /// what the command's own state says. One property, so the three places that draw a summary
     /// cannot pick three different colours for the same block.
     public var tone: SummaryTone {
+        // A watch's sentence describes the series, not its latest run: `11 runs · p50 150 ms ·
+        // p95 200 ms · 1 failure` drawn in success green is a sentence whose last three words say
+        // something failed.
+        if let watch { return watch.tone }
         if let httpSummary {
             switch httpSummary.tone {
             case .success: return .success

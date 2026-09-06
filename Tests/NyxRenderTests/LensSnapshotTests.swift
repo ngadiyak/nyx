@@ -196,11 +196,17 @@ private struct LensGrid {
         let display = terminal.displayRows(from: cursor, count: rows, folding: folding,
                                            lenses: lenses, buffers: { buffers[$0] })
         let lensPalette = LensPalette.forTheme(palette)
+        // The dim comes from the palette this frame is *rendered* in, exactly as `Pane.render`
+        // passes it: an indexed colour is resolved by the renderer against `RenderFrame.palette`,
+        // but a resolved one is baked into the cell here, so a fixture terminal built without a
+        // theme would otherwise put xterm's bright black on a nyx-dark ground.
+        let placeholderDim = LensPalette.dimColour(in: palette)
         var lines = display.map { row -> Row in
             switch row {
             case .row(let absolute): return terminal.absoluteRow(absolute) ?? Row(cols: cols)
             case .fold(_, let hidden, let status):
-                return terminal.foldPlaceholderRow(hiddenRows: hidden, status: status)
+                return terminal.foldPlaceholderRow(hiddenRows: hidden, status: status,
+                                                   dim: placeholderDim)
             case .lens(let id, let index):
                 return buffers[id]?.row(index, cols: cols, palette: lensPalette) ?? Row(cols: cols)
             }

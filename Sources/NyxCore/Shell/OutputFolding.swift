@@ -307,16 +307,28 @@ public extension Terminal {
     ///
     /// Italic, and in the block's own status colour -- the same three the spine uses: red for a
     /// failure, amber while the command is still running (a folded build is a live tail, and grey
-    /// beside an amber spine said two different things about one block), bright black otherwise.
-    /// It used to be dim as well, and dimmed bright black read as a comment the shell had printed
-    /// rather than as the one thing on that row you are meant to click.
-    func foldPlaceholderRow(hiddenRows: Int, status: BlockStatus) -> Row {
+    /// beside an amber spine said two different things about one block), the theme's dim otherwise.
+    /// It used to carry the `.dim` *attribute* as well, and dimmed bright black read as a comment
+    /// the shell had printed rather than as the one thing on that row you are meant to click.
+    ///
+    /// The grey is `LensPalette.dimColour` -- resolved against this terminal's palette, not
+    /// `.indexed(8)` handed to the renderer raw, which is bright black on the theme's background
+    /// and measured 1.91:1 on nyx-dark. It is the same grey a lens' own `▸ […] 40 items` is drawn
+    /// in, because they are the same control in two places and two greys on one screen read as two
+    /// different kinds of thing.
+    ///
+    /// `dim` is a parameter so the frame path can resolve it once rather than walking the readable
+    /// ladder for every placeholder row on screen; nil resolves it here, which is what a caller
+    /// with one row to draw wants.
+    func foldPlaceholderRow(hiddenRows: Int, status: BlockStatus, dim: RGB? = nil) -> Row {
         var row = Row(cols: cols)
         var cell = Cell()
         switch status {
         case .running: cell.fg = .indexed(3)
         case .failed: cell.fg = .indexed(1)
-        case .succeeded: cell.fg = .indexed(8)
+        case .succeeded:
+            let grey = dim ?? LensPalette.dimColour(in: palette)
+            cell.fg = .rgb(grey.r, grey.g, grey.b)
         }
         cell.attrs = [.italic]
         for (column, scalar) in OutputFolding.placeholder(hiddenRows: hiddenRows).unicodeScalars.enumerated() {

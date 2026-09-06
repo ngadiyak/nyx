@@ -77,8 +77,8 @@ private func folded(_ ids: UInt32..., shape: FoldShape = .all) -> OutputFolding 
     #expect(rows.count == 6)
 }
 
-/// Not dim: dimmed bright black reads as a comment the shell printed, and the placeholder is the
-/// button that puts the output back. It keeps the italic and takes the block's own status colour --
+/// Not the `.dim` *attribute*: dimmed bright black reads as a comment the shell printed, and the
+/// placeholder is the button that puts the output back. It keeps the italic and takes the block's own status colour --
 /// the same three the spine uses, so a folded running build is amber on both.
 @Test func thePlaceholderRowIsItalicInTheBlocksStatusColour() {
     let t = session()
@@ -86,7 +86,9 @@ private func folded(_ ids: UInt32..., shape: FoldShape = .all) -> OutputFolding 
     let text = String(row.cells.prefix(30).map { $0.content == 0 ? " " : Character(UnicodeScalar($0.content)!) })
         .trimmingCharacters(in: .whitespaces)
     #expect(text == OutputFolding.placeholder(hiddenRows: 10))
-    #expect(row.cells[0].fg == .indexed(8))
+    // The theme's dim, resolved, not `.indexed(8)` handed over raw: bright black on nyx-dark's
+    // background is 1.91:1, and a placeholder nobody can read is a button nobody can find.
+    #expect(row.cells[0].fg == LensPalette.forTheme(t.palette).dim)
     #expect(!row.cells[0].attrs.contains(.dim))
     #expect(row.cells[0].attrs.contains(.italic))
 
@@ -284,4 +286,20 @@ private func runningInATallPane() -> Terminal {
     let blocks = t.visibleBlocks(rows: 44)
     #expect(blocks.count == 2)
     #expect(blocks.map(\.region.promptRow) == [0, 2])
+}
+
+/// The fold placeholder and a lens' own fold placeholder are the same grey.
+///
+/// They are the same control in two places -- `▸ … 75 lines hidden` over a block's output and
+/// `▸ […] 40 items` inside a pretty-printed body -- and two different greys on one screen reads as
+/// two different kinds of thing. The lens' came down `LensPalette`'s ladder from the first;
+/// the block's was `.indexed(8)` raw, which on nyx-dark is 1.91:1 against the background.
+@Test func theFoldPlaceholderIsTheSameDimAsALensPlaceholder() {
+    for (name, palette) in Themes.builtin {
+        let t = Terminal(cols: 40, rows: 4, scrollbackLimit: 50, palette: palette)
+        let colour = t.foldPlaceholderRow(hiddenRows: 10, status: .succeeded).cells[0].fg
+        #expect(colour == LensPalette.forTheme(palette).dim, "\(name)")
+        #expect(colour.kind == .rgb, "\(name)")
+        #expect(RGB.contrast(RGB(colour.r, colour.g, colour.b), palette.background) >= 4.5, "\(name)")
+    }
 }

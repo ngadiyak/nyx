@@ -1815,6 +1815,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // Once per frame, never per row: resolving the theme's dim colour walks a blend
                 // ladder, and there are as many rows as the window is tall.
                 let lensPalette = LensPalette.forTheme(t.palette)
+                let placeholderDim = LensPalette.dimColour(in: t.palette)
                 let display = t.displayRows(from: self.viewportCursor(in: t, memo: memo),
                                             count: t.rows,
                                             folding: self.folding, lenses: self.lenses,
@@ -1833,7 +1834,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     switch row {
                     case .row(let absolute): return t.absoluteRow(absolute) ?? Row(cols: t.cols)
                     case .fold(_, let hidden, let status):
-                        return t.foldPlaceholderRow(hiddenRows: hidden, status: status)
+                        return t.foldPlaceholderRow(hiddenRows: hidden, status: status,
+                                                    dim: placeholderDim)
                     case .lens(let id, let index):
                         // A blank row rather than nothing at all when the buffer has just been
                         // replaced under the display: the next frame has the right lines, and one

@@ -44,7 +44,7 @@ public enum RequestExport {
 /// the yes/no answer; the text is then re-parsed by `MiniJSON` so the *rendering* keeps the keys
 /// in the order the user wrote them, which `JSONSerialization`'s bridged dictionary does not
 /// promise to do twice in a row.
-private func jsonBody(_ command: CurlCommand) -> JSONValue? {
+private func jsonBody(_ command: CurlCommand) -> MiniJSON.Value? {
     guard let body = command.body, let text = bodyPlainText(body) else { return nil }
     if bodyDeclaresJSON(command) {
         return MiniJSON.parse(text)
@@ -273,26 +273,30 @@ private enum CommentStyle {
 
 // MARK: - A tiny order-preserving JSON reader
 
-/// A JSON value that remembers the order its object keys were written in. `JSONSerialization`'s
-/// bridged dictionary does not promise that, and every renderer below needs the *same* order
-/// `JSONSerialization` was only consulted to validate -- so parsing happens twice: once (in
-/// `jsonBody`) to answer "is this JSON", and once here to answer "in what order".
-private indirect enum JSONValue {
-    case string(String)
-    case number(String)
-    case bool(Bool)
-    case null
-    case array([JSONValue])
-    case object([(String, JSONValue)])
-}
-
 /// A minimal recursive-descent JSON reader. Deliberately not strict where strictness would only
 /// reject text `CurlCommand` already accepted as a body: a literal control character inside a
 /// string (curl's `$'...\n...'` bodies contain a real newline byte, not the two-character `\n`
 /// escape) is read as itself rather than rejected, because the alternative is refusing to render
 /// a body this same process just finished treating as valid JSON.
 private enum MiniJSON {
-    static func parse(_ text: String) -> JSONValue? {
+    /// A JSON value that remembers the order its object keys were written in. `JSONSerialization`'s
+    /// bridged dictionary does not promise that, and every renderer below needs the *same* order
+    /// `JSONSerialization` was only consulted to validate -- so parsing happens twice: once (in
+    /// `jsonBody`) to answer "is this JSON", and once here to answer "in what order".
+    ///
+    /// Not `JSONDocument`/`JSONValue`, which is the response side's reader and is strict where
+    /// this one must not be -- see the note on `MiniJSON` about control characters in a `$'...'`
+    /// body.
+    indirect enum Value {
+        case string(String)
+        case number(String)
+        case bool(Bool)
+        case null
+        case array([Value])
+        case object([(String, Value)])
+    }
+
+    static func parse(_ text: String) -> MiniJSON.Value? {
         var reader = Reader(Array(text.unicodeScalars))
         reader.skipWhitespace()
         guard let value = reader.parseValue() else { return nil }
@@ -314,12 +318,12 @@ private enum MiniJSON {
             while let c = current, c == " " || c == "\t" || c == "\n" || c == "\r" { index += 1 }
         }
 
-        mutating func parseValue() -> JSONValue? {
+        mutating func parseValue() -> MiniJSON.Value? {
             guard let c = current else { return nil }
             switch c {
             case "{": return parseObject()
             case "[": return parseArray()
-            case "\"": return parseString().map(JSONValue.string)
+            case "\"": return parseString().map(MiniJSON.Value.string)
             case "t": return consume(literal: "true") ? .bool(true) : nil
             case "f": return consume(literal: "false") ? .bool(false) : nil
             case "n": return consume(literal: "null") ? .null : nil
@@ -335,9 +339,9 @@ private enum MiniJSON {
             return true
         }
 
-        mutating func parseObject() -> JSONValue? {
+        mutating func parseObject() -> MiniJSON.Value? {
             index += 1 // "{"
-            var pairs: [(String, JSONValue)] = []
+            var pairs: [(String, MiniJSON.Value)] = []
             skipWhitespace()
             if current == "}" { index += 1; return .object(pairs) }
             while true {
@@ -356,9 +360,9 @@ private enum MiniJSON {
             }
         }
 
-        mutating func parseArray() -> JSONValue? {
+        mutating func parseArray() -> MiniJSON.Value? {
             index += 1 // "["
-            var items: [JSONValue] = []
+            var items: [MiniJSON.Value] = []
             skipWhitespace()
             if current == "]" { index += 1; return .array(items) }
             while true {
@@ -412,7 +416,7 @@ private enum MiniJSON {
             return scalar
         }
 
-        mutating func parseNumber() -> JSONValue? {
+        mutating func parseNumber() -> MiniJSON.Value? {
             let start = index
             if current == "-" { index += 1 }
             while let c = current, ("0" ... "9").contains(c) { index += 1 }
@@ -628,7 +632,7 @@ private func jsTemplateEscape(_ s: String) -> String {
 /// against the source body is readable. Keys are always quoted -- a header name is never a valid
 /// identifier, and this printer is shared with the body literal, where quoting every key rather
 /// than checking each one against JS identifier syntax is one rule instead of two.
-private func jsLiteral(_ value: JSONValue, indent: Int) -> String {
+private func jsLiteral(_ value: MiniJSON.Value, indent: Int) -> String {
     switch value {
     case .string(let s): return jsString(s)
     case .number(let n): return n
@@ -775,7 +779,7 @@ private func pyFStringEscape(_ s: String) -> String {
     return out
 }
 
-private func pyLiteral(_ value: JSONValue, indent: Int) -> String {
+private func pyLiteral(_ value: MiniJSON.Value, indent: Int) -> String {
     switch value {
     case .string(let s): return pyString(s)
     case .number(let n): return n

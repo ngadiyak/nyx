@@ -326,6 +326,31 @@ enum UISnapshot {
                       background: palette.background)
             }
         }
+        // The field a `Filter…` or `Find in Body…` lens is typed into, in every state it has and
+        // in both built-in themes. It is the one piece of this chrome drawn over the *pane* and
+        // painted from the pane's own palette, so what each picture answers is whether AppKit's
+        // own parts -- the field's bezel, the secondary sentence, the `Run with jq` button, all of
+        // which follow the *window's* appearance -- came out in the theme's. Rendered under
+        // whatever appearance the snapshot process is in, which is exactly the mismatch: a dark
+        // theme under Light Mode gave a white bezel and near-black text on a near-black pane.
+        for (themeName, themePalette) in [("dark", palette),
+                                          ("light", Themes.builtin["nyx-light"] ?? palette)] {
+            let states: [(String, String, String?, Bool)] = [
+                ("empty", "", nil, false),
+                ("typed", ".users[] | .name", nil, false),
+                ("unsupported", "map(.x)", JSONPath.unsupportedMessage, true),
+            ]
+            for (name, text, message, offersJq) in states {
+                let view = LensFieldView(frame: NSRect(x: 0, y: 0, width: 360, height: 58))
+                view.show(caption: "Filter", text: text, palette: themePalette)
+                view.setMessage(message, offersJq: offersJq)
+                let size = view.intrinsicContentSize
+                view.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
+                view.layoutSubtreeIfNeeded()
+                write(view, named: "lens-field-\(name)-\(themeName)", into: directory,
+                      background: themePalette.background)
+            }
+        }
         // The `Watch…` popover, in both appearances, on the stop rule that has the most in it:
         // every row is up, and the sentence at the foot is what the header will then say.
         for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {

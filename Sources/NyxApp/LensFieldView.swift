@@ -66,6 +66,13 @@ final class LensFieldView: NSView, NSTextFieldDelegate {
 
     /// `Filter` or `Find`, with whatever was already typed, and the colours of the pane it sits on.
     func show(caption text: String, text existing: String, palette: Palette) {
+        // The field's bezel, the `Run with jq` button and `secondaryLabelColor` are drawn by
+        // AppKit in the *window's* appearance, while everything else here is painted from the
+        // pane's theme. A dark theme under Light Mode therefore gave a white bezel and near-black
+        // secondary text on a near-black pane. Telling the view which appearance it is really
+        // sitting in makes all of them agree with the theme -- the same line
+        // `BlockHeaderView.update` carries, for the same reason.
+        appearance = NSAppearance(named: palette.isLight ? .aqua : .darkAqua)
         caption.stringValue = text
         field.stringValue = existing
         field.placeholderString = text == "Filter" ? ".users[0].name" : "a word in the body"

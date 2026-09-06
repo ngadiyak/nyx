@@ -174,10 +174,18 @@ public enum CommandBlockChrome {
     /// aligned to the last column can never begin left of `lastUsedColumn + 1`). nil when not even
     /// the ⋯ and the chevron fit anywhere on the command.
     ///
-    /// A pane narrower than the smallest strip therefore shows no strip at all, and that is the
-    /// decision rather than a gap: the chevron on the command row, the status mark in the gutter,
-    /// ⌘⇧↑ and the right-click menu all still fold the block, and a strip drawn anyway would cover
-    /// the command it describes.
+    /// When no row of the command has room for even the ⋯ and the chevron, the minimal strip goes
+    /// over the tail of the **last** row anyway. That is a deliberate exception to "the text wins",
+    /// and it is here because the command it covers is the one that needs the strip most: a request
+    /// run from the workbench is a single line hundreds of characters long, it fills every row it
+    /// touches, and its ⋯ menu is the only place "Open in Workbench", the four exports and "Save as
+    /// Button" are. Four cells of it are hidden while the pointer is on the block and come back the
+    /// moment it leaves; a menu that could not be opened at all would not come back. The *static*
+    /// summary keeps the old rule and is skipped, so nothing is painted over text unhovered.
+    ///
+    /// A pane narrower than the smallest strip is the one case that still gets nothing: the strip
+    /// would begin off the left edge. The chevron on the command row, the status mark in the
+    /// gutter, ⌘⇧↑ and the right-click menu all still fold the block.
     public static func overlayPlacement(commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
                                         stripColumns: [OverlayControls: Int],
                                         cols: Int) -> OverlayPlacement? {
@@ -189,7 +197,9 @@ public enum CommandBlockChrome {
                 return OverlayPlacement(row: row.absoluteRow, controls: controls)
             }
         }
-        return nil
+        guard let last = commandRows.last, let minimal = stripColumns[.minimal],
+              minimal > 0, minimal <= cols else { return nil }
+        return OverlayPlacement(row: last.absoluteRow, controls: .minimal)
     }
 }
 
@@ -253,6 +263,10 @@ public struct SummaryPlacement: Equatable {
 public enum BlockAction: Equatable {
     case copyCommand, copyOutput, copyMarkdown, saveOutput
     case runAgain, editAndRun
+    /// The Request group, offered only on a block whose command was a `curl` -- see
+    /// `BlockHeader.isHTTP`. These are the four things you can do to a *request* that mean nothing
+    /// for `make test`: open it as a form, take it to another tool, keep it as a button.
+    case openInWorkbench, copyAs(ExportFormat), saveAsButton, saveToProject
     case toggleFold, toggleFoldAll
     case notifyWhenDone(armed: Bool)
 
@@ -265,6 +279,12 @@ public enum BlockAction: Equatable {
         case .saveOutput: return "Save Output\u{2026}"
         case .runAgain: return "Run This Command Again"
         case .editAndRun: return "Edit and Run This Command\u{2026}"
+        case .openInWorkbench: return "Open in Workbench\u{2026}"
+        // The same names the workbench's own Export menu uses, because they are the same act
+        // reached from somewhere else: two words for one thing is two things to learn.
+        case .copyAs(let format): return "Copy as \(format.title)"
+        case .saveAsButton: return "Save as Button\u{2026}"
+        case .saveToProject: return "Save to Project\u{2026}"
         case .toggleFold: return "Fold Output"
         case .toggleFoldAll: return "Fold Everything Long"
         case .notifyWhenDone: return "Notify When Done"
@@ -274,7 +294,7 @@ public enum BlockAction: Equatable {
     /// Where a separator goes in the menu: before the first action of each group after the first.
     public var startsGroup: Bool {
         switch self {
-        case .runAgain, .toggleFold, .notifyWhenDone: return true
+        case .runAgain, .openInWorkbench, .toggleFold, .notifyWhenDone: return true
         default: return false
         }
     }
@@ -332,17 +352,31 @@ public struct BlockHeader: Equatable {
     /// What the block's curl said, when the block was one. nil for everything else, which is almost
     /// every block.
     public let httpSummary: HTTPSummary?
+    /// Whether the block's command line was a `curl` -- which is what the Request group in the ⋯
+    /// menu turns on.
+    ///
+    /// Separate from `httpSummary != nil`, and it has to be: a request that could not connect, or
+    /// one whose response was too large to read, is still a request you want to open in the
+    /// workbench and still has no summary to show. The caller carries the bool because deciding it
+    /// costs a `CurlCommand.parse` of a string built from the grid; the pane keeps it beside the
+    /// exchange in `RequestSummaryCache` so it is decided once per block rather than once per frame.
+    public let isHTTP: Bool
 
     /// `httpSummary`, when there is one, *replaces* `summary` rather than sitting beside it: a
     /// request's status and latency are what the user ran the command to find out, and two sources
     /// for one string is two ways for the command row, the hover strip and the sticky strip to
     /// disagree about what a block did.
     public init(id: UInt32, state: State, folded: Bool, hasOutput: Bool, anyFolds: Bool,
-                notifyArmed: Bool, summary: String, httpSummary: HTTPSummary? = nil) {
+                notifyArmed: Bool, summary: String, httpSummary: HTTPSummary? = nil,
+                isHTTP: Bool = false) {
         self.id = id; self.state = state; self.folded = folded; self.hasOutput = hasOutput
         self.anyFolds = anyFolds; self.notifyArmed = notifyArmed
         self.summary = httpSummary?.text ?? summary
         self.httpSummary = httpSummary
+        // A block that produced a response is a request whatever the caller says: the summary could
+        // not have been made otherwise, and a menu that disagreed with the row above it would be
+        // the pane's cache being wrong in the one place a user can see it.
+        self.isHTTP = isHTTP || httpSummary != nil
     }
 
     /// The colour meaning for this block's summary: the request's, when it made one, and otherwise
@@ -384,12 +418,22 @@ public struct BlockHeader: Equatable {
     }
 
     /// The ⋯ menu, in order, each with whether it can do anything right now.
+    ///
+    /// The Request group is *absent* on an ordinary block rather than greyed out. A disabled item
+    /// says "this could apply here and does not"; "Copy as Python requests" could never apply to
+    /// `make test`, and eight dead rows under every menu in the terminal is the kind of chrome that
+    /// makes a menu not worth opening.
     public var actions: [(action: BlockAction, enabled: Bool)] {
         var list: [(BlockAction, Bool)] = [
             (.copyCommand, true), (.copyOutput, hasOutput), (.copyMarkdown, true), (.saveOutput, hasOutput),
             (.runAgain, !isRunning), (.editAndRun, !isRunning),
-            (.toggleFold, hasOutput), (.toggleFoldAll, true),
         ]
+        if isHTTP {
+            list.append((.openInWorkbench, true))
+            list += ExportFormat.allCases.map { (.copyAs($0), true) }
+            list += [(.saveAsButton, true), (.saveToProject, true)]
+        }
+        list += [(.toggleFold, hasOutput), (.toggleFoldAll, true)]
         if isRunning { list.append((.notifyWhenDone(armed: notifyArmed), true)) }
         return list.map { (action: $0.0, enabled: $0.1) }
     }
@@ -415,7 +459,8 @@ public extension CommandBlock {
     /// the pane, which parses a finished curl's transcript at most once -- is the only one that can
     /// afford to look.
     func header(now: Double, folding: OutputFolding, notifyArmed: Bool, anyFolds: Bool,
-                hasOutput: Bool, httpSummary: HTTPSummary? = nil) -> BlockHeader {
+                hasOutput: Bool, httpSummary: HTTPSummary? = nil,
+                isHTTP: Bool = false) -> BlockHeader {
         let state: BlockHeader.State
         let summary: String
         if isRunning {
@@ -431,7 +476,8 @@ public extension CommandBlock {
         }
         return BlockHeader(id: region.id, state: state, folded: folding.isFolded(region.id),
                            hasOutput: hasOutput, anyFolds: anyFolds,
-                           notifyArmed: notifyArmed, summary: summary, httpSummary: httpSummary)
+                           notifyArmed: notifyArmed, summary: summary, httpSummary: httpSummary,
+                           isHTTP: isHTTP)
     }
 }
 

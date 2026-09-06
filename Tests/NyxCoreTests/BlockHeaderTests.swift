@@ -169,3 +169,48 @@ private func httpSummary(_ text: String, _ tone: HTTPSummary.Tone) -> HTTPSummar
     #expect(h.tone == .failure)
     #expect(h.summary.hasSuffix("exit 23"))
 }
+
+// MARK: - The Request group
+
+/// A block that ran a `curl` offers the four things you can do to a *request* -- open it as a form,
+/// copy it as another tool's code, keep it as a button -- and it offers them after `Edit and Run`,
+/// where the other "do it again" actions are.
+@Test func httpBlocksOfferTheRequestGroup() {
+    let h = block(region()).header(now: 100, folding: OutputFolding(), notifyArmed: false,
+                                   anyFolds: false, hasOutput: true, isHTTP: true)
+    #expect(h.isHTTP)
+    #expect(h.actions.map(\.action) == [
+        .copyCommand, .copyOutput, .copyMarkdown, .saveOutput,
+        .runAgain, .editAndRun,
+        .openInWorkbench, .copyAs(.httpie), .copyAs(.fetch), .copyAs(.pythonRequests), .copyAs(.go),
+        .saveAsButton, .saveToProject,
+        .toggleFold, .toggleFoldAll,
+    ])
+    // Hoisted: `allSatisfy` inside the macro is a throwing call the expansion cannot handle.
+    let allEnabled = h.actions.allSatisfy(\.enabled)
+    #expect(allEnabled)
+    // The separator before the group: the menu builders draw one wherever this is true.
+    #expect(BlockAction.openInWorkbench.startsGroup)
+}
+
+/// Every other block -- which is almost every block -- has no Request group at all. Nothing is
+/// greyed out: an action that cannot apply is absent, not offered and refused.
+@Test func plainBlocksDoNot() {
+    let h = block(region()).header(now: 100, folding: OutputFolding(), notifyArmed: false,
+                                   anyFolds: false, hasOutput: true)
+    #expect(!h.isHTTP)
+    #expect(!h.actions.contains { $0.action == .openInWorkbench })
+    #expect(!h.actions.contains { if case .copyAs = $0.action { return true } else { return false } })
+    #expect(!h.actions.contains { $0.action == .saveAsButton })
+    #expect(!h.actions.contains { $0.action == .saveToProject })
+}
+
+@Test func theRequestActionsAreTitledForAMenu() {
+    #expect(BlockAction.openInWorkbench.title == "Open in Workbench\u{2026}")
+    #expect(BlockAction.copyAs(.httpie).title == "Copy as HTTPie")
+    #expect(BlockAction.copyAs(.fetch).title == "Copy as JavaScript fetch")
+    #expect(BlockAction.copyAs(.pythonRequests).title == "Copy as Python requests")
+    #expect(BlockAction.copyAs(.go).title == "Copy as Go")
+    #expect(BlockAction.saveAsButton.title == "Save as Button\u{2026}")
+    #expect(BlockAction.saveToProject.title == "Save to Project\u{2026}")
+}

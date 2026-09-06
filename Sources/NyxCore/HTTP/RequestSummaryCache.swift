@@ -39,6 +39,19 @@ public struct RequestSummaryCache: Equatable {
 
     public func entry(for id: UInt32) -> Entry? { entries[id] }
 
+    /// Whether this block's command was a `curl`, from what was found when it was read -- the bool
+    /// behind `BlockHeader.isHTTP` and the ⋯ menu's Request group.
+    ///
+    /// Read from the cache rather than decided again, because deciding it means building the
+    /// command line out of the grid and parsing it, and the menu is built on a click while the
+    /// header is built sixty times a second. False for a block nobody has read yet -- one still
+    /// running, or one whose prompt row has never been on screen -- which is the honest answer:
+    /// nothing has looked at it.
+    public func isRequest(id: UInt32) -> Bool {
+        if case .request = entries[id] { return true }
+        return false
+    }
+
     public mutating func remember(_ entry: Entry, for id: UInt32) { entries[id] = entry }
 
     /// Drops everything the buffer has evicted. Command ids only ever increase, so `oldest` is a

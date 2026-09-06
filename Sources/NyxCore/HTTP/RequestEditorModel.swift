@@ -537,6 +537,20 @@ public struct RequestEditorModel: Equatable {
         "\(command.effectiveMethod) \(command.url.host)\(command.url.path)"
     }
 
+    /// The button this request would be saved as, before the user gets to rename it.
+    ///
+    /// `copyLine`, not `runLine`: a quick action is a command a person will read in their config
+    /// file and may well run outside Nyx, so it is the request as they wrote it rather than the
+    /// request with the workbench's own `-sS -i -w` measurement flags welded on. `.send`, because a
+    /// request is a thing you run once and watch, not a background toggle.
+    ///
+    /// Here rather than in the sheet because two surfaces now save a button -- the workbench's Save
+    /// menu and a block's ⋯ menu -- and a name suggested one way in one of them is exactly the kind
+    /// of difference nobody notices until a user has two buttons for one request.
+    public var quickActionDraft: QuickAction {
+        QuickAction(name: suggestedActionName, kind: .send, command: copyLine)
+    }
+
     /// A blank request, which is what the New Request action opens: `curl https://` with the
     /// caret in the URL field.
     public static func newRequest() -> RequestEditorModel {

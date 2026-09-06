@@ -193,6 +193,21 @@ enum UISnapshot {
                       into: directory, background: palette.background)
             }
         }
+        // The pill over the row it is really drawn on, in both themes: what a user sees a moment
+        // after pasting a `curl`. Pictured with the command in front of it because the whole
+        // question about this chrome is whether it reads as part of the line or as something
+        // floating over it -- a pill on an empty background answers neither.
+        write(workbenchHintRow(palette: palette, .darkAqua), named: "workbench-hint-dark",
+              into: directory, background: palette.background)
+        if let lightPalette = Themes.builtin["nyx-light"] {
+            write(workbenchHintRow(palette: lightPalette, .aqua), named: "workbench-hint-light",
+                  into: directory, background: lightPalette.background)
+        }
+        // The case the placement rule was changed for: a command line so long that no row of it has
+        // four free columns, hovered. The minimal strip goes over the tail rather than nowhere, and
+        // this is the picture of exactly how much of the command that costs.
+        write(longCommandStrip(palette: palette), named: "block-header-long-command-dark",
+              into: directory, background: palette.background)
         // The two narrower strips. A crowded command line leaves no room for a 20-column strip, and
         // one drawn anyway covers the end of the command it describes -- so the summary goes first
         // and then Copy, and the ⋯ menu and the chevron, which between them reach every action,
@@ -470,6 +485,69 @@ enum UISnapshot {
             textView.layoutManager?.ensureLayout(for: textView.textContainer!)
         }
         return view
+    }
+
+    /// One row of the grid, drawn the way the pane draws it: the terminal's font, the theme's
+    /// foreground, one cell row tall and `columns` cells wide. What the floating chrome below sits
+    /// on, so the pictures show contrast against the text rather than against nothing.
+    private static func gridRow(palette: Palette, text: String, columns: Int) -> (NSView, CGFloat) {
+        let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let cell = ceil(font.ascender - font.descender + font.leading)
+        let advance = ("M" as NSString).size(withAttributes: [.font: font]).width
+        let width = advance * CGFloat(columns)
+        let row = NSView(frame: NSRect(x: 0, y: 0, width: width, height: cell))
+        let label = NSTextField(labelWithString: text)
+        label.font = font
+        label.textColor = nsColor(palette.foreground, alpha: 1)
+        label.lineBreakMode = .byClipping
+        label.frame = NSRect(x: 0, y: 0, width: width, height: cell)
+        row.addSubview(label)
+        return (row, cell)
+    }
+
+    /// `⌘E Workbench` where it is really placed: right-aligned on the last row of a command that
+    /// leaves room for it.
+    private static func workbenchHintRow(palette: Palette, _ appearance: NSAppearance.Name) -> NSView {
+        let (row, cell) = gridRow(palette: palette,
+                                  text: "curl -sS https://api.example.com/v1/users?page=2",
+                                  columns: 64)
+        row.appearance = NSAppearance(named: appearance)
+        let pill = WorkbenchHintView(frame: NSRect(x: 0, y: 0, width: 120, height: cell))
+        pill.appearance = NSAppearance(named: appearance)
+        pill.update(text: WorkbenchHint.text(chord: "\u{2318}E"), palette: palette)
+        let width = pill.intrinsicContentSize.width
+        pill.frame = NSRect(x: row.bounds.width - width, y: 0, width: width, height: cell)
+        pill.layoutSubtreeIfNeeded()
+        row.addSubview(pill)
+        return row
+    }
+
+    /// The hover strip on a command line with no room anywhere: the ⋯ and the chevron over the tail
+    /// of the last row. The command is a real 219-character `curl` at 80 columns, which is the case
+    /// the fallback exists for -- a request run from the workbench is long by construction.
+    private static func longCommandStrip(palette: Palette) -> NSView {
+        let header = BlockHeader(id: 7, state: .finished, folded: false, hasOutput: true,
+                                 anyFolds: false, notifyArmed: false, summary: "",
+                                 httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json",
+                                                          tone: .success),
+                                 isHTTP: true)
+        // Exactly 80 characters: the row is *full*, which is the only condition under which the
+        // strip is placed over text at all. A shorter line here would picture the case that was
+        // never in question.
+        let (row, cell) = gridRow(
+            palette: palette,
+            text: "-H 'content-type: application/json' -d '{\"name\":\"ada\",\"role\":\"admin\"}' -u ada:s3",
+            columns: 80)
+        row.appearance = NSAppearance(named: .darkAqua)
+        let strip = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: cell))
+        strip.appearance = NSAppearance(named: .darkAqua)
+        strip.update(header: header, controls: .minimal, palette: palette,
+                     font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+        let width = strip.intrinsicContentSize.width
+        strip.frame = NSRect(x: row.bounds.width - width, y: 0, width: width, height: cell)
+        strip.layoutSubtreeIfNeeded()
+        row.addSubview(strip)
+        return row
     }
 
     /// `Save as Button…`: the quick-action sheet as the request editor prefills it -- the name it

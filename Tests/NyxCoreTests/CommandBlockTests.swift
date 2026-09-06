@@ -285,12 +285,39 @@ private let stripColumns: [OverlayControls: Int] = [.full: 20, .noCopy: 8, .mini
     #expect(placement == OverlayPlacement(row: 4, controls: .minimal))
 }
 
-/// One free column fits no strip at all, and no strip is drawn -- the Metal chevron and the gutter
-/// mark are what fold the block there.
-@Test func aRowWithNoRoomGetsNoStrip() {
+/// One free column fits no strip anywhere, and the strip goes over the tail of the last row
+/// anyway: hovering is a deliberate act, four covered cells last only while the pointer is there,
+/// and a command with *no* free column is exactly the long pasted `curl` whose ⋯ menu carries the
+/// whole Request group. The static summary still gives way rather than painting over the text.
+@Test func aRowWithNoRoomGetsTheMinimalStripOverItsTail() {
     let placement = CommandBlockChrome.overlayPlacement(
         commandRows: [(absoluteRow: 4, lastUsedColumn: 38)], stripColumns: stripColumns, cols: 40)
+    #expect(placement == OverlayPlacement(row: 4, controls: .minimal))
+}
+
+/// The last row of the command, not the first: that is where the eye is, and it is the row the
+/// summary would have used if there had been room.
+@Test func theOverlayFallsBackOntoTheLastRowOfALongCommand() {
+    let placement = CommandBlockChrome.overlayPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 39), (absoluteRow: 5, lastUsedColumn: 39),
+                      (absoluteRow: 6, lastUsedColumn: 37)],
+        stripColumns: stripColumns, cols: 40)
+    #expect(placement == OverlayPlacement(row: 6, controls: .minimal))
+}
+
+/// A pane narrower than the smallest strip is the one case that still gets nothing: a strip wider
+/// than the pane would hang off the left edge, and the gutter mark, ⌘⇧↑ and the right-click menu
+/// all still reach the block.
+@Test func aPaneNarrowerThanTheStripGetsNoStrip() {
+    let placement = CommandBlockChrome.overlayPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 2)], stripColumns: stripColumns, cols: 3)
     #expect(placement == nil)
+}
+
+/// And a command with no rows on screen has nowhere to put one.
+@Test func noCommandRowsMeansNoStrip() {
+    #expect(CommandBlockChrome.overlayPlacement(commandRows: [], stripColumns: stripColumns,
+                                                cols: 40) == nil)
 }
 
 /// A wrapped command whose last row is full: the strip goes up to the row that has room rather than

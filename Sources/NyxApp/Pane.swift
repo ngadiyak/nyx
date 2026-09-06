@@ -99,6 +99,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private let remoteStrip = RemoteStripView(frame: .zero)
     /// The hovered block's Copy/⋯/chevron strip, drawn over its command row the same way.
     private let blockHeader = BlockHeaderView(frame: .zero)
+    /// `⌘E Workbench`, at the end of a `curl` that has just been pasted. See `WorkbenchHint`.
+    private let workbenchHint = WorkbenchHintView(frame: .zero)
     /// The prompt row the strip currently names, for its click.
     private var stickyPromptRow: Int?
     /// Which commands' output is collapsed. Empty for almost every pane that ever exists, which is
@@ -134,6 +136,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// How much of the hover strip fits on the row it was placed on. Decided in `render()` by
     /// `CommandBlockChrome.overlayPlacement`; applied after the lock, where AppKit lives.
     private var hoverOverlayControls: OverlayControls = .full
+    /// The `curl` a paste has just put on the command line, and the clock reading at which its pill
+    /// stops being offered. Nil for every pane that has never had one pasted into it, which is the
+    /// state that costs nothing per frame.
+    private var hintCommand: String?
+    private var hintExpiry: Double = 0
+    /// Fires once, when the pill's welcome runs out: nothing else would ask for the redraw that
+    /// takes it off an otherwise idle screen.
+    private var hintTimer: Timer?
     /// Ticks once a second while a running command's row is on screen, so its elapsed time moves.
     private var runningTimer: Timer?
     /// Whether a command was running at the last check, to notice the moment a new one starts.
@@ -208,6 +218,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         blockHeader.onAction = { [weak self] action, id in self?.perform(action, on: id) }
         blockHeader.onToggleFold = { [weak self] id, full in self?.toggleFold(ofCommand: id, full: full) }
         addSubview(blockHeader)
+        workbenchHint.onPress = { [weak self] in self?.openWorkbenchFromHint() }
+        addSubview(workbenchHint)
         if let remote {
             remoteStrip.onButton = { [weak self] in self?.remoteStripButtonPressed() }
             addSubview(remoteStrip)
@@ -768,6 +780,92 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// line for.
     private static let requestOutputRowLimit = 20_000
 
+    /// Where the `⌘E Workbench` pill goes this frame and what it says, or nil for no pill.
+    ///
+    /// Three questions, in the order that makes the common case free: is one armed at all (nothing
+    /// is, in every pane nobody has pasted a `curl` into), is the line still worth offering it for,
+    /// and is there anywhere to put it. The middle one asks `WorkbenchHint` about what is on the
+    /// command line *now* rather than about the text that armed it, so backspacing the `curl` away
+    /// takes the pill with it.
+    ///
+    /// Placed by `CommandBlockChrome.overlayPlacement`, the same ladder the hover strip uses,
+    /// against the rows of the command line rather than of a block: the first row from the bottom
+    /// with room, and -- because a `curl` worth a workbench usually fills every row it touches --
+    /// the tail of the last row when none has any.
+    private func workbenchHintPlacement(in t: Terminal, lines: [Row], cellWidth: Double,
+                                        screenRow: (Int) -> Int?) -> (slot: Int, text: String)? {
+        guard let armed = hintCommand, Date.timeIntervalSinceReferenceDate < hintExpiry,
+              cellWidth > 0 else { return nil }
+        // With shell integration the line itself is the authority, and `currentInput` going nil --
+        // the command was run, or the line was cleared -- takes the pill with it. Without it there
+        // is nothing to read back, and the text that was pasted a moment ago is the best thing
+        // known about the line.
+        let line = t.shellEmitsPromptMarks ? t.currentInput : armed
+        guard let line, WorkbenchHint.shouldShow(commandLine: line, hintEnabled: config.httpHint,
+                                                 altScreen: t.modes.altScreen) else { return nil }
+        let cursorRow = t.scrollback.count + t.screen.cursor.y
+        let firstRow = min(t.currentInputStart?.row ?? cursorRow, cursorRow)
+        var candidates: [(absoluteRow: Int, lastUsedColumn: Int)] = []
+        var slotOf: [Int: Int] = [:]
+        for absolute in firstRow...cursorRow {
+            guard let slot = screenRow(absolute), slot < lines.count else { continue }
+            slotOf[absolute] = slot
+            var last = -1
+            for (column, cell) in lines[slot].cells.enumerated() where cell.content != 0 { last = column }
+            candidates.append((absoluteRow: absolute, lastUsedColumn: last))
+        }
+        // The chord as the palette writes it, from the table this pane matches keys against: `⌘E`
+        // is a default, and a config that has moved it must not be told to press it.
+        let text = WorkbenchHint.text(chord: bindings.binding(for: .editAndRunCommand)?.displayName ?? "")
+        let columns = Int((workbenchHint.width(for: text) / cellWidth).rounded(.up))
+        guard let placement = CommandBlockChrome.overlayPlacement(commandRows: candidates,
+                                                                  stripColumns: [.minimal: columns],
+                                                                  cols: t.cols),
+              let slot = slotOf[placement.row] else { return nil }
+        return (slot: slot, text: text)
+    }
+
+    /// Offers the workbench for a `curl` that has just been pasted, for `WorkbenchHint.seconds`.
+    ///
+    /// Armed from the paste rather than from the shell's echo: the paste is the moment we know a
+    /// request arrived, and waiting to recognise it in the grid would mean recognising every line
+    /// the user types by hand as well -- a pill that appears while you are still typing a command
+    /// is chrome nobody asked for.
+    private func armWorkbenchHint(for text: String) {
+        guard config.httpHint, !text.isEmpty, CurlDetection.isCurl(text) else { return }
+        guard !session.withTerminal({ $0.modes.altScreen }) else { return }
+        hintCommand = text
+        hintExpiry = Date.timeIntervalSinceReferenceDate + WorkbenchHint.seconds
+        hintTimer?.invalidate()
+        // Half a second past the deadline, so the frame this asks for is one where the pill has
+        // certainly expired rather than one racing it.
+        hintTimer = Timer.scheduledTimer(withTimeInterval: WorkbenchHint.seconds + 0.5, repeats: false) {
+            [weak self] _ in self?.dismissWorkbenchHint()
+        }
+        markDirty()
+    }
+
+    /// Takes the pill away: a key press, the deadline, or the workbench having been opened.
+    private func dismissWorkbenchHint() {
+        guard hintCommand != nil else { return }
+        hintCommand = nil
+        hintTimer?.invalidate()
+        hintTimer = nil
+        markDirty()
+    }
+
+    /// The pill was clicked: the line it is sitting on, in the workbench.
+    ///
+    /// The line as the shell has it, falling back to the text that armed the pill -- without shell
+    /// integration there is no `currentInput` to read, and the pasted text is what is on the line.
+    private func openWorkbenchFromHint() {
+        let typed: String? = session.withTerminal { $0.currentInput }
+        let line = typed ?? hintCommand
+        dismissWorkbenchHint()
+        guard let line, !line.isEmpty else { return }
+        editCurrentInput(line)
+    }
+
     private func render() {
         // Asked before the frame is built, not after: while an application is inside a synchronised
         // update (DECSET 2026) the frame would be thrown away, and building one walks the grid, the
@@ -796,6 +894,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         var summaries: [(row: Int, text: String, color: RGB)] = []
         var sticky: (text: String, failed: Bool, row: Int, summary: String, tone: SummaryTone)?
         var anyRunningOnScreen = false
+        // Where the workbench pill goes this frame and what it says, or nil for no pill. Decided
+        // under the lock with the rest of the chrome, applied after it.
+        var hint: (slot: Int, text: String)?
         // Set under the lock, acted on after it: the overlay and the cursor rects are AppKit calls.
         var hoverChanged = false
         // What the buffer looked like when the frame was built. The dirty flags are cleared against
@@ -1035,11 +1136,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let cellWidth = self.cellSizePoints.width
             summaries = blocks.compactMap { block -> (row: Int, text: String, color: RGB)? in
                 guard block.showsHeader, let promptSlot = screenRow(block.region.promptRow) else { return nil }
+                // In this order: reading the block is what puts "was this a request" in the cache,
+                // and `isRequest` is that cached answer rather than a second parse of the grid.
+                let httpSummary = self.requestSummary(for: block, in: t)
                 let header = block.header(now: now, folding: self.folding,
                                           notifyArmed: self.armedNotifications.contains(block.region.id),
                                           anyFolds: !self.folding.isEmpty,
                                           hasOutput: t.commandHasOutput(atAbsoluteRow: block.region.promptRow),
-                                          httpSummary: self.requestSummary(for: block, in: t))
+                                          httpSummary: httpSummary,
+                                          isHTTP: self.requestCache.isRequest(id: block.region.id))
                 let text = header.summaryWithChevron
                 // Every row of the command line is a candidate, not just the prompt row: a pasted
                 // `curl` wraps, and the row that has room is usually the last one.
@@ -1134,6 +1239,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             for row in notesSpokenFor where notes.indices.contains(row) {
                 notes[row] = nil
             }
+            // The pill over the command line the user is typing at. Not gated on `chromeAllowed`:
+            // it belongs to the line rather than to a block, so it appears in a shell with no
+            // integration at all -- where there are no blocks and never will be -- and its own rule
+            // (`WorkbenchHint.shouldShow`) keeps it off the alternate screen.
+            hint = self.workbenchHintPlacement(in: t, lines: lines, cellWidth: cellWidth,
+                                               screenRow: screenRow)
             // Same pass, same lock, same viewport: the strip names the command whose output is on
             // screen *in this frame*, and reading it anywhere else would let the two disagree.
             // Costs one flag test for a shell with no integration, which is the whole reason
@@ -1191,6 +1302,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // `update` compares before it applies, so redrawing here every frame is cheap. `frame.palette`
         // was already read under the lock this frame; passing it on saves a second lock take.
         blockHeaderChanged(palette: frame.palette)
+        let hintWasHidden = workbenchHint.isHidden
+        workbenchHint.update(text: hint?.text, palette: frame.palette)
+        if let hint {
+            let size = workbenchHint.intrinsicContentSize
+            let origin = overlayOrigin(forHeaderRow: hint.slot)
+            workbenchHint.frame = NSRect(x: origin.x - size.width, y: origin.y,
+                                         width: size.width, height: cellSizePoints.height)
+        }
+        // The pill claims the pointer only while it is up, so appearing or disappearing changes
+        // which view owns the cell it covers -- and with it, whether the I-beam or the arrow shows.
+        if hintWasHidden != workbenchHint.isHidden { window?.invalidateCursorRects(for: self) }
         // Only when the block under the pointer actually changed: rebuilding cursor rects asks
         // AppKit to re-run `resetCursorRects` for the view, which is not free per frame.
         if hoverChanged { updateHoverCursor() }
@@ -1253,6 +1375,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
+        // Any key at all takes the workbench pill away, including the ⌘E it is advertising: the
+        // offer has been read, and chrome that outstays an answer is worse than chrome that was
+        // never shown. Before the action dispatch below, so the pill is gone whichever way the key
+        // is dealt with.
+        dismissWorkbenchHint()
         // A tab whose session ended on the host, or whose attach never happened, will never show
         // another byte. The first key closes it -- what "press any key to continue" has always
         // meant -- and the key is swallowed rather than handed on to whatever tab comes next.
@@ -1756,10 +1883,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 guard let row = t.promptRow(ofCommand: id),
                       let region = t.command(containingAbsoluteRow: row) else { return nil }
                 let block = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
+                // Read here as well as in `render`, because a right-click reaches blocks the frame
+                // never built a header for: one whose prompt row is scrolled off the top still has
+                // every output row under the pointer, and its Request group has to be there.
+                let httpSummary = self.requestSummary(for: block, in: t)
                 return block.header(now: t.now(), folding: self.folding,
                                     notifyArmed: self.armedNotifications.contains(id),
                                     anyFolds: !self.folding.isEmpty,
-                                    hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow))
+                                    hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow),
+                                    httpSummary: httpSummary,
+                                    isHTTP: self.requestCache.isRequest(id: id))
             }
             if let header {
                 for (index, entry) in header.actions.enumerated() {
@@ -2694,10 +2827,66 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             send(Array((command + "\r").utf8))
         case .editAndRun:
             if !editAndRunCommand(atAbsoluteRow: region.promptRow) { NSSound.beep() }
+        case .openInWorkbench:
+            guard let command = requestCommand(of: region) else { NSSound.beep(); return }
+            if !presentRequestEditor(command: command, then: { [weak self] line in
+                self?.runFromWorkbench(line)
+            }) { NSSound.beep() }
+        case .copyAs(let format):
+            guard let command = requestCommand(of: region) else { NSSound.beep(); return }
+            copyToPasteboard(RequestExport.render(command, as: format))
+        case .saveAsButton:
+            guard let command = requestCommand(of: region) else { NSSound.beep(); return }
+            // The same path the workbench's own `Save as Button…` takes: the sheet names it, and
+            // the list goes back through the config file so the button appears in every window.
+            if !presentQuickActionEditor(for: command, then: { action in
+                let delegate = NSApp.delegate as? AppDelegate
+                delegate?.setQuickActions((delegate?.quickActions ?? []) + [action])
+            }) { NSSound.beep() }
+        case .saveToProject:
+            guard let command = requestCommand(of: region) else { NSSound.beep(); return }
+            if !presentQuickActionEditor(for: command, then: { [weak self] action in
+                self?.appendToProjectFile("quick = " + action.configValue)
+            }) { NSSound.beep() }
         case .toggleFold: toggleFold(ofCommand: id, full: NSEvent.modifierFlags.contains(.option))
         case .toggleFoldAll: _ = foldAllLongOutput()
         case .notifyWhenDone(let armed): setNotification(armed: !armed, forCommand: id)
         }
+    }
+
+    /// The request a block ran, parsed, or nil when its command line is not one.
+    ///
+    /// Re-parsed here rather than kept in the cache beside the exchange: this runs on a menu press,
+    /// not per frame, and holding a whole `CurlCommand` per block on screen to save one parse on a
+    /// click nobody may ever make is the wrong trade. Nil only when the grid no longer holds the
+    /// command the menu was built from -- a `clear` between opening the menu and choosing from it.
+    private func requestCommand(of region: CommandRegion) -> CurlCommand? {
+        CurlCommand.parse(session.withTerminal { $0.commandLine(of: region) })
+    }
+
+    /// The button sheet, prefilled from a request, on this pane's window.
+    ///
+    /// A sheet window rather than `presentAsSheet` for the reason `presentCommandEditor` sets out:
+    /// a pane is a view, so there is no presenting controller, and a window retains a content view
+    /// controller but not the controller behind a bare content view.
+    @discardableResult
+    private func presentQuickActionEditor(for command: CurlCommand,
+                                          then keep: @escaping (QuickAction) -> Void) -> Bool {
+        guard let window else { return false }
+        let editor = QuickActionEditor(editing: RequestEditorModel(command: command).quickActionDraft)
+        let size = editor.view.frame.size == .zero ? NSSize(width: 420, height: 260) : editor.view.frame.size
+        let sheet = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                             styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        sheet.contentViewController = editor
+        sheet.titlebarAppearsTransparent = true
+        sheet.isReleasedWhenClosed = false
+        editor.onFinish = { [weak window, weak sheet] action in
+            if let sheet { window?.endSheet(sheet) }
+            guard let action else { return }
+            keep(action)
+        }
+        window.beginSheet(sheet) { _ in }
+        return true
     }
 
     private func copyToPasteboard(_ text: String) {
@@ -2859,6 +3048,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         bytes += Array(normalised.utf8)
         if bracketed { bytes += Array("\u{1B}[201~".utf8) }
         send(bytes)
+        // Every paste passes through here -- ⌘V, the middle button, the confirmation sheet, the
+        // command editor and the workbench itself -- so this is the one place that can notice a
+        // request arriving on the command line.
+        armWorkbenchHint(for: text)
     }
 
     /// A sheet, never a modal alert: `runModal()` stops the run loop and with it every session in
@@ -2938,17 +3131,52 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     /// Edits the text already on the command line, then replaces it with the result.
+    ///
+    /// A `curl` gets the workbench and everything else gets the plain editor. That is the whole
+    /// routing rule, and it is the same one `pasteWithEditor` and `editAndRun` follow: one chord,
+    /// two sheets, chosen by what the line actually is rather than by which menu item was used.
     private func editCurrentInput(_ text: String) {
+        dismissWorkbenchHint()
+        if let command = CurlCommand.parse(text),
+           presentRequestEditor(command: command, then: { [weak self] line in
+               // The line on screen is the one being replaced, so it goes before the new one is
+               // typed. `^E` then `^U` covers both common line editors: zsh's `^U` kills the whole
+               // line, bash's kills back from the cursor, so moving to the end first makes them
+               // agree.
+               self?.send([0x05, 0x15])
+               self?.runFromWorkbench(line)
+           }) {
+            return
+        }
         presentCommandEditor(text: text, heading: "Edit the command line", runTitle: "Run") {
             [weak self] edited in
             guard let self else { return }
-            // Clear what is there before writing the replacement. `^E` then `^U` covers both of the
-            // common line editors: zsh's `^U` kills the whole line, bash's kills back from the
-            // cursor, so moving to the end first makes them agree.
             self.send([0x05, 0x15])
             let bracketed = self.session.withTerminal { $0.modes.bracketedPaste }
             self.performPaste(edited, bracketed: bracketed)
         }
+    }
+
+    /// Runs what the workbench finished with, and remembers it.
+    ///
+    /// A bracketed paste and then a separate `\r`, rather than a line ending in one: a request line
+    /// is long and often has quoted newlines in its body, and inside the brackets the shell takes
+    /// the whole thing as text instead of running it a fragment at a time. The `\r` outside them is
+    /// what submits it.
+    ///
+    /// Recorded here as well as when the block finishes, because these are different guarantees: a
+    /// pane with no shell integration has no blocks and would otherwise never write a request to
+    /// the history at all. `RequestHistory.record` dedups on the parsed request, so a run that is
+    /// recorded twice is one row either way.
+    private func runFromWorkbench(_ line: String) {
+        guard !line.isEmpty else { return }
+        let bracketed = session.withTerminal { $0.modes.bracketedPaste }
+        performPaste(line, bracketed: bracketed)
+        send([0x0D])
+        // `performPaste` arms the pill for any pasted curl; this one is already running, and a pill
+        // offering to edit a line that has left the prompt would point at nothing.
+        dismissWorkbenchHint()
+        (NSApp.delegate as? AppDelegate)?.requests?.record(line)
     }
 
     /// `⌘⇧V`: paste, but look at it first. The plain paste path deliberately does not interrupt a
@@ -2960,6 +3188,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty,
               acceptsInput else {
             return false
+        }
+        dismissWorkbenchHint()
+        // A `curl` on the pasteboard is a request, and a request has a better editor than a text
+        // box. Everything else pastes through the plain one exactly as it always did.
+        if let command = CurlCommand.parse(text),
+           presentRequestEditor(command: command, then: { [weak self] line in
+               self?.runFromWorkbench(line)
+           }) {
+            return true
         }
         let bracketed = session.withTerminal { $0.modes.bracketedPaste }
         presentCommandEditor(text: text, heading: "Edit before pasting", runTitle: "Paste") {
@@ -2995,9 +3232,19 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// The same editor, on a line that did not come from this pane's scrollback -- a row of the
     /// palette's Requests section, which may well have been run in another tab.
+    ///
+    /// A request goes to the workbench, which is what makes a palette row of a `curl` open as a
+    /// form: every row of that section is one by construction, since nothing else is ever recorded.
     @discardableResult
     func editAndRun(command: String) -> Bool {
         guard !command.isEmpty else { return false }
+        dismissWorkbenchHint()
+        if let parsed = CurlCommand.parse(command),
+           presentRequestEditor(command: parsed, then: { [weak self] line in
+               self?.runFromWorkbench(line)
+           }) {
+            return true
+        }
         return presentCommandEditor(text: command, heading: "Edit and run", runTitle: "Run") {
             [weak self] edited in
             guard let self else { return }
@@ -3008,19 +3255,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
     }
 
-    /// `new_request`: opens the command editor pre-filled with `curl `, ready for a URL and flags.
-    ///
-    /// Task 9 replaces this with the request editor -- a form for the method, headers and body,
-    /// not a text box that happens to start with the word `curl`. Until then this is the one path
-    /// that actually starts a request from nothing, so it goes through the same editor and the
-    /// same run path as every other command rather than being a dead menu item.
+    /// `new_request`: the workbench on a blank request -- `curl https://`, with the form waiting
+    /// for a URL, headers and a body.
     @discardableResult
     func newRequest() -> Bool {
-        return presentCommandEditor(text: "curl ", heading: "New request", runTitle: "Run") {
-            [weak self] edited in
-            guard let self else { return }
-            let bracketed = self.session.withTerminal { $0.modes.bracketedPaste }
-            self.performPaste(edited, bracketed: bracketed)
+        dismissWorkbenchHint()
+        return presentRequestEditor(command: RequestEditorModel.newRequest().command) {
+            [weak self] line in self?.runFromWorkbench(line)
         }
     }
 

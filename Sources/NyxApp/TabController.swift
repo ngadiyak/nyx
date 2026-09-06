@@ -945,7 +945,8 @@ final class TabController: NSViewController, NSMenuItemValidation {
                 NSSound.beep()
                 return
             }
-            // Task 9 replaces this with the request editor.
+            // Opens the workbench: every line in this section parsed as a `curl` on the way in, so
+            // `editAndRun` routes all of them to the form rather than to the plain text box.
             if !pane.editAndRun(command: line) { NSSound.beep() }
         }
     }
@@ -1500,7 +1501,6 @@ extension TabController: ActionTarget {
         case .saveCommandOutput: if focusedPane?.saveLastCommandOutput() != true { NSSound.beep() }
         case .notifyWhenDone: if focusedPane?.armNotificationForRunningCommand() != true { NSSound.beep() }
         case .saveScrollback: saveScrollback()
-        // Task 9 replaces this with the request editor.
         case .newRequest: if focusedPane?.newRequest() != true { NSSound.beep() }
 
         case .copy: focusedPane?.copy(nil)
@@ -1592,10 +1592,11 @@ extension TabController: ActionTarget {
             // Only on a remote pane that is observing. On a local pane, or one already writing,
             // there is nothing to take.
             return focusedPane?.remote?.state.stripAction == .takeControl
-        // `newRequest`, `toggleHTTPLens` and `stopWatch` fall through to here rather than getting
-        // their own case: real state to gate on -- a shown response, a running watch -- arrives
-        // with the response plan. Until then they are enabled whenever any other pane-scoped
-        // action is, which is a tracked gap, not an oversight.
+        // `newRequest` falls through to here and is right to: a blank request needs nothing to
+        // exist but a pane to run it in. `toggleHTTPLens` and `stopWatch` fall through because the
+        // state they would gate on -- a shown response, a running watch -- arrives with the
+        // response plan; until then they are enabled whenever any other pane-scoped action is,
+        // which is a tracked gap, not an oversight.
         default:
             return focusedPane != nil
         }

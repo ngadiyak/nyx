@@ -726,10 +726,9 @@ final class RequestEditor: NSViewController {
     }
 
     /// The button this request would be saved as, prefilled the way `Save as Button…` prefills it.
-    /// One place, so the sheet and its picture cannot disagree.
-    func quickActionDraft() -> QuickAction {
-        QuickAction(name: model.suggestedActionName, kind: .send, command: model.copyLine)
-    }
+    /// The rule is `RequestEditorModel.quickActionDraft`, so this sheet, a block's ⋯ menu and the
+    /// snapshot of the sheet cannot suggest three different names for one request.
+    func quickActionDraft() -> QuickAction { model.quickActionDraft }
 
     private func finishWatch(_ plan: WatchPlanRequest) {
         onWatch?(plan)

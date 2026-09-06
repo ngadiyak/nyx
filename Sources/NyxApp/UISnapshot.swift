@@ -402,8 +402,9 @@ enum UISnapshot {
         // differs is that bug coming back.
         for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
             let cell = ceil(defaultFont.ascender - defaultFont.descender + defaultFont.leading)
-            // The shipping width: the gutter takes at most `PromptGutter.maximumWidth` of the
-            // pane's own padding, so a wider picture would flatter marks that are really 6 points.
+            // The shipping width at the default padding, which is the *hit area*. The capsule
+            // inside it is `PromptGutter.markWidth` wherever the gutter is wider, so this picture
+            // shows both: how big the target is, and how big the mark in it looks.
             let width = CGFloat(PromptGutter.width(padding: Double(8)))
             let gutter = PromptGutterView(frame: NSRect(x: 0, y: 0, width: width, height: cell * 4))
             gutter.appearance = NSAppearance(named: appearance)

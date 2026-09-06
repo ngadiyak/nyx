@@ -58,13 +58,31 @@ public enum GutterMarkLabel {
 /// overlaps a glyph. That makes its width a function of the padding setting, which is the sort of
 /// rule that is quietly wrong in a view until someone sets `padding = 0` -- so it is here.
 public enum PromptGutter {
-    /// As wide as a mark needs and no wider; the rest of the padding stays padding.
-    public static let maximumWidth: Double = 6
+    /// How much of the padding the gutter may take. This is the **hit area**, not the mark: the
+    /// mark is `markWidth` points wide wherever the gutter is wider than that.
+    ///
+    /// It was six, which is the width of the capsule plus its inset -- a five-point target for a
+    /// pointer, and the owner's report was exactly that: the dots are hard to click. Fourteen is
+    /// still inside the padding (`width` never returns more than the padding it is given, so a pane
+    /// at the default eight is unchanged in every way but this) and the extra width is empty space
+    /// on the *text* side, which is where a pointer reaching for a dot overshoots to.
+    public static let maximumWidth: Double = 14
+    /// The capsule that is actually drawn, and its inset from the gutter's leading edge. Separate
+    /// from `maximumWidth` so that widening the target cannot move or fatten the picture.
+    public static let markWidth: Double = 4
+    public static let markInset: Double = 1
     /// Below this there is not enough room to draw a mark without it touching the text.
     public static let minimumPadding: Double = 4
 
     public static func width(padding: Double) -> Double {
         padding >= minimumPadding ? min(padding, maximumWidth) : 0
+    }
+
+    /// Where the capsule goes inside a gutter of `gutterWidth` points: always the same place and
+    /// the same size, however much room the hit area has. A gutter too narrow for the whole
+    /// capsule draws what fits rather than overflowing into the first column of text.
+    public static func markRect(gutterWidth: Double) -> (x: Double, width: Double) {
+        (markInset, min(markWidth, max(0, gutterWidth - markInset * 2)))
     }
 
     /// The visible row a point falls on, measured from the top of the pane including its padding.

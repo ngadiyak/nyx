@@ -75,3 +75,47 @@ private func exchange(status: Int) -> HTTPExchange? {
     #expect(cache.isEmpty == false)
     #expect(RequestSummaryCache().isEmpty)
 }
+
+// MARK: - Which blocks reach the history
+
+/// A request is recorded when it is *run*, not when it is read. Reading happens again whenever the
+/// cache has been trimmed and the block comes back on screen -- so without this the timestamp of a
+/// request from last Tuesday became "just now" the moment you scrolled back to it, and it jumped
+/// to the top of the palette over things actually run since.
+@Test func aBlockIsOfferedToTheHistoryOnce() {
+    var cache = RequestSummaryCache()
+    let first = cache.shouldRecord(id: 4)
+    #expect(first)
+    let again = cache.shouldRecord(id: 4)
+    #expect(!again)
+}
+
+/// Command ids only ever increase (`prune` relies on the same fact), so an id at or below the
+/// high-water mark names a block that has already had its turn -- whatever the cache has since
+/// forgotten about it.
+@Test func aReParsedBlockIsNotOfferedAgainAfterTheCacheIsTrimmed() {
+    var cache = RequestSummaryCache()
+    for id in UInt32(1)...5 {
+        let offered = cache.shouldRecord(id: id)
+        #expect(offered)
+    }
+    cache.trim(to: 0)
+    cache.prune(olderThan: 100)
+    #expect(cache.isEmpty)
+    let old = cache.shouldRecord(id: 3)
+    #expect(!old)
+    let newest = cache.shouldRecord(id: 6)
+    #expect(newest)
+}
+
+/// Scrolling far enough back to read blocks in any order still records nothing twice: the mark is
+/// the highest id ever offered, not the last one.
+@Test func readingOlderBlocksOutOfOrderOffersNone() {
+    var cache = RequestSummaryCache()
+    let newest = cache.shouldRecord(id: 9)
+    #expect(newest)
+    for id in UInt32(1)...8 {
+        let old = cache.shouldRecord(id: id)
+        #expect(!old)
+    }
+}

@@ -25,6 +25,8 @@ public struct RequestSummaryCache: Equatable {
     }
 
     private var entries: [UInt32: Entry] = [:]
+    /// The highest block id ever offered to the request history. See `shouldRecord`.
+    private var highestRecorded: UInt32 = 0
 
     public init() {}
 
@@ -44,6 +46,21 @@ public struct RequestSummaryCache: Equatable {
     public mutating func prune(olderThan oldest: UInt32) {
         guard !entries.isEmpty else { return }
         entries = entries.filter { $0.key >= oldest }
+    }
+
+    /// Whether this block's command should be written to the request history -- true once per
+    /// block, ever.
+    ///
+    /// Separate from `shouldParse` because the two questions have different answers after a trim:
+    /// a block whose entry has been evicted is read again when it comes back on screen, and
+    /// recording it again would stamp a request from last Tuesday with the time you scrolled past
+    /// it and lift it over everything actually run since. Command ids only ever increase (`prune`
+    /// relies on the same fact, and a terminal `reset` does not restart them), so an id at or
+    /// below the high-water mark names a block that has already had its turn.
+    public mutating func shouldRecord(id: UInt32) -> Bool {
+        guard id > highestRecorded else { return false }
+        highestRecorded = id
+        return true
     }
 
     /// Keeps the `limit` most recent entries.

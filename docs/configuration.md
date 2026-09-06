@@ -166,13 +166,30 @@ shows a bar offering to review the file; approval is recorded against the file's
 edit, or a `git pull` that brings one in, revokes it until you look again. A cloned repository can
 never put a command behind a button on its own.
 
+## The request history
+
+Every curl that finishes in a pane is remembered in `~/.config/nyx/requests` (beside the config;
+`NYX_REQUEST_HISTORY` moves it), and the command palette lists them under the Remote section --
+`GET api.example.com/users`, with how long ago it ran. Choosing one opens it in the editor ready to
+run again.
+
+One request per line, newest first, as `<unix seconds><tab><the command line>`. Re-running a request
+moves its line to the top rather than adding a second one; sameness is what the command *is*, so
+`--silent` and `-s` are one entry. A line that is not a curl with a URL is not kept.
+
+The file is written at mode `0600` and holds the command lines exactly as they ran, credentials
+included -- the same words as your shell history, and for the same reason: what comes back out of
+the palette has to be the request that worked. What the palette *shows* is masked. Fifty requests
+are kept.
+
 ## Environment variables
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `NYX_CONFIG` | app, tests | Path of the config file; the themes directory, `session.json` and `remote/` sit beside it. Two config directories is how two Nyx instances on one Mac get two identities |
+| `NYX_CONFIG` | app, tests | Path of the config file; the themes directory, `session.json`, `requests` and `remote/` sit beside it. Two config directories is how two Nyx instances on one Mac get two identities |
 | `NYX_RELAY_BIN` | tests | Path of the `nyx-relay` binary; the relay integration tests launch it locally and skip without it |
 | `NYX_SESSION` | app | Path of the session file, overriding the one beside the config |
+| `NYX_REQUEST_HISTORY` | app | Path of the request history file, overriding the one beside the config |
 | `NYX_UI_SNAPSHOT=<dir>` | app | Render every piece of chrome to PNGs in `<dir>` and exit. See `docs/testing.md` |
 | `NYX_RENDER_STATS=1` | app | Print row-cache statistics per pane |
 | `NYX_SNAPSHOT=1` | tests | Enable the end-to-end pixel snapshot test |

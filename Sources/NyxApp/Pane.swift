@@ -735,11 +735,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 return nil
             }
             // The one moment a request is known to have been *run*: this block is finished, it is a
-            // curl, and it has not been read before. Recorded here rather than when the command is
-            // typed, because what the user re-runs from the palette must be a line that ran, and
-            // recorded for a failed connection too -- "the deploy call that could not reach the
-            // host" is exactly the one somebody wants back.
-            (NSApp.delegate as? AppDelegate)?.requests?.record(line)
+            // curl, and no block this new has been recorded. Recorded here rather than when the
+            // command is typed, because what the user re-runs from the palette must be a line that
+            // ran, and recorded for a failed connection too -- "the deploy call that could not
+            // reach the host" is exactly the one somebody wants back.
+            //
+            // `shouldRecord` and not `shouldParse`: reading happens again whenever the cache has
+            // been trimmed and the block comes back on screen, and recording it again would stamp
+            // last Tuesday's request with the time you scrolled past it.
+            if requestCache.shouldRecord(id: id) {
+                (NSApp.delegate as? AppDelegate)?.requests?.record(line)
+            }
             // A response big enough to fill the scrollback is not one whose body kind is worth
             // joining into a single string under the session lock. The head and the sentinel are
             // in the first and last rows of it, but reading only those would still walk the whole

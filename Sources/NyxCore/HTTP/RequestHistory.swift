@@ -47,6 +47,11 @@ public struct RequestHistory: Equatable {
     /// Fifty is about a fortnight of ordinary use and a file under 10 KB.
     public static let defaultLimit = 50
 
+    /// How many lines of the file are worth reading to find `limit` requests: enough that a list
+    /// of near-duplicates still fills the palette, few enough that a foreign file cannot stall
+    /// launch.
+    private static let readMultiple = 20
+
     /// Above this, a "line" is not a request anybody typed -- it is a base64 body or a corrupt
     /// file -- and parsing it per row is not worth the scrollback it came from.
     private static let maximumLineLength = 8_192
@@ -81,15 +86,45 @@ public struct RequestHistory: Equatable {
     /// (or by a hand that edited it) comes back deduped and trimmed to the limit in force *now*.
     /// A line whose timestamp is not a number, that has no tab, or whose command is not a curl is
     /// dropped on its own; the rest of the file survives it.
+    ///
+    /// Split on any newline and with the `\r` taken off, because a file that has been through an
+    /// editor or a Windows checkout otherwise comes back with a carriage return welded to the end
+    /// of every command -- which parses as a *different* request each time and quietly turns dedup
+    /// off. Only the newest `limit * 20` lines are read at all: this runs before the first window
+    /// is drawn, and a file that grew unbounded elsewhere must not be a pause at launch.
     public static func parse(_ text: String, limit: Int) -> RequestHistory {
         var history = RequestHistory(limit: limit)
-        for row in text.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
+        let rows = text.split(whereSeparator: \.isNewline)
+        for row in rows.prefix(max(0, limit) * RequestHistory.readMultiple).reversed() {
             guard let tab = row.firstIndex(of: "\t") else { continue }
             guard let seconds = TimeInterval(row[row.startIndex ..< tab]) else { continue }
-            history.record(String(row[row.index(after: tab)...]),
-                           at: Date(timeIntervalSince1970: seconds))
+            var line = String(row[row.index(after: tab)...])
+            while line.hasSuffix("\r") { line.removeLast() }
+            history.record(line, at: Date(timeIntervalSince1970: seconds))
         }
         return history
+    }
+
+    /// A stable handle for an entry, and what a palette row carries instead of its position.
+    ///
+    /// A hash rather than the line itself: a row is passed around, compared and printed, and the
+    /// line it stands for can hold a bearer token or a password in its URL. FNV-1a rather than
+    /// `Hasher`, whose seed changes per process -- an id has to mean the same thing to everything
+    /// that sees it. Two entries can never share one: dedup keeps at most one entry per request.
+    public static func identifier(for line: String) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in line.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100_0000_01b3
+        }
+        return String(hash, radix: 16)
+    }
+
+    /// The line behind a row, or nil when that request is no longer remembered -- trimmed off the
+    /// end while the palette was open, or dropped by a hand edit. The caller says so rather than
+    /// running whatever has taken its place.
+    public func line(for id: String) -> String? {
+        entries.first { RequestHistory.identifier(for: $0.line) == id }?.line
     }
 
     /// The file's contents, ending in a newline. Empty for an empty history, so a store that has
@@ -102,12 +137,19 @@ public struct RequestHistory: Equatable {
 
     /// The palette's Requests section, in `entries` order.
     ///
-    /// `kind` carries the index into `entries`, not the line: the row is a handle, and the caller
-    /// re-reads the real (unmasked) line from the history when it acts on it. Rows are dropped for
-    /// entries that no longer parse -- which a hand-edited file can produce -- and the indices of
-    /// the rest do not shift, so a row never opens the editor on its neighbour.
+    /// `kind` carries an id for the entry, not its position and not its line. Not the position,
+    /// because a curl finishing in another tab while the palette is open moves every row down one
+    /// and the row under the cursor would then run its neighbour's command. Not the line, because
+    /// what a row shows is masked and what it runs must not be, and a row is passed around and
+    /// printed. The caller reads the real line back with `line(for:)`, which says nil when that
+    /// request is no longer remembered. Rows are dropped for entries that no longer parse, which a
+    /// hand-edited file can produce.
+    ///
+    /// `searchText` ends in "request curl" so that either word finds the whole section, the way
+    /// "theme" finds the themes: a palette you can only search by a host you already remember is a
+    /// list, not a search.
     public func paletteItems(now: Date, masking: Masking = .display) -> [PaletteItem] {
-        entries.enumerated().compactMap { index, entry in
+        entries.compactMap { entry in
             guard let command = CurlCommand.parse(entry.line) else { return nil }
             let host = RequestHistory.displayHost(command.url.host, masking: masking)
             let path = command.url.path
@@ -117,8 +159,9 @@ public struct RequestHistory: Equatable {
             // that fits.
             return PaletteItem(title: title,
                                detail: RelativeAge.text(from: entry.at, to: now),
-                               searchText: "\(title) \(host) \(path) \(command.effectiveMethod)",
-                               kind: .request(index: index))
+                               searchText: "\(title) \(host) \(path) \(command.effectiveMethod)"
+                                   + " request curl",
+                               kind: .request(id: RequestHistory.identifier(for: entry.line)))
         }
     }
 

@@ -141,7 +141,8 @@ private func at(_ secondsAgo: TimeInterval) -> Date { epoch.addingTimeInterval(-
     #expect(items.map(\.title) == ["POST api.example.com/v2/deployments",
                                    "GET api.example.com/users"])
     #expect(items.map(\.detail) == ["2 min ago", "2 h ago"])
-    #expect(items.map(\.kind) == [.request(index: 0), .request(index: 1)])
+    #expect(items.map(\.kind) == [.request(id: RequestHistory.identifier(for: history.entries[0].line)),
+                                  .request(id: RequestHistory.identifier(for: history.entries[1].line))])
     // Everything on the row, plus the method and host on their own, so `post deployments` and
     // `example.com` both find it.
     #expect(items[0].searchText.contains("POST"))
@@ -191,15 +192,99 @@ private func at(_ secondsAgo: TimeInterval) -> Date { epoch.addingTimeInterval(-
     #expect(history.paletteItems(now: epoch)[0].title == "GET example.com")
 }
 
-/// The index on the row indexes `entries`, which is what the caller re-runs. A stored line the
-/// palette cannot title must therefore not shift the ones after it.
-@Test func rowIndicesAddressTheEntriesTheyCameFrom() {
+/// Every row resolves to the request it was built from, in the order the list is in.
+@Test func rowsResolveToTheEntriesTheyCameFrom() {
     var history = RequestHistory(limit: 10)
     history.record("curl https://a.example.com/one", at: at(300))
     history.record("curl https://b.example.com/two", at: at(60))
+    let lines = history.paletteItems(now: epoch).compactMap { item -> String? in
+        guard case .request(let id) = item.kind else { return nil }
+        return history.line(for: id)
+    }
+    #expect(lines == ["curl https://b.example.com/two", "curl https://a.example.com/one"])
+}
+
+// MARK: - Rows address the request, not the position
+
+/// The defect this replaced an index with an id for: a curl finishing in another tab while the
+/// palette is open pushes every row down one, and the row the user is looking at would have run
+/// its neighbour's command.
+@Test func aRowStillRunsItsOwnRequestAfterTheListMoves() {
+    var history = RequestHistory(limit: 10)
+    history.record("curl https://a.example.com/one", at: at(300))
+    history.record("curl https://b.example.com/two", at: at(60))
+    let chosen = history.paletteItems(now: epoch)[1]          // the older of the two
+    #expect(chosen.title == "GET a.example.com/one")
+
+    history.record("curl https://c.example.com/three", at: epoch)  // the list moves under it
+    guard case .request(let id) = chosen.kind else {
+        Issue.record("not a request row")
+        return
+    }
+    #expect(history.line(for: id) == "curl https://a.example.com/one")
+}
+
+/// A row for a request that has since been trimmed off the end, or dropped by a hand edit, has
+/// nothing to run. It says so rather than running whatever now sits at that place in the list.
+@Test func aRowForAForgottenRequestResolvesToNothing() {
+    var history = RequestHistory(limit: 1)
+    history.record("curl https://a.example.com/one", at: at(60))
+    let chosen = history.paletteItems(now: epoch)[0]
+    history.record("curl https://b.example.com/two", at: epoch)   // trims the first one away
+    guard case .request(let id) = chosen.kind else {
+        Issue.record("not a request row")
+        return
+    }
+    #expect(history.line(for: id) == nil)
+}
+
+/// The id is a hash of the line, so it is the same in every process and carries no part of the
+/// credential the line may hold -- a palette row is passed around and logged.
+@Test func anIdentifierIsStableAndCarriesNoSecret() {
+    let line = "curl https://admin:hunter2secret@api.example.com/v1/users"
+    let id = RequestHistory.identifier(for: line)
+    #expect(id == RequestHistory.identifier(for: line))
+    #expect(id != RequestHistory.identifier(for: line + " "))
+    #expect(!id.contains("hunter2secret"))
+}
+
+// MARK: - The file, awkwardly written
+
+/// A file with Windows line endings -- an editor, a `scp` from elsewhere -- is still a list of
+/// requests. Splitting on "\n" alone left the `\r` on the end of every command, so no line parsed
+/// as the same request twice and dedup silently stopped working.
+@Test func aCRLFFileIsReadAsLines() {
+    let text = "1699999940\tcurl https://b.example.com/two\r\n"
+             + "1699999700\tcurl https://a.example.com/one\r\n"
+    let history = RequestHistory.parse(text, limit: 10)
+    #expect(history.entries.map(\.line) == ["curl https://b.example.com/two",
+                                            "curl https://a.example.com/one"])
+}
+
+/// Launch reads this file before the first window is drawn. Whatever is in it -- a log somebody
+/// redirected here, a file that grew unbounded under an older build -- it must not be a pause.
+@Test func aHugeFileIsNotReadWhole() {
+    let line = "1699999700\tcurl https://a.example.com/"
+    let text = (0..<5_000).map { "\(line)\($0)" }.joined(separator: "\n")
+    let history = RequestHistory.parse(text, limit: 10)
+    // The newest `limit` survive, and only `limit * 20` lines were looked at to find them.
+    #expect(history.entries.count == 10)
+    #expect(history.entries[0].line == "curl https://a.example.com/0")
+    #expect(history.entries[9].line == "curl https://a.example.com/9")
+}
+
+// MARK: - Finding the section
+
+/// Typing "theme" finds the themes; "request" and "curl" have to find these. A palette where you
+/// must already know the host you are looking for is a list, not a search.
+@Test func theSectionIsFoundByTypingRequestOrCurl() {
+    var history = RequestHistory(limit: 10)
+    history.record("curl https://api.example.com/users", at: epoch)
     let items = history.paletteItems(now: epoch)
-    #expect(items[0].kind == .request(index: 0))
-    #expect(history.entries[0].line == "curl https://b.example.com/two")
-    #expect(items[1].kind == .request(index: 1))
-    #expect(history.entries[1].line == "curl https://a.example.com/one")
+    var byKind = CommandPalette(items: items)
+    byKind.setQuery("request")
+    #expect(byKind.selected?.title == "GET api.example.com/users")
+    var byTool = CommandPalette(items: items)
+    byTool.setQuery("curl")
+    #expect(byTool.selected?.title == "GET api.example.com/users")
 }

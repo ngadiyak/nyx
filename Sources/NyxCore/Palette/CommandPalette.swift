@@ -12,10 +12,11 @@ public enum PaletteItemKind: Equatable {
     /// A session on a paired device: attach to it. `sessionID` is empty for the placeholder row an
     /// offline device shows, which nothing can attach to.
     case remoteSession(deviceID: String, sessionID: String)
-    /// A request from `RequestHistory`, by its index in `entries`. The index rather than the line:
-    /// the row is a handle, and what the palette shows is masked while what gets run must not be,
-    /// so the caller reads the real line back from the history it built these from.
-    case request(index: Int)
+    /// A request from `RequestHistory`, by `RequestHistory.identifier(for:)`. An id rather than a
+    /// position, because the list moves under an open palette every time a curl finishes in any
+    /// tab; an id rather than the line, because the line can carry a credential. The caller reads
+    /// the real line back with `RequestHistory.line(for:)`, and beeps when it is gone.
+    case request(id: String)
 }
 
 /// One row of the command palette.

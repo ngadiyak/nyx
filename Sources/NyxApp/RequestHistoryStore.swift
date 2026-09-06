@@ -42,12 +42,10 @@ final class RequestHistoryStore {
         history.paletteItems(now: now)
     }
 
-    /// The real, unmasked line behind a `.request(index:)` row -- what an editor opens on and what
-    /// gets run. nil when the list changed since the row was built, which is why the caller is made
-    /// to ask rather than being handed the line inside the row.
-    func line(at index: Int) -> String? {
-        history.entries.indices.contains(index) ? history.entries[index].line : nil
-    }
+    /// The real, unmasked line behind a `.request(id:)` row -- what an editor opens on and what
+    /// gets run. nil when that request is no longer remembered: the panel can be open while a curl
+    /// finishes in another tab, and a row must run its own command or none.
+    func line(for id: String) -> String? { history.line(for: id) }
 
     /// Remembers a request and rewrites the file. A line that is not a curl, or a duplicate of the
     /// top entry that would rewrite the file to the same bytes, does not touch the disk at all --
@@ -61,6 +59,11 @@ final class RequestHistoryStore {
         RequestHistoryStore.queue.async { RequestHistoryStore.write(text, to: url) }
     }
 
+    /// Set on the queue after the first failed write has been logged. A read-only config
+    /// directory would otherwise write the same line to the system log on every request for as
+    /// long as the application is open, and a message repeated a hundred times is one nobody reads.
+    private static var reportedWriteFailure = false
+
     private static func write(_ text: String, to url: URL) {
         let directory = url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -69,11 +72,24 @@ final class RequestHistoryStore {
         // each other's half-written file into place.
         let temporary = directory.appendingPathComponent(".\(url.lastPathComponent).\(getpid()).tmp")
         guard FileManager.default.createFile(atPath: temporary.path, contents: Data(text.utf8),
-                                             attributes: [.posixPermissions: 0o600]) else { return }
+                                             attributes: [.posixPermissions: 0o600]) else {
+            report("could not write \(temporary.path)")
+            return
+        }
         // `rename(2)`, not `moveItem`: it replaces an existing file atomically, which is the whole
         // point of writing to a temporary name, and `moveItem` fails when the destination exists.
         if rename(temporary.path, url.path) != 0 {
+            report("could not replace \(url.path): \(String(cString: strerror(errno)))")
             try? FileManager.default.removeItem(at: temporary)
         }
+    }
+
+    /// Says so once. A history that silently stops being kept is the kind of defect a user only
+    /// finds a fortnight later, when the palette is still showing the same three requests.
+    private static func report(_ what: String) {
+        guard !reportedWriteFailure else { return }
+        reportedWriteFailure = true
+        NSLog("nyx: the request history is not being saved -- %@. "
+              + "The palette will only remember requests until this window closes.", what)
     }
 }

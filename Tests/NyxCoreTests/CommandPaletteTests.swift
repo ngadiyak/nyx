@@ -168,8 +168,9 @@ private func palette(_ titles: [String]) -> CommandPalette {
     let items = PaletteSource.items(actions: [.newTab], chord: { _ in nil },
                                     themes: ["dracula"], tabTitles: ["zsh"], remote: [remote],
                                     requests: requests)
+    let id = RequestHistory.identifier(for: "curl https://api.example.com/users")
     #expect(items.map(\.kind) == [.action(.newTab), .theme("dracula"), .tab(0),
-                                  .remoteSession(deviceID: "d", sessionID: "s"), .request(index: 0)])
+                                  .remoteSession(deviceID: "d", sessionID: "s"), .request(id: id)])
     #expect(items.last?.title == "GET api.example.com/users")
     #expect(items.last?.detail == "just now")
 }

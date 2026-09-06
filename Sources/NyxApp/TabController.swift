@@ -937,10 +937,11 @@ final class TabController: NSViewController, NSMenuItemValidation {
             let described = coordinator.describe(deviceID: deviceID, sessionID: sessionID)
             openRemote(deviceID: deviceID, sessionID: sessionID, hostName: described.hostName,
                        title: described.title)
-        case .request(let index):
-            // The row carries an index, not the line: what it shows is masked and what runs must
-            // not be, so the real line is read back here.
-            guard let line = appDelegate?.requests?.line(at: index), let pane = focusedPane else {
+        case .request(let id):
+            // The row carries an id, not the line: what it shows is masked and what runs must not
+            // be, so the real line is read back here. Nil means the request was trimmed off the
+            // end while the panel was open -- a beep, not somebody else's command.
+            guard let line = appDelegate?.requests?.line(for: id), let pane = focusedPane else {
                 NSSound.beep()
                 return
             }

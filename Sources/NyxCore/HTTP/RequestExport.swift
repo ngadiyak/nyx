@@ -79,19 +79,69 @@ private func bodyPlainText(_ body: CurlCommand.Body) -> String? {
     }
 }
 
+/// A query parameter, from wherever it came from: the URL's own `?...` or one of curl's `-G`
+/// pairs. A plain tuple rather than `CurlCommand.QueryItem` because the second source has no
+/// `ShellWord` to keep -- see `getQueryPairs`.
+private typealias QueryPair = (name: String, value: String?)
+
+/// Whether `-G` retargets this command's body into the query string instead of sending it --
+/// true only for the two body kinds curl's own `-G` documentation names (`-d`/`--data` and
+/// `--data-urlencode`); `--json`, `-F` and `-T` are not in that list; curl's own doc.
+private func queryConsumingBody(_ command: CurlCommand) -> Bool {
+    guard command.get else { return false }
+    switch command.body {
+    case .data?, .urlencoded?: return true
+    default: return false
+    }
+}
+
+/// The pairs `-G` moves from the body into the query string, in the order curl would send them.
+/// `.data` items are split on `&` -- a single `-d 'a=1&b=2'` is already two pairs, and curl joins
+/// separate `-d` occurrences with `&` before doing anything else with them, so splitting each
+/// word and flattening in order reproduces that join without materialising it. `.urlencoded`
+/// items are not split: each `--data-urlencode` occurrence is already exactly one pair by
+/// construction, and a `&` inside its value is data, not a separator.
+///
+/// Values are never percent-decoded *or* pre-encoded here: curl itself percent-encodes a
+/// `--data-urlencode` value (and sends a plain `-d` value as written) at the point it builds the
+/// request, so the text kept in `CurlCommand` is what a person typed. Every renderer below hands
+/// these to the target's own query-building call (`params=`, `URLSearchParams`,
+/// `url.QueryEscape`, HTTPie's `==`) so the *target* does the encoding curl would have done,
+/// instead of this code guessing at it twice.
+private func getQueryPairs(_ command: CurlCommand) -> [QueryPair] {
+    func pair(_ text: String) -> QueryPair {
+        guard let equals = text.firstIndex(of: "=") else { return (text, nil) }
+        return (String(text[text.startIndex ..< equals]), String(text[text.index(after: equals)...]))
+    }
+    switch command.body {
+    case .data(let words) where command.get:
+        return words.flatMap { $0.text.split(separator: "&", omittingEmptySubsequences: false).map { pair(String($0)) } }
+    case .urlencoded(let words) where command.get:
+        return words.map { pair($0.text) }
+    default:
+        return []
+    }
+}
+
 /// The URL split into a query-free base and its items, for the formats that have a native way to
-/// carry query parameters separately from the path (HTTPie's `name==value`, Python's `params=`).
-/// A URL built from a variable (`$API/...`) is returned whole with no items: `URLParts` says
-/// itself that splitting a variable-bearing URL into host/path is a guess, and turning that guess
-/// into query items a person did not write would be worse than leaving the string alone.
-private func splitQuery(_ command: CurlCommand) -> (base: String, items: [CurlCommand.QueryItem]) {
-    guard !command.url.raw.containsVariable else { return (command.url.string, []) }
+/// carry query parameters separately from the path (HTTPie's `name==value`, Python's `params=`,
+/// and fetch/Go when `-G` has put pairs there that need real encoding -- see `renderFetch` and
+/// `renderGo`). A URL built from a variable (`$API/...`) keeps its full string with no items split
+/// out of *it*: `URLParts` says itself that splitting a variable-bearing URL into host/path is a
+/// guess, and turning that guess into query items a person did not write would be worse than
+/// leaving the string alone. `-G` pairs are still appended in that case -- they come from
+/// separate `-d`/`--data-urlencode` words, never from the URL word, so there is nothing to guess
+/// at there even when the URL itself is opaque.
+private func splitQuery(_ command: CurlCommand) -> (base: String, items: [QueryPair]) {
+    let getPairs = getQueryPairs(command)
+    guard !command.url.raw.containsVariable else { return (command.url.string, getPairs) }
     var base = ""
     if let scheme = command.url.scheme { base += scheme + "://" }
     base += command.url.host
     if let port = command.url.port { base += ":\(port)" }
     base += command.url.path
-    return (base, command.url.query)
+    let items: [QueryPair] = command.url.query.map { ($0.name, $0.value) } + getPairs
+    return (base, items)
 }
 
 /// Whether any header or auth value this render would touch carries a shell variable -- the
@@ -409,7 +459,7 @@ private func renderHTTPie(_ command: CurlCommand) -> String {
         groups.append([ShellWords.quote(word)])
     }
 
-    if let body = command.body {
+    if let body = command.body, !queryConsumingBody(command) {
         groups.append(contentsOf: httpieBodyGroups(command, body))
     }
 
@@ -446,7 +496,24 @@ private func httpieBodyGroups(_ command: CurlCommand, _ body: CurlCommand.Body) 
 
 private func renderFetch(_ command: CurlCommand) -> String {
     var lines: [String] = []
-    lines.append("fetch(\(jsString(command.url.string)), {")
+
+    let urlExpr: String
+    if queryConsumingBody(command) {
+        let (base, items) = splitQuery(command)
+        lines.append("const params = new URLSearchParams();")
+        for item in items {
+            lines.append("params.append(\(jsString(item.name)), \(jsString(item.value ?? "")));")
+        }
+        lines.append("")
+        // `URLSearchParams` does its own percent-encoding at call time -- and, unlike
+        // `url.Values.Encode()` in Go, keeps insertion order -- so building the final URL from it
+        // rather than concatenating the raw pair text is what makes a space in a `-d` value come
+        // out `%20` here the way curl would have sent it, not a broken URL.
+        urlExpr = "\(jsString(base)) + \"?\" + params.toString()"
+    } else {
+        urlExpr = jsString(command.url.string)
+    }
+    lines.append("fetch(\(urlExpr), {")
     lines.append("  method: \(jsString(command.effectiveMethod)),")
 
     let headers = fetchHeaderEntries(command)
@@ -456,7 +523,7 @@ private func renderFetch(_ command: CurlCommand) -> String {
         lines.append("  },")
     }
 
-    if let body = command.body {
+    if let body = command.body, !queryConsumingBody(command) {
         if let json = jsonBody(command) {
             lines.append("  body: JSON.stringify(\(jsLiteral(json, indent: 2))),")
         } else if let text = bodyPlainText(body) {
@@ -604,7 +671,7 @@ private func renderPython(_ command: CurlCommand) -> String {
         lines.append("    },")
     }
 
-    if let body = command.body {
+    if let body = command.body, !queryConsumingBody(command) {
         if let json = jsonBody(command) {
             lines.append("    json=\(pyLiteral(json, indent: 4)),")
         } else if let text = bodyPlainText(body) {
@@ -732,7 +799,8 @@ private func pyLiteral(_ value: JSONValue, indent: Int) -> String {
 // MARK: - Go
 
 private func renderGo(_ command: CurlCommand) -> String {
-    let bodyText = command.body.flatMap(bodyPlainText)
+    let consumesBody = queryConsumingBody(command)
+    let bodyText = consumesBody ? nil : command.body.flatMap(bodyPlainText)
     let usesOS = commandUsesVariables(command)
     let usesTLS = command.flags.contains(.insecure)
     let usesTimeout = command.timing.maxTime != nil
@@ -741,6 +809,7 @@ private func renderGo(_ command: CurlCommand) -> String {
     if usesTLS { imports.append("crypto/tls") }
     if usesOS { imports.append("os") }
     if bodyText != nil { imports.append("strings") }
+    if consumesBody { imports.append("net/url") }
     if usesTimeout { imports.append("time") }
     imports.sort()
 
@@ -750,8 +819,22 @@ private func renderGo(_ command: CurlCommand) -> String {
     lines.append("")
     lines.append("func main() {")
 
-    let bodyArg = bodyText.map { "strings.NewReader(\(goRawOrString($0)))" } ?? "nil"
-    lines.append("\treq, err := http.NewRequest(\(goString(command.effectiveMethod)), \(goString(command.url.string)), \(bodyArg))")
+    let requestURLExpr: String
+    let bodyArg: String
+    if consumesBody {
+        let (base, items) = splitQuery(command)
+        // `url.Values{}.Encode()` sorts its keys, which would reorder `-a=1&b=2` into `a=1&b=2`
+        // even when curl -- and the source command -- wrote them the other way round; escaping
+        // each pair by hand and joining in the order `-G` would send them is what keeps that
+        // order, at the cost of not being the one-liner `url.Values` usually is.
+        lines.append("\tquery := \(goQueryEscapeExpr(items))")
+        requestURLExpr = "\(goString(base))+\"?\"+query"
+        bodyArg = "nil"
+    } else {
+        requestURLExpr = goString(command.url.string)
+        bodyArg = bodyText.map { "strings.NewReader(\(goRawOrString($0)))" } ?? "nil"
+    }
+    lines.append("\treq, err := http.NewRequest(\(goString(command.effectiveMethod)), \(requestURLExpr), \(bodyArg))")
     lines.append("\tif err != nil {")
     lines.append("\t\tpanic(err)")
     lines.append("\t}")
@@ -858,4 +941,16 @@ private func goString(_ s: String) -> String {
 /// producing source Go will not compile.
 private func goRawOrString(_ text: String) -> String {
     text.contains("`") ? goString(text) : "`\(text)`"
+}
+
+/// `-G` pairs written as `url.QueryEscape(name)+"="+url.QueryEscape(value)`, joined by a literal
+/// `"&"` in the order given -- see `renderGo`'s comment on why this is not `url.Values{}.Encode()`.
+private func goQueryEscapeExpr(_ items: [QueryPair]) -> String {
+    // gofmt spaces a `+` between two call expressions but not between two literals (compare this
+    // line's own `foo() + "=" + bar()` against `renderGo`'s `goString(base)+"?"+query`) -- written
+    // pre-spaced here so the fixture this produces is already what `gofmt -l` wants, not what it
+    // would rewrite on first save.
+    items.map { item in
+        "url.QueryEscape(\(goString(item.name))) + \"=\" + url.QueryEscape(\(goString(item.value ?? "")))"
+    }.joined(separator: " + \"&\" + ")
 }

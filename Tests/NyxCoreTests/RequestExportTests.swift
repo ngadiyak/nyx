@@ -66,6 +66,33 @@ private func exportFixture(_ name: String, _ ext: String) throws -> String {
     #expect(RequestExport.render(command, as: .go) == expected)
 }
 
+// MARK: - Fixture 06: `-G` with two `--data-urlencode` pairs and no query of its own -- the pairs
+// become the whole query, in every target's own query-building call rather than a body.
+
+@Test func fixture06AsHTTPie() throws {
+    let command = try CurlFixtures.command("06-get-with-urlencode")
+    let expected = try exportFixture("06-get-with-urlencode", "http")
+    #expect(RequestExport.render(command, as: .httpie) == expected)
+}
+
+@Test func fixture06AsFetch() throws {
+    let command = try CurlFixtures.command("06-get-with-urlencode")
+    let expected = try exportFixture("06-get-with-urlencode", "js")
+    #expect(RequestExport.render(command, as: .fetch) == expected)
+}
+
+@Test func fixture06AsPython() throws {
+    let command = try CurlFixtures.command("06-get-with-urlencode")
+    let expected = try exportFixture("06-get-with-urlencode", "py")
+    #expect(RequestExport.render(command, as: .pythonRequests) == expected)
+}
+
+@Test func fixture06AsGo() throws {
+    let command = try CurlFixtures.command("06-get-with-urlencode")
+    let expected = try exportFixture("06-get-with-urlencode", "go")
+    #expect(RequestExport.render(command, as: .go) == expected)
+}
+
 // MARK: - Rules the two fixtures do not each exercise
 
 /// Every option this model has no field for, plus the flags with no target-language equivalent,
@@ -166,4 +193,46 @@ private func exportFixture(_ name: String, _ ext: String) throws -> String {
     #expect(rendered.contains("name=Ada"))
     #expect(rendered.contains("role=admin"))
     #expect(!rendered.contains("--raw"))
+}
+
+/// Whether `needles` each appear in `haystack`, in that order -- used below where the thing that
+/// matters is the *sequence* the three `-G` items come out in, not just that each one is present
+/// somewhere.
+private func appearsInOrder(_ needles: [String], in haystack: String) -> Bool {
+    var searchStart = haystack.startIndex
+    for needle in needles {
+        guard let range = haystack.range(of: needle, range: searchStart ..< haystack.endIndex) else { return false }
+        searchStart = range.upperBound
+    }
+    return true
+}
+
+/// `-G` puts the URL's own query first, then the `-d` pairs in the order they were written --
+/// never re-sorted (Go's `url.Values.Encode()` would; that is exactly why `renderGo` does not use
+/// it) and never turned into a body, in any of the four targets.
+@Test func getWithDataBecomesQueryItemsInOrderNotABody() throws {
+    let command = try #require(CurlCommand.parse("curl -G -d a=1 -d 'b=x y' 'https://x/p?c=3'"))
+
+    let httpie = RequestExport.render(command, as: .httpie)
+    #expect(appearsInOrder(["c==3", "a==1", "'b==x y'"], in: httpie))
+    #expect(!httpie.contains("--raw"))
+
+    let fetch = RequestExport.render(command, as: .fetch)
+    #expect(fetch.contains("new URLSearchParams()"))
+    #expect(appearsInOrder(["params.append(\"c\", \"3\")", "params.append(\"a\", \"1\")", "params.append(\"b\", \"x y\")"], in: fetch))
+    #expect(fetch.contains("method: \"GET\","))
+    #expect(!fetch.contains("body:"))
+
+    let python = RequestExport.render(command, as: .pythonRequests)
+    #expect(appearsInOrder(["\"c\": \"3\",", "\"a\": \"1\",", "\"b\": \"x y\","], in: python))
+    #expect(!python.contains("data="))
+
+    let go = RequestExport.render(command, as: .go)
+    #expect(go.contains("net/url"))
+    #expect(appearsInOrder([
+        "url.QueryEscape(\"c\") + \"=\" + url.QueryEscape(\"3\")",
+        "url.QueryEscape(\"a\") + \"=\" + url.QueryEscape(\"1\")",
+        "url.QueryEscape(\"b\") + \"=\" + url.QueryEscape(\"x y\")",
+    ], in: go))
+    #expect(go.contains("http.NewRequest(\"GET\", \"https://x/p\"+\"?\"+query, nil)"))
 }

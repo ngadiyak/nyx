@@ -24,7 +24,7 @@ what came back.
 
 | Question | Decision |
 |---|---|
-| How a request runs | **Transparently through the shell.** Nyx appends visible flags to the curl it runs (`-sS`, `-i`, `-w` with a timing line) and parses the block's output. The transcript shows exactly what ran. |
+| How a request runs | **Transparently through the shell.** Nyx appends visible flags to the curl it runs (`-sS`, `-i`, `-w` with a one-line timing sentinel) and parses the block's output. The transcript shows exactly what ran. |
 | Where the workbench lives | **A sheet for editing, lenses in the block.** The editor is a structured sheet in the place of today's ⌘⇧V editor; the response stays in the normal output block, read through lenses; watch and repeat are states of a block. |
 | Trigger on paste | **Hint + the existing editor keys.** A pasted curl lands on the prompt as today, with a pill at the end of the command line: "⌘E Workbench". ⌘E (edit the command line) on a curl opens the workbench, and ⌘⇧V (paste through the editor) with a curl on the clipboard opens it too; on anything else both open the plain editor as now. "Open in Workbench…" is in every curl block's ⋯ menu; "New Request…" is in the palette. |
 | v1 scope | Editor + lenses; watch / repeat / poll; export and saving (buttons, `.nyx`, history in the palette). **Assertions and secret masking in export are v2**, except that the visible command in the sheet and the block masks secrets from day one (§5.3), because a screenshot is the most common leak. |
@@ -132,8 +132,12 @@ The sheet's preview and the block's command row use `.display`; the line sent to
 - `-sS` unless `-v` or `-N` is set (progress meter lines would corrupt the exchange parse; `-S`
   keeps errors visible),
 - `-i` unless `-I`, `-o`, `-O` or `-D` is set (headers are what the lenses read),
-- `-w '\n--nyx-http-- %{json}\n'` unless `-w` is set (curl ≥ 7.72; macOS ships 8.x; if the block's
-  output has no sentinel line the summary shows what it can from the status line alone).
+- `-w '\n--nyx-http-- %{http_code} %{time_total} %{time_namelookup} %{time_connect} %{time_appconnect} %{time_starttransfer} %{size_download} %{num_redirects} %{content_type}\n'` unless `-w` is set — nine
+  space-separated variables, content type last because it may contain spaces; `url_effective` is
+  not included (the redirect chain in the headers says where the request went). Not `%{json}`:
+  since curl 8.2 it carries the whole certificate chain, several kilobytes per request in the
+  transcript. If the block's output has no sentinel line the summary shows what it can from the
+  status line alone.
 
 The additions are visible in the transcript. The sentinel line is drawn like any other output row
 in the raw lens; every other lens hides it and shows its content as the latency line (§6.1).
@@ -154,9 +158,9 @@ its Options tab ("Pipeline present: headers and timing unavailable").
   skipped.
 - With `-v`, lines starting `* `, `> ` are dropped and `< ` lines form the head.
 - The body is everything between the last head's blank line and the sentinel line (or the end).
-- The sentinel's JSON gives `status`, `timeTotal`, `timeNamelookup`, `timeConnect`,
-  `timeAppconnect`, `timeStarttransfer`, `sizeDownload`, `urlEffective`, `numRedirects`,
-  `contentType`.
+- The sentinel line gives `status`, `timeTotal`, `timeNamelookup`, `timeConnect`,
+  `timeAppconnect`, `timeStarttransfer`, `sizeDownload`, `numRedirects`, `contentType` — eight
+  numbers then the content type to the end of the line.
 - `bodyKind`: `.json` when Content-Type says so *or* the body parses as JSON; `.text`; `.binary`
   (a NUL or > 5 % non-printables in the first 4 KB); `.empty`.
 

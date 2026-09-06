@@ -214,3 +214,32 @@ private func httpSummary(_ text: String, _ tone: HTTPSummary.Tone) -> HTTPSummar
     #expect(BlockAction.saveAsButton.title == "Save as Button\u{2026}")
     #expect(BlockAction.saveToProject.title == "Save to Project\u{2026}")
 }
+
+// MARK: - The summary's colour is a line of text, and has to read like one
+
+/// Every tone, in every built-in theme, at or above 4.5:1 against that theme's own background.
+///
+/// `Palette.readable(_:)` only ever *picks* between a colour and its bright variant; where neither
+/// is legible it hands back the better of two unreadable colours. Solarized Dark's red pair is
+/// 3.25:1 and 3.26:1, so a failed request's `404 · 12 ms` was drawn at 3.25:1 -- worse than the
+/// body text around it, on the one line that exists to be noticed.
+@Test func everyToneReadsAgainstEveryBuiltInTheme() {
+    let tones: [SummaryTone] = [.plain, .running, .success, .redirect, .failure]
+    for (name, palette) in Themes.builtin {
+        for tone in tones {
+            let colour = tone.color(in: palette)
+            let ratio = RGB.contrast(colour, palette.background)
+            #expect(ratio >= 4.5, "\(name)/\(tone): \(String(format: "%.2f", ratio)):1")
+        }
+    }
+}
+
+/// And a colour that was already legible is left exactly as the theme wrote it: lifting is a last
+/// resort, not a wash over every theme's palette.
+@Test func aLegibleToneIsNotTouched() {
+    let palette = Palette.xtermDefault()
+    let picked = palette.readable(2)
+    if RGB.contrast(picked, palette.background) >= 4.5 {
+        #expect(SummaryTone.success.color(in: palette) == picked)
+    }
+}

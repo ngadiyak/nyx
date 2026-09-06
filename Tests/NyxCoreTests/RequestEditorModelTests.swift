@@ -407,3 +407,45 @@ import Testing
     deleting.setBodyText("", contentType: nil)
     #expect(deleting.command.method == "DELETE")
 }
+
+// MARK: - The tab labels
+
+/// A badge appearing must not move the word in front of it.
+///
+/// The five segments are equal width and their labels are centred, so `Headers` slid left the
+/// instant a header was added and slid back when the last one was removed -- five labels dancing
+/// while you type into a table. The count sits in a field of constant width instead, written with
+/// figure spaces, which are exactly as wide as the digits they stand in for.
+@Test func aTabLabelIsTheSameWidthWithAndWithoutItsCount() throws {
+    let empty = try #require(CurlCommand.parse("curl https://example.com"))
+    let loaded = try #require(CurlCommand.parse(
+        "curl -H 'a: 1' -H 'b: 2' -H 'c: 3' https://example.com?x=1"))
+    for tab in RequestEditorModel.Tab.allCases {
+        let bare = RequestEditorModel(command: empty).tabLabel(tab)
+        let full = RequestEditorModel(command: loaded).tabLabel(tab)
+        #expect(bare.count == full.count, "\(tab): \u{201C}\(bare)\u{201D} vs \u{201C}\(full)\u{201D}")
+        #expect(bare.hasPrefix(tab.rawValue))
+    }
+}
+
+@Test func aTabLabelShowsTheCountAndNotAZero() throws {
+    let loaded = try #require(CurlCommand.parse("curl -H 'a: 1' -H 'b: 2' https://example.com"))
+    let model = RequestEditorModel(command: loaded)
+    #expect(model.tabLabel(.headers).contains("2"))
+    // Nothing to say is said with nothing: a "0" on four of five tabs is noise on every request.
+    #expect(!model.tabLabel(.auth).contains("0"))
+}
+
+/// A count nobody can read at a glance is not worth reflowing the control for: past ninety-nine
+/// the badge says so and stops growing.
+@Test func anAbsurdCountIsCappedRatherThanWidening() throws {
+    var line = "curl https://example.com"
+    for index in 0..<120 { line += " -H 'h\(index): 1'" }
+    let many = try #require(CurlCommand.parse(line))
+    let model = RequestEditorModel(command: many)
+    #expect(model.tabLabel(.headers).contains("99+"))
+    // Still the same width as the same tab with no badge at all -- which is the whole point.
+    let empty = try #require(CurlCommand.parse("curl https://example.com"))
+    #expect(model.tabLabel(.headers).count
+        == RequestEditorModel(command: empty).tabLabel(.headers).count)
+}

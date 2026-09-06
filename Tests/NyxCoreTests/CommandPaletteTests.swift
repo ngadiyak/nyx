@@ -172,7 +172,7 @@ private func palette(_ titles: [String]) -> CommandPalette {
     #expect(items.map(\.kind) == [.action(.newTab), .theme("dracula"), .tab(0),
                                   .remoteSession(deviceID: "d", sessionID: "s"), .request(id: id)])
     #expect(items.last?.title == "GET api.example.com/users")
-    #expect(items.last?.detail == "just now")
+    #expect(items.last?.detail == "Request \u{b7} just now")
 }
 
 /// A window with no history is the ordinary palette: the parameter defaults to nothing, so no

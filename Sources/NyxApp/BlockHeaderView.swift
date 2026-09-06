@@ -19,7 +19,16 @@ final class BlockHeaderView: NSView {
     private let moreButton = NSButton(title: "\u{22EF}", target: nil, action: nil)
     private let chevronButton = NSButton(title: "", target: nil, action: nil)
     private let stack = NSStackView()
-    private let hairline = NSView()
+    /// The strip's leading edge: two cells of gradient from the terminal's background to nothing.
+    ///
+    /// It was a one-point rule, which is right where the strip sits on empty space and wrong where
+    /// it does not: on a command line with no room anywhere, the strip is placed over the tail of
+    /// the text, and a hard edge cut the glyph underneath in half -- a character sliced down the
+    /// middle reads as a rendering fault rather than as chrome. A fade lets the last glyph go out
+    /// instead of being guillotined.
+    private let fadeLayer = CAGradientLayer()
+    /// How wide the fade is, in points: two cells of the pane's font. Set from `configure`.
+    private var fadeInset: CGFloat = 16
     private var header: BlockHeader?
     private var controls: OverlayControls = .full
     private var palette = Palette.xtermDefault()
@@ -48,6 +57,10 @@ final class BlockHeaderView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
+        // The strip's ground *is* the gradient: an opaque background with a fade drawn on top of
+        // it would paint over the first characters of the summary, and one drawn underneath would
+        // be hidden by it.
+        layer = fadeLayer
         isHidden = true
         for button in [copyButton, moreButton, chevronButton] {
             button.bezelStyle = .inline
@@ -64,13 +77,11 @@ final class BlockHeaderView: NSView {
         stack.orientation = .horizontal
         stack.spacing = 6
         stack.alignment = .centerY
-        stack.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 4)
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 4)
         stack.setViews([summary, copyButton, moreButton, chevronButton], in: .center)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
-        hairline.translatesAutoresizingMaskIntoConstraints = false
-        hairline.wantsLayer = true
-        addSubview(hairline)
+
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -79,10 +90,6 @@ final class BlockHeaderView: NSView {
             // default insets, and two required edge constraints on a view shorter than its
             // content log a constraint break every frame instead of just centring it.
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            hairline.leadingAnchor.constraint(equalTo: leadingAnchor),
-            hairline.topAnchor.constraint(equalTo: topAnchor),
-            hairline.bottomAnchor.constraint(equalTo: bottomAnchor),
-            hairline.widthAnchor.constraint(equalToConstant: 1),
         ])
     }
 
@@ -121,6 +128,15 @@ final class BlockHeaderView: NSView {
     /// Which of the strip's parts are shown. Not a rule of its own: `overlayPlacement` decides, and
     /// this obeys, so what is measured and what is drawn cannot come apart.
     private func configure(header: BlockHeader, controls: OverlayControls, font: NSFont) {
+        // Two cells of the *pane's* font, so the fade is two characters wide whatever the zoom --
+        // measured here because this is the one place the strip is told what the grid looks like.
+        let cell = ceil(("0" as NSString).size(withAttributes: [.font: font]).width)
+        let fade = max(8, cell * 2)
+        if fadeInset != fade {
+            fadeInset = fade
+            stack.edgeInsets = NSEdgeInsets(top: 0, left: fade + 4, bottom: 0, right: 4)
+            needsLayout = true
+        }
         summary.stringValue = header.summary
         summary.font = font
         summary.isHidden = controls == .minimal || header.summary.isEmpty
@@ -163,8 +179,13 @@ final class BlockHeaderView: NSView {
         style(copyButton, title: "Copy", enabled: copyButton.isEnabled)
         style(moreButton, title: "\u{22EF}", enabled: true)
         style(chevronButton, title: header.chevron, enabled: true)
-        layer?.backgroundColor = nsColor(palette.background, alpha: 1).cgColor
-        hairline.layer?.backgroundColor = nsColor(palette.noteForeground, alpha: 1).cgColor
+        // Left to right: nothing, then the strip's own ground, held to the right-hand edge. The
+        // stops are placed in `layout()`, where the width is known.
+        let ground = nsColor(palette.background, alpha: 1).cgColor
+        fadeLayer.colors = [nsColor(palette.background, alpha: 0).cgColor, ground, ground]
+        fadeLayer.startPoint = CGPoint(x: 0, y: 0.5)
+        fadeLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        placeFadeStops()
         isHidden = false
         invalidateIntrinsicContentSize()
     }
@@ -175,6 +196,18 @@ final class BlockHeaderView: NSView {
         let color = nsColor(enabled ? palette.foreground : palette.noteForeground, alpha: 1)
         let font = button.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize(for: button.controlSize))
         button.attributedTitle = NSAttributedString(string: title, attributes: [.foregroundColor: color, .font: font])
+    }
+
+    override func layout() {
+        super.layout()
+        placeFadeStops()
+    }
+
+    /// Where the fade ends: two cells in from the leading edge, as a fraction of the width.
+    private func placeFadeStops() {
+        guard bounds.width > 0 else { return }
+        let end = min(1, fadeInset / bounds.width)
+        fadeLayer.locations = [0, NSNumber(value: Double(end)), 1]
     }
 
     override var intrinsicContentSize: NSSize { stack.fittingSize }

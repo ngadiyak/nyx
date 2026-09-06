@@ -138,6 +138,11 @@ final class SettingsWindowController: NSWindowController {
             row("", checkbox("restore-session", title: "Reopen windows and tabs on launch")),
             row("", checkbox("mouse-scroll-alt-screen", title: "Scroll wheel sends arrows in full-screen apps")),
             row("", checkbox("clipboard-read", title: "Allow programs to read the clipboard")),
+            // Under the checkbox it explains, not at the foot of a page whose last four settings
+            // are about something else entirely.
+            (NSGridCell.emptyContentView,
+             footnote("Off by default: any program in the terminal could then see whatever you "
+                      + "last copied.")),
             row("Option key", popUp("option-as-meta", options: ["none", "left", "right", "both"])),
             row("Bell", popUp("bell", options: ["visual", "sound", "none"])),
             row("Multi-line paste", popUp("multiline-paste", options: ["edit", "confirm", "direct"])),
@@ -145,7 +150,7 @@ final class SettingsWindowController: NSWindowController {
                 unit: "lines"),
             row("Auto-fold output over", stepperField("fold-long-output", min: 0, max: 1_000_000, step: 50),
                 unit: "lines (0 = never)"),
-            row("", sectionHeader("Requests")),
+            sectionHeader("Requests"),
             row("Response body", popUp("http-lens", titled: [
                 ("Pretty JSON", "pretty"),
                 ("Raw", "raw"),
@@ -155,7 +160,7 @@ final class SettingsWindowController: NSWindowController {
                 unit: "seconds"),
             row("Remember", stepperField("http-history", min: 0, max: 500, step: 5),
                 unit: "requests (0 = off)"),
-        ], note: "Letting programs read the clipboard is off by default: any program in the terminal could then see whatever you last copied.")
+        ], note: "")
     }
 
     private func keysPage() -> NSView {
@@ -545,24 +550,48 @@ final class SettingsWindowController: NSWindowController {
         grid.columnSpacing = 12
         grid.column(at: 0).xPlacement = .trailing
 
-        let noteLabel = NSTextField(wrappingLabelWithString: note)
-        noteLabel.translatesAutoresizingMaskIntoConstraints = false
-        noteLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        noteLabel.textColor = .secondaryLabelColor
+        // A section header owns its whole row: both cells merged, left-aligned to the page margin,
+        // with air above it. Sitting in the second column it was indented to wherever the controls
+        // happened to start and read as another setting's label rather than as the name of what
+        // follows -- which is exactly what the Remote page's "Paired devices" does not do.
+        for (index, row) in rows.enumerated()
+        where row.0.identifier == SettingsWindowController.sectionHeaderIdentifier {
+            grid.row(at: index).mergeCells(in: NSRange(location: 0, length: 2))
+            grid.cell(atColumnIndex: 0, rowIndex: index).xPlacement = .leading
+            if index > 0 { grid.row(at: index).topPadding = 10 }
+        }
 
         let view = NSView()
         view.addSubview(grid)
-        view.addSubview(noteLabel)
         NSLayoutConstraint.activate([
             grid.topAnchor.constraint(equalTo: view.topAnchor, constant: 18),
             grid.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
             grid.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -18),
+        ])
+        guard !note.isEmpty else {
+            grid.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -16).isActive = true
+            return view
+        }
+        let noteLabel = footnote(note)
+        view.addSubview(noteLabel)
+        NSLayoutConstraint.activate([
             noteLabel.topAnchor.constraint(greaterThanOrEqualTo: grid.bottomAnchor, constant: 16),
             noteLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
             noteLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
             noteLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16),
         ])
         return view
+    }
+
+    /// A small grey sentence. Used for a page's closing note and for the one footnote that belongs
+    /// to a single checkbox rather than to the page.
+    private func footnote(_ text: String) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.textColor = .secondaryLabelColor
+        label.preferredMaxLayoutWidth = 420
+        return label
     }
 
     /// A label beside a control -- and the same words attached to the control itself.
@@ -670,15 +699,22 @@ final class SettingsWindowController: NSWindowController {
 
     private var popUpTitledValues: [String: [(title: String, value: String)]] = [:]
 
-    /// A small caption row, e.g. "Requests" above the four curl-workbench settings: this page mixes
-    /// several unrelated toggles in one flat list, and a group of keys that arrived together reads
-    /// as an unexplained jump without something naming what changed.
-    private func sectionHeader(_ title: String) -> NSTextField {
+    /// A section name inside a page, e.g. "Requests" above the four curl-workbench settings: this
+    /// page mixes several unrelated toggles in one flat list, and a group of keys that arrived
+    /// together reads as an unexplained jump without something naming what changed.
+    ///
+    /// Exactly the Remote page's "Paired devices": semibold at the small system size, in the full
+    /// label colour, flush with the page's left margin. Grey and indented -- which is what this was
+    /// -- makes a heading look like a disabled setting.
+    private func sectionHeader(_ title: String) -> (NSView, NSView) {
         let label = NSTextField(labelWithString: title)
         label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-        label.textColor = .secondaryLabelColor
-        return label
+        label.identifier = SettingsWindowController.sectionHeaderIdentifier
+        label.setAccessibilityRole(.staticText)
+        return (label, NSGridCell.emptyContentView)
     }
+
+    private static let sectionHeaderIdentifier = NSUserInterfaceItemIdentifier("section-header")
 
     private func checkbox(_ key: String, title: String) -> NSButton {
         let button = NSButton(checkboxWithTitle: title, target: self, action: #selector(controlChanged(_:)))

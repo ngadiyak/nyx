@@ -96,7 +96,8 @@ final class RequestEditor: NSViewController {
     // MARK: - Building the sheet
 
     override func loadView() {
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: 720, height: 480))
+        let content = ContentView(frame: NSRect(x: 0, y: 0, width: 720, height: 480))
+        content.onLayout = { [weak self] in self?.snapPreview() }
 
         methodPopup.target = self
         methodPopup.action = #selector(methodChanged)
@@ -160,11 +161,58 @@ final class RequestEditor: NSViewController {
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
             pages.heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
-            preview.heightAnchor.constraint(equalToConstant: 110),
+            previewHeight,
         ])
 
         view = content
         render()
+    }
+
+    /// About eight lines of the preview, snapped down to a whole number of them by
+    /// `snapToWholeRows` once AppKit has said how tall a line really is.
+    private lazy var previewHeight = preview.heightAnchor.constraint(equalToConstant: 118)
+
+    /// The width the auth grid's label column is held to: the widest of the four labels it shows
+    /// (`Kind:`, `User:`, and `Password:` / `Value:` / `Token:` depending on the kind).
+    static let widestAuthLabel: CGFloat = {
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        return ["Kind:", "User:", "Password:", "Value:", "Token:"]
+            .map { ceil(($0 as NSString).size(withAttributes: [.font: font]).width) }
+            .max() ?? 80
+    }()
+
+    /// The preview shows whole lines: see `snapToWholeRows`.
+    private func snapPreview() {
+        let text = previewTextView
+        guard let manager = text.layoutManager, let container = text.textContainer,
+              manager.numberOfGlyphs > 0 else { return }
+        // The height AppKit *used* for the first line fragment, not `defaultLineHeight` for the
+        // font: they differ by a fraction of a point, and a fraction per line is a whole line of
+        // error by the eighth one -- which is precisely the line that was being sliced.
+        let pitch = manager.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil).height
+        _ = container
+        RequestEditor.snapToWholeRows(preview.contentView.bounds.height - text.textContainerInset.height * 2,
+                                      pitch: pitch, constraint: previewHeight)
+    }
+
+    /// Shrinks an owned height constraint until the box shows a whole number of rows.
+    ///
+    /// Both boxes that scroll -- the command preview and the two field tables -- were sized by the
+    /// space the sheet had rather than by their content, so their last visible row was routinely
+    /// cut across the middle: half a header, half a line of the very command that is about to run.
+    /// A sliced glyph reads as a rendering fault, and in the preview it reads as a *truncated
+    /// command*, which is the one thing this box must never suggest.
+    ///
+    /// It shrinks rather than computing an absolute height because the chrome around the rows --
+    /// a bezel, a clip view, a text container's insets -- is AppKit's and differs per box; the
+    /// remainder is measured from what is actually on screen. Converges in one pass and then does
+    /// nothing: once the remainder is gone there is nothing to take off.
+    static func snapToWholeRows(_ visibleHeight: CGFloat, pitch: CGFloat,
+                                constraint: NSLayoutConstraint) {
+        guard pitch > 0, visibleHeight > pitch else { return }
+        let remainder = visibleHeight.truncatingRemainder(dividingBy: pitch)
+        guard remainder > 0.5 else { return }
+        constraint.constant -= remainder
     }
 
     override func viewDidAppear() {
@@ -304,11 +352,16 @@ final class RequestEditor: NSViewController {
         grid.rowSpacing = 10
         grid.columnSpacing = 10
         grid.column(at: 0).xPlacement = .trailing
+        // Pinned to the widest label this column will ever hold. Without it the column is as wide
+        // as whatever is *visible*, so choosing None -- which hides the two rows under Kind --
+        // shrank it to fit "Kind:" and slid the popup 31 points to the left. A control that moves
+        // when you change an unrelated value reads as a different sheet.
+        grid.column(at: 0).width = RequestEditor.widestAuthLabel
         authGrid = grid
 
         let note = NSTextField(wrappingLabelWithString:
-            "A credential written as a variable -- $TOKEN -- is kept as a reference, never resolved "
-            + "and never masked: it is not the secret.")
+            "A credential written as a variable \u{2014} $TOKEN \u{2014} is kept as a reference, never "
+            + "resolved and never masked: it is not the secret.")
         note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         note.textColor = .secondaryLabelColor
 
@@ -446,10 +499,10 @@ final class RequestEditor: NSViewController {
 
         setIfChanged(urlField, model.urlString)
 
-        let badges = model.tabBadges
+        // `tabLabel`, not a count appended here: the badge sits in a constant-width field so the
+        // five centred labels do not slide sideways as things are added and removed.
         for (index, tab) in RequestEditorModel.Tab.allCases.enumerated() {
-            let count = badges[tab] ?? 0
-            tabs.setLabel(count == 0 ? tab.rawValue : "\(tab.rawValue) \(count)", forSegment: index)
+            tabs.setLabel(model.tabLabel(tab), forSegment: index)
         }
         if let index = RequestEditorModel.Tab.allCases.firstIndex(of: model.tab) {
             tabs.selectedSegment = index
@@ -720,7 +773,11 @@ final class RequestEditor: NSViewController {
         field.alignment = .right
         field.describeForAccessibility("Seconds between runs", role: .textField)
         alert.accessoryView = field
-        alert.addButton(withTitle: "Start")
+        // Explicit, not implied: an `NSAlert` assigns the return key to its first button when it
+        // is *run*, and this alert is also built for a snapshot, where it never is -- so the
+        // picture showed two identical grey buttons and no default at all.
+        let start = alert.addButton(withTitle: "Start")
+        start.keyEquivalent = "\r"
         alert.addButton(withTitle: "Cancel")
         return (alert, field)
     }
@@ -740,7 +797,7 @@ final class RequestEditor: NSViewController {
 
     @objc private func saveAsButton() {
         commitEdits()
-        let editor = QuickActionEditor(editing: quickActionDraft())
+        let editor = QuickActionEditor(editing: quickActionDraft(), heading: "New Button", verb: "Save")
         editor.onFinish = { [weak self] action in
             self?.dismiss(editor)
             guard let action else { return }
@@ -754,7 +811,7 @@ final class RequestEditor: NSViewController {
 
     @objc private func saveToProject() {
         commitEdits()
-        let editor = QuickActionEditor(editing: quickActionDraft())
+        let editor = QuickActionEditor(editing: quickActionDraft(), heading: "New Button", verb: "Save")
         editor.onFinish = { [weak self] action in
             self?.dismiss(editor)
             guard let self, let action else { return }
@@ -762,6 +819,20 @@ final class RequestEditor: NSViewController {
             self.onSaveToProject?(action.name, "quick = " + action.configValue)
         }
         presentAsSheet(editor)
+    }
+}
+
+/// The sheet's content view, which exists only to report its own layout passes.
+///
+/// `NSViewController.viewDidLayout` is called for a view inside a window, and the snapshot renderer
+/// lays this sheet out with no window at all -- so the row snapping would never run in exactly the
+/// pictures that exist to catch a sliced row.
+private final class ContentView: NSView {
+    var onLayout: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        onLayout?()
     }
 }
 
@@ -811,6 +882,9 @@ final class FieldTable: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private let addButton = NSButton(title: "+", target: nil, action: nil)
     private let removeButton = NSButton(title: "−", target: nil, action: nil)
     private var rows: [RequestEditorModel.Field] = []
+    /// The table's own height, so it can be held to a whole number of rows; `layout()` grows it to
+    /// whatever the page allows.
+    private lazy var scrollerHeight = scroller.heightAnchor.constraint(equalToConstant: 108)
     /// How many of `rows` are the command's own -- the rest are derived and cannot be removed.
     private var editableCount = 0
 
@@ -877,7 +951,7 @@ final class FieldTable: NSView, NSTableViewDataSource, NSTableViewDelegate {
             scroller.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             scroller.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroller.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scroller.heightAnchor.constraint(greaterThanOrEqualToConstant: 108),
+            scrollerHeight,
 
             empty.centerXAnchor.constraint(equalTo: scroller.centerXAnchor),
             empty.centerYAnchor.constraint(equalTo: scroller.centerYAnchor),
@@ -894,6 +968,35 @@ final class FieldTable: NSView, NSTableViewDataSource, NSTableViewDelegate {
             note.trailingAnchor.constraint(equalTo: trailingAnchor),
             bottomAnchor.constraint(greaterThanOrEqualTo: addButton.bottomAnchor, constant: 4),
         ])
+    }
+
+    /// The table shows whole rows or none: see `RequestEditor.floorToWholeRows`. Done here rather
+    /// than from the controller because the height is resolved by Auto Layout from whatever space
+    /// the sheet has, so the only moment the answer is known is this view's own layout pass.
+    override func layout() {
+        super.layout()
+        // Everything under the table: the gap, the +/− row, and the margin below it. What is left
+        // is the table's, rounded down to whole rows -- `snapToWholeRows` takes the remainder off
+        // once AppKit has laid the bezel and clip view out and said what is really visible.
+        let below = 6 + addButton.frame.height + 4
+        let available = bounds.height - 8 - below
+        // The bezel and the clip view's own edges, measured rather than assumed. Computing the
+        // target from the space *available* rather than from the current height is what keeps this
+        // from oscillating: grow-then-shrink on alternate passes is a table that flickers by a row.
+        let chrome = max(0, scroller.frame.height - scroller.contentView.bounds.height)
+        // The pitch AppKit actually lays rows out at, taken from two of them: `rowHeight` plus
+        // `intercellSpacing` is the documented arithmetic and it is two points out per row in this
+        // style -- six rows of that is a third of a row, which is exactly the slice at the bottom.
+        let pitch = table.numberOfRows > 1
+            ? table.rect(ofRow: 1).minY - table.rect(ofRow: 0).minY
+            : table.rowHeight + table.intercellSpacing.height
+        guard pitch > 0, available > chrome + pitch else { return }
+        // The column header sits *inside* the clip view here, so it is chrome too -- measured, not
+        // assumed, because that is the difference between six whole rows and five and a half.
+        let header = table.headerView?.frame.height ?? 0
+        let rows = max(1, floor((available - chrome - header) / pitch))
+        let target = rows * pitch + chrome + header
+        if abs(scrollerHeight.constant - target) > 0.5 { scrollerHeight.constant = target }
     }
 
     func show(rows: [RequestEditorModel.Field], note text: String?, canAdd: Bool, editableCount: Int) {

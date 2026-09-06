@@ -516,6 +516,26 @@ public struct RequestEditorModel: Equatable {
         ]
     }
 
+    /// One tab's label for the segmented control: the name, then how many things it holds.
+    ///
+    /// The count sits in a field of constant width, padded with FIGURE SPACE (U+2007), which is by
+    /// definition as wide as a digit. The five segments are equal width and their labels centred,
+    /// so a label that grew when a header was added slid the word `Headers` sideways -- and typing
+    /// into the table made all five labels twitch on every keystroke. Reserving the space costs a
+    /// little air on either side and buys a control that holds still.
+    ///
+    /// Capped at `99+`: a request with a hundred headers is not one anybody is counting by eye,
+    /// and letting the badge grow to four characters would be the same reflow with more steps.
+    public func tabLabel(_ tab: Tab) -> String {
+        let count = tabBadges[tab] ?? 0
+        let badge = count == 0 ? "" : (count > 99 ? "99+" : String(count))
+        let field = String(repeating: "\u{2007}", count: max(0, RequestEditorModel.badgeWidth - badge.count))
+        return tab.rawValue + " " + badge + field
+    }
+
+    /// Three, because `99+` is the widest badge there is.
+    private static let badgeWidth = 3
+
     /// The command as a `\`-continued block with every credential masked. For reading only.
     public var preview: String { serialisedCommand.shellLine(masking: .display, layout: .multiline) }
 

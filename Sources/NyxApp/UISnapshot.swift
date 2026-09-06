@@ -193,6 +193,23 @@ enum UISnapshot {
                       into: directory, background: palette.background)
             }
         }
+        // The four HTTP summaries against Solarized Dark, whose red pair (3.25:1 and 3.26:1) is the
+        // theme that proved `Palette.readable` alone is not enough: it picks between two colours
+        // and lifts neither. Every tone here is now held to 4.5:1 against this background by
+        // `SummaryTone.color(in:)`, and this is the picture that says so.
+        if let solarized = Themes.builtin["solarized-dark"] {
+            for (name, header) in httpBlockHeaderStates() {
+                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
+                view.appearance = NSAppearance(named: .darkAqua)
+                view.update(header: header, controls: .full, palette: solarized,
+                            font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+                let size = view.intrinsicContentSize
+                view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
+                view.layoutSubtreeIfNeeded()
+                write(view, named: "block-header-\(name)-solarized", into: directory,
+                      background: solarized.background)
+            }
+        }
         // The pill over the row it is really drawn on, in both themes: what a user sees a moment
         // after pasting a `curl`. Pictured with the command in front of it because the whole
         // question about this chrome is whether it reads as part of the line or as something
@@ -477,7 +494,15 @@ enum UISnapshot {
         view.appearance = NSAppearance(named: appearance)
         view.frame = NSRect(x: 0, y: 0, width: 720, height: 480)
         controller.show(tab: tab)
-        view.layoutSubtreeIfNeeded()
+        // Glyphs first: the preview snaps its height to the line height AppKit actually used, and
+        // a text view that has not laid out yet has no line to measure.
+        for textView in descendants(of: view).compactMap({ $0 as? NSTextView }) {
+            textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+        }
+        // Three passes: the preview and the two tables snap their own heights down to a whole
+        // number of rows *during* a layout pass, and a changed constraint needs the next one to
+        // take effect. In the app that is the run loop's next cycle; here there is none.
+        for _ in 0..<3 { view.layoutSubtreeIfNeeded() }
         // The preview and the body are text views, which generate their glyphs on the first real
         // display pass: without this the two boxes render empty, and they are the two boxes this
         // sheet exists for.
@@ -556,7 +581,8 @@ enum UISnapshot {
         guard let command = CurlCommand.parse(chromeCurl) else { return NSView() }
         let request = RequestEditor(command: command, palette: palette)
         _ = request.view      // the draft is read from the model, which the view's load fills in
-        let controller = QuickActionEditor(editing: request.quickActionDraft())
+        let controller = QuickActionEditor(editing: request.quickActionDraft(),
+                                           heading: "New Button", verb: "Save")
         let view = controller.view
         view.appearance = NSAppearance(named: appearance)
         view.frame = NSRect(x: 0, y: 0, width: 460, height: 232)

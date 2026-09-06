@@ -23,10 +23,11 @@ final class WorkbenchHintView: NSView {
     /// `RemoteStripView`'s is: a theme reload changes no word and every colour.
     private var shown: (text: String, palette: Palette)?
 
-    /// The floor the title is held to, and why it is not 4.5: the same measured-versus-computed gap
-    /// `RemoteStripView` documents. The arithmetic runs in sRGB and the layer is captured through a
-    /// device profile, so aiming at 4.5 lands near 4.1 in the pixels a person actually sees.
-    private static let contrastFloor = 5.4
+    /// How much of the theme's accent the chip is made of. Dark themes keep the remote strip's
+    /// 22 %; light themes need far more of it before the chip is a shape rather than a smudge --
+    /// see `update`.
+    private static let darkChipMix = 0.22
+    private static let lightChipMix = 0.40
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -106,9 +107,26 @@ final class WorkbenchHintView: NSView {
         // contrast is computed against this exact colour, and it has to stay readable over a window
         // with `background-opacity` below 1. The accent, because the pill is an offer rather than a
         // warning -- the same colour the remote strip uses when nothing is wrong.
-        let ground = RGB.blend(palette.accent, into: palette.background, amount: 0.78)
-        let ink = RGB.readable(palette.foreground, on: ground, towards: palette.foreground,
-                               minimum: WorkbenchHintView.contrastFloor)
+        //
+        // A chip has to be a *shape* before it is a label: on a light theme, 22 % of the accent
+        // over a near-white ground measured 1.49:1 against the terminal background, which is a
+        // rectangle you have to look for. Light themes therefore take more of the accent -- the
+        // chip darkens rather than the text lightening, so the title keeps its contrast against
+        // the chip while the chip gains its own edge against the page.
+        let mix = palette.isLight ? WorkbenchHintView.lightChipMix : WorkbenchHintView.darkChipMix
+        let ground = RGB.blend(palette.accent, into: palette.background, amount: 1 - mix)
+        // Whichever of the theme's two extremes reads better *on the chip*, which is not always
+        // the foreground: a light theme's chip is darker than its page, and the page colour is
+        // then the legible ink. `RGB.readable(x, towards: x)` cannot help here -- blending a
+        // colour into itself is a no-op ladder -- so this picks rather than lifts, and the pick is
+        // the best the theme has to offer.
+        let pick = RGB.contrast(palette.foreground, ground) >= RGB.contrast(palette.background, ground)
+            ? palette.foreground : palette.background
+        // And lifted if even that is not enough: Solarized Dark's foreground on its own accent chip
+        // measures 3.82:1, which is a label you read twice. The last resort is the extreme the
+        // chip is furthest from, which always clears the floor.
+        let ink = RGB.readable(pick, on: ground,
+                               towards: ground.relativeLuminance < 0.5 ? RGB(255, 255, 255) : RGB(0, 0, 0))
         layer?.backgroundColor = nsColor(ground, alpha: 1).cgColor
         // `contentTintColor` recolours a symbol image, not a title: the title paints in the
         // system's `labelColor` unless it is set as an attributed string.

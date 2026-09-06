@@ -140,7 +140,10 @@ private func at(_ secondsAgo: TimeInterval) -> Date { epoch.addingTimeInterval(-
     let items = history.paletteItems(now: epoch)
     #expect(items.map(\.title) == ["POST api.example.com/v2/deployments",
                                    "GET api.example.com/users"])
-    #expect(items.map(\.detail) == ["2 min ago", "2 h ago"])
+    // The trailing column names the kind first, the way a Theme, Tab or Quick Action row does:
+    // a palette whose right-hand column says "2 min ago" on some rows and "Theme" on others gives
+    // the reader nothing to read down.
+    #expect(items.map(\.detail) == ["Request \u{b7} 2 min ago", "Request \u{b7} 2 h ago"])
     #expect(items.map(\.kind) == [.request(id: RequestHistory.identifier(for: history.entries[0].line)),
                                   .request(id: RequestHistory.identifier(for: history.entries[1].line))])
     // Everything on the row, plus the method and host on their own, so `post deployments` and

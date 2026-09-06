@@ -15,14 +15,22 @@ final class QuickActionEditor: NSViewController {
     var onFinish: ((QuickAction?) -> Void)?
 
     private let existing: QuickAction?
+    private let heading: String
+    private let verb: String
     private let nameField = NSTextField(frame: .zero)
     private let commandField = NSTextField(frame: .zero)
     private let kindControl = NSSegmentedControl(labels: ["Type it", "New tab", "Background"],
                                                  trackingMode: .selectOne, target: nil, action: nil)
     private let explanation = NSTextField(wrappingLabelWithString: "")
 
-    init(editing action: QuickAction? = nil) {
+    /// `heading` and `verb` default to what editing a button off the tab bar says. They exist
+    /// because this sheet is now also reached from a *request*, where it is prefilled with a
+    /// draft nobody has saved yet: "Edit Button" over a button that does not exist, above a
+    /// "Save" that would create it, describes the wrong act.
+    init(editing action: QuickAction? = nil, heading: String? = nil, verb: String? = nil) {
         self.existing = action
+        self.heading = heading ?? (action == nil ? "New Button" : "Edit Button")
+        self.verb = verb ?? (action == nil ? "Add" : "Save")
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -31,7 +39,7 @@ final class QuickActionEditor: NSViewController {
     override func loadView() {
         let content = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 232))
 
-        let title = NSTextField(labelWithString: existing == nil ? "New Button" : "Edit Button")
+        let title = NSTextField(labelWithString: heading)
         title.font = .systemFont(ofSize: 15, weight: .semibold)
 
         nameField.placeholderString = "Caffeine"
@@ -59,7 +67,7 @@ final class QuickActionEditor: NSViewController {
 
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
-        let save = NSButton(title: existing == nil ? "Add" : "Save", target: self, action: #selector(save))
+        let save = NSButton(title: verb, target: self, action: #selector(save))
         save.keyEquivalent = "\r"
 
         if let existing {

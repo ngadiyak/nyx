@@ -153,8 +153,11 @@ public struct RequestHistory: Equatable {
             // The *whole* path, not the truncated one, and the method and host on their own: a row
             // is found by the segment that was cut off the end at least as often as by the part
             // that fits.
+            // "Request · 2 min ago": the kind first, then the age. Every other section's rows name
+            // what they are in this column ("Theme", "Tab", "Quick Action"), and a bare age made
+            // the Requests section the one place the column meant something else.
             return PaletteItem(title: title,
-                               detail: RelativeAge.text(from: entry.at, to: now),
+                               detail: "Request \u{b7} " + RelativeAge.text(from: entry.at, to: now),
                                searchText: "\(title) \(host) \(path) \(command.effectiveMethod)"
                                    + " request curl",
                                kind: .request(id: RequestHistory.identifier(for: entry.line)))

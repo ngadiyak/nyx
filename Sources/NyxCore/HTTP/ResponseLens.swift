@@ -128,10 +128,20 @@ public enum LensRendering {
 
         switch lens {
         case .raw, .headers:
+            // `.raw` is the instruction to show the transcript untouched. `.headers` cannot reach
+            // here -- it returned above, before the size check -- and is listed only because this
+            // switch is exhaustive over the lens, which is how a lens added later gets a compiler
+            // error here instead of silently rendering nothing.
             return nil
         case .pretty:
             var out: [LensLine] = []
-            if let head = exchange.final { out += headerBlock(head, folded: input.folded) }
+            if let head = exchange.final {
+                out += headerBlock(head, folded: input.folded)
+            } else {
+                // The same sentence the headers lens uses, so two views of one response cannot
+                // describe it differently.
+                out.append(dim(noHeaders))
+            }
             out += bodyBlock(exchange, folded: input.folded)
             if let timing = exchange.timing { out.append(dim(latency(timing))) }
             return out
@@ -143,7 +153,13 @@ public enum LensRendering {
             }
             let results = JSONPath.evaluate(expression, on: value)
             guard !results.isEmpty else { return [dim("no results for \"\(path)\"")] }
-            return results.flatMap { lensLines(JSONDocument.pretty($0, folded: input.folded)) }
+            // Each result is its own document, and every one of them has a root: unprefixed, all
+            // of their roots are `NodePath([])` and folding the first folded every one of them.
+            // The position in the result list is the namespace.
+            return results.enumerated().flatMap { offset, result in
+                prefixed(JSONDocument.pretty(result, folded: folds(input.folded, under: offset)),
+                         with: .index(offset))
+            }
         case .grep(let needle):
             // The body *as shown*, not as it arrived: a JSON response is usually one enormous
             // line, and searching that gives one hit on line 1 with forty highlights in it. The
@@ -223,9 +239,7 @@ public enum LensRendering {
 
     private static func headersLens(_ exchange: HTTPExchange) -> [LensLine] {
         guard let head = exchange.final else {
-            guard !exchange.redirects.isEmpty else {
-                return [dim("No response headers in this transcript \u{2014} the request ran without -i")]
-            }
+            guard !exchange.redirects.isEmpty else { return [dim(noHeaders)] }
             return exchange.redirects.map(redirectLine)
         }
         var status = "HTTP/\(head.version) \(head.status)"
@@ -496,12 +510,15 @@ public enum LensRendering {
         var at = 0
         while at < ordered.count {
             guard kept[at] else {
-                var run = 0
-                while at < ordered.count, !kept[at] {
-                    run += 1
-                    at += 1
+                let start = at
+                while at < ordered.count, !kept[at] { at += 1 }
+                let run = at - start
+                // Collapsing one line saves nothing and costs the reader a sentence to decode.
+                guard run > 1 else {
+                    out.append(LensLine("  " + ordered[start].text))
+                    continue
                 }
-                out.append(dim("  \u{2026} \(run) unchanged line\(run == 1 ? "" : "s")"))
+                out.append(dim("  \u{2026} \(run) unchanged lines"))
                 continue
             }
             switch ordered[at] {
@@ -518,6 +535,29 @@ public enum LensRendering {
     }
 
     // MARK: - Small things
+
+    /// What a response with no head at all leaves to say. One string: the pretty lens and the
+    /// headers lens both show it, and two views of one response must not word it differently.
+    static let noHeaders = "No response headers in this transcript \u{2014} the request ran without -i"
+
+    /// The folds that belong to result `offset`, with its prefix taken off, ready for a printer
+    /// that knows nothing about being one of several.
+    private static func folds(_ folded: Set<NodePath>, under offset: Int) -> Set<NodePath> {
+        guard !folded.isEmpty else { return [] }
+        return Set(folded.compactMap { path -> NodePath? in
+            guard path.steps.first == .index(offset) else { return nil }
+            return NodePath(Array(path.steps.dropFirst()))
+        })
+    }
+
+    /// The printed lines with every fold point moved into result `step`'s namespace.
+    private static func prefixed(_ pretty: [JSONDocument.PrettyLine],
+                                 with step: NodePath.Step) -> [LensLine] {
+        pretty.map { line in
+            LensLine(line.text, spans: line.spans,
+                     node: line.node.map { NodePath([step] + $0.steps) }, depth: line.depth)
+        }
+    }
 
     private static func dim(_ text: String) -> LensLine {
         LensLine(text, spans: [span(.dim, text)])

@@ -425,3 +425,82 @@ private func twentyLines(changingAt changed: Range<Int>, marker: String) -> [Str
     // And the fold point the pane will hang a click on: the body's root, on the `{` line.
     #expect(lines[1].node == NodePath([]))
 }
+
+// MARK: - The minors
+
+/// Two results of one filter are two documents, and folding the first must not fold the second.
+/// Every result's paths are prefixed with its position, so the roots cannot collide on `NodePath([])`.
+@Test func filterResultsHaveTheirOwnFoldPaths() {
+    let body = exchange(body: ["{\"items\":[{\"a\":[1,2]},{\"b\":[3,4]}]}"])
+    let open = LensRendering.lines(for: .filter(".items[]"),
+                                   input: LensInput(exchange: body, previous: nil,
+                                                    folded: [])) ?? []
+    #expect(texts(open) == ["{", "  \"a\": [", "    1,", "    2", "  ]", "}",
+                            "{", "  \"b\": [", "    3,", "    4", "  ]", "}"])
+    #expect(open[0].node == NodePath([.index(0)]))
+    #expect(open[1].node == NodePath([.index(0), .key("a")]))
+    #expect(open[6].node == NodePath([.index(1)]))
+
+    let folded = LensRendering.lines(for: .filter(".items[]"),
+                                     input: LensInput(exchange: body, previous: nil,
+                                                      folded: [NodePath([.index(0)])])) ?? []
+    #expect(texts(folded) == ["\u{25B8} {…} 1 key",
+                              "{", "  \"b\": [", "    3,", "    4", "  ]", "}"])
+}
+
+/// The cap that is about the *shape* of the change rather than its size: sixteen hundred lines,
+/// well inside the size cap, but moving a block of eight hundred is an edit distance of sixteen
+/// hundred and Myers' trace is not worth that. The coarse answer is the honest one -- every line is
+/// still here -- and it is visibly coarse rather than quietly wrong.
+@Test func pastTheEditDistanceCapTheDiffClassifiesInstead() {
+    let alpha = (0..<800).map { "alpha \($0)" }
+    let beta = (0..<800).map { "beta \($0)" }
+    let previous = exchange(headers: [("content-type", "text/plain")], body: alpha + beta,
+                            kind: .text)
+    let current = exchange(headers: [("content-type", "text/plain")], body: beta + alpha,
+                           kind: .text)
+    #expect(alpha.count + beta.count < LensRendering.maxDiffLines)
+    let lines = LensRendering.lines(for: .diff(previousCommandID: 1),
+                                    input: LensInput(exchange: current, previous: previous,
+                                                     folded: [])) ?? []
+    #expect(lines.first?.text.hasPrefix("0 lines changed") == true)
+    #expect(lines.count == 2)
+    #expect(lines[1].text == "  \u{2026} 1600 unchanged lines")
+}
+
+/// Collapsing one line saves nothing and costs the reader a sentence to decode. It is only worth
+/// doing when there is more than one line behind it.
+@Test func aSingleUnchangedLineIsNotCollapsed() {
+    let before = (1...10).map { "line \($0)" }
+    let after = before.enumerated().map { $0.offset == 0 || $0.offset == 8 ? "\($0.element) changed" : $0.element }
+    let previous = exchange(headers: [("content-type", "text/plain")], body: before, kind: .text)
+    let current = exchange(headers: [("content-type", "text/plain")], body: after, kind: .text)
+    let lines = LensRendering.lines(for: .diff(previousCommandID: 1),
+                                    input: LensInput(exchange: current, previous: previous,
+                                                     folded: [])) ?? []
+    #expect(texts(lines).dropFirst() == ["- line 1", "+ line 1 changed",
+                                         "  line 2", "  line 3", "  line 4", "  line 5",
+                                         "  line 6", "  line 7", "  line 8",
+                                         "- line 9", "+ line 9 changed",
+                                         "  line 10"])
+    #expect(!texts(lines).contains("  \u{2026} 1 unchanged line"))
+}
+
+/// The pretty lens says the same thing the headers lens says when there are no headers: a body with
+/// nothing above it looks like a lens that lost them.
+@Test func prettyWithoutAHeadSaysWhy() {
+    let bodyOnly = HTTPExchange(redirects: [], final: nil, bodyLines: ["hello"], bodyKind: .text,
+                                timing: nil)
+    let lines = LensRendering.lines(for: .pretty,
+                                    input: LensInput(exchange: bodyOnly, previous: nil,
+                                                     folded: [ResponseLens.headersNode])) ?? []
+    #expect(texts(lines) == ["No response headers in this transcript \u{2014} the request ran without -i",
+                             "hello"])
+    #expect(lines[0].spans.map(\.style) == [.dim])
+    // Word for word what the headers lens says, so two views of one response cannot describe it
+    // differently.
+    let headers = LensRendering.lines(for: .headers,
+                                      input: LensInput(exchange: bodyOnly, previous: nil,
+                                                       folded: []))
+    #expect(headers?.first?.text == lines[0].text)
+}

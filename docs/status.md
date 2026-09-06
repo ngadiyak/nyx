@@ -1,6 +1,6 @@
 # Where Nyx stands
 
-An honest inventory as of 2026-09-05, against the spec and against the terminals Nyx has to beat.
+An honest inventory as of 2026-09-06, against the spec and against the terminals Nyx has to beat.
 Update this when a row changes; the README's "Not there yet" is the user-facing summary of the
 same facts.
 
@@ -26,13 +26,15 @@ same facts.
 | Quick actions | `send` / `run` / `toggle` buttons on the bar, editable from the UI, written back to the file; per-project `.nyx` behind a digest-bound approval |
 | Sessions | Windows, tabs, splits, cwd and scrollback restored; corrupt or newer snapshot → one window |
 | Remote sessions | A paired Mac's shell as a tab: relay-based, end-to-end encrypted (X25519 per attach, signed by an Ed25519 device identity, ChaCha20-Poly1305 with a per-direction counter), six-character pairing code with a four-word fingerprint both people compare, palette Remote section, snapshot-then-live with the host's OSC 133 marks intact, one writer with take-control, an audit log on the host. Verified with two instances against the deployed relay |
+| Requests (workbench, request side) | A pasted `curl` offers `⌘E Workbench`; ⌘E, ⌘⇧V, New Request, a block's ⋯ menu and the palette's Requests section all open one command as a form -- method, parameters, headers, body, auth, options -- with secrets masked until revealed, a live preview of exactly what will run, Copy and four exports (HTTPie, fetch, Python requests, Go), Save as Button / Save to Project, and a run whose status, latency, size and body kind land on the block header. The last fifty requests are remembered beside the config file |
 | Accessibility | Every drawn control is an accessibility element with role and state |
-| Verification | 1380 swift-testing tests, offscreen Metal pixel tests, UI snapshot renderer, an opt-in run against a real relay binary (`NYX_RELAY_BIN`), CI with warning gate, bench floor, launch check and snapshot artifact |
+| Verification | 1741 swift-testing tests, offscreen Metal pixel tests, UI snapshot renderer, an opt-in run against a real relay binary (`NYX_RELAY_BIN`), CI with warning gate, bench floor, launch check and snapshot artifact |
 
 ## Not there yet
 
 | Gap | Why it matters | Notes |
 |---|---|---|
+| Requests: lenses and watch | The response half of the workbench: pretty-printing a JSON body in place (`⌘⇧J`, `http-lens`), the header/body/timing lenses, and re-running a request on an interval with a diff (`http-watch-interval`, `Stop Watching`). `Repeat` in the sheet runs the request once and says so in the log; `toggle_http_lens` and `stop_watch` beep | The response plan. The request side above is complete and verified |
 | Distribution | Nobody else can run it | `scripts/release.sh` is ready; needs a Developer ID certificate and a notarytool profile |
 | Automatic update | Nobody finds out about a new version | Sparkle or a hand-rolled appcast; after distribution |
 | Throughput 190 vs 300 MB/s | Already beats iTerm2 by an order of magnitude; the target was set to beat Ghostty/Alacritty on the same stream | Table-driven parser, actual-row-width tracking, flat cell storage; each rewrites tested code |

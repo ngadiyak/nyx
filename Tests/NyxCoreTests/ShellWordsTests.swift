@@ -71,3 +71,45 @@ import Testing
     #expect(quoted == "'https://api.example.com/v1?x=1'")
     #expect(ShellWords.split(quoted) == [word])
 }
+
+@Test func ansiCQuotingIsLiteral() {
+    let line = #"$'{"a":1}'"#
+    let words = ShellWords.split(line)
+    #expect(words?.count == 1)
+    #expect(words?.first?.text == #"{"a":1}"#)
+    #expect(words?.first?.pieces == [.text(#"{"a":1}"#)])
+
+    guard let word = words?.first else { return }
+    let quoted = ShellWords.quote(word)
+    #expect(quoted == #"'{"a":1}'"#)
+    #expect(ShellWords.split(quoted) == [word])
+}
+
+@Test func ansiCEscapesDecode() {
+    let line = #"$'a\nb\x41'"#
+    let words = ShellWords.split(line)
+    #expect(words?.count == 1)
+    #expect(words?.first?.text == "a\nbA")
+}
+
+@Test func crlfContinuation() {
+    let line = "curl \\\r\n  -s \\\r\n  https://x"
+    let words = ShellWords.split(line)
+    #expect(words?.map(\.text) == ["curl", "-s", "https://x"])
+}
+
+@Test func backtickIsEscapedInDoubleQuotes() {
+    let word = ShellWord(pieces: [.text("`echo hi` "), .variable("$TOKEN")])
+    let quoted = ShellWords.quote(word)
+    #expect(ShellWords.split(quoted) == [word])
+}
+
+@Test func specialParametersAreVariables() {
+    let names = ["$0", "$1", "$9", "$?", "$#", "$@", "$*", "$$"]
+    for name in names {
+        let words = ShellWords.split(name)
+        #expect(words?.count == 1)
+        #expect(words?.first?.isVariable == true)
+        #expect(words?.first?.pieces == [.variable(name)])
+    }
+}

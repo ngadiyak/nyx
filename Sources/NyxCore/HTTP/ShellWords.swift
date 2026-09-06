@@ -79,12 +79,13 @@ public enum ShellWords {
         while i < n {
             let c = scalars[i]
 
-            // Outside quotes, "\" + newline vanishes completely before anything else looks at
-            // it: checked here, ahead of the word-boundary logic below, so it never reads as
-            // whitespace (which would flush a word that hasn't started) or as content (which
-            // would start one) -- either way produces a phantom empty word around it.
-            if c == "\\", i + 1 < n, scalars[i + 1] == "\n" {
-                i += 2
+            // Outside quotes, "\" + newline (or "\" + CRLF, from a pasted Windows-style line)
+            // vanishes completely before anything else looks at it: checked here, ahead of the
+            // word-boundary logic below, so it never reads as whitespace (which would flush a
+            // word that hasn't started) or as content (which would start one) -- either way
+            // produces a phantom empty word around it.
+            if c == "\\", let next = continuationEnd(scalars, at: i) {
+                i = next
                 continue
             }
 
@@ -99,6 +100,17 @@ public enum ShellWords {
                 }
                 inWord = true
                 // Fall through: `c` is the first character of the new word.
+            }
+
+            // `$'...'` (ANSI-C quoting, e.g. Chrome's "Copy as cURL" emitting
+            // `--data-raw $'{"a":1}'`) is a distinct literal-with-escapes construct, not a
+            // variable followed by a quote -- handled here, ahead of the switch below, because
+            // it needs its own escape rules and its own closing `'` scanned as one unit.
+            if c == "$", i + 1 < n, scalars[i + 1] == "'" {
+                guard let (decoded, next) = scanAnsiCQuoted(scalars, at: i) else { return nil }
+                text += decoded
+                i = next
+                continue
             }
 
             switch c {
@@ -120,14 +132,16 @@ public enum ShellWords {
                         terminated = true
                         break
                     }
+                    if d == "\\", let next = continuationEnd(scalars, at: i) {
+                        i = next // backslash-newline (or backslash-CRLF) vanishes even in quotes
+                        continue
+                    }
                     if d == "\\", i + 1 < n {
                         let e = scalars[i + 1]
                         switch e {
-                        case "\"", "\\", "$":
+                        case "\"", "\\", "$", "`":
                             text.unicodeScalars.append(e)
                             i += 2
-                        case "\n":
-                            i += 2 // backslash-newline vanishes even inside double quotes
                         default:
                             // Not a recognized double-quote escape: the backslash is literal.
                             text.unicodeScalars.append(d)
@@ -183,8 +197,11 @@ public enum ShellWords {
 
     /// Writes `word` the way `CurlCommand.shellLine` spells a rebuilt curl command: bare when
     /// nothing in it needs protecting from the shell, single-quoted when it is safe literal text,
-    /// double-quoted (with `\"`, `\\`, `\$` escaped) when it either contains a `'` or mixes in a
-    /// variable that must stay live.
+    /// double-quoted (with `\"`, `\\`, `\$`, `` \` `` escaped) when it either contains a `'` or
+    /// mixes in a variable that must stay live. The backtick is escaped even though single
+    /// quoting handles most of these cases: unescaped inside double quotes it would start a
+    /// command substitution in a real shell, which is exactly the kind of live behaviour a
+    /// literal piece must not gain by being written back out.
     public static func quote(_ word: ShellWord) -> String {
         if word.isVariable, case .variable(let v) = word.pieces.first {
             return v
@@ -232,7 +249,7 @@ public enum ShellWords {
     private static func escapedForDoubleQuotes(_ t: String) -> String {
         var out = ""
         for s in t.unicodeScalars {
-            if s == "\"" || s == "\\" || s == "$" {
+            if s == "\"" || s == "\\" || s == "$" || s == "`" {
                 out.unicodeScalars.append("\\")
             }
             out.unicodeScalars.append(s)
@@ -240,12 +257,80 @@ public enum ShellWords {
         return out
     }
 
+    /// Recognizes a "\" + newline continuation (or "\" + CR + LF, from a pasted Windows-style
+    /// line) starting at `scalars[i]` (`scalars[i] == "\\"` already checked by the caller).
+    /// Returns the index just past it, or `nil` if this backslash isn't one.
+    private static func continuationEnd(_ scalars: [Unicode.Scalar], at i: Int) -> Int? {
+        let count = scalars.count
+        guard i + 1 < count else { return nil }
+        if scalars[i + 1] == "\n" { return i + 2 }
+        if scalars[i + 1] == "\r", i + 2 < count, scalars[i + 2] == "\n" { return i + 3 }
+        return nil
+    }
+
+    /// Scans a bare `$'...'` (ANSI-C quoting) starting at `scalars[i] == "$"`
+    /// (`scalars[i + 1] == "'"` already checked by the caller). Decodes `\n \t \r \\ \' \" \xHH`;
+    /// any other backslash sequence keeps its backslash literally, matching the fallback the
+    /// double-quote scanner uses for an escape it doesn't recognize. Returns the decoded literal
+    /// text and the index just past the closing quote, or `nil` if the quote is never closed.
+    private static func scanAnsiCQuoted(_ scalars: [Unicode.Scalar], at i: Int) -> (String, Int)? {
+        let count = scalars.count
+        var j = i + 2 // past "$'"
+        var out = ""
+        while j < count {
+            let d = scalars[j]
+            if d == "'" {
+                return (out, j + 1)
+            }
+            if d == "\\", j + 1 < count {
+                let e = scalars[j + 1]
+                switch e {
+                case "n": out += "\n"; j += 2
+                case "t": out += "\t"; j += 2
+                case "r": out += "\r"; j += 2
+                case "\\", "'", "\"":
+                    out.unicodeScalars.append(e)
+                    j += 2
+                case "x":
+                    var k = j + 2
+                    var hex = ""
+                    while k < count, hex.count < 2, isHexDigit(scalars[k]) {
+                        hex.unicodeScalars.append(scalars[k])
+                        k += 1
+                    }
+                    if let value = UInt8(hex, radix: 16) {
+                        out.unicodeScalars.append(Unicode.Scalar(value))
+                        j = k
+                    } else {
+                        out.unicodeScalars.append(d) // "\x" with no hex digits: literal backslash
+                        j += 1
+                    }
+                default:
+                    out.unicodeScalars.append(d) // unrecognized escape: backslash is literal
+                    j += 1
+                }
+                continue
+            }
+            out.unicodeScalars.append(d)
+            j += 1
+        }
+        return nil // unterminated
+    }
+
+    private static func isHexDigit(_ s: Unicode.Scalar) -> Bool {
+        (("0" as Unicode.Scalar) ... ("9" as Unicode.Scalar) ~= s)
+            || (("a" as Unicode.Scalar) ... ("f" as Unicode.Scalar) ~= s)
+            || (("A" as Unicode.Scalar) ... ("F" as Unicode.Scalar) ~= s)
+    }
+
     /// Reads a `$...` reference at `scalars[i]` (`scalars[i] == "$"` already checked by the
     /// caller): `$(...)`/`${...}` scan to the matching close (counting nested opens so a
     /// parenthesized subcommand or a `${a:-${b}}` default doesn't end early), `$NAME` scans a
-    /// C-identifier. Returns `nil` -- meaning "this `$` is not a variable, treat it as literal" --
-    /// for anything else (`$`, `$ `, `$5`, `$` at end of input), matching what a shell would
-    /// actually expand.
+    /// C-identifier, and a single `$0`-`$9`, `$?`, `$#`, `$@`, `$*` or `$$` is a special
+    /// parameter that never extends past that one character -- `$12` is `$1` followed by the
+    /// literal `2`, matching how a shell itself reads positional parameters. Returns `nil` --
+    /// meaning "this `$` is not a variable, treat it as literal" -- for anything else (`$`, `$ `,
+    /// `$` at end of input), matching what a shell would actually expand.
     private static func scanVariable(_ scalars: [Unicode.Scalar], at i: Int) -> (String, Int)? {
         let n = scalars.count
         var j = i + 1
@@ -263,10 +348,24 @@ public enum ShellWords {
             return (String(String.UnicodeScalarView(scalars[i..<j])), j)
         }
 
+        if isSpecialParameter(scalars[j]) {
+            return (String(String.UnicodeScalarView(scalars[i...j])), j + 1)
+        }
+
         guard isIdentifierStart(scalars[j]) else { return nil }
         j += 1
         while j < n, isIdentifierContinue(scalars[j]) { j += 1 }
         return (String(String.UnicodeScalarView(scalars[i..<j])), j)
+    }
+
+    private static func isSpecialParameter(_ s: Unicode.Scalar) -> Bool {
+        if ("0" as Unicode.Scalar) ... ("9" as Unicode.Scalar) ~= s { return true }
+        switch s {
+        case "?", "#", "@", "*", "$":
+            return true
+        default:
+            return false
+        }
     }
 
     private static func isIdentifierStart(_ s: Unicode.Scalar) -> Bool {

@@ -151,12 +151,17 @@ final class SettingsWindowController: NSWindowController {
             row("Auto-fold output over", stepperField("fold-long-output", min: 0, max: 1_000_000, step: 50),
                 unit: "lines (0 = never)"),
             sectionHeader("Requests"),
-            row("Response body", popUp("http-lens", titled: [
+            // Two of these four set values nothing reads yet: the lens is applied by the response
+            // view and the interval by the watch, both of which arrive with the response plan.
+            // Left in place and disabled, with a tooltip that says so -- a control that writes a
+            // setting with no effect is worse than one that is visibly not ready.
+            row("Response body", comingSoon(popUp("http-lens", titled: [
                 ("Pretty JSON", "pretty"),
                 ("Raw", "raw"),
-            ])),
+            ]), key: "http-lens")),
             row("", checkbox("http-hint", title: "Offer the workbench when a curl is pasted")),
-            row("Watch every", stepperField("http-watch-interval", min: 1, max: 3600, step: 1),
+            row("Watch every", comingSoon(stepperField("http-watch-interval", min: 1, max: 3600, step: 1),
+                                          key: "http-watch-interval", stepper: true),
                 unit: "seconds"),
             row("Remember", stepperField("http-history", min: 0, max: 500, step: 5),
                 unit: "requests (0 = off)"),
@@ -715,6 +720,20 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private static let sectionHeaderIdentifier = NSUserInterfaceItemIdentifier("section-header")
+
+    /// Greys a control whose setting is parsed and stored but not yet read by anything, and says
+    /// when it will be. `refresh` re-enables nothing, so this survives every reload; the response
+    /// plan takes the call away rather than flipping a flag.
+    private func comingSoon(_ control: NSView, key: String, stepper: Bool = false) -> NSView {
+        for name in stepper ? [key, key + ".stepper"] : [key] {
+            controls[name]?.isEnabled = false
+            controls[name]?.toolTip = SettingsWindowController.comingWithTheResponsePlan
+        }
+        control.toolTip = SettingsWindowController.comingWithTheResponsePlan
+        return control
+    }
+
+    static let comingWithTheResponsePlan = "Coming with lenses and watch"
 
     private func checkbox(_ key: String, title: String) -> NSButton {
         let button = NSButton(checkboxWithTitle: title, target: self, action: #selector(controlChanged(_:)))

@@ -28,7 +28,7 @@ same facts.
 | Remote sessions | A paired Mac's shell as a tab: relay-based, end-to-end encrypted (X25519 per attach, signed by an Ed25519 device identity, ChaCha20-Poly1305 with a per-direction counter), six-character pairing code with a four-word fingerprint both people compare, palette Remote section, snapshot-then-live with the host's OSC 133 marks intact, one writer with take-control, an audit log on the host. Verified with two instances against the deployed relay |
 | Requests (workbench, request side) | A pasted `curl` offers `⌘E Workbench`; ⌘E, ⌘⇧V, New Request, a block's ⋯ menu and the palette's Requests section all open one command as a form -- method, parameters, headers, body, auth, options -- with secrets masked until revealed, a live preview of exactly what will run, Copy and four exports (HTTPie, fetch, Python requests, Go), Save as Button / Save to Project, and a run whose status, latency, size and body kind land on the block header. The last fifty requests are remembered beside the config file |
 | Accessibility | Every drawn control is an accessibility element with role and state |
-| Verification | 1760 swift-testing tests, offscreen Metal pixel tests, UI snapshot renderer, an opt-in run against a real relay binary (`NYX_RELAY_BIN`), CI with warning gate, bench floor, launch check and snapshot artifact |
+| Verification | 1770 swift-testing tests, offscreen Metal pixel tests, UI snapshot renderer, an opt-in run against a real relay binary (`NYX_RELAY_BIN`), CI with warning gate, bench floor, launch check and snapshot artifact |
 
 ## Not there yet
 

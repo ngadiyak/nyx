@@ -168,12 +168,14 @@ final class RequestEditor: NSViewController {
         render()
     }
 
-    /// About eight lines of the preview, snapped down to a whole number of them by
-    /// `snapToWholeRows` once AppKit has said how tall a line really is.
-    private lazy var previewHeight = preview.heightAnchor.constraint(equalToConstant: 118)
+    private lazy var previewHeight =
+        preview.heightAnchor.constraint(equalToConstant: RequestEditor.previewDesignHeight)
 
     /// What the Repeat menu says while the response side does not exist.
     static let comingWithTheResponsePlan = "Coming with lenses and watch"
+
+    /// What the Response popup says when a pipeline has already taken the answer away.
+    static let unavailableWithAPipeline = "Unavailable with a pipeline"
 
     /// The width the auth grid's label column is held to: the widest of the four labels it shows
     /// (`Kind:`, `User:`, and `Password:` / `Value:` / `Token:` depending on the kind).
@@ -184,39 +186,32 @@ final class RequestEditor: NSViewController {
             .max() ?? 80
     }()
 
-    /// The preview shows whole lines: see `snapToWholeRows`.
+    /// The preview shows whole lines, and as many of them as its box has room for.
     private func snapPreview() {
         let text = previewTextView
-        guard let manager = text.layoutManager, let container = text.textContainer,
-              manager.numberOfGlyphs > 0 else { return }
+        guard let manager = text.layoutManager, manager.numberOfGlyphs > 0 else { return }
         // The height AppKit *used* for the first line fragment, not `defaultLineHeight` for the
-        // font: they differ by a fraction of a point, and a fraction per line is a whole line of
-        // error by the eighth one -- which is precisely the line that was being sliced.
+        // font: they differ by a fraction of a point, and a fraction per line is most of a line by
+        // the eighth one -- which is the line that was being sliced.
         let pitch = manager.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil).height
-        _ = container
-        RequestEditor.snapToWholeRows(preview.contentView.bounds.height - text.textContainerInset.height * 2,
-                                      pitch: pitch, constraint: previewHeight)
+        // The space the *lines* actually get: from the top of the first line fragment to the bottom
+        // of what is visible, both in the text view's own coordinates. Taking the container's inset
+        // off the clip height instead was wrong by eight points -- the box drew a ninth line that
+        // had room to start and not to finish, which is a line of the command with its descenders
+        // cut off.
+        let firstTop = manager.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil).minY
+        let visible = text.visibleRect
+        let showing = visible.maxY - max(visible.minY, firstTop)
+        guard pitch > 0, showing > 0 else { return }
+        let chrome = previewHeight.constant - showing
+        let lines = max(1, floor((RequestEditor.previewDesignHeight - chrome) / pitch))
+        let target = lines * pitch + chrome
+        if abs(previewHeight.constant - target) > 0.5 { previewHeight.constant = target }
     }
 
-    /// Shrinks an owned height constraint until the box shows a whole number of rows.
-    ///
-    /// Both boxes that scroll -- the command preview and the two field tables -- were sized by the
-    /// space the sheet had rather than by their content, so their last visible row was routinely
-    /// cut across the middle: half a header, half a line of the very command that is about to run.
-    /// A sliced glyph reads as a rendering fault, and in the preview it reads as a *truncated
-    /// command*, which is the one thing this box must never suggest.
-    ///
-    /// It shrinks rather than computing an absolute height because the chrome around the rows --
-    /// a bezel, a clip view, a text container's insets -- is AppKit's and differs per box; the
-    /// remainder is measured from what is actually on screen. Converges in one pass and then does
-    /// nothing: once the remainder is gone there is nothing to take off.
-    static func snapToWholeRows(_ visibleHeight: CGFloat, pitch: CGFloat,
-                                constraint: NSLayoutConstraint) {
-        guard pitch > 0, visibleHeight > pitch else { return }
-        let remainder = visibleHeight.truncatingRemainder(dividingBy: pitch)
-        guard remainder > 0.5 else { return }
-        constraint.constant -= remainder
-    }
+    /// About eight lines. The exact height is `snapPreview`'s: this is the space the sheet gives
+    /// the box, and it takes the largest whole number of lines that fits in it.
+    private static let previewDesignHeight: CGFloat = 118
 
     override func viewDidAppear() {
         super.viewDidAppear()
@@ -277,9 +272,12 @@ final class RequestEditor: NSViewController {
             entry.toolTip = RequestEditor.comingWithTheResponsePlan
             repeats.menu?.addItem(entry)
         }
+        // The control itself, not only its items: a pull-down that opens onto three greyed lines
+        // is a worse answer than one that is plainly not ready.
+        repeats.isEnabled = false
         repeats.toolTip = RequestEditor.comingWithTheResponsePlan
-        repeats.setAccessibilityLabel("Run this request repeatedly")
-        repeats.toolTip = "Run this request more than once"
+        repeats.setAccessibilityLabel("Run this request repeatedly \u{2014} "
+            + RequestEditor.comingWithTheResponsePlan)
 
         let run = NSButton(title: "Run", target: self, action: #selector(runOnce))
         // ⌘⏎, not ⏎. A plain Return here is a key equivalent, and a key equivalent is offered the
@@ -557,7 +555,24 @@ final class RequestEditor: NSViewController {
         failBox.state = model.command.flags.contains(.fail) ? .on : .off
         setIfChanged(maxTimeField, model.command.timing.maxTime.map(Self.number) ?? "")
         setIfChanged(retryField, model.command.timing.retry.map(String.init) ?? "")
-        outputPopup.selectItem(withTitle: model.outputMode.rawValue)
+        // A pipeline takes the headers and the sentinel away, so there is nothing to choose
+        // between: the popup says why rather than showing a mode that will not happen. The note
+        // under it (`runNote`) says the same thing at more length; this is the control agreeing
+        // with it instead of contradicting it.
+        let piped = model.runNote != nil
+        outputPopup.isEnabled = !piped
+        if piped {
+            if outputPopup.item(withTitle: RequestEditor.unavailableWithAPipeline) == nil {
+                outputPopup.addItem(withTitle: RequestEditor.unavailableWithAPipeline)
+            }
+            outputPopup.selectItem(withTitle: RequestEditor.unavailableWithAPipeline)
+            outputPopup.toolTip = model.runNote
+        } else {
+            outputPopup.item(withTitle: RequestEditor.unavailableWithAPipeline)
+                .map { outputPopup.menu?.removeItem($0) }
+            outputPopup.toolTip = nil
+            outputPopup.selectItem(withTitle: model.outputMode.rawValue)
+        }
 
         revealBox.state = revealed ? .on : .off
         runNote.stringValue = model.runNote.map { "⚠︎ " + $0 } ?? ""
@@ -988,26 +1003,32 @@ final class FieldTable: NSView, NSTableViewDataSource, NSTableViewDelegate {
     override func layout() {
         super.layout()
         // Everything under the table: the gap, the +/− row, and the margin below it. What is left
-        // is the table's, rounded down to whole rows -- `snapToWholeRows` takes the remainder off
-        // once AppKit has laid the bezel and clip view out and said what is really visible.
+        // is the table's, and the table shows whole rows or none.
         let below = 6 + addButton.frame.height + 4
         let available = bounds.height - 8 - below
-        // The bezel and the clip view's own edges, measured rather than assumed. Computing the
-        // target from the space *available* rather than from the current height is what keeps this
-        // from oscillating: grow-then-shrink on alternate passes is a table that flickers by a row.
-        let chrome = max(0, scroller.frame.height - scroller.contentView.bounds.height)
         // The pitch AppKit actually lays rows out at, taken from two of them: `rowHeight` plus
         // `intercellSpacing` is the documented arithmetic and it is two points out per row in this
-        // style -- six rows of that is a third of a row, which is exactly the slice at the bottom.
+        // style -- six rows of that is a third of a row, which is exactly a sliced glyph.
         let pitch = table.numberOfRows > 1
             ? table.rect(ofRow: 1).minY - table.rect(ofRow: 0).minY
             : table.rowHeight + table.intercellSpacing.height
-        guard pitch > 0, available > chrome + pitch else { return }
-        // The column header sits *inside* the clip view here, so it is chrome too -- measured, not
-        // assumed, because that is the difference between six whole rows and five and a half.
-        let header = table.headerView?.frame.height ?? 0
-        let rows = max(1, floor((available - chrome - header) / pitch))
-        let target = rows * pitch + chrome + header
+        // How much of the height is *not* rows, measured from the three places AppKit hides it:
+        // the bezel, the column header -- which sits inside the clip view, so the document's
+        // visible rect starts at a *negative* y by exactly its height -- and a five-point gap above
+        // the first row that `rect(ofRow: 0)` is the only witness to. Two earlier attempts assumed
+        // parts of this and were a row out: the pixels said 5.7 rows while every number the view
+        // reported said 6.
+        let visible = scroller.documentVisibleRect
+        let headerBand = -min(0, visible.minY)
+        let firstRowTop = table.numberOfRows > 0 ? table.rect(ofRow: 0).minY : 0
+        let rowsShowing = max(0, visible.height - headerBand - firstRowTop)
+        guard pitch > 0, rowsShowing > 0 else { return }
+        let chrome = scroller.frame.height - rowsShowing
+        // The target is a function of the space the page gives this view and of that fixed chrome,
+        // never of the current height: a target that depended on the height it sets would grow and
+        // shrink on alternate passes, which is a table that flickers by a row.
+        let rows = max(1, floor((available - chrome) / pitch))
+        let target = rows * pitch + chrome
         if abs(scrollerHeight.constant - target) > 0.5 { scrollerHeight.constant = target }
     }
 

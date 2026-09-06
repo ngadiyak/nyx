@@ -48,14 +48,9 @@ public struct PaletteItem: Equatable {
         self.isEnabled = isEnabled
     }
 
-    /// A row for a menu action. `isEnabled` is the same answer the menu bar gets from
-    /// `ActionTarget.canPerform`, so an action that is greyed in the menu is greyed here: a palette
-    /// that offers what the menu refuses is a palette that beeps at you.
-    public static func action(_ action: TerminalAction, chord: String?,
-                              isEnabled: Bool = true) -> PaletteItem {
+    public static func action(_ action: TerminalAction, chord: String?) -> PaletteItem {
         PaletteItem(title: action.title, detail: chord ?? "",
-                    searchText: "\(action.title) \(action.configName)", kind: .action(action),
-                    isEnabled: isEnabled)
+                    searchText: "\(action.title) \(action.configName)", kind: .action(action))
     }
 
     public static func theme(_ name: String) -> PaletteItem {
@@ -166,13 +161,23 @@ public struct CommandPalette: Equatable {
 /// whoever last edited the view. Each new section goes on the end: a row that moves is a habit
 /// broken, and the sections people reach for blind are the oldest ones.
 public enum PaletteSource {
+    /// `enabled` is the same answer the menu bar gets from `ActionTarget.canPerform`, and an
+    /// action it refuses is left *out* rather than greyed.
+    ///
+    /// A menu is a fixed list read by position, so a greyed item there is a landmark: "that lives
+    /// here, and here is why it is unavailable". A palette is a list you produce by typing, and a
+    /// result you cannot choose is a wrong answer to what you asked -- in a fresh window
+    /// twenty-nine rows were grey, which is a third of the panel. The rows that arrive already
+    /// built (`remote`, `requests`) keep whatever they say about themselves: the Remote section's
+    /// placeholders are disabled *and* worth showing, because their text is the explanation for the
+    /// section being empty.
     public static func items(actions: [TerminalAction], chord: (TerminalAction) -> String?,
                              enabled: (TerminalAction) -> Bool = { _ in true },
                              quickActions: [(action: QuickAction, isRunning: Bool)] = [],
                              themes: [String], tabTitles: [String],
                              remote: [PaletteItem] = [],
                              requests: [PaletteItem] = []) -> [PaletteItem] {
-        actions.map { PaletteItem.action($0, chord: chord($0), isEnabled: enabled($0)) }
+        actions.filter(enabled).map { PaletteItem.action($0, chord: chord($0)) }
             + quickActions.enumerated().map {
                 PaletteItem.quickAction($0.element.action, index: $0.offset,
                                         isRunning: $0.element.isRunning)

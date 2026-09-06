@@ -505,7 +505,10 @@ public struct RequestEditorModel: Equatable {
         [
             .params: paramRows(revealed: true).count,
             .headers: headerRows(revealed: true).count,
-            .body: command.body == nil ? 0 : 1,
+            // No badge: a body is one thing or nothing, and `Body 1` says nothing `Body` does not
+            // -- the page itself shows whether there is one. The counts that earn a badge are the
+            // ones nobody can see at a glance: how many headers, how many parameters.
+            .body: 0,
             .auth: command.auth == .none ? 0 : 1,
             // Only what the Options tab actually has a control for. Counting every flag made the
             // badge say `1` for a `-s` nothing on the tab could show, let alone turn off.

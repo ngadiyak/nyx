@@ -503,6 +503,12 @@ enum UISnapshot {
         // number of rows *during* a layout pass, and a changed constraint needs the next one to
         // take effect. In the app that is the run loop's next cycle; here there is none.
         for _ in 0..<3 { view.layoutSubtreeIfNeeded() }
+        // And then everything is marked for display: a scroll view keeps a cached backing for the
+        // rows it has already drawn, so a clip view that *grew* in the last pass was captured at
+        // its old height -- the picture showed five and a bit rows of a table that had settled on
+        // six. `cacheDisplay` redraws only what is dirty.
+        for subview in descendants(of: view) { subview.needsDisplay = true }
+        view.needsDisplay = true
         // The preview and the body are text views, which generate their glyphs on the first real
         // display pass: without this the two boxes render empty, and they are the two boxes this
         // sheet exists for.

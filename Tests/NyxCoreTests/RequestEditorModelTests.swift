@@ -283,7 +283,8 @@ import Testing
     let model = RequestEditorModel(command: try CurlFixtures.command("01-chrome-copy-as-curl"))
     #expect(model.tabBadges[.params] == 0)
     #expect(model.tabBadges[.headers] == 14)
-    #expect(model.tabBadges[.body] == 1)
+    // The body is deliberately not counted; see `theBodyTabCarriesNoCount`.
+    #expect(model.tabBadges[.body] == 0)
     #expect(model.tabBadges[.auth] == 0)
     #expect(model.tabBadges[.options] == 1, "--compressed is the only option set")
 
@@ -469,4 +470,18 @@ import Testing
     #expect(!draft.command.contains("-sSi"))
     // One line, so the `quick =` value it becomes is one line.
     #expect(!draft.command.contains("\n"))
+}
+
+/// A body is not a countable thing. `Body 1` said nothing `Body` did not -- there is one body or
+/// there is none, and the tab's own page shows which -- while `Headers 14` and `Params 3` are
+/// counts somebody wants at a glance.
+@Test func theBodyTabCarriesNoCount() throws {
+    let command = try #require(CurlCommand.parse(
+        "curl -H 'a: 1' -d '{}' 'https://example.com/x?q=1'"))
+    let model = RequestEditorModel(command: command)
+    #expect(model.tabBadges[.body] == 0)
+    #expect(model.tabLabel(.body).trimmingCharacters(in: .whitespaces) == "Body")
+    // The countable ones are untouched.
+    #expect(model.tabBadges[.headers] == 1)
+    #expect(model.tabBadges[.params] == 1)
 }

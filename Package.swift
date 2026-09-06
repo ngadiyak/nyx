@@ -40,7 +40,15 @@ let package = Package(
             linkerSettings: [.linkedFramework("AppKit")]
         ),
         .executableTarget(name: "nyx-bench", dependencies: ["NyxCore"], path: "Sources/NyxBench", swiftSettings: releaseSettings),
-        .testTarget(name: "NyxCoreTests", dependencies: ["NyxCore"], path: "Tests/NyxCoreTests"),
+        .testTarget(
+            name: "NyxCoreTests",
+            dependencies: ["NyxCore"],
+            path: "Tests/NyxCoreTests",
+            // `.copy` keeps `Fixtures/` as a directory inside the bundle, so a fixture is found at
+            // `subdirectory: "Fixtures/curl"`. `.process` would flatten it and drop the `.sh`
+            // files as unrecognized resources; leaving it out entirely is a build warning.
+            resources: [.copy("Fixtures")]
+        ),
         .testTarget(name: "NyxRenderTests", dependencies: ["NyxRender"], path: "Tests/NyxRenderTests"),
         .testTarget(name: "NyxRemoteTests", dependencies: ["NyxRemote"], path: "Tests/NyxRemoteTests"),
     ]

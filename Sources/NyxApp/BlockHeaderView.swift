@@ -40,6 +40,19 @@ final class BlockHeaderView: NSView {
     /// middle reads as a rendering fault rather than as chrome. A fade lets the last glyph go out
     /// instead of being guillotined.
     private let fadeLayer = CAGradientLayer()
+    /// How tall the terminal row under this strip is.
+    ///
+    /// The strip's *frame* is as tall as its pills need -- 20 points for an `.inline` bezel at the
+    /// small control size, against a 16-point row -- because `hitTest` rejects anything outside the
+    /// frame, and a frame one row tall left a two-point dead sliver along the top and bottom of
+    /// every pill. Measured: six of nine sample points per pill reached it; the other three, the
+    /// top and bottom edges, fell through to the pane.
+    ///
+    /// The *ground* stays one row tall, which is why this is a separate number: a 20-point opaque
+    /// band would clip the descenders of the row above and the ascenders of the row below. nil
+    /// paints the whole frame, which is what the snapshot renderer wants -- it draws the strip
+    /// standalone, with no rows around it to cover.
+    var paintedHeight: CGFloat?
     /// How wide the fade is, in points: two cells of the pane's font. Set from `configure`.
     private var fadeInset: CGFloat = 16
     private var header: BlockHeader?
@@ -77,8 +90,9 @@ final class BlockHeaderView: NSView {
         wantsLayer = true
         // The strip's ground *is* the gradient: an opaque background with a fade drawn on top of
         // it would paint over the first characters of the summary, and one drawn underneath would
-        // be hidden by it.
-        layer = fadeLayer
+        // be hidden by it. A sublayer rather than the backing layer, so it can be shorter than the
+        // view -- see `paintedHeight`. Added before any subview, so it stays under the pills.
+        layer?.addSublayer(fadeLayer)
         isHidden = true
         for button in [copyButton, lensButton, stopButton, moreButton, chevronButton] {
             button.bezelStyle = .inline
@@ -249,6 +263,9 @@ final class BlockHeaderView: NSView {
 
     override func layout() {
         super.layout()
+        let painted = min(paintedHeight ?? bounds.height, bounds.height)
+        fadeLayer.frame = CGRect(x: 0, y: (bounds.height - painted) / 2,
+                                 width: bounds.width, height: painted)
         placeFadeStops()
     }
 

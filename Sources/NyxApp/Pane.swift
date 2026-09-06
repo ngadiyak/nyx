@@ -3124,8 +3124,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                            font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
         let size = blockHeader.intrinsicContentSize
         let origin = overlayOrigin(forHeaderRow: row)
-        blockHeader.frame = NSRect(x: origin.x - size.width, y: origin.y,
-                                   width: size.width, height: cellSizePoints.height)
+        // As tall as the pills, centred on the row. `hitTest` rejects a point outside the view's
+        // frame, so a frame one row tall (16 pt) around 20-point pills left a two-point dead sliver
+        // along the top and the bottom of every one of them -- worst on the round `⋯` and `▾`,
+        // which are the two controls that never go away. The strip's *ground* is still one row
+        // tall; see `BlockHeaderView.paintedHeight`.
+        let rowHeight = cellSizePoints.height
+        let height = max(rowHeight, size.height)
+        blockHeader.paintedHeight = rowHeight
+        blockHeader.frame = NSRect(x: origin.x - size.width, y: origin.y - (height - rowHeight) / 2,
+                                   width: size.width, height: height)
         window?.invalidateCursorRects(for: self)
     }
 

@@ -35,6 +35,50 @@ public struct LensPalette: Equatable {
                                              header: .indexed(6), added: .indexed(2),
                                              removed: .indexed(1), dim: .indexed(8))
 
+    /// `standard` with `dim` resolved against this theme instead of handed over as an index.
+    ///
+    /// `dim` is what the latency line, both fold placeholders, the `↪ 301 →` redirect line and the
+    /// diff summary are drawn in -- four things a reader is meant to be able to read. As
+    /// `.indexed(8)` it is the theme's bright black on the theme's background, which measured
+    /// 1.91:1 in nyx-dark, 2.32 in one-dark, 2.46 in catppuccin-mocha, 2.79 in solarized-dark and
+    /// 3.03 in dracula. Text at 1.9:1 is not dim, it is absent.
+    ///
+    /// The other seven stay indexed on purpose: they are the theme's own green, red and blue, and
+    /// a lens should be in the colours the rest of the screen is in.
+    ///
+    /// Cheap, but not free -- twenty blend steps in the worst case -- so it is computed once per
+    /// frame by the caller and never inside the per-row loop.
+    public static func forTheme(_ palette: Palette) -> LensPalette {
+        var lens = standard
+        let dim = dimColour(in: palette)
+        lens.dim = .rgb(dim.r, dim.g, dim.b)
+        return lens
+    }
+
+    /// The dim colour for a theme: readable, and still visibly dimmer than the body text.
+    ///
+    /// A floor and a ceiling, because both mistakes are real. Below 4.5:1 the line cannot be read
+    /// at all; at the foreground's own contrast it stops being a dim style and the fold placeholder
+    /// reads as something the server printed. The ceiling is three quarters of the foreground's
+    /// contrast, and the floor wins where a theme leaves no room between them -- an unreadable dim
+    /// is the worse of the two failures.
+    public static func dimColour(in palette: Palette) -> RGB {
+        let background = palette.background
+        let floor = 4.5
+        let ceiling = max(floor, RGB.contrast(palette.foreground, background) * 0.75)
+        let lifted = RGB.readable(palette.colors[8], on: background, towards: palette.foreground,
+                                  minimum: floor)
+        guard RGB.contrast(lifted, background) > ceiling else { return lifted }
+        // Too strong: back towards the background, stopping at the first step under the ceiling
+        // that is still over the floor.
+        for step in 1...20 {
+            let candidate = RGB.blend(lifted, into: background, amount: Double(step) / 20)
+            let contrast = RGB.contrast(candidate, background)
+            if contrast <= ceiling { return contrast >= floor ? candidate : lifted }
+        }
+        return lifted
+    }
+
     /// nil for `.match`, which is an attribute rather than a colour.
     public func colour(for style: LensStyle) -> Color? {
         switch style {

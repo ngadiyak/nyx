@@ -1803,6 +1803,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // the same blocks, and the terminal is locked between them, so nothing can have
                 // moved the rows it remembers. See `CommandRegionMemo`.
                 let memo = CommandRegionMemo()
+                // Once per frame, never per row: resolving the theme's dim colour walks a blend
+                // ladder, and there are as many rows as the window is tall.
+                let lensPalette = LensPalette.forTheme(t.palette)
                 let display = t.displayRows(from: self.viewportCursor(in: t, memo: memo),
                                             count: t.rows,
                                             folding: self.folding, lenses: self.lenses,
@@ -1827,7 +1830,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                         // replaced under the display: the next frame has the right lines, and one
                         // empty row is better than a slot count that does not match the display.
                         return self.lensBuffers[id]?.row(index, cols: t.cols,
-                                                         palette: LensPalette.standard)
+                                                         palette: lensPalette)
                             ?? Row(cols: t.cols)
                     }
                 } + Array(repeating: Row(cols: t.cols), count: max(0, t.rows - display.count))

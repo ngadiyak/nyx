@@ -119,7 +119,10 @@ func lensesRenderInBothThemes() throws {
                 command.cells[column].content = scalar.value
             }
             var frame = [command]
-            frame += (0..<(rows - 1)).map { buffer.row($0, cols: cols, palette: .standard) }
+            // The theme's lens palette, not `.standard`: `dim` is resolved against this
+            // background, and `.standard`'s raw `.indexed(8)` measured 1.91:1 in nyx-dark.
+            let lensPalette = LensPalette.forTheme(palette)
+            frame += (0..<(rows - 1)).map { buffer.row($0, cols: cols, palette: lensPalette) }
             let render = RenderFrame(cols: cols, rows: rows, lines: frame, graphemes: [],
                                      palette: palette, cursor: nil, cursorShape: .block,
                                      focused: true, preedit: nil)

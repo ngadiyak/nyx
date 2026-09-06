@@ -184,3 +184,37 @@ private func text(_ row: Row) -> String {
     #expect(row.cells[7].content == UInt32(UInt8(ascii: "1")))
     #expect(!row.cells.contains { $0.attrs.contains(.wide) || $0.attrs.contains(.wideSpacer) })
 }
+
+/// The lens' `dim` -- the latency line, both fold placeholders, the `↪ 301 →` line and the diff
+/// summary -- has to be readable in the theme it is drawn in.
+///
+/// `.indexed(8)` handed to the renderer raw is the theme's bright black against the theme's
+/// background: 1.91:1 in nyx-dark, 2.32 in one-dark, 2.46 in catppuccin-mocha, 2.79 in
+/// solarized-dark, 3.03 in dracula. Text at 1.9:1 is not dim, it is absent.
+@Test func dimIsReadableInEveryBuiltInTheme() {
+    for (name, palette) in Themes.builtin {
+        let dim = LensPalette.dimColour(in: palette)
+        let contrast = RGB.contrast(dim, palette.background)
+        #expect(contrast >= 4.5, "\(name): \(contrast)")
+        // …and never stronger than the body text, or it is not a dim style at all. Where the
+        // theme leaves room between the floor and three quarters of the foreground's contrast, it
+        // stays under that too; where it does not, the floor wins -- an unreadable dim is the
+        // worse of the two failures.
+        let foreground = RGB.contrast(palette.foreground, palette.background)
+        #expect(contrast <= foreground, "\(name): \(contrast) vs fg \(foreground)")
+        if foreground * 0.75 >= 4.5 {
+            #expect(contrast <= foreground * 0.75 + 0.001, "\(name): \(contrast) vs fg \(foreground)")
+        }
+    }
+}
+
+/// The theme's own colours, so a lens is in the theme's green and the theme's red like everything
+/// else on the screen -- and `dim` resolved rather than passed through as an index.
+@Test func theThemePaletteResolvesOnlyDim() {
+    let palette = Themes.builtin["nyx-dark"] ?? Palette.xtermDefault()
+    let lens = LensPalette.forTheme(palette)
+    #expect(lens.key == LensPalette.standard.key)
+    #expect(lens.string == LensPalette.standard.string)
+    #expect(lens.dim != LensPalette.standard.dim)
+    #expect(lens.dim.kind == .rgb)
+}

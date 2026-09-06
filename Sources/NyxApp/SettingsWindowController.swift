@@ -151,14 +151,14 @@ final class SettingsWindowController: NSWindowController {
             row("Auto-fold output over", stepperField("fold-long-output", min: 0, max: 1_000_000, step: 50),
                 unit: "lines (0 = never)"),
             sectionHeader("Requests"),
-            // Two of these four set values nothing reads yet: the lens is applied by the response
-            // view and the interval by the watch, both of which arrive with the response plan.
-            // Left in place and disabled, with a tooltip that says so -- a control that writes a
-            // setting with no effect is worse than one that is visibly not ready.
-            row("Response body", comingSoon(popUp("http-lens", titled: [
+            // One of these four still sets a value nothing reads: the interval belongs to the
+            // watch, which has not arrived. Left in place and disabled, with a tooltip that says
+            // so -- a control that writes a setting with no effect is worse than one that is
+            // visibly not ready.
+            row("Response body", popUp("http-lens", titled: [
                 ("Pretty JSON", "pretty"),
                 ("Raw", "raw"),
-            ]), key: "http-lens"), greyed: true),
+            ])),
             row("", checkbox("http-hint", title: "Offer the workbench when a curl is pasted")),
             row("Watch every", comingSoon(stepperField("http-watch-interval", min: 1, max: 3600, step: 1),
                                           key: "http-watch-interval", stepper: true),

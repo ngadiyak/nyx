@@ -52,7 +52,7 @@ so that template and this page are the two places a new key must be added.
 | `remote-relay` | `wss://nyx.agentforge.cc/v1/ws` | The relay's WebSocket URL |
 | `remote-relay-token` | — | The relay's shared secret, checked before pairing is even possible. Not comment-stripped, so `#` is allowed |
 | `remote-snapshot-lines` | `2000` | Lines of scrollback a host sends a client as the initial snapshot before switching to the live stream. Clamped to 100–20000 |
-| `http-lens` | `pretty` | `pretty` (reformat a JSON response body), `raw` (exactly as received). Read by the response lenses, which are the next plan: the key is parsed and validated today, and nothing reads it yet. `toggle_http_lens` is greyed in the menu and absent from the palette until the response plan lands |
+| `http-lens` | `pretty` | Which lens a finished `curl`'s response opens in: `pretty` (the JSON body reformatted, foldable, with the headers on one line and the phase latencies underneath) or `raw` (the rows exactly as they arrived). Only applies to a JSON body small enough to re-lay-out; everything else stays raw. `⌘⇧J` flips one response between the two without touching this |
 | `http-hint` | `true` | Show the `⌘E Workbench` pill at the end of a `curl` that has just been **pasted**, for eight seconds or until the next key press. Typing one by hand does not raise it |
 | `http-watch-interval` | `5` | Seconds between polls while a `--watch` request is running. Clamped to 1–3600 |
 | `http-history` | `50` | How many requests the palette's Requests section remembers. `0` turns the feature off. Clamped to 0–500 |
@@ -144,7 +144,7 @@ A user binding beats a default for the same chord; the last line in the file win
 | `remote_sessions` | — | Opens the command palette's Remote section. Settings → Remote also gets you there |
 | `remote_pair` | — | Opens the pairing sheet, either side |
 | `remote_take_control` | — | On an observed remote tab, takes over as writer |
-| `toggle_http_lens` | ⌘⇧J | Flips a shown response between `pretty` and `raw`. **Greyed in the menu and absent from the palette until the response plan lands**; the binding is live and beeps |
+| `toggle_http_lens` | ⌘⇧J | Flips the response under the pointer -- or the last one in the pane -- between `pretty` and `raw`. Greyed when the pane has no request to show |
 | `stop_watch` | ⌘. | Stops a running `--watch` request. **Greyed in the menu and absent from the palette until the response plan lands**; the binding is live and beeps |
 
 The menu is generated from `ActionCatalog.sections`, so every action is discoverable there with

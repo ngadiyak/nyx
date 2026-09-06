@@ -17,6 +17,10 @@ final class BlockHeaderView: NSView {
     private let summary = NSTextField(labelWithString: "")
     private let copyButton = NSButton(title: "Copy", target: nil, action: nil)
     private let moreButton = NSButton(title: "\u{22EF}", target: nil, action: nil)
+    /// `{ }` -- pretty JSON on, pretty JSON off. Only on a block whose command was a request, and
+    /// only where there is room for `Copy`: it is a convenience for a thing the ⋯ menu also does,
+    /// and the chevron and the ⋯ are what the strip is for.
+    private let lensButton = NSButton(title: "{ }", target: nil, action: nil)
     private let chevronButton = NSButton(title: "", target: nil, action: nil)
     private let stack = NSStackView()
     /// The strip's leading edge: two cells of gradient from the terminal's background to nothing.
@@ -46,6 +50,7 @@ final class BlockHeaderView: NSView {
         let summaryCount: Int
         let chevron: String
         let hasOutput: Bool
+        let lens: Bool
         let font: String
         let size: CGFloat
     }
@@ -62,7 +67,7 @@ final class BlockHeaderView: NSView {
         // be hidden by it.
         layer = fadeLayer
         isHidden = true
-        for button in [copyButton, moreButton, chevronButton] {
+        for button in [copyButton, lensButton, moreButton, chevronButton] {
             button.bezelStyle = .inline
             button.controlSize = .small
             button.target = self
@@ -70,6 +75,8 @@ final class BlockHeaderView: NSView {
         }
         copyButton.action = #selector(copyPressed)
         copyButton.toolTip = "Copy this command\u{2019}s output"
+        lensButton.action = #selector(lensPressed)
+        lensButton.setAccessibilityLabel("Toggle pretty response")
         moreButton.action = #selector(morePressed)
         moreButton.toolTip = "More actions for this command"
         moreButton.setAccessibilityLabel("More actions")
@@ -78,7 +85,7 @@ final class BlockHeaderView: NSView {
         stack.spacing = 6
         stack.alignment = .centerY
         stack.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 4)
-        stack.setViews([summary, copyButton, moreButton, chevronButton], in: .center)
+        stack.setViews([summary, copyButton, lensButton, moreButton, chevronButton], in: .center)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
@@ -111,6 +118,7 @@ final class BlockHeaderView: NSView {
     func width(for controls: OverlayControls, header: BlockHeader, font: NSFont) -> CGFloat {
         let key = WidthKey(controls: controls, summaryCount: header.summary.count,
                            chevron: header.chevron, hasOutput: header.hasOutput,
+                           lens: header.isHTTP && !header.lensTooLarge,
                            font: font.fontName, size: font.pointSize)
         if let cached = widths[key] { return cached }
         let previousHeader = self.header
@@ -141,6 +149,9 @@ final class BlockHeaderView: NSView {
         summary.font = font
         summary.isHidden = controls == .minimal || header.summary.isEmpty
         copyButton.isHidden = controls != .full
+        // A request, with a body a lens can do something with, and room on the strip for more than
+        // the two controls every block has.
+        lensButton.isHidden = !header.isHTTP || header.lensTooLarge || controls == .minimal
         chevronButton.isHidden = !header.hasOutput
     }
 
@@ -213,6 +224,11 @@ final class BlockHeaderView: NSView {
     override var intrinsicContentSize: NSSize { stack.fittingSize }
 
     @objc private func copyPressed() { if let header { onAction?(.copyOutput, header.id) } }
+    @objc private func lensPressed() {
+        guard let header else { return }
+        onAction?(.toggleLens, header.id)
+    }
+
     @objc private func chevronPressed() {
         guard let header else { return }
         onToggleFold?(header.id, NSEvent.modifierFlags.contains(.option))
@@ -239,7 +255,7 @@ final class BlockHeaderView: NSView {
             item.target = self
             item.representedObject = MenuEntry(action: entry.action, id: header.id)
             item.isEnabled = entry.enabled
-            if case .notifyWhenDone(let armed) = entry.action { item.state = armed ? .on : .off }
+            item.state = header.isChecked(entry.action) ? .on : .off
             menu.addItem(item)
         }
         menu.autoenablesItems = false

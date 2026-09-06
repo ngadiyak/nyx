@@ -34,7 +34,7 @@ same facts.
 
 | Gap | Why it matters | Notes |
 |---|---|---|
-| Requests: lenses and watch | The response half of the workbench: pretty-printing a JSON body in place (`⌘⇧J`, `http-lens`), the header/body/timing lenses, and re-running a request on an interval with a diff (`http-watch-interval`, `Stop Watching`). All three are visible and **disabled** rather than missing: the sheet's `Repeat` menu is greyed with "Coming with lenses and watch", and `Toggle Pretty Response` and `Stop Watching` are greyed in the menu and absent from the palette. Their key bindings stay in place and beep | The response plan. The request side above is complete and verified |
+| Requests: the watch | Re-running a request on an interval and diffing the answers (`http-watch-interval`, `Stop Watching`). The sheet's `Repeat` menu is greyed with "Coming with lenses and watch" and `Stop Watching` is greyed in the menu and absent from the palette; the binding stays in place and beeps. **The lenses are done**: a finished `curl` opens in `http-lens`, `⌘⇧J` flips it, and the ⋯ menu's Lens group has Headers, Body, Filter, Find in Body and Diff with Previous Run | The response plan's watch tasks |
 | Distribution | Nobody else can run it | `scripts/release.sh` is ready; needs a Developer ID certificate and a notarytool profile |
 | Automatic update | Nobody finds out about a new version | Sparkle or a hand-rolled appcast; after distribution |
 | Throughput 190 vs 300 MB/s | Already beats iTerm2 by an order of magnitude; the target was set to beat Ghostty/Alacritty on the same stream | Table-driven parser, actual-row-width tracking, flat cell storage; each rewrites tested code |

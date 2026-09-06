@@ -133,6 +133,30 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Only visible finished blocks are ever read, so this grows by the handful; the cap is for a
     /// session that scrolls through thousands of requests without ever clearing.
     private static let requestCacheLimit = 512
+    /// Which responses are being read through which lens, and what is folded inside them. Empty in
+    /// every pane nobody has run a `curl` in, which is what keeps the render path unchanged: the
+    /// lens-aware branch is behind the same `isEmpty` the folds are.
+    private var lenses = LensChoices()
+    /// The lines each lensed block is showing, by command id. Built off the main thread and stored
+    /// here; the frame reads it and nothing else writes it.
+    private var lensBuffers: [UInt32: LensBuffer] = [:]
+    /// Rendering a response is a JSON parse and a pretty-print of a body that can be megabytes.
+    /// Serial, so two rebuilds of the same block cannot land out of order, and `.userInitiated`
+    /// because someone is waiting for it -- they just chose the lens.
+    private let lensQueue = DispatchQueue(label: "nyx.lens", qos: .userInitiated)
+    /// Rebuilds already in flight, so a burst of folds does not queue five renderings of the same
+    /// block. The value is the input's generation; a newer one supersedes.
+    private var lensRebuilds: Set<UInt32> = []
+    /// A drag over a lensed block's own lines. Not `Selection`: those are absolute rows and cells
+    /// of the grid, and these lines exist nowhere in the buffer.
+    private var lensSelection: LensSelection?
+    /// The `Filter…` / `Find in Body…` field, while one is open, and the block it belongs to.
+    private var lensField: LensFieldView?
+    private var lensFieldBlock: UInt32?
+    /// Requests read this frame that should open in the configured lens. Applied by `render` once
+    /// the session lock is gone -- the same arrangement the request history has, and for the same
+    /// reason: nothing that dispatches may run with the lock held.
+    private var pendingDefaultLens: [UInt32] = []
     /// How much of the hover strip fits on the row it was placed on. Decided in `render()` by
     /// `CommandBlockChrome.overlayPlacement`; applied after the lock, where AppKit lives.
     private var hoverOverlayControls: OverlayControls = .full
@@ -718,7 +742,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// mode is a stale row on screen, which no test of the drawing catches and no user reports as
     /// anything but "sometimes the terminal is wrong".
     private func dirtyRows(of t: Terminal, top: Int) -> [Bool] {
-        let mapping = ViewportMapping(of: t, top: top, folded: !folding.isEmpty)
+        let mapping = ViewportMapping(of: t, top: top, folded: !folding.isEmpty || !lenses.isEmpty)
         let trusted = mapping.trustsDirtyFlags(after: lastMapping)
         lastMapping = mapping
         guard trusted else { return [] }
@@ -737,6 +761,220 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             + "\(s.fullInvalidations) full invalidations\n"
         FileHandle.standardError.write(Data(line.utf8))
         renderer.resetStats()
+    }
+
+    // MARK: - Lenses
+    //
+    // A lens replaces a finished request's output rows with lines Nyx made up: pretty JSON, the
+    // headers, a filter, a search, a diff against the last run. Everything that decides what those
+    // lines *are* is `LensRendering` in NyxCore; what is here is when to build them, where to put
+    // them, and how a click reaches one.
+
+    /// Opens the configured lens on requests read this frame. Called from `render` after the lock.
+    private func applyPendingLenses() {
+        guard !pendingDefaultLens.isEmpty else { return }
+        let ids = pendingDefaultLens
+        pendingDefaultLens.removeAll()
+        for id in ids where lenses.lens(of: id) == nil {
+            lenses.set(.pretty, for: id)
+            rebuildLens(for: id)
+        }
+    }
+
+    /// Whether anything in this pane could be shown through a lens: a finished request that has
+    /// been read. What `⌘⇧J`'s menu item and palette row are enabled by.
+    var hasResponseToLens: Bool { lensTargetBlock() != nil }
+
+    /// The lens a block is being read through, for its header and its menu.
+    func lens(of id: UInt32) -> ResponseLens? { lenses.lens(of: id) }
+
+    /// Whether this block's body is past what a lens will re-lay-out, which is what the ⋯ menu says
+    /// instead of offering seven rows that would each do nothing.
+    func lensIsTooLarge(_ id: UInt32) -> Bool {
+        guard case .request(let exchange)? = requestCache.entry(for: id), let exchange else {
+            return false
+        }
+        return LensRendering.isTooLarge(exchange)
+    }
+
+    /// The nearest earlier block that ran the same request, or nil. Both the menu's `Diff with
+    /// Previous Run` and the diff itself go through this, so the row cannot be enabled for a run
+    /// the lens would then fail to find.
+    func previousRun(of id: UInt32) -> UInt32? {
+        guard let line = requestCache.commandLine(of: id),
+              let command = CurlCommand.parse(line) else { return nil }
+        return requestCache.previousRun(before: id, matching: command)
+    }
+
+    /// Chooses a lens for a block. `nil` and `.raw` are the same instruction -- put the rows back.
+    func setLens(_ lens: ResponseLens?, on id: UInt32) {
+        let chosen: ResponseLens? = (lens == nil || lens == .raw) ? nil : lens
+        lenses.set(chosen, for: id)
+        if chosen == nil { lensBuffers[id] = nil }
+        if lensSelection?.commandID == id { lensSelection = nil }
+        rebuildLens(for: id)
+        markDirty()
+    }
+
+    /// `⌘⇧J` and the `{ }` control: pretty ↔ raw, on the block under the pointer or the last
+    /// request in the pane. Returns false when there is no request to toggle, so the caller can
+    /// beep rather than pretending.
+    @discardableResult
+    func toggleLensOfCurrentBlock() -> Bool {
+        guard let id = lensTargetBlock() else { return false }
+        guard !lensIsTooLarge(id) else { return false }
+        setLens(lenses.lens(of: id) == nil ? .pretty : nil, on: id)
+        return true
+    }
+
+    /// The block a lens command applies to: the one under the pointer when it is a request, else
+    /// the last request in the pane. A keyboard shortcut with no pointer involved still has to have
+    /// an answer, and "the response you were just looking at" is the one people mean.
+    private func lensTargetBlock() -> UInt32? {
+        if let point = lastPointerPoint, let id = commandID(under: point),
+           requestCache.isRequest(id: id) {
+            return id
+        }
+        if let hovered = hoveredBlock?.id, requestCache.isRequest(id: hovered) { return hovered }
+        return session.withTerminal { t -> UInt32? in
+            t.promptRows.reversed().compactMap { row -> UInt32? in
+                guard let region = t.command(containingAbsoluteRow: row), region.id != 0,
+                      self.requestCache.isRequest(id: region.id) else { return nil }
+                return region.id
+            }.first
+        }
+    }
+
+    /// Builds a block's lens lines off the main thread and stores them when they are ready.
+    ///
+    /// The frame builder never waits on this: it draws whatever buffer is there, which is the
+    /// previous rendering while a new one is in flight and the raw rows when there is none at all.
+    /// A response of two megabytes is a JSON parse and a pretty-print, and doing that between two
+    /// frames is how a terminal gets a reputation for stuttering.
+    private func rebuildLens(for id: UInt32) {
+        guard let lens = lenses.lens(of: id) else {
+            lensBuffers[id] = nil
+            markDirty()
+            return
+        }
+        guard case .request(let exchange)? = requestCache.entry(for: id), let exchange else {
+            lenses.set(nil, for: id)
+            lensBuffers[id] = nil
+            markDirty()
+            return
+        }
+        var previous: HTTPExchange?
+        if case .diff(let previousID) = lens,
+           case .request(let earlier)? = requestCache.entry(for: previousID) {
+            previous = earlier
+        }
+        let input = LensInput(exchange: exchange, previous: previous, folded: lenses.folded(in: id))
+        let version = session.withTerminal { $0.contentVersion }
+        lensRebuilds.insert(id)
+        lensQueue.async { [weak self] in
+            let lines = LensRendering.lines(for: lens, input: input)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.lensRebuilds.remove(id)
+                // The lens may have changed while this was in flight -- a fold, another lens, back
+                // to raw. The newest choice wins; this rendering is of a question nobody is asking.
+                guard self.lenses.lens(of: id) == lens else { return }
+                if let lines, !lines.isEmpty {
+                    self.lensBuffers[id] = LensBuffer(commandID: id, lens: lens, lines: lines,
+                                                      contentVersion: version)
+                } else {
+                    // nil is `LensRendering` saying "show the raw transcript": a body too large, a
+                    // filter with no JSON under it, a diff with nothing to compare against. The
+                    // block goes back to its rows rather than showing an empty pane.
+                    self.lensBuffers[id] = nil
+                    self.lenses.set(nil, for: id)
+                }
+                self.markDirty()
+            }
+        }
+    }
+
+    /// Opens the one-line field a filter or a search is typed into, over the block's command row.
+    ///
+    /// The field applies on every keystroke, because the lens is a pure function of the exchange
+    /// and the text: there is nothing to submit, and a response that only re-filters when you press
+    /// return is one you cannot explore.
+    private func presentLensField(for lens: ResponseLens, on id: UInt32) {
+        dismissLensField()
+        let isFilter: Bool
+        if case .filter = lens { isFilter = true } else { isFilter = false }
+        let view = LensFieldView(frame: .zero)
+        let palette = session.withTerminal { $0.palette }
+        addSubview(view)
+        view.frame = lensFieldFrame(for: id, height: view.intrinsicContentSize.height)
+        view.show(caption: isFilter ? "Filter" : "Find", text: "", palette: palette)
+        view.onChange = { [weak self] text in
+            guard let self else { return }
+            guard !text.isEmpty else {
+                self.setLens(nil, on: id)
+                self.lensField?.setMessage(nil, offersJq: false)
+                return
+            }
+            if isFilter {
+                let body = self.lensBody(of: id)
+                if let problem = LensRendering.filterError(text, body: body) {
+                    // A path this box does not understand, or a body that is not JSON. The lens is
+                    // left alone -- the response stays on screen -- and the sentence says which.
+                    self.lensField?.setMessage(problem, offersJq: problem == JSONPath.unsupportedMessage)
+                    return
+                }
+                self.lensField?.setMessage(nil, offersJq: false)
+                self.setLens(.filter(text), on: id)
+            } else {
+                self.setLens(.grep(text), on: id)
+            }
+        }
+        view.onRunWithJq = { [weak self] text in
+            guard let self, let line = self.requestCache.commandLine(of: id) else { return }
+            self.dismissLensField()
+            // The block's own command line, piped: what a person would have typed if they had
+            // known at the start that they would want jq. Bracketed, because a `\`-continued curl
+            // read off the grid has real newlines in it.
+            let escaped = text.replacingOccurrences(of: "'", with: "'\\''")
+            let bracketed = self.session.withTerminal { $0.modes.bracketedPaste }
+            self.performPaste("\(line) | jq '\(escaped)'", bracketed: bracketed)
+            self.send([0x0D])
+        }
+        view.onClose = { [weak self] in self?.dismissLensField() }
+        lensField = view
+        lensFieldBlock = id
+        view.focus()
+        onFocusRequested?()
+    }
+
+    /// Over the block's command row when that row is on screen, and at the top of the pane when it
+    /// is not: the field belongs to a response, and a response scrolled off the top is still the
+    /// one being filtered.
+    private func lensFieldFrame(for id: UInt32, height: CGFloat) -> NSRect {
+        let width: CGFloat = 360
+        let cell = cellSizePoints
+        var row = 0
+        if let promptRow = session.withTerminal({ $0.promptRow(ofCommand: id) }) {
+            let top = session.withTerminal { $0.viewportTopRow }
+            row = max(0, min(rows - 1, promptRow - top))
+        }
+        let y = bounds.height - padding - CGFloat(row + 1) * cell.height - height
+        return NSRect(x: max(padding, bounds.width - padding - width),
+                      y: max(padding, y), width: width, height: height)
+    }
+
+    /// The response body as a JSON document, for the field's own error message.
+    private func lensBody(of id: UInt32) -> JSONValue? {
+        guard case .request(let exchange)? = requestCache.entry(for: id),
+              let exchange else { return nil }
+        return LensRendering.bodyValue(exchange)
+    }
+
+    func dismissLensField() {
+        lensField?.removeFromSuperview()
+        lensField = nil
+        lensFieldBlock = nil
+        window?.makeFirstResponder(self)
     }
 
     /// Writes the request read this frame to the history, outside the session lock. Called from
@@ -787,8 +1025,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let exchange = block.region.outputRows.count > Pane.requestOutputRowLimit
                 ? nil
                 : HTTPExchange.parse(lines: t.outputText(of: block.region).components(separatedBy: "\n"))
-            requestCache.remember(.request(exchange), for: id)
+            requestCache.remember(.request(exchange), line: line, for: id)
             requestCache.trim(to: Pane.requestCacheLimit)
+            // The one moment a response exists and nobody has looked at it yet, which is where the
+            // default lens belongs. Not applied here: this runs under the session lock, and
+            // building a lens means dispatching. `render` drains it the way it drains the history.
+            if let exchange, config.httpLens == .pretty, exchange.bodyKind == .json,
+               !LensRendering.isTooLarge(exchange) {
+                pendingDefaultLens.append(id)
+            }
         }
         // `.request(nil)` still produces a summary: a curl that could not connect prints no head
         // and no sentinel, and "exit 7 · connection refused" is the entire point of it.
@@ -950,6 +1195,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             if self.foldingGeneration != t.scrollbackGeneration {
                 self.foldingGeneration = t.scrollbackGeneration
                 self.folding.unfoldAll()
+                // A lens replaces a block's rows; with every absolute row meaning something else
+                // there is no block left to replace, and the buffers are readings of text that has
+                // gone.
+                self.lenses = LensChoices()
+                self.lensBuffers.removeAll()
+                self.lensSelection = nil
             }
             // Folds whose prompt has gone -- evicted from the ring, or overwritten -- are dropped
             // here rather than accumulating over a session, and with them any notification armed
@@ -963,7 +1214,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let bufferMoved = t.evictedRows != self.lastPruneEvictedRows
                 || t.scrollbackGeneration != self.lastPruneGeneration
             if bufferMoved, !(self.folding.isEmpty && self.armedNotifications.isEmpty
-                                && self.requestCache.isEmpty) {
+                                && self.requestCache.isEmpty && self.lenses.isEmpty) {
                 self.lastPruneEvictedRows = t.evictedRows
                 self.lastPruneGeneration = t.scrollbackGeneration
                 let oldest = t.oldestCommandID
@@ -974,6 +1225,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // A reading outlives the rows it was made from by exactly nothing: once the block
                 // is evicted its id can never come back, and the entry is a leak.
                 self.requestCache.prune(olderThan: oldest)
+                if !self.lenses.isEmpty {
+                    self.lenses.prune(olderThan: oldest)
+                    self.lensBuffers = self.lensBuffers.filter { $0.key >= oldest }
+                }
             }
             // Screen coordinates: `cursor.y` counts from the top of the live screen. The renderer
             // takes it as an index into the lines it is handed, which are display slots, so with a
@@ -988,7 +1243,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let matches: [[Range<Int>]]
             let current: [Range<Int>?]
             let hovered: [Range<Int>?]
-            if self.folding.isEmpty {
+            if self.folding.isEmpty && self.lenses.isEmpty {
                 // Untouched: no fold means no buffer walk, no mapping and no allocation beyond the
                 // rows themselves. This is the path every frame of an ordinary session takes.
                 self.foldRowsOnScreen = []
@@ -1006,7 +1261,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // by visible row has to be placed through the display rows rather than by
                 // subtracting the viewport top -- otherwise a highlight lands on whichever row the
                 // fold pulled up into that slot.
-                let display = t.displayRows(from: top, count: t.rows, folding: self.folding)
+                let display = t.displayRows(from: top, count: t.rows, folding: self.folding,
+                                            lenses: self.lenses,
+                                            buffers: { self.lensBuffers[$0] })
                 self.foldRowsOnScreen = display
                 // The caret goes through the same map as the text under it. Without this it was
                 // drawn at `cursor.y` -- as many rows below the prompt as the folds above had
@@ -1022,16 +1279,28 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     case .row(let absolute): return t.absoluteRow(absolute) ?? Row(cols: t.cols)
                     case .fold(_, let hidden, let status):
                         return t.foldPlaceholderRow(hiddenRows: hidden, status: status)
-                    case .lens:
-                        // Unreachable today: this pane passes no `LensChoices` to `displayRows`,
-                        // so no lens entry can come back. The response plan's next task is what
-                        // gives the pane a buffer to draw here.
-                        return Row(cols: t.cols)
+                    case .lens(let id, let index):
+                        // A blank row rather than nothing at all when the buffer has just been
+                        // replaced under the display: the next frame has the right lines, and one
+                        // empty row is better than a slot count that does not match the display.
+                        return self.lensBuffers[id]?.row(index, cols: t.cols,
+                                                         palette: LensPalette.standard)
+                            ?? Row(cols: t.cols)
                     }
                 } + Array(repeating: Row(cols: t.cols), count: max(0, t.rows - display.count))
                 selected = display.map { row in
-                    guard case .row(let absolute) = row else { return nil }
-                    return self.selection?.columnRange(onRow: absolute, cols: t.cols)
+                    switch row {
+                    case .row(let absolute):
+                        return self.selection?.columnRange(onRow: absolute, cols: t.cols)
+                    case .lens(let id, let index):
+                        // The lens has its own selection, in its own coordinates, drawn through the
+                        // same channel: the renderer is handed cell ranges either way.
+                        guard let selection = self.lensSelection, selection.commandID == id,
+                              let buffer = self.lensBuffers[id] else { return nil }
+                        return selection.columns(onLine: index, in: buffer)
+                    case .fold:
+                        return nil
+                    }
                 } + Array(repeating: nil, count: max(0, t.rows - display.count))
                 matches = SearchHighlights.visibleRanges(self.searchSession.matches,
                                                         displayRows: display, cols: t.cols)
@@ -1175,7 +1444,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                           anyFolds: !self.folding.isEmpty,
                                           hasOutput: t.commandHasOutput(atAbsoluteRow: block.region.promptRow),
                                           httpSummary: httpSummary,
-                                          isHTTP: self.requestCache.isRequest(id: block.region.id))
+                                          isHTTP: self.requestCache.isRequest(id: block.region.id),
+                                          lens: self.lenses.lens(of: block.region.id),
+                                          lensTooLarge: self.lensIsTooLarge(block.region.id),
+                                          // Only the ⋯ menu needs it, and finding it parses command
+                                          // lines: not a question for sixty frames a second.
+                                          hasPreviousRun: false)
                 let text = header.summaryWithChevron
                 // Every row of the command line is a candidate, not just the prompt row: a pasted
                 // `curl` wraps, and the row that has room is usually the last one.
@@ -1304,6 +1578,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                dirtyRows: self.dirtyRows(of: t, top: top))
         }
         drainPendingRecord()
+        applyPendingLenses()
         // A running command's elapsed time only moves if something asks for a redraw; nothing else
         // on this row changes while it runs. One timer per pane, alive only while it would do
         // anything -- the idle-CPU cost of a terminal sitting at a prompt must stay at zero.
@@ -1674,8 +1949,27 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // A fold placeholder is a button, not text: clicking it puts the output back. Checked
         // before mouse reporting, because a fold only exists while the user is reading scrollback.
         if unfoldPlaceholder(at: convert(event.locationInWindow, from: nil)) { return }
+        // A lens line's fold point is a button too, and it is checked before mouse reporting for
+        // the same reason: a lens only exists on a finished block being read.
+        if event.clickCount == 1, toggleLensFold(at: convert(event.locationInWindow, from: nil)) {
+            return
+        }
         if report(event, .left, .press) { return }
         lastMousePoint = convert(event.locationInWindow, from: nil)
+        // A drag that starts on a lens line selects the lens's own text. A drag that starts on the
+        // transcript clears any lens selection: two visible selections is one too many, and only
+        // one of them can be what ⌘C means.
+        if let hit = lensLine(at: lastMousePoint!) {
+            lensSelection = LensSelection(commandID: hit.id,
+                                          anchor: .init(line: hit.line, character: hit.character),
+                                          head: .init(line: hit.line, character: hit.character))
+            markDirty()
+            return
+        }
+        if lensSelection != nil {
+            lensSelection = nil
+            markDirty()
+        }
         let point = topLeft(lastMousePoint!)
         let block = event.modifierFlags.contains(.option)
         let changed = session.withTerminal { t in
@@ -1686,6 +1980,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if lensSelection != nil {
+            lastMousePoint = convert(event.locationInWindow, from: nil)
+            if let hit = lensLine(at: lastMousePoint!), hit.id == lensSelection?.commandID {
+                lensSelection?.head = .init(line: hit.line, character: hit.character)
+                markDirty()
+            }
+            return
+        }
         guard selectionController.isDragging else { report(event, .left, .drag); return }
         lastMousePoint = convert(event.locationInWindow, from: nil)
         let point = topLeft(lastMousePoint!)
@@ -1696,6 +1998,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if let selection = lensSelection {
+            lastMousePoint = nil
+            if selection.isEmpty { lensSelection = nil; markDirty() }
+            else if config.copyOnSelect { copy(nil) }
+            return
+        }
         guard selectionController.isDragging else { report(event, .left, .release); return }
         lastMousePoint = nil
         let wasEmpty = selection == nil || selection?.isEmpty == true
@@ -1912,6 +2220,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // where each command began, so the whole block's actions -- not just rerun and edit -- are
         // answerable from a right-click.
         if let point, let id = commandID(under: point) {
+            // Asked before the lock: finding the previous run of this request parses command lines
+            // out of the cache, and this is a menu press rather than a frame.
+            let previousRun = self.previousRun(of: id)
             let header: BlockHeader? = session.withTerminal { t in
                 guard let row = t.promptRow(ofCommand: id),
                       let region = t.command(containingAbsoluteRow: row) else { return nil }
@@ -1925,7 +2236,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                     anyFolds: !self.folding.isEmpty,
                                     hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow),
                                     httpSummary: httpSummary,
-                                    isHTTP: self.requestCache.isRequest(id: id))
+                                    isHTTP: self.requestCache.isRequest(id: id),
+                                    lens: self.lenses.lens(of: id),
+                                    lensTooLarge: self.lensIsTooLarge(id),
+                                    hasPreviousRun: previousRun != nil)
             }
             drainPendingRecord()
             if let header {
@@ -1936,7 +2250,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     item.target = self
                     item.representedObject = BlockMenuEntry(action: entry.action, id: id)
                     item.isEnabled = entry.enabled
-                    if case .notifyWhenDone(let armed) = entry.action { item.state = armed ? .on : .off }
+                    // The lens rows are a radio group and the notification row is a switch; both
+                    // are one question to the header, so a third state cannot be invented here.
+                    item.state = header.isChecked(entry.action) ? .on : .off
                     menu.addItem(item)
                 }
                 menu.addItem(.separator())
@@ -2102,6 +2418,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             rects.append(NSRect(x: padding + CGFloat(columns.lowerBound) * cell.width,
                                 y: bounds.height - padding - CGFloat(row + 1) * cell.height,
                                 width: CGFloat(columns.count) * cell.width, height: cell.height))
+        }
+        // A lens line with a fold point on it is a control, and the pointer has to say so: it is
+        // the only thing on that row a click does something to.
+        if !lenses.isEmpty {
+            for (visible, entry) in foldRowsOnScreen.enumerated() {
+                guard case .lens(let id, let line) = entry,
+                      lensBuffers[id]?.line(line)?.node != nil else { continue }
+                rects.append(NSRect(x: padding,
+                                    y: bounds.height - padding - CGFloat(visible + 1) * cell.height,
+                                    width: max(0, bounds.width - 2 * padding), height: cell.height))
+            }
         }
         hoveredRect = rects
         window?.invalidateCursorRects(for: self)
@@ -2582,6 +2909,31 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return row >= 0 && row < rows ? row : nil
     }
 
+    /// Which lens line a view point is on, and where along it, or nil when the point is on
+    /// ordinary terminal text. The column is a Character offset, which is what a selection and a
+    /// fold both work in.
+    private func lensLine(at point: NSPoint) -> (id: UInt32, line: Int, character: Int)? {
+        guard !lenses.isEmpty, let visible = visibleRow(at: point),
+              visible < foldRowsOnScreen.count,
+              case .lens(let id, let line) = foldRowsOnScreen[visible],
+              let buffer = lensBuffers[id] else { return nil }
+        let cell = cellSizePoints
+        guard cell.width > 0 else { return nil }
+        let column = Int(((Double(point.x) - Double(padding)) / Double(cell.width)).rounded(.down))
+        return (id, line, buffer.characterOffset(atColumn: max(0, column), line: line))
+    }
+
+    /// A click on a folded or foldable node in a lens folds or unfolds it. The placeholder line is
+    /// the control, the same way a fold placeholder is: there is nowhere else to put a chevron for
+    /// a line the terminal does not know exists.
+    private func toggleLensFold(at point: NSPoint) -> Bool {
+        guard let hit = lensLine(at: point),
+              let node = lensBuffers[hit.id]?.line(hit.line)?.node else { return false }
+        lenses.toggleFold(node, in: hit.id)
+        rebuildLens(for: hit.id)
+        return true
+    }
+
     /// A click on a fold placeholder puts the output back. Returns false when the click was on
     /// ordinary text, so it can go on to mean what it usually means.
     private func unfoldPlaceholder(at point: NSPoint) -> Bool {
@@ -2846,8 +3198,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let text = session.withTerminal { $0.commandLine(of: region) }
             copyToPasteboard(text)
         case .copyOutput:
-            let text = session.withTerminal { $0.outputText(of: region) }
-            copyToPasteboard(text)
+            // What is on the screen, when that is a lens: someone copying a response they are
+            // reading pretty-printed means the pretty-printed one, not the single line it arrived
+            // as. Without a lens this is the transcript, exactly as it always was.
+            if let buffer = lensBuffers[id] {
+                copyToPasteboard(buffer.text(lines: 0 ..< buffer.lineCount))
+            } else {
+                copyToPasteboard(session.withTerminal { $0.outputText(of: region) })
+            }
         case .copyMarkdown:
             let md = session.withTerminal { BlockExport.markdown(command: $0.commandLine(of: region),
                                                                  output: $0.outputText(of: region)) }
@@ -2890,7 +3248,46 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         case .toggleFold: toggleFold(ofCommand: id, full: NSEvent.modifierFlags.contains(.option))
         case .toggleFoldAll: _ = foldAllLongOutput()
         case .notifyWhenDone(let armed): setNotification(armed: !armed, forCommand: id)
+        case .setLens(let lens):
+            switch lens {
+            // The two that need a word from the user open the field over the block's command row
+            // rather than switching to a lens with nothing in it.
+            case .filter, .grep: presentLensField(for: lens, on: id)
+            case .diff:
+                // The row carries "diff"; which run to diff against is the cache's answer, and the
+                // menu only enables the row when there is one.
+                guard let previous = previousRun(of: id) else { NSSound.beep(); return }
+                setLens(.diff(previousCommandID: previous), on: id)
+            default: setLens(lens, on: id)
+            }
+        case .toggleLens:
+            if !toggleLensOfCurrentBlock() { NSSound.beep() }
+        case .copyBody:
+            guard let text = responseText(of: id, headersOnly: false) else { NSSound.beep(); return }
+            copyToPasteboard(text)
+        case .copyHeaders:
+            guard let text = responseText(of: id, headersOnly: true) else { NSSound.beep(); return }
+            copyToPasteboard(text)
+        // The body is past what a lens will re-lay-out. The row says so and still does the thing
+        // that works on a response that size.
+        case .lensUnavailable: saveOutput(ofCommand: id)
         }
+    }
+
+    /// The response's body or its headers as text, for the two Copy rows. Built from the parsed
+    /// exchange rather than from the grid, so `Copy Headers` gives the headers and not the blank
+    /// line and the body under them.
+    private func responseText(of id: UInt32, headersOnly: Bool) -> String? {
+        guard case .request(let exchange)? = requestCache.entry(for: id),
+              let exchange else { return nil }
+        if headersOnly {
+            guard let head = exchange.final else { return nil }
+            var status = "HTTP/\(head.version) \(head.status)"
+            if !head.reason.isEmpty { status += " \(head.reason)" }
+            return ([status] + head.headers.map { "\($0.name): \($0.value)" })
+                .joined(separator: "\n")
+        }
+        return exchange.bodyLines.isEmpty ? nil : exchange.bodyLines.joined(separator: "\n")
     }
 
     /// The request a block ran, parsed, or nil when its command line is not one.
@@ -3024,6 +3421,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     @objc func copy(_ sender: Any?) {
+        // A lens selection wins when there is one: it is the visible one, and the terminal's own
+        // selection was cleared the moment a drag started on a lens line.
+        if let lensSelection, let buffer = lensBuffers[lensSelection.commandID] {
+            let text = lensSelection.text(from: buffer)
+            guard !text.isEmpty else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            return
+        }
         guard let s = selection else { return }
         // `text(in:)` already yields "" for an empty selection, so this covers that too — and a
         // selection of nothing but blanks, which should leave the pasteboard alone rather than

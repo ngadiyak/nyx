@@ -1537,10 +1537,15 @@ extension TabController: ActionTarget {
             // and the menu item is greyed out for exactly this reason.
             if focusedPane?.takeControl() != true { NSSound.beep() }
 
-        // Unreachable from the menu and the palette, which grey both (see `canPerform`), but a
+        // The block under the pointer, else the last request in the pane: pretty ↔ raw. Beeps when
+        // the pane has no response to show -- the menu and the palette already grey it there, and a
+        // `keybind` line reaches `perform` directly.
+        case .toggleHTTPLens:
+            if focusedPane?.toggleLensOfCurrentBlock() != true { NSSound.beep() }
+
+        // Unreachable from the menu and the palette, which grey it (see `canPerform`), but a
         // `keybind` line reaches `perform` directly -- so the beep stays as the answer to a chord
         // pressed for a feature that has not arrived.
-        case .toggleHTTPLens: NSSound.beep()
         case .stopWatch: NSSound.beep()
         }
     }
@@ -1595,13 +1600,14 @@ extension TabController: ActionTarget {
             // Only on a remote pane that is observing. On a local pane, or one already writing,
             // there is nothing to take.
             return focusedPane?.remote?.state.stripAction == .takeControl
-        case .toggleHTTPLens, .stopWatch:
-            // The response plan owns both: one needs a shown response to re-render, the other a
-            // running watch to stop. Neither exists yet, so they are greyed in the menu and absent
-            // from the palette rather than beeping -- a menu item that is *there* and does nothing
-            // is a promise; one that is greyed is a feature that has not arrived, and a palette
-            // row you cannot choose is a wrong answer to what you typed. The bindings stay in
-            // place so nothing has to be re-bound when it does.
+        case .toggleHTTPLens:
+            // A response to look at. Without one there is nothing to flip, and the row is greyed in
+            // the menu and absent from the palette rather than beeping at whoever chose it.
+            return focusedPane?.hasResponseToLens == true
+        case .stopWatch:
+            // The watch is the one thing the response plan has not built yet: greyed in the menu,
+            // absent from the palette, and its binding still in place so nothing has to be re-bound
+            // when it arrives.
             return false
         // `newRequest` falls through to here and is right to: a blank request needs nothing to
         // exist but a pane to run it in.

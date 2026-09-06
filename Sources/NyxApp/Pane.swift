@@ -215,6 +215,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// The watch this pane is running, or nil -- which is every pane nobody has asked for one in.
     /// Kept after it finishes so the newest run's header can go on showing the statistics.
     private var watch: WatchSeries?
+    /// The Watch popover while one is up, so Start can close it -- see `presentWatchPlanEditor`.
+    private var watchPopover: NSPopover?
     /// Alive only while the series is waiting for its next run to fall due. A watch that is
     /// *running* one has nothing to poll for: the finish arrives with the frame that reads the
     /// block. See `updateWatchTimer`.
@@ -633,6 +635,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         stopWatch(.paneClosed)
         watchTimer?.invalidate()
         watchTimer = nil
+        watchPopover?.performClose(nil)
+        watchPopover = nil
         // The pill's expiry timer retains this pane until it fires; a tab closed inside its eight
         // seconds would otherwise keep a whole terminal alive waiting to hide a label.
         hintTimer?.invalidate()
@@ -1127,12 +1131,39 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// of the same request a quarter of a second later.
     func startWatch(plan: WatchPlan, command: String, firstRunSent: Bool = false) {
         guard !command.isEmpty else { NSSound.beep(); return }
+        // A series only ever sends at a prompt, and a shell that emits no marks can never say it
+        // is at one -- so a watch here would sit on a 250 ms timer until the pane closed and never
+        // send a thing. Refused with the reason rather than started: silence is a defect, and this
+        // is reachable from the sheet's Repeat menu in *any* pane, including one running a shell
+        // Nyx has no hooks in.
+        guard session.withTerminal({ $0.shellEmitsPromptMarks }) else {
+            reportWatchRefused()
+            return
+        }
         stopWatch(.stopped)
         let now = watchClock
         watch = WatchSeries(plan: plan, command: Pane.watchLine(command), startedAt: now)
         watchSentAt = firstRunSent ? now : nil
         updateWatchTimer()
         markDirty()
+    }
+
+    /// Says why a watch cannot start here. The same shape as `reportProjectWrite`: an alert on the
+    /// sheet that asked when there is one, because an alert on the window behind a sheet is queued
+    /// until that sheet closes and reads as nothing having happened.
+    private func reportWatchRefused() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Cannot watch a request in this pane"
+        alert.informativeText = "A watch sends its next run only when the shell is back at a "
+            + "prompt, and this shell does not tell Nyx where its prompts are. Set "
+            + "shell-integration = auto and open a new tab, or run the request from a pane that "
+            + "has it."
+        if let host = window?.attachedSheet ?? window {
+            alert.beginSheetModal(for: host) { _ in }
+        } else {
+            NSSound.beep()
+        }
     }
 
     /// The line a series actually types: the request with Nyx's own measurement flags on it.
@@ -1235,8 +1266,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         let now = watchClock
         if let sentAt = watchSentAt {
-            // Typed and not yet seen to start. Give up waiting only after a long time; see
-            // `watchStartTimeout`.
+            // Typed and not yet seen to start. Ask the buffer directly before giving up: a local
+            // request can begin and end between two ticks, and on a pane with no frames the tick
+            // is the only thing looking.
+            pollWatch()
+            if watch?.isFinished == true || watchSentAt == nil { return }
             if now - sentAt > Pane.watchStartTimeout { watchSentAt = nil }
             return
         }
@@ -1275,6 +1309,53 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func stopWatchIfUserTyped() {
         guard !isSendingWatchRun, let series = watch, !series.isFinished else { return }
         stopWatch(.userTyped)
+    }
+
+    /// Moves the series on **without a frame**, from the coalesced check that already notices a
+    /// command starting and finishing from the prompt marks alone.
+    ///
+    /// This is what makes a watch survive not being looked at. `render()` does not run for a pane
+    /// whose tab is not selected (its view is out of the hierarchy), whose window is occluded, or
+    /// whose window is minimised -- the display link is paused or invalidated -- and the frame
+    /// builder is also the only thing that reads a block into the exchange cache. Driven from
+    /// there alone, switching tabs mid-watch left the series `.waiting` on a deadline that had
+    /// passed with a run it never saw start: every thirty seconds `watchStartTimeout` cleared the
+    /// outstanding flag and the next tick typed the request again, for ever, ignoring the
+    /// interval, never counting towards `.count(n)` and never testing an `until` condition.
+    ///
+    /// So the block is found by *id* rather than by being on screen, read through the same
+    /// `requestSummary` the frame uses (one parse per block, cached, so a frame that later draws
+    /// it does no work), and the series moved on. `render` goes on draining whatever it sees; the
+    /// two cannot double-count, because `RequestSummaryCache.shouldParse` answers once per block.
+    private func pollWatch() {
+        guard let series = watch, !series.isFinished else { return }
+        var runningID: UInt32?
+        session.withTerminal { t in
+            if self.watchSentAt != nil { runningID = t.runningCommand?.id }
+            guard let region = self.watchCandidateBlock(of: series, in: t) else { return }
+            // `requestSummary` is the finish signal: it reads the transcript, caches the exchange
+            // and enqueues the run. It refuses a block that has not finished, which is the guard
+            // that keeps a run in flight out of the series' statistics.
+            _ = self.requestSummary(for: CommandBlock(region: region, visibleRows: 0..<0,
+                                                      showsHeader: true), in: t)
+        }
+        drainPendingRecord()
+        advanceWatch(runningCommandID: runningID)
+        applyPendingLenses()
+    }
+
+    /// The block a waiting or running series is expecting an answer from, wherever it is on screen.
+    ///
+    /// While a run is `.running` that is its own block, by id. While one has been typed and not
+    /// seen to start it is the last command in the buffer that has actually run -- the bottom
+    /// region when it has output of its own, else the one before the prompt being typed at.
+    private func watchCandidateBlock(of series: WatchSeries, in t: Terminal) -> CommandRegion? {
+        if case .running(let id) = series.phase {
+            return t.promptRow(ofCommand: id).flatMap { t.command(containingAbsoluteRow: $0) }
+        }
+        guard watchSentAt != nil, t.totalRows > 0,
+              let bottom = t.command(containingAbsoluteRow: t.totalRows - 1) else { return nil }
+        return bottom.outputStart == nil ? t.previousCommand(of: bottom) : bottom
     }
 
     /// Moves the series on by whatever this frame saw: a run that started, and runs whose blocks
@@ -1334,11 +1415,18 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private func presentWatchPlanEditor(seed: WatchPlan, command: String, on id: UInt32) {
         let editor = WatchPlanEditor(seed: seed)
         editor.onStart = { [weak self] plan in
+            // Closed from here, not by the controller: `dismiss(nil)` only ends a *presented*
+            // controller, and this one was handed to an `NSPopover` rather than presented -- so
+            // pressing Start left the popover on screen over the watch it had just begun.
+            self?.watchPopover?.performClose(nil)
+            self?.watchPopover = nil
             self?.startWatch(plan: plan, command: command)
         }
+        watchPopover?.performClose(nil)
         let popover = NSPopover()
         popover.contentViewController = editor
         popover.behavior = .transient
+        watchPopover = popover
         // The command row if it is on screen, and the top of the pane if it is not -- the same
         // rule the filter field follows, and for the same reason: a response scrolled past is
         // still the one being asked about.
@@ -1425,10 +1513,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             }
             // And the one moment a watched run is known to have *finished*: reading the block is
             // what turns a transcript into a status and a timing, so this is where the series
-            // hears about it. Never for a block older than the newest run -- the cache re-reads a
-            // block that comes back on screen after a trim, and an old request handed to a waiting
-            // series would be counted as a run it never made.
-            if let series = watch, !series.isFinished, id >= (series.runs.last?.id ?? 0) {
+            // hears about it. Whether it is the series' own run at all is `WatchSeries.owns`,
+            // which is tested without a terminal -- an id comparison cannot tell a stranger's
+            // curl from a later run of the watch.
+            if let series = watch, series.owns(finishedBlock: id, outstanding: watchSentAt != nil) {
                 pendingWatchFinishes.append(WatchFinish(id: id, status: exchange?.status,
                                                         exitStatus: block.region.exitStatus ?? 0,
                                                         timeTotal: exchange?.timing?.total,
@@ -3632,6 +3720,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             }
         }
         commandWasRunning = bottom.started
+        // Before the notification rule, and unconditionally: this is the one path that runs for a
+        // pane with no frames -- a background tab, an occluded or minimised window -- and it is
+        // what keeps a watch advancing there. See `pollWatch`.
+        pollWatch()
         guard let finished = commandWatcher.observe(bottomPromptRow: bottom.row, outputStarted: bottom.started,
                                                     runningID: bottom.runningID, now: now) else { return }
         let armed = armedNotifications

@@ -259,3 +259,32 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
     watchRun(&failed, id: 1, status: nil, exitStatus: 7, timeTotal: nil, start: 0, end: 0.1)
     #expect(failed.headerText == "watch every 5 s \u{b7} run 1 \u{b7} exit 7")
 }
+
+/// A series adopts the run it is watching and the run it has just typed, and nothing else.
+///
+/// The regression this is for: a quick-action button, a paste or the workbench's own Run reaches
+/// the shell without stopping a *waiting* series, and its block was taken as the series' newest
+/// run -- carrying the header, the dots and the Stop button, folding the real newest run, and
+/// counting a request nobody watched into the statistics and the stop rule.
+@Test func ownsOnlyItsOwnRuns() {
+    var series = watchSeries(interval: 5, startedAt: 0)
+    // Waiting for its first run, nothing typed yet: no block in the pane is its own.
+    #expect(!series.owns(finishedBlock: 9, outstanding: false))
+
+    // Typed and not yet seen to start. A local request can begin and end between two 250 ms
+    // ticks, so the next command to finish is that run whatever its id turns out to be.
+    #expect(series.owns(finishedBlock: 9, outstanding: true))
+
+    series.runStarted(id: 4, at: 0)
+    #expect(series.owns(finishedBlock: 4, outstanding: false))
+    // Somebody else's curl, finishing while the series' own run is still going.
+    #expect(!series.owns(finishedBlock: 5, outstanding: false))
+    #expect(!series.owns(finishedBlock: 5, outstanding: true))
+
+    series.runFinished(id: 4, status: 200, exitStatus: 0, timeTotal: 0.1, body: "", at: 1)
+    // Back to waiting: a stranger's block that finishes now is not a run of this series.
+    #expect(!series.owns(finishedBlock: 5, outstanding: false))
+
+    series.stop(.stopped)
+    #expect(!series.owns(finishedBlock: 4, outstanding: true))
+}

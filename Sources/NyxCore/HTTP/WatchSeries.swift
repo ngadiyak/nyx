@@ -282,6 +282,26 @@ public struct WatchSeries: Equatable {
         }
     }
 
+    /// Whether a block that has just finished is one of this series' own runs.
+    ///
+    /// Two ways in and no third. The run the series is watching -- `.running(id)` -- is the one it
+    /// asked for and the only block that may finish it. And a run that was typed and has not been
+    /// seen to start: a local request can begin and end between two of the pane's ticks, so while
+    /// one is `outstanding` the next command to finish is that run, whatever id it turns out to
+    /// have. `outstanding` is the pane saying "I typed a run and have not seen it start".
+    ///
+    /// Everything else is somebody else's command. Adopting one was a real defect: a quick-action
+    /// button, a paste or the workbench's own Run reaches the shell without stopping a *waiting*
+    /// series, and the stranger's block became the series' newest run -- taking the header, the
+    /// dots and the Stop button, folding the real newest run, and counting a request nobody
+    /// watched into the statistics and the stop rule. An id comparison cannot tell them apart:
+    /// every later block has a larger id, which is exactly what a stranger's has too.
+    public func owns(finishedBlock id: UInt32, outstanding: Bool) -> Bool {
+        guard !isFinished else { return false }
+        if case .running(let expected) = phase { return expected == id }
+        return outstanding
+    }
+
     /// Ends the series. The first reason wins: a watch that stopped because the user typed did not
     /// then stop again because the pane closed, and the header should say what actually happened.
     public mutating func stop(_ reason: Finish) {

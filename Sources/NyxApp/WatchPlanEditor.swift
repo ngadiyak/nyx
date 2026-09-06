@@ -195,8 +195,9 @@ final class WatchPlanEditor: NSViewController, NSTextFieldDelegate {
             NSSound.beep()
             return
         }
+        // The popover is the pane's, and closing it is the pane's job: this controller was never
+        // *presented*, so `dismiss(nil)` here did nothing at all.
         onStart?(plan)
-        dismiss(nil)
     }
 
     /// One place where the model decides what the popover looks like: which rows are up, what the

@@ -13,10 +13,11 @@ final class LensFieldView: NSView, NSTextFieldDelegate {
     var onChange: ((String) -> Void)?
     /// The `Run with jq` button: the expression as typed, for the shell.
     var onRunWithJq: ((String) -> Void)?
-    /// `⎋` and the close button. The pane takes the field down for the other reasons a one-line
-    /// popover has to go: a click anywhere in the grid, a `clear`, and the block being evicted from
-    /// the scrollback. Scrolling does not close it -- it follows the command row it belongs to; see
-    /// `Pane.repositionLensField`.
+    /// `⎋` and `⏎`, which are the only two ways to close this from the keyboard -- there is no
+    /// close button, because every keystroke is already applied and the field has nothing to submit.
+    /// The pane takes it down for the other reasons a one-line popover has to go: a click anywhere
+    /// in the grid, a `clear`, and the block being evicted from the scrollback. Scrolling does not
+    /// close it -- it follows the command row it belongs to; see `Pane.repositionLensField`.
     var onClose: (() -> Void)?
 
     private let caption = NSTextField(labelWithString: "")

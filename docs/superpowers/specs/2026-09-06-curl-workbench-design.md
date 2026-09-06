@@ -204,8 +204,10 @@ hover overlay gets a `{ }` button for HTTP blocks, the ⋯ menu gets a Lens subm
 pretty ↔ raw on the block under the pointer or the last HTTP block. A lens is per block and
 remembered for the session (`LensChoices`, keyed by command id like `OutputFolding`, pruned with it).
 
-**Limits.** Lenses apply to bodies up to 2 MB or 20,000 lines; above that the block stays raw and
-the menu says "Body too large for lenses — Save Output…". Lens lines are computed off the main
+**Limits.** Lenses apply to bodies up to 20,000 lines or 2 MB, whichever comes first, and never
+more than `scrollback` keeps -- a lens is built from the rows the pane still has, so a response
+whose head has already left the ring is read from what is left of it. Above the limits the block
+stays raw and the menu says "Body too large for lenses — Save Output…". Lens lines are computed off the main
 thread once per (command id, lens) and cached; the render path only reads rows.
 
 ### 6.3 JSON path subset
@@ -214,8 +216,12 @@ thread once per (command id, lens) and cached; the render path only reads rows.
 `.a[-1]`, `.a[1:3]`, `.a[]`, `.a[]?.b`, `keys`, `length`, `.[] | .id` (one pipe stage), and a
 top-level `..` search for a key (`..name`). Anything else is rejected with "not supported here —
 Run with jq" which appends `| jq '<expr>'` to the command and runs it. The filter field in the
-block (opened by the Lens ▸ Filter… item or `/` while the pointer is on an HTTP block) evaluates as
-you type against the cached document.
+block (opened by the Lens ▸ Filter… item) evaluates as you type against the cached document.
+
+There is no `/` shortcut for it. A bare printable key whose meaning depends on where the pointer
+happens to be resting would eat a `/` typed at the prompt -- which is the first character of half
+the paths anybody types -- and the pointer is not something the person at the keyboard is looking
+at.
 
 ## 7. Watch, repeat, poll
 

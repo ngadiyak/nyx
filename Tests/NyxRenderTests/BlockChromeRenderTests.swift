@@ -145,6 +145,7 @@ private let spineColor = RGB(0, 255, 0)
         switch entry {
         case .row(let absolute): return t.absoluteRow(absolute) ?? Row(cols: cols)
         case .fold(_, let hidden, let status): return t.foldPlaceholderRow(hiddenRows: hidden, status: status)
+        case .lens: return Row(cols: cols)      // no lens is set on this terminal
         }
     } + Array(repeating: Row(cols: cols), count: max(0, rows - display.count))
 

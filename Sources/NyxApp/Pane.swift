@@ -1022,6 +1022,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     case .row(let absolute): return t.absoluteRow(absolute) ?? Row(cols: t.cols)
                     case .fold(_, let hidden, let status):
                         return t.foldPlaceholderRow(hiddenRows: hidden, status: status)
+                    case .lens:
+                        // Unreachable today: this pane passes no `LensChoices` to `displayRows`,
+                        // so no lens entry can come back. The response plan's next task is what
+                        // gives the pane a buffer to draw here.
+                        return Row(cols: t.cols)
                     }
                 } + Array(repeating: Row(cols: t.cols), count: max(0, t.rows - display.count))
                 selected = display.map { row in

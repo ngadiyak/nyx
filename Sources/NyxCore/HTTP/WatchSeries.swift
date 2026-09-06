@@ -243,24 +243,34 @@ public struct WatchSeries: Equatable {
     /// next run the instant the last one lands whenever the endpoint is slower than the interval,
     /// which is how a watch turns into a load test.
     ///
-    /// A finish for a run nobody saw start is still recorded. It means the pane missed the start
-    /// (a command that came and went between two timer ticks), and ignoring it would leave the
-    /// series waiting on a deadline that already passed -- sending the same request again and
-    /// again, one per tick, forever.
+    /// A finish for a run nobody saw start, with nothing else in flight, is still recorded and does
+    /// schedule the next one. It means the pane missed the start (a command that came and went
+    /// between two timer ticks), and ignoring it would leave the series waiting on a deadline that
+    /// already passed -- sending the same request again and again, one per tick, forever.
+    ///
+    /// A finish for an unknown run while one *is* in flight is a different animal and is dropped
+    /// whole: it is not this series' run, and the run this series is waiting on has not come back.
+    /// Recording it would put someone else's block in the timeline and the statistics, and -- far
+    /// worse -- moving the phase for it would leave the series `.waiting` while a curl is still
+    /// running, which is exactly the second-request-into-a-busy-shell this type exists to prevent.
+    ///
+    /// A finish that arrives after `stop` is the other asymmetry: the run was this series' own, so
+    /// its result is kept, but the series does not come back to life.
     public mutating func runFinished(id: UInt32, status: Int?, exitStatus: Int32,
                                      timeTotal: Double?, body: String, at: Double) {
         let finished = Run(id: id, status: status, exitStatus: exitStatus, timeTotal: timeTotal, at: at)
+        let wasInFlight = runningRunID == id
         if let index = runs.lastIndex(where: { $0.id == id }) {
             runs[index] = finished
-        } else if !isFinished {
+        } else if !isFinished, runningRunID == nil {
             runs.append(finished)
         } else {
             return
         }
-        if runningRunID == id { runningRunID = nil }
-        // Stopped while this run was in flight: its output is still the user's, so it is kept, but
-        // the series does not come back to life.
-        guard !isFinished else { return }
+        if wasInFlight { runningRunID = nil }
+        // Only the run the series was actually waiting on -- or a finish that arrived with nothing
+        // in flight at all -- may set the next deadline. Anything else leaves the phase alone.
+        guard !isFinished, wasInFlight || runningRunID == nil else { return }
 
         switch plan.stop {
         case .count(let times) where runs.count >= times:

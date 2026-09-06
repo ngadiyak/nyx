@@ -41,6 +41,29 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
     #expect(series.shouldSend(now: 105, shellAtPrompt: true))
 }
 
+@Test func strayFinishKeepsTheSeriesRunning() {
+    var series = watchSeries(interval: 5, startedAt: 0)
+    series.runStarted(id: 5, at: 0)
+
+    // A block that is not this series' run finishing while run 5 is still going changes nothing:
+    // the series is still waiting on 5, and must not send a second curl into a busy shell.
+    series.runFinished(id: 9, status: 200, exitStatus: 0, timeTotal: 0.1, body: "", at: 1)
+    #expect(series.phase == .running(id: 5))
+    #expect(!series.shouldSend(now: 1_000_000, shellAtPrompt: true))
+    #expect(series.runs.map(\.id) == [5])
+
+    series.runFinished(id: 5, status: 200, exitStatus: 0, timeTotal: 0.2, body: "", at: 2)
+    #expect(series.phase == .waiting(until: 7))
+    #expect(series.timeline(last: 5) == [.success])
+
+    // With nothing in flight, a finish for a start the pane missed is taken: the series would
+    // otherwise sit on a deadline that had already passed and re-send on every tick.
+    var missed = watchSeries(interval: 5, startedAt: 0)
+    missed.runFinished(id: 1, status: 200, exitStatus: 0, timeTotal: 0.1, body: "", at: 3)
+    #expect(missed.runs.map(\.id) == [1])
+    #expect(missed.phase == .waiting(until: 8))
+}
+
 @Test func doesNotSendAwayFromPrompt() {
     let series = watchSeries(interval: 5, startedAt: 0)
     #expect(!series.shouldSend(now: 10, shellAtPrompt: false))

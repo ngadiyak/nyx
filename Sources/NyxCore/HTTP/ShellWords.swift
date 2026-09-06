@@ -199,6 +199,37 @@ public enum ShellWords {
         return words
     }
 
+    /// One word holding exactly the characters given -- except that a `$VAR`, `${VAR}` or `$(cmd)`
+    /// spelling inside it stays a live variable reference.
+    ///
+    /// This is what a **text field** hands back, which is not the same thing as a line of shell.
+    /// `split` would unquote and unescape it: `"Chromium";v="128"` is a header value whose
+    /// quotation marks are part of the value, and splitting it would send `Chromium;v=128`. But a
+    /// `$TOKEN` typed into that same field has to survive as a reference, because writing it back
+    /// out as literal text would hand the server the six characters `$TOKEN` instead of the
+    /// credential. Neither rule can be dropped, so this applies exactly one of them.
+    public static func word(literal text: String) -> ShellWord {
+        let scalars = Array(text.unicodeScalars)
+        var pieces: [ShellWord.Piece] = []
+        var run = ""
+        var i = 0
+        while i < scalars.count {
+            if scalars[i] == "$", let (spelling, next) = scanVariable(scalars, at: i) {
+                if !run.isEmpty {
+                    pieces.append(.text(run))
+                    run = ""
+                }
+                pieces.append(.variable(spelling))
+                i = next
+                continue
+            }
+            run.unicodeScalars.append(scalars[i])
+            i += 1
+        }
+        if !run.isEmpty { pieces.append(.text(run)) }
+        return ShellWord(pieces: pieces)
+    }
+
     /// Writes `word` the way `CurlCommand.shellLine` spells a rebuilt curl command: bare when
     /// nothing in it needs protecting from the shell, single-quoted when it is safe literal text,
     /// double-quoted (with `\"`, `\\`, `\$`, `` \` `` escaped) when it either contains a `'` or

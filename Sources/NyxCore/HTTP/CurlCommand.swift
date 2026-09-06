@@ -167,6 +167,26 @@ public struct CurlCommand: Equatable {
             self.string = string
         }
 
+        /// The parts written back out as one URL string. The editor rebuilds a URL through this
+        /// after a query row changes, and `parse` fills `string` with it, so the text a round trip
+        /// produces and the text an edit produces are the same text by construction.
+        public var rebuilt: String {
+            var text = ""
+            if let scheme { text += scheme + "://" }
+            text += host
+            if let port { text += ":\(port)" }
+            text += path
+            if !query.isEmpty {
+                text += "?" + query.map { item in
+                    item.value.map { "\(item.name)=\($0)" } ?? item.name
+                }.joined(separator: "&")
+            } else if emptyQuery {
+                text += "?"
+            }
+            if let fragment { text += "#" + fragment }
+            return text
+        }
+
         /// Splits `word` into scheme / host / port / path / query / fragment. Total: every input
         /// produces parts, because there is no reading of a curl URL that should stop the parse.
         public static func parse(_ word: ShellWord) -> URLParts {
@@ -224,23 +244,10 @@ public struct CurlCommand: Equatable {
                 }
             }
 
-            var rebuilt = ""
-            if let scheme { rebuilt += scheme + "://" }
-            rebuilt += host
-            if let port { rebuilt += ":\(port)" }
-            rebuilt += path
-            if !query.isEmpty {
-                rebuilt += "?" + query.map { item in
-                    item.value.map { "\(item.name)=\($0)" } ?? item.name
-                }.joined(separator: "&")
-            } else if emptyQuery {
-                rebuilt += "?"
-            }
-            if let fragment { rebuilt += "#" + fragment }
-
-            return URLParts(scheme: scheme, host: host, port: port, path: path, query: query,
-                            emptyQuery: emptyQuery, fragment: fragment, raw: word,
-                            string: word.containsVariable ? text : rebuilt)
+            var parts = URLParts(scheme: scheme, host: host, port: port, path: path, query: query,
+                                 emptyQuery: emptyQuery, fragment: fragment, raw: word, string: text)
+            if !word.containsVariable { parts.string = parts.rebuilt }
+            return parts
         }
     }
 

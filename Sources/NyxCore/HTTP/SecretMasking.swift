@@ -54,6 +54,12 @@ public enum SecretMasking {
     /// so a caller can hand every header to this without deciding first.
     public static func maskedHeaderValue(name: String, value: String) -> String {
         guard isSecretHeader(name) else { return value }
+        if name.lowercased() == "cookie", value.contains("=") {
+            // A cookie header is a list, not one credential: masking it whole would hide the
+            // harmless cookies behind the same bullets and show the tail of whichever one happened
+            // to be last. `-b` carries the same content and gets the same treatment.
+            return maskedCookieString(value)
+        }
         if let space = value.firstIndex(of: " ") {
             let scheme = String(value[value.startIndex ..< space])
             if authSchemes.contains(scheme.lowercased()) {
@@ -85,12 +91,47 @@ public enum SecretMasking {
         }.joined(separator: ";")
     }
 
-    /// Masks the value half of a `name=value` parameter word when the name says it is a secret.
-    /// A word with no `=` has no name to judge, so it is left alone.
+    /// Masks the value half of a **single** `name=value` pair when the name says it is a secret.
+    /// Text with no `=` has no name to judge, so it is left alone. `&` is data here, not a
+    /// separator: `--data-urlencode 'q=a&b'` is one pair whose value happens to contain an `&`.
     static func maskedParameter(_ text: String) -> String {
         guard let equals = text.firstIndex(of: "=") else { return text }
         let name = String(text[text.startIndex ..< equals])
         guard isSecretParameter(name) else { return text }
         return name + "=" + masked(String(text[text.index(after: equals)...]))
+    }
+
+    /// Masks an `&`-joined *list* of pairs, each judged by its own name -- the form a `-d` body
+    /// takes, since curl joins every `-d` with `&`. Splitting only at the first `=` would make
+    /// everything after the first value into "the value", so `password=x&user=nik` printed the
+    /// username as part of the mask and `user=nik&password=x` printed the password in full.
+    /// Rejoining with `&` is lossless, so a body that is not a parameter list (JSON, `@file`)
+    /// comes back unchanged.
+    static func maskedParameterList(_ text: String) -> String {
+        text.split(separator: "&", omittingEmptySubsequences: false)
+            .map { maskedParameter(String($0)) }
+            .joined(separator: "&")
+    }
+
+    /// Options whose value is `something:secret` -- proxy credentials and a client certificate
+    /// with its passphrase. The half in front of the colon is a username or a path and stays.
+    private static let colonSecretOptions: Set<String> = [
+        "-U", "--proxy-user", "-E", "--cert", "--proxy-cert",
+    ]
+
+    /// Options whose whole value is a passphrase.
+    private static let wholeSecretOptions: Set<String> = [
+        "--key-password", "--tls-password", "--tlspassword", "--proxy-tlspassword",
+        "--pass", "--proxy-key-password", "--proxy-pass",
+    ]
+
+    /// Masks the value of an option `CurlCommand` keeps verbatim in `other`. Anything not on the
+    /// two lists is returned unchanged -- `--proxy http://p:3128` is a destination, not a secret.
+    public static func maskedOptionValue(option: String, value: String) -> String {
+        if wholeSecretOptions.contains(option) { return masked(value) }
+        guard colonSecretOptions.contains(option), let colon = value.firstIndex(of: ":") else {
+            return value
+        }
+        return String(value[value.startIndex ..< colon]) + ":" + masked(String(value[value.index(after: colon)...]))
     }
 }

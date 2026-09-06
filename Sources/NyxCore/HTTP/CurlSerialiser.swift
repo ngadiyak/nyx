@@ -86,7 +86,7 @@ extension CurlCommand {
         case nil:
             break
         case .data(let items):
-            for item in items { groups.append(["-d", ShellWords.quote(maskedParameter(item, masking: masking))]) }
+            for item in items { groups.append(["-d", ShellWords.quote(maskedParameterList(item, masking: masking))]) }
         case .raw(let value):
             groups.append(["--data-raw", ShellWords.quote(value)])
         case .binary(let value):
@@ -97,7 +97,9 @@ extension CurlCommand {
             groups.append(["--json", ShellWords.quote(value)])
         case .form(let items):
             for item in items {
-                let value = SecretMasking.isSecretParameter(item.name)
+                let text = item.value.text
+                let isFileReference = text.hasPrefix("@") || text.hasPrefix("<")
+                let value = SecretMasking.isSecretParameter(item.name) && !isFileReference
                     ? maskedSecret(item.value, masking: masking)
                     : item.value
                 groups.append(["-F", ShellWords.quote(ShellWord(pieces: [.text(item.name + "=")] + value.pieces))])
@@ -127,24 +129,26 @@ extension CurlCommand {
         groups.append(jar)
 
         // 6. Everything this model does not name, in the order it was written.
-        for entry in other {
-            if entry.option.isEmpty {
-                // A bare word that was not the first URL.
-                if let value = entry.value { groups.append([ShellWords.quote(value)]) }
-                continue
-            }
+        for entry in other where !entry.option.isEmpty {
             if entry.option.contains("=") {
                 // Already `--opt=value`: one word, or re-splitting it would change what curl sees.
                 groups.append([ShellWords.quote(ShellWord(entry.option))])
                 continue
             }
             var words = [ShellWords.quote(ShellWord(entry.option))]
-            if let value = entry.value { words.append(ShellWords.quote(value)) }
+            if let value = entry.value {
+                words.append(ShellWords.quote(maskedOption(entry.option, value, masking: masking)))
+            }
             groups.append(words)
         }
 
-        // 7. The URL, and then whatever the line piped or redirected its output to.
+        // 7. The URL, then any further bare words -- curl reads those as more URLs, so writing
+        //    them before this one would swap which request the command makes -- then whatever the
+        //    line piped or redirected its output to.
         var tail = [urlWord(masking: masking)]
+        for entry in other where entry.option.isEmpty {
+            if let value = entry.value { tail.append(ShellWords.quote(value)) }
+        }
         if !trailingPipeline.isEmpty { tail.append(trailingPipeline) }
         groups.append(tail)
 
@@ -208,9 +212,22 @@ extension CurlCommand {
         return ShellWord(SecretMasking.maskedCookieString(word.text))
     }
 
+    /// A `--data-urlencode` word: one pair, so an `&` in the value is data.
     private func maskedParameter(_ word: ShellWord, masking: Masking) -> ShellWord {
         guard masking == .display, !word.containsVariable else { return word }
         return ShellWord(SecretMasking.maskedParameter(word.text))
+    }
+
+    /// A `-d` word: curl joins every `-d` with `&`, so one word is a whole parameter list and each
+    /// pair is judged by its own name.
+    private func maskedParameterList(_ word: ShellWord, masking: Masking) -> ShellWord {
+        guard masking == .display, !word.containsVariable else { return word }
+        return ShellWord(SecretMasking.maskedParameterList(word.text))
+    }
+
+    private func maskedOption(_ option: String, _ value: ShellWord, masking: Masking) -> ShellWord {
+        guard masking == .display, !value.containsVariable else { return value }
+        return ShellWord(SecretMasking.maskedOptionValue(option: option, value: value.text))
     }
 
     /// The URL, rebuilt from `URLParts` so an edited query is what gets written -- except where
@@ -228,7 +245,9 @@ extension CurlCommand {
         text += url.host
         if let port = url.port { text += ":\(port)" }
         text += url.path
-        if !url.query.isEmpty {
+        if url.query.isEmpty {
+            if url.emptyQuery { text += "?" }
+        } else {
             text += "?" + url.query.map { item in
                 guard let value = item.value else { return item.name }
                 let shown = masking == .display && SecretMasking.isSecretParameter(item.name)
@@ -242,9 +261,19 @@ extension CurlCommand {
     }
 
     /// `5`, not `5.0`: curl accepts both, but a command that grows a decimal point every time it
-    /// is written back out stops looking like the one the user typed.
+    /// is written back out stops looking like the one the user typed. Never exponent notation
+    /// either -- `String(0.00001)` is `"1e-05"`, which curl rejects outright. The shortest plain
+    /// decimal that reads back as the same `Double` is found by widening the precision until it
+    /// does, so no digit the user typed is lost and none is invented.
     private func number(_ value: Double) -> String {
         if value == value.rounded(), abs(value) < 1e15 { return String(Int(value)) }
-        return String(value)
+        for precision in 1 ... 17 {
+            var text = String(format: "%.\(precision)f", value)
+            guard Double(text) == value else { continue }
+            while text.hasSuffix("0") { text.removeLast() }
+            if text.hasSuffix(".") { text.removeLast() }
+            return text
+        }
+        return String(value) // unreachable for any timeout a person would write
     }
 }

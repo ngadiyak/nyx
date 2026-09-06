@@ -264,3 +264,99 @@ import Testing
     let command = try #require(CurlCommand.parse("curl -b cookies.txt https://x/y"))
     #expect(command.shellLine(masking: .display, layout: .oneLine) == "curl -b cookies.txt https://x/y")
 }
+
+// MARK: - Round 1 of the Task 3 review
+
+@Test func ampersandJoinedDataMasksEachPairByItsOwnName() throws {
+    // curl joins every `-d` with `&`, so one `-d` word is a whole parameter *list*. Splitting only
+    // at the first `=` masked the wrong thing: everything after the first value became "the value".
+    let first = try #require(CurlCommand.parse("curl -d 'user=nik&password=0123456789abcd' https://x/y"))
+    #expect(first.shellLine(masking: .display, layout: .oneLine)
+        .contains("-d 'user=nik&password=••••abcd'"))
+
+    let second = try #require(CurlCommand.parse("curl -d 'password=0123456789abcd&user=nik' https://x/y"))
+    #expect(second.shellLine(masking: .display, layout: .oneLine)
+        .contains("-d 'password=••••abcd&user=nik'"))
+}
+
+@Test func urlencodeIsOnePairAndIsNotSplitOnAmpersand() throws {
+    // `--data-urlencode` names exactly one pair and encodes the value, so an `&` inside it is
+    // data, not a separator.
+    let command = try #require(CurlCommand.parse("curl -G --data-urlencode 'q=a&b' https://x/y"))
+    #expect(command.shellLine(masking: .display, layout: .oneLine).contains("--data-urlencode 'q=a&b'"))
+}
+
+@Test func aSecondBareURLKeepsItsPlace() throws {
+    let command = try #require(CurlCommand.parse("curl https://a/1 https://b/2"))
+    let out = command.shellLine(masking: .none, layout: .oneLine)
+    #expect(out == "curl https://a/1 https://b/2")
+    #expect(CurlCommand.parse(out) == command)
+}
+
+@Test func repeatedOutputAndTwoURLsRoundTrip() throws {
+    let command = try #require(CurlCommand.parse("curl -o a -o b https://a https://b"))
+    let out = command.shellLine(masking: .none, layout: .oneLine)
+    #expect(out.contains("https://a https://b"))
+    #expect(CurlCommand.parse(out) == command)
+}
+
+@Test func theCookieHeaderMasksPerValue() throws {
+    let command = try #require(CurlCommand.parse("curl -H 'Cookie: session=0123456789abcd; theme=dark' https://x/y"))
+    #expect(command.shellLine(masking: .display, layout: .oneLine)
+        .contains("-H 'Cookie: session=••••abcd; theme=••••'"))
+}
+
+@Test func secretsInOtherOptionsAreMasked() throws {
+    let command = try #require(CurlCommand.parse(
+        "curl -U proxyuser:0123456789abcd -E /etc/cert.pem:0123456789wxyz --key-password 0123456789efgh https://x/y"))
+    let out = command.shellLine(masking: .display, layout: .oneLine)
+    #expect(out.contains("-U 'proxyuser:••••abcd'"))
+    #expect(out.contains("-E '/etc/cert.pem:••••wxyz'"))
+    #expect(out.contains("--key-password '••••efgh'"))
+    #expect(CurlCommand.parse(command.shellLine(masking: .none, layout: .oneLine)) == command)
+}
+
+@Test func aCertPathWithNoPasswordIsNotMasked() throws {
+    let command = try #require(CurlCommand.parse("curl -E /etc/cert.pem https://x/y"))
+    #expect(command.shellLine(masking: .display, layout: .oneLine) == "curl -E /etc/cert.pem https://x/y")
+}
+
+@Test func anEmptyButPresentQueryIsKept() throws {
+    for line in ["curl 'https://x/y?'", "curl 'https://x/y?#frag'"] {
+        let command = try #require(CurlCommand.parse(line))
+        let out = command.shellLine(masking: .none, layout: .oneLine)
+        #expect(CurlCommand.parse(out) == command, "did not round-trip: \(out)")
+    }
+    let command = try #require(CurlCommand.parse("curl 'https://x/y?'"))
+    #expect(command.url.emptyQuery)
+    #expect(command.shellLine(masking: .none, layout: .oneLine) == "curl 'https://x/y?'")
+
+    let plain = try #require(CurlCommand.parse("curl https://x/y"))
+    #expect(!plain.url.emptyQuery)
+}
+
+@Test func deletingEveryQueryParameterDropsTheQuestionMark() throws {
+    // The flag says the `?` was *written*, not that the query is empty now -- otherwise clearing
+    // the parameters in the workbench would leave a `?` nobody asked for.
+    var command = try #require(CurlCommand.parse("curl 'https://x/y?a=1'"))
+    command.url.query = []
+    #expect(command.shellLine(masking: .none, layout: .oneLine) == "curl https://x/y")
+}
+
+@Test func aFormFileReferenceIsNotASecret() throws {
+    let command = try #require(CurlCommand.parse("curl -F api_key=@key.pem -F secret=<data.txt https://x/y"))
+    let out = command.shellLine(masking: .display, layout: .oneLine)
+    #expect(out.contains("-F api_key=@key.pem"))
+    #expect(out.contains("-F 'secret=<data.txt'"))
+}
+
+@Test func numbersAreWrittenAsPlainDecimals() throws {
+    // `String(1e-05)` is "1e-05", which curl rejects.
+    let command = try #require(CurlCommand.parse("curl --max-time 5 --connect-timeout 0.00001 --retry-delay 2.50 https://x/y"))
+    let out = command.shellLine(masking: .none, layout: .oneLine)
+    #expect(out.contains("--max-time 5 "))
+    #expect(out.contains("--connect-timeout 0.00001 "))
+    #expect(out.contains("--retry-delay 2.5 "))
+    #expect(!out.contains("e-"))
+    #expect(CurlCommand.parse(out) == command)
+}

@@ -143,6 +143,11 @@ public struct CurlCommand: Equatable {
         public var port: Int?
         public var path: String
         public var query: [QueryItem]
+        /// True when a `?` was written but no parameters followed it. `query.isEmpty` alone cannot
+        /// say whether the `?` was there, and the difference survives a round trip: without this,
+        /// `https://x/y?` came back as `https://x/y`. Clearing `query` in an editor leaves this
+        /// false, so deleting every parameter also drops the `?`.
+        public var emptyQuery: Bool
         public var fragment: String?
         /// The word exactly as written, so a variable or a glob survives editing untouched.
         public var raw: ShellWord
@@ -150,12 +155,13 @@ public struct CurlCommand: Equatable {
         /// host and path is a guess (the scheme may be inside `$API`), so the source text stands.
         public var string: String
 
-        public init(scheme: String?, host: String, port: Int?, path: String, query: [QueryItem], fragment: String?, raw: ShellWord, string: String) {
+        public init(scheme: String?, host: String, port: Int?, path: String, query: [QueryItem], emptyQuery: Bool = false, fragment: String?, raw: ShellWord, string: String) {
             self.scheme = scheme
             self.host = host
             self.port = port
             self.path = path
             self.query = query
+            self.emptyQuery = emptyQuery
             self.fragment = fragment
             self.raw = raw
             self.string = string
@@ -185,6 +191,7 @@ public struct CurlCommand: Equatable {
             }
 
             var query: [QueryItem] = []
+            var emptyQuery = false
             if let mark = rest.firstIndex(of: "?") {
                 let queryText = rest[rest.index(after: mark)...]
                 rest = rest[rest.startIndex ..< mark]
@@ -196,6 +203,7 @@ public struct CurlCommand: Equatable {
                         query.append(QueryItem(name: String(pair), value: nil))
                     }
                 }
+                emptyQuery = query.isEmpty
             }
 
             var authority = rest
@@ -225,11 +233,13 @@ public struct CurlCommand: Equatable {
                 rebuilt += "?" + query.map { item in
                     item.value.map { "\(item.name)=\($0)" } ?? item.name
                 }.joined(separator: "&")
+            } else if emptyQuery {
+                rebuilt += "?"
             }
             if let fragment { rebuilt += "#" + fragment }
 
             return URLParts(scheme: scheme, host: host, port: port, path: path, query: query,
-                            fragment: fragment, raw: word,
+                            emptyQuery: emptyQuery, fragment: fragment, raw: word,
                             string: word.containsVariable ? text : rebuilt)
         }
     }
@@ -470,7 +480,9 @@ private let table: [String: OptionKind] = {
         "--limit-rate", "--max-redirs", "--retry-max-time", "--keepalive-time", "--local-port",
         "--dns-servers", "--request-target", "--aws-sigv4", "--netrc-file", "--socks5",
         "--socks5-hostname", "--proxy-user", "-U", "--noproxy", "--alt-svc", "--etag-save",
-        "--etag-compare",
+        "--etag-compare", "--key-password", "--tls-password", "--tlspassword", "--tlsuser",
+        "--proxy-tlspassword", "--proxy-tlsuser", "--pass", "--proxy-key-password", "--proxy-pass",
+        "--proxy-cert", "--proxy-cacert", "--proxy-key",
     ], .passthroughValue)
 
     put([

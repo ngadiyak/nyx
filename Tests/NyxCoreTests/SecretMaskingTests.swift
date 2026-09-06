@@ -24,11 +24,42 @@ import Testing
 }
 
 @Test func aValueWithNoSchemeWordIsMaskedWhole() {
-    // `Cookie: session=abcdefgh` must not keep `session=abcdefgh` just because it has a space in
-    // it somewhere -- only a real auth scheme word is kept.
-    #expect(SecretMasking.maskedHeaderValue(name: "Cookie", value: "session=abcdefgh; theme=dark")
-        == "••••dark")
+    // A secret header whose value is not `<scheme> <token>` has nothing worth keeping in front,
+    // so the whole value goes. (`Cookie:` is the exception and has its own test.)
     #expect(SecretMasking.maskedHeaderValue(name: "x-api-key", value: "sk_live_0123456789") == "••••6789")
+    #expect(SecretMasking.maskedHeaderValue(name: "x-auth-token", value: "not a scheme word") == "••••word")
+    #expect(SecretMasking.maskedHeaderValue(name: "x-amz-security-token", value: "abc") == "••••")
+}
+
+@Test func theCookieHeaderIsMaskedValueByValue() {
+    // One masked blob would hide `theme=dark` behind the same bullets as the session, and show
+    // the tail of whichever cookie happened to be last. Each value is masked on its own.
+    #expect(SecretMasking.maskedHeaderValue(name: "Cookie", value: "session=0123456789abcd; theme=dark")
+        == "session=••••abcd; theme=••••")
+    #expect(SecretMasking.maskedHeaderValue(name: "cookie", value: "novaluehere") == "••••here")
+}
+
+@Test func optionValueSecretsAreMaskedByShape() {
+    // `user:password` and `certpath:password` keep the half in front of the colon; a password
+    // option is all secret.
+    #expect(SecretMasking.maskedOptionValue(option: "-U", value: "proxyuser:0123456789abcd")
+        == "proxyuser:••••abcd")
+    #expect(SecretMasking.maskedOptionValue(option: "--proxy-user", value: "u:p") == "u:••••")
+    #expect(SecretMasking.maskedOptionValue(option: "-E", value: "/etc/cert.pem:0123456789wxyz")
+        == "/etc/cert.pem:••••wxyz")
+    #expect(SecretMasking.maskedOptionValue(option: "-E", value: "/etc/cert.pem") == "/etc/cert.pem")
+    #expect(SecretMasking.maskedOptionValue(option: "--key-password", value: "0123456789efgh") == "••••efgh")
+    #expect(SecretMasking.maskedOptionValue(option: "--tls-password", value: "abc") == "••••")
+    #expect(SecretMasking.maskedOptionValue(option: "--proxy", value: "http://p:3128") == "http://p:3128")
+}
+
+@Test func aParameterListIsMaskedPairByPair() {
+    #expect(SecretMasking.maskedParameterList("user=nik&password=0123456789abcd")
+        == "user=nik&password=••••abcd")
+    #expect(SecretMasking.maskedParameterList("password=0123456789abcd&user=nik")
+        == "password=••••abcd&user=nik")
+    #expect(SecretMasking.maskedParameterList("{\"a\":1}") == "{\"a\":1}")
+    #expect(SecretMasking.maskedParameter("q=a&b") == "q=a&b")   // one pair, `&` is data
 }
 
 @Test func anOrdinaryHeaderIsNotMasked() {

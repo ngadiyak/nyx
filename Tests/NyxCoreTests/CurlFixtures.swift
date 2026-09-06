@@ -30,3 +30,22 @@ enum CurlFixtures {
         return command
     }
 }
+
+extension CurlFixtures {
+    /// Every fixture, in order. The round-trip law runs over all of them: a corpus that only
+    /// covers the shapes the serialiser already handles proves nothing.
+    static let all = [
+        "01-chrome-copy-as-curl",
+        "02-postman",
+        "03-github-api",
+        "04-stripe-basic-auth",
+        "05-multiline-continuations",
+        "06-get-with-urlencode",
+        "07-form-upload",
+        "08-json-flag",
+        "09-body-from-file",
+        "10-pipeline",
+        "11-prefix-and-globs",
+        "12-head-and-timeouts",
+    ]
+}

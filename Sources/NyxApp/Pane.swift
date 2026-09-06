@@ -228,6 +228,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// run starts, when it finishes (a local request can begin and end between two ticks), and
     /// after `watchStartTimeout` for the line that never ran at all.
     private var watchSentAt: Double?
+    /// The newest command in the pane that had already run when the outstanding line was typed.
+    /// The floor `WatchSeries.owns` needs to tell the run it is waiting for from a stale block
+    /// that finished before the watch existed -- see that function.
+    private var watchSentAfterCommandID: UInt32 = 0
     /// True for exactly as long as the watch is writing its own run to the shell, so the rule that
     /// stops a series when the user types does not stop it on the series' own bytes.
     private var isSendingWatchRun = false
@@ -1144,6 +1148,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let now = watchClock
         watch = WatchSeries(plan: plan, command: Pane.watchLine(command), startedAt: now)
         watchSentAt = firstRunSent ? now : nil
+        // The sheet types its first run and then calls this, so the terminal has not seen the new
+        // command yet: what it calls the last finished command is still the block *before* it.
+        watchSentAfterCommandID = firstRunSent ? newestRunCommandID : 0
         updateWatchTimer()
         markDirty()
         return true
@@ -1291,6 +1298,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         sendWatchRun(series.command, at: now)
     }
 
+    /// The newest command in the pane that has actually run -- not the prompt the user (or the
+    /// watch) is about to type at, which has an id already but has produced nothing. Read at the
+    /// moment a run is typed, so that the run itself, whose id is the prompt's, is above it.
+    private var newestRunCommandID: UInt32 {
+        session.withTerminal { $0.lastFinishedCommand?.id ?? 0 }
+    }
+
     /// Types one run at the shell.
     ///
     /// Bracketed like every other command Nyx types for the user, because a `\`-continued `curl`
@@ -1308,6 +1322,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if bracketed { bytes += Array("\u{1B}[201~".utf8) }
         bytes += [0x0D]
         watchSentAt = now
+        watchSentAfterCommandID = newestRunCommandID
         isSendingWatchRun = true
         send(bytes)
         isSendingWatchRun = false
@@ -1526,7 +1541,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // hears about it. Whether it is the series' own run at all is `WatchSeries.owns`,
             // which is tested without a terminal -- an id comparison cannot tell a stranger's
             // curl from a later run of the watch.
-            if let series = watch, series.owns(finishedBlock: id, outstanding: watchSentAt != nil) {
+            if let series = watch, series.owns(finishedBlock: id, outstanding: watchSentAt != nil,
+                                               typedAfter: watchSentAfterCommandID) {
                 pendingWatchFinishes.append(WatchFinish(id: id, status: exchange?.status,
                                                         exitStatus: block.region.exitStatus ?? 0,
                                                         timeTotal: exchange?.timing?.total,

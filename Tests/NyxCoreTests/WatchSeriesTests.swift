@@ -269,27 +269,49 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
 @Test func ownsOnlyItsOwnRuns() {
     var series = watchSeries(interval: 5, startedAt: 0)
     // Waiting for its first run, nothing typed yet: no block in the pane is its own.
-    #expect(!series.owns(finishedBlock: 9, outstanding: false))
+    #expect(!series.owns(finishedBlock: 9, outstanding: false, typedAfter: 8))
 
     // Typed and not yet seen to start. A local request can begin and end between two 250 ms
-    // ticks, so the next command to finish is that run whatever its id turns out to be.
-    #expect(series.owns(finishedBlock: 9, outstanding: true))
+    // ticks, so the next command to finish is that run whatever its id turns out to be -- as long
+    // as it is newer than everything that had already run when the line was typed.
+    #expect(series.owns(finishedBlock: 9, outstanding: true, typedAfter: 8))
 
     series.runStarted(id: 4, at: 0)
-    #expect(series.owns(finishedBlock: 4, outstanding: false))
+    #expect(series.owns(finishedBlock: 4, outstanding: false, typedAfter: 3))
     // Somebody else's curl, finishing while the series' own run is still going.
-    #expect(!series.owns(finishedBlock: 5, outstanding: false))
-    #expect(!series.owns(finishedBlock: 5, outstanding: true))
+    #expect(!series.owns(finishedBlock: 5, outstanding: false, typedAfter: 3))
+    #expect(!series.owns(finishedBlock: 5, outstanding: true, typedAfter: 3))
 
     series.runFinished(id: 4, status: 200, exitStatus: 0, timeTotal: 0.1, body: "", at: 1)
     // Back to waiting: a stranger's block that finishes now is not a run of this series.
-    #expect(!series.owns(finishedBlock: 5, outstanding: false))
+    #expect(!series.owns(finishedBlock: 5, outstanding: false, typedAfter: 4))
     // And the outstanding case has a floor. A block older than a run already recorded is never
     // the run just typed: the pane's exchange cache is trimmed, and a trimmed block that scrolls
     // back on screen is read again -- which without this counted last Tuesday's request as a run.
-    #expect(!series.owns(finishedBlock: 3, outstanding: true))
-    #expect(series.owns(finishedBlock: 5, outstanding: true))
+    #expect(!series.owns(finishedBlock: 3, outstanding: true, typedAfter: 4))
+    #expect(series.owns(finishedBlock: 5, outstanding: true, typedAfter: 4))
 
     series.stop(.stopped)
-    #expect(!series.owns(finishedBlock: 4, outstanding: true))
+    #expect(!series.owns(finishedBlock: 4, outstanding: true, typedAfter: 3))
+}
+
+/// The *first* run needs the floor too, and `runs.last` cannot give it one.
+///
+/// A series with no runs yet had a floor of zero, so every block in the pane was newer than it.
+/// The outstanding window is the pane saying "I typed a run and have not seen it start", and the
+/// block it hands over is whatever ran last -- which on a restored session, or a `curl` that
+/// finished while the tab was in the background, is a stale block nobody watched. It became run 1:
+/// its status went into the timeline, its body became the diff's "previous", and `Run until 200`
+/// could stop on a response from before the watch existed.
+@Test func theFirstRunHasAFloorToo() {
+    var series = watchSeries(interval: 5, startedAt: 0)
+    // Newest thing that had already run when the line was typed: block 12.
+    #expect(!series.owns(finishedBlock: 12, outstanding: true, typedAfter: 12))
+    #expect(!series.owns(finishedBlock: 7, outstanding: true, typedAfter: 12))
+    // The run itself gets the next id, and is adopted.
+    #expect(series.owns(finishedBlock: 13, outstanding: true, typedAfter: 12))
+
+    // A pane with nothing behind it at all: floor zero, and the first block is still the run.
+    series = watchSeries(interval: 5, startedAt: 0)
+    #expect(series.owns(finishedBlock: 1, outstanding: true, typedAfter: 0))
 }

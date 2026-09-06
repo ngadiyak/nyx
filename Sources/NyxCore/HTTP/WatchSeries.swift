@@ -297,14 +297,25 @@ public struct WatchSeries: Equatable {
     /// watched into the statistics and the stop rule. An id comparison alone cannot tell them
     /// apart: every later block has a larger id, which is exactly what a stranger's has too.
     ///
-    /// The outstanding case still has a floor, and needs one: a block *older* than a run already
-    /// recorded is never this run. The pane's exchange cache is trimmed, and a trimmed block that
-    /// comes back on screen is read again -- so without the floor an old request scrolling past
-    /// during the gap between typing a run and seeing it start would be counted as that run.
-    public func owns(finishedBlock id: UInt32, outstanding: Bool) -> Bool {
+    /// The outstanding case has two floors, and needs both.
+    ///
+    /// A block *older* than a run already recorded is never this run: the pane's exchange cache is
+    /// trimmed, and a trimmed block that comes back on screen is read again, so without that floor
+    /// an old request scrolling past during the gap between typing a run and seeing it start was
+    /// counted as that run.
+    ///
+    /// `typedAfter` is the same floor for the run that has no run before it. It is the newest
+    /// command in the pane that had already *run* when the line was typed, and the run being
+    /// waited for is necessarily newer than it. Without it the first run's floor was zero, so any
+    /// block at all was newer -- and the block the pane hands over while outstanding is "whatever
+    /// ran last", which on a restored session, or after a `curl` that finished while the tab was
+    /// in the background, is a stale block nobody watched. It became run 1: its status went into
+    /// the timeline, its body became the diff's "previous", and `Run until 200` could stop on a
+    /// response from before the watch existed.
+    public func owns(finishedBlock id: UInt32, outstanding: Bool, typedAfter newest: UInt32) -> Bool {
         guard !isFinished else { return false }
         if case .running(let expected) = phase { return expected == id }
-        return outstanding && id >= (runs.last?.id ?? 0)
+        return outstanding && id >= (runs.last?.id ?? 0) && id > newest
     }
 
     /// Ends the series. The first reason wins: a watch that stopped because the user typed did not

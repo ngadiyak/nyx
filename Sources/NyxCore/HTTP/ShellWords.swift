@@ -18,8 +18,12 @@ public struct ShellWord: Equatable {
         self.pieces = [.text(text)]
     }
 
+    /// An empty list becomes `[.text("")]` so the empty word has exactly one spelling. Without
+    /// this, `split("''")` -- which accumulates no pieces at all -- produces a word whose `text`
+    /// is `""` but which is not `==` to `ShellWord("")`, and `curl -d ''` becomes a body no
+    /// caller can construct or compare against.
     public init(pieces: [Piece]) {
-        self.pieces = pieces
+        self.pieces = pieces.isEmpty ? [.text("")] : pieces
     }
 
     /// Pieces joined back into one string, variables spelled verbatim (`$TOKEN`, not a value).

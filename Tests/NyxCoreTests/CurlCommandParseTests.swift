@@ -296,3 +296,69 @@ import Testing
     #expect(c.headers.isEmpty)
     #expect(c.other == [CurlCommand.Other(option: "-H", value: ShellWord(pieces: [.variable("$AUTH_HEADER")]))])
 }
+
+// MARK: - Round 1 review fixes
+
+@Test func outputRedirectionStartsTheTail() throws {
+    let c = try #require(CurlCommand.parse("curl https://x/y > out.json"))
+    #expect(c.trailingPipeline == "> out.json")
+    #expect(c.other.isEmpty)          // the redirection is not a second URL
+    #expect(c.url.string == "https://x/y")
+}
+
+@Test func appendingRedirectionAndFileDescriptorDupRoundTrip() throws {
+    let c = try #require(CurlCommand.parse("curl https://x/y >> log 2>&1"))
+    #expect(c.trailingPipeline == ">> log 2>&1")
+    #expect(c.other.isEmpty)
+}
+
+@Test func inputRedirectionStartsTheTail() throws {
+    let c = try #require(CurlCommand.parse("curl https://x/y < in.json"))
+    #expect(c.trailingPipeline == "< in.json")
+    #expect(c.other.isEmpty)
+}
+
+@Test func aTrailingAmpersandStartsTheTail() throws {
+    let c = try #require(CurlCommand.parse("curl https://x/y &"))
+    #expect(c.trailingPipeline == "&")
+    #expect(c.other.isEmpty)
+}
+
+@Test func mergedRedirectionStartsTheTail() throws {
+    let c = try #require(CurlCommand.parse("curl https://x/y &> everything.log"))
+    #expect(c.trailingPipeline == "&> everything.log")
+    #expect(c.other.isEmpty)
+}
+
+@Test func emptyDataArgumentIsAnEmptyWord() throws {
+    // `ShellWords.split` spells an empty quoted word with no pieces at all; it has to compare
+    // equal to `ShellWord("")` or a body of `-d ''` is unrepresentable.
+    let c = try #require(CurlCommand.parse("curl -d '' https://x/y"))
+    #expect(c.body == .data([ShellWord("")]))
+    #expect(c.effectiveMethod == "POST")
+}
+
+@Test func aValueOnAFlagOptionIsKeptWhole() throws {
+    // `--silent` takes no value, so `=1` cannot be stored anywhere; the whole spelling goes to
+    // `other` rather than the value being dropped and the line rebuilt as something else.
+    let c = try #require(CurlCommand.parse("curl --silent=1 https://x/y"))
+    #expect(!c.flags.contains(.silent))
+    #expect(c.other == [CurlCommand.Other(option: "--silent=1", value: nil)])
+}
+
+@Test func aValueOnAnUnmodelledFlagIsKeptWhole() throws {
+    let c = try #require(CurlCommand.parse("curl --http2=1 --wat=3 https://x/y"))
+    #expect(c.other == [
+        CurlCommand.Other(option: "--http2=1", value: nil),
+        CurlCommand.Other(option: "--wat=3", value: nil),
+    ])
+}
+
+@Test func anOperatorThatIsAnOptionValueIsNotTheTail() throws {
+    // `-d '>'` sends a `>` as the body. Only an operator standing on its own -- not one a
+    // value-taking option has already claimed -- ends the command.
+    let c = try #require(CurlCommand.parse("curl -d '>' https://x/y"))
+    #expect(c.body == .data([ShellWord(">")]))
+    #expect(c.trailingPipeline == "")
+    #expect(c.url.string == "https://x/y")
+}

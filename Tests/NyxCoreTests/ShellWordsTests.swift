@@ -113,3 +113,15 @@ import Testing
         #expect(words?.first?.pieces == [.variable(name)])
     }
 }
+
+@Test func anEmptyQuotedWordEqualsTheEmptyWord() {
+    let words = ShellWords.split("curl -d ''")
+    #expect(words?.count == 3)
+    #expect(words?[2] == ShellWord(""))
+    #expect(words?[2].text == "")
+    #expect(words?[2].containsVariable == false)
+    // Built directly with no pieces, it must still be that same word -- otherwise two spellings
+    // of "empty" exist and `==` disagrees with `text`.
+    #expect(ShellWord(pieces: []) == ShellWord(""))
+    #expect(ShellWords.quote(ShellWord(pieces: [])) == "''")
+}

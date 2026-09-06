@@ -298,11 +298,7 @@ public struct CurlCommand: Equatable {
     /// command on it is not `curl` (a `curl` further down a pipeline is reading somebody else's
     /// output, not making the request this line is about), or when no URL is given.
     public static func parse(_ line: String) -> CurlCommand? {
-        guard let allWords = ShellWords.split(line) else { return nil }
-
-        let cut = allWords.firstIndex(where: isPipelineStart) ?? allWords.count
-        let words = Array(allWords[..<cut])
-        let pipeline = joinPipeline(Array(allWords[cut...]))
+        guard let words = ShellWords.split(line) else { return nil }
 
         var index = 0
         var prefix: [ShellWord] = []
@@ -316,9 +312,17 @@ public struct CurlCommand: Equatable {
         var state = ParseState()
         var urls: [ShellWord] = []
         var optionsEnded = false
+        // Where the shell tail begins. Found inside this loop rather than by scanning the words up
+        // front, because a value a preceding option has already claimed is not an operator:
+        // `curl -d '>' https://x` sends a `>` as its body, and quoting is gone by this point.
+        var tailStart = words.count
 
         while index < words.count {
             let word = words[index]
+            if isTailOperator(word) {
+                tailStart = index
+                break
+            }
             index += 1
 
             guard !optionsEnded, let lead = leadingText(word), lead.hasPrefix("-"), lead != "-" else {
@@ -345,6 +349,13 @@ public struct CurlCommand: Equatable {
                 let split = splitWord(word, atFirstOf: ["="])
                 let name = split?.left ?? word.text
                 let inline = split?.right
+                if inline != nil, !takesValue(name) {
+                    // `--silent=1`: there is nowhere to put the `1`, and dropping it would rebuild
+                    // a line the user did not write. The whole spelling goes to `other` instead --
+                    // including the flag itself, so it is represented once rather than twice.
+                    state.command.other.append(.init(option: word.text, value: nil))
+                    continue
+                }
                 apply(option: name, inline: inline, next: nextWord, to: &state, urls: &urls)
                 continue
             }
@@ -356,12 +367,7 @@ public struct CurlCommand: Equatable {
             var at = 1
             while at < scalars.count {
                 let name = "-\(scalars[at])"
-                let takesValue: Bool
-                switch table[name] {
-                case .value, .passthroughValue: takesValue = true
-                default: takesValue = false
-                }
-                if !takesValue {
+                if !takesValue(name) {
                     apply(option: name, inline: nil, next: { _ in nil }, to: &state, urls: &urls)
                     at += 1
                     continue
@@ -377,7 +383,7 @@ public struct CurlCommand: Equatable {
         command.prefix = prefix
         command.url = URLParts.parse(urls[0])
         command.other.append(contentsOf: urls.dropFirst().map { Other(option: "", value: $0) })
-        command.trailingPipeline = pipeline
+        command.trailingPipeline = joinPipeline(Array(words[tailStart...]))
         return command
     }
 }
@@ -477,6 +483,16 @@ private let table: [String: OptionKind] = {
 
     return t
 }()
+
+/// Whether this spelling takes an argument. An option not in the table counts as taking one only
+/// when it is written `--opt=value`, which is handled by the caller: guessing that an unknown
+/// `--opt` takes the next word is what would turn a URL into an option's value.
+private func takesValue(_ option: String) -> Bool {
+    switch table[option] {
+    case .value, .passthroughValue: return true
+    default: return false
+    }
+}
 
 /// Applies one option. `next` is called only by the kinds that want a value, so a boolean never
 /// swallows the word after it.
@@ -623,7 +639,8 @@ private func splitWord(_ word: ShellWord, atFirstOf separators: Set<Unicode.Scal
             let tail = String(String.UnicodeScalarView(scalars[(hit + 1)...]))
             if !tail.isEmpty { rest.append(.text(tail)) }
             rest.append(contentsOf: word.pieces[(index + 1)...])
-            if rest.isEmpty { rest = [.text("")] }
+            // A separator at the very end leaves nothing: `ShellWord.init(pieces:)` spells that
+            // as the one empty word, so `-u user:` gives an empty password rather than no word.
             return (left, scalars[hit], ShellWord(pieces: rest))
         }
     }
@@ -670,7 +687,7 @@ private extension ShellWord {
         let tail = String(String.UnicodeScalarView(scalars[wanted.count...]))
         if !tail.isEmpty { kept.append(.text(tail)) }
         kept.append(contentsOf: pieces.dropFirst())
-        return ShellWord(pieces: kept.isEmpty ? [.text("")] : kept)
+        return ShellWord(pieces: kept)
     }
 
     /// Removes the space curl allows after a header's colon, without touching a later piece.
@@ -681,7 +698,7 @@ private extension ShellWord {
         var kept: [Piece] = []
         if !scalars.isEmpty { kept.append(.text(String(scalars))) }
         kept.append(contentsOf: pieces.dropFirst())
-        return ShellWord(pieces: kept.isEmpty ? [.text("")] : kept)
+        return ShellWord(pieces: kept)
     }
 }
 
@@ -720,23 +737,43 @@ private func isCurl(_ word: ShellWord) -> Bool {
     return text == "curl" || text.hasSuffix("/curl")
 }
 
-/// The word that ends the curl command and starts whatever the output is fed to.
-private func isPipelineStart(_ word: ShellWord) -> Bool {
+/// A shell operator word: the thing that ends the curl command and starts whatever its output --
+/// or its exit status -- is handed to. Both jobs use this one predicate, so anything that can
+/// begin the tail is also written back out unquoted, and the tail round-trips by construction.
+///
+/// Recognized: `|`, `||`, `&&`, `;`, a trailing `&`, and the redirections `>` `>>` `<` `<<` with an
+/// optional leading file descriptor (`2>`) or `&` (`&>`, `&>>`) and an optional `&N` / `&-` target
+/// (`2>&1`, `1>&-`). A redirection only counts when the whole word is one -- `>out.json` written
+/// without a space is a single word to the tokenizer and stays an argument, which is a known gap.
+private func isTailOperator(_ word: ShellWord) -> Bool {
     guard !word.containsVariable else { return false }
-    return ["|", "||", "&&", ";"].contains(word.text)
+    let text = word.text
+    if ["|", "||", "&&", ";", "&"].contains(text) { return true }
+
+    let scalars = Array(text.unicodeScalars)
+    var i = 0
+    if i < scalars.count, scalars[i] == "&" {
+        i += 1                                      // `&>` / `&>>`: stdout and stderr together
+    } else {
+        while i < scalars.count, isDigit(scalars[i]) { i += 1 }   // an explicit file descriptor
+    }
+    guard i < scalars.count, scalars[i] == ">" || scalars[i] == "<" else { return false }
+    let arrow = scalars[i]
+    i += 1
+    if i < scalars.count, scalars[i] == arrow { i += 1 }          // `>>` append, `<<` heredoc
+    if i < scalars.count, scalars[i] == "&" {                     // duplicate onto another fd
+        i += 1
+        if i < scalars.count, scalars[i] == "-" { return i + 1 == scalars.count }
+        guard i < scalars.count else { return false }
+        while i < scalars.count, isDigit(scalars[i]) { i += 1 }
+    }
+    return i == scalars.count
 }
 
-/// Re-joins the pipeline so it can be appended to a rebuilt command line. Operator words are
-/// written through unquoted -- `ShellWords.quote` would turn `|` into `'|'`, an argument rather
-/// than a pipe, and the line would stop meaning what it meant.
+/// Re-joins the tail so it can be appended to a rebuilt command line. Operator words are written
+/// through unquoted -- `ShellWords.quote` would turn `|` into `'|'`, an argument rather than a
+/// pipe, and the line would stop meaning what it meant -- while everything else is quoted as the
+/// argument it is.
 private func joinPipeline(_ words: [ShellWord]) -> String {
-    words.map { word -> String in
-        guard !word.containsVariable else { return ShellWords.quote(word) }
-        let scalars = Array(word.text.unicodeScalars)
-        let operators: Set<Unicode.Scalar> = ["|", "&", ";", "<", ">"]
-        let isOperator = !scalars.isEmpty
-            && scalars.contains(where: { operators.contains($0) })
-            && scalars.allSatisfy { operators.contains($0) || isDigit($0) }
-        return isOperator ? word.text : ShellWords.quote(word)
-    }.joined(separator: " ")
+    words.map { isTailOperator($0) ? $0.text : ShellWords.quote($0) }.joined(separator: " ")
 }

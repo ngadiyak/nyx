@@ -48,9 +48,14 @@ public struct PaletteItem: Equatable {
         self.isEnabled = isEnabled
     }
 
-    public static func action(_ action: TerminalAction, chord: String?) -> PaletteItem {
+    /// A row for a menu action. `isEnabled` is the same answer the menu bar gets from
+    /// `ActionTarget.canPerform`, so an action that is greyed in the menu is greyed here: a palette
+    /// that offers what the menu refuses is a palette that beeps at you.
+    public static func action(_ action: TerminalAction, chord: String?,
+                              isEnabled: Bool = true) -> PaletteItem {
         PaletteItem(title: action.title, detail: chord ?? "",
-                    searchText: "\(action.title) \(action.configName)", kind: .action(action))
+                    searchText: "\(action.title) \(action.configName)", kind: .action(action),
+                    isEnabled: isEnabled)
     }
 
     public static func theme(_ name: String) -> PaletteItem {
@@ -162,11 +167,12 @@ public struct CommandPalette: Equatable {
 /// broken, and the sections people reach for blind are the oldest ones.
 public enum PaletteSource {
     public static func items(actions: [TerminalAction], chord: (TerminalAction) -> String?,
+                             enabled: (TerminalAction) -> Bool = { _ in true },
                              quickActions: [(action: QuickAction, isRunning: Bool)] = [],
                              themes: [String], tabTitles: [String],
                              remote: [PaletteItem] = [],
                              requests: [PaletteItem] = []) -> [PaletteItem] {
-        actions.map { PaletteItem.action($0, chord: chord($0)) }
+        actions.map { PaletteItem.action($0, chord: chord($0), isEnabled: enabled($0)) }
             + quickActions.enumerated().map {
                 PaletteItem.quickAction($0.element.action, index: $0.offset,
                                         isRunning: $0.element.isRunning)

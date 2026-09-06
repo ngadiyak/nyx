@@ -864,6 +864,9 @@ final class TabController: NSViewController, NSMenuItemValidation {
         let bindings = KeyBindingTable(user: config.keybinds)
         let items = PaletteSource.items(actions: ActionCatalog.allMenuActions,
                                         chord: { bindings.binding(for: $0)?.displayName },
+                                        // The same answer the menu bar gets, so a row that would
+                                        // beep is greyed here instead.
+                                        enabled: { [weak self] in self?.canPerform($0) ?? true },
                                         quickActions: quickActions.map {
                                             ($0, QuickActionRunner.shared.isRunning($0))
                                         },
@@ -1534,9 +1537,9 @@ extension TabController: ActionTarget {
             // and the menu item is greyed out for exactly this reason.
             if focusedPane?.takeControl() != true { NSSound.beep() }
 
-        // The response plan (Task 10+) implements both of these against a live watch and a shown
-        // response; until then there is nothing for either to act on, and a beep says the key was
-        // heard rather than doing nothing at all.
+        // Unreachable from the menu and the palette, which grey both (see `canPerform`), but a
+        // `keybind` line reaches `perform` directly -- so the beep stays as the answer to a chord
+        // pressed for a feature that has not arrived.
         case .toggleHTTPLens: NSSound.beep()
         case .stopWatch: NSSound.beep()
         }
@@ -1592,11 +1595,15 @@ extension TabController: ActionTarget {
             // Only on a remote pane that is observing. On a local pane, or one already writing,
             // there is nothing to take.
             return focusedPane?.remote?.state.stripAction == .takeControl
+        case .toggleHTTPLens, .stopWatch:
+            // The response plan owns both: one needs a shown response to re-render, the other a
+            // running watch to stop. Neither exists yet, so they are greyed in the menu and in the
+            // palette rather than beeping -- a menu item that is *there* and does nothing is a
+            // promise; one that is greyed is a feature that has not arrived. The bindings stay in
+            // place so nothing has to be re-bound when it does.
+            return false
         // `newRequest` falls through to here and is right to: a blank request needs nothing to
-        // exist but a pane to run it in. `toggleHTTPLens` and `stopWatch` fall through because the
-        // state they would gate on -- a shown response, a running watch -- arrives with the
-        // response plan; until then they are enabled whenever any other pane-scoped action is,
-        // which is a tracked gap, not an oversight.
+        // exist but a pane to run it in.
         default:
             return focusedPane != nil
         }

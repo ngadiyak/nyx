@@ -172,6 +172,9 @@ final class RequestEditor: NSViewController {
     /// `snapToWholeRows` once AppKit has said how tall a line really is.
     private lazy var previewHeight = preview.heightAnchor.constraint(equalToConstant: 118)
 
+    /// What the Repeat menu says while the response side does not exist.
+    static let comingWithTheResponsePlan = "Coming with lenses and watch"
+
     /// The width the auth grid's label column is held to: the widest of the four labels it shows
     /// (`Kind:`, `User:`, and `Password:` / `Value:` / `Token:` depending on the kind).
     static let widestAuthLabel: CGFloat = {
@@ -261,11 +264,20 @@ final class RequestEditor: NSViewController {
         // face is a disclosure arrow says nothing about what is behind it.
         let repeats = NSPopUpButton(frame: .zero, pullsDown: true)
         repeats.addItem(withTitle: "Repeat")
+        // Disabled, not removed. Repeating a request is the response plan's, and running it *once*
+        // while a menu says "Run 10 times" is a feature lying about what it did. Left in view and
+        // greyed, with a tooltip that says when it arrives: a menu item that vanishes teaches
+        // nobody anything, and one that is there and does less than it says is worse.
+        repeats.menu?.autoenablesItems = false
         for (title, plan) in [("Run every…", WatchPlanRequest.every(seconds: watchInterval)),
                               ("Run 10 times", .times(10)),
                               ("Run until 200", .untilStatus(200))] {
-            repeats.menu?.addItem(item(title, #selector(runWatch(_:)), plan))
+            let entry = item(title, #selector(runWatch(_:)), plan)
+            entry.isEnabled = false
+            entry.toolTip = RequestEditor.comingWithTheResponsePlan
+            repeats.menu?.addItem(entry)
         }
+        repeats.toolTip = RequestEditor.comingWithTheResponsePlan
         repeats.setAccessibilityLabel("Run this request repeatedly")
         repeats.toolTip = "Run this request more than once"
 

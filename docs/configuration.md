@@ -52,7 +52,7 @@ so that template and this page are the two places a new key must be added.
 | `remote-relay` | `wss://nyx.agentforge.cc/v1/ws` | The relay's WebSocket URL |
 | `remote-relay-token` | — | The relay's shared secret, checked before pairing is even possible. Not comment-stripped, so `#` is allowed |
 | `remote-snapshot-lines` | `2000` | Lines of scrollback a host sends a client as the initial snapshot before switching to the live stream. Clamped to 100–20000 |
-| `http-lens` | `pretty` | `pretty` (reformat a JSON response body), `raw` (exactly as received). `toggle_http_lens` flips it for one response |
+| `http-lens` | `pretty` | `pretty` (reformat a JSON response body), `raw` (exactly as received). Read by the response lenses, which are the next plan: the key is parsed and validated today, and nothing reads it yet. `toggle_http_lens` is greyed until then |
 | `http-hint` | `true` | Show the `⌘E Workbench` pill at the end of a `curl` that has just been **pasted**, for eight seconds or until the next key press. Typing one by hand does not raise it |
 | `http-watch-interval` | `5` | Seconds between polls while a `--watch` request is running. Clamped to 1–3600 |
 | `http-history` | `50` | How many requests the palette's Requests section remembers. `0` turns the feature off. Clamped to 0–500 |
@@ -140,12 +140,12 @@ A user binding beats a default for the same chord; the last line in the file win
 | `save_command_output` | — | Writes the last command's output to a file the user chooses |
 | `notify_when_done` | — | Arm a notification for the command running now, however short it turns out |
 | `save_scrollback` | — | Writes the transcript to a file the user chooses |
-| `new_request` | — | Opens the command editor pre-filled with `curl `. Task 9 replaces this with a dedicated request editor |
+| `new_request` | — | Opens the request workbench on a blank request: method, URL, parameters, headers, body, auth and options as a form |
 | `remote_sessions` | — | Opens the command palette's Remote section. Settings → Remote also gets you there |
 | `remote_pair` | — | Opens the pairing sheet, either side |
 | `remote_take_control` | — | On an observed remote tab, takes over as writer |
-| `toggle_http_lens` | ⌘⇧J | Flips a shown response between `pretty` and `raw`. Implemented alongside the response view |
-| `stop_watch` | ⌘. | Stops a running `--watch` request. Implemented alongside the response view |
+| `toggle_http_lens` | ⌘⇧J | Flips a shown response between `pretty` and `raw`. **Greyed in the menu and the palette** until the response plan lands; the binding is live and beeps |
+| `stop_watch` | ⌘. | Stops a running `--watch` request. **Greyed in the menu and the palette** until the response plan lands; the binding is live and beeps |
 
 The menu is generated from `ActionCatalog.sections`, so every action is discoverable there with
 its current chord, and the settings window's Keys page lists them all.
@@ -176,9 +176,10 @@ never put a command behind a button on its own.
 ## The request history
 
 Every curl that finishes in a pane is remembered in `~/.config/nyx/requests` (beside the config;
-`NYX_REQUEST_HISTORY` moves it), and the command palette lists them under the Remote section --
-`GET api.example.com/users`, with how long ago it ran. Choosing one opens it in the editor ready to
-run again.
+`NYX_REQUEST_HISTORY` moves it), and the command palette lists them under the Requests section --
+`GET api.example.com/users`, with `Request · 2 min ago` beside it. Choosing one opens it in the
+request workbench, ready to change something and run again. What is stored is the request as it was
+written: Nyx's own `-sSi -w …` measurement flags are taken off before a line is remembered.
 
 One request per line, newest first, as `<unix seconds><tab><the command line>`. Re-running a request
 moves its line to the top rather than adding a second one; sameness is what the command *is*, so

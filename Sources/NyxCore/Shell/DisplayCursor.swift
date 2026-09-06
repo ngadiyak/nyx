@@ -29,6 +29,27 @@ public struct DisplayCursor: Equatable {
 }
 
 public extension DisplayCursor {
+    /// Whether a viewport anchor survives the **display** changing height under it -- a lens
+    /// opening or closing, a watch run replacing a block's lens, a fold moving.
+    ///
+    /// Only the live-bottom anchor is dropped, and it has to be: it is what `send` records while a
+    /// command is being typed, and it is stale the instant a lens opens under it. In a window the
+    /// session has never scrolled, `viewportTopRow` is 0 from the first keystroke to the last, so
+    /// that anchor stays "valid" and the frame draws from the prompt down with the shell's own
+    /// prompt a hundred display lines below the last row: no caret, no echo, until somebody scrolls
+    /// by hand.
+    ///
+    /// A reader's anchor is kept, and this is why the rule has a name. Dropping every anchor threw
+    /// anyone reading an *earlier* block out of it whenever a *later* one changed -- a watch
+    /// completing a run every five seconds does exactly that, and a reader who had opened run 7 and
+    /// parked seventy lines into it was put back to the top of it, or to the prompt, on every tick.
+    /// Nothing about the block they are reading changed, so neither should where they are in it.
+    /// `canonicalised` still clamps it against the buffers as they are now, which is what covers a
+    /// rebuild that came back shorter.
+    static func survivesDisplayChange(anchor: DisplayCursor?, isDisplayBottom: Bool) -> Bool {
+        anchor != nil && !isDisplayBottom
+    }
+
     /// The same anchor after the scrollback ring has thrown `evictedAfter - evictedBefore` rows
     /// away, or nil when it cannot be kept.
     ///
@@ -62,27 +83,6 @@ public extension DisplayCursor {
     /// A counter that appears to go backwards -- `Terminal.evictedRows` never does, but a caller
     /// can read the two numbers in the wrong order -- shifts nothing rather than moving rows
     /// upwards into indices that were never theirs.
-    /// Whether a viewport anchor survives the **display** changing height under it -- a lens
-    /// opening or closing, a watch run replacing a block's lens, a fold moving.
-    ///
-    /// Only the live-bottom anchor is dropped, and it has to be: it is what `send` records while a
-    /// command is being typed, and it is stale the instant a lens opens under it. In a window the
-    /// session has never scrolled, `viewportTopRow` is 0 from the first keystroke to the last, so
-    /// that anchor stays "valid" and the frame draws from the prompt down with the shell's own
-    /// prompt a hundred display lines below the last row: no caret, no echo, until somebody scrolls
-    /// by hand.
-    ///
-    /// A reader's anchor is kept, and this is why the rule has a name. Dropping every anchor threw
-    /// anyone reading an *earlier* block out of it whenever a *later* one changed -- a watch
-    /// completing a run every five seconds does exactly that, and a reader who had opened run 7 and
-    /// parked seventy lines into it was put back to the top of it, or to the prompt, on every tick.
-    /// Nothing about the block they are reading changed, so neither should where they are in it.
-    /// `canonicalised` still clamps it against the buffers as they are now, which is what covers a
-    /// rebuild that came back shorter.
-    static func survivesDisplayChange(anchor: DisplayCursor?, isDisplayBottom: Bool) -> Bool {
-        anchor != nil && !isDisplayBottom
-    }
-
     static func shifted(anchor: DisplayCursor?, anchorTop: Int,
                         evictedBefore: Int, evictedAfter: Int, viewportTopRow: Int)
         -> (anchor: DisplayCursor, anchorTop: Int)? {

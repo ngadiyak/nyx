@@ -181,6 +181,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// bottom moving -- see `Terminal.viewportCursor`.
     private var viewportAnchorIsDisplayBottom = false
 
+    /// For a display that is about to be a different height -- a lens opened or closed, a watch run
+    /// lensed, a fold moved. Only the live-bottom anchor goes; a reader's own place is kept, and
+    /// `canonicalised` clamps it against the buffers as they are. The rule is
+    /// `DisplayCursor.survivesDisplayChange`, in Core where it is tested.
+    private func forgetViewportAnchorIfItIsOnlyTheLiveBottom() {
+        guard !DisplayCursor.survivesDisplayChange(anchor: viewportAnchor,
+                                                   isDisplayBottom: viewportAnchorIsDisplayBottom)
+        else { return }
+        forgetViewportAnchor()
+    }
+
     /// Forgets where in the display the viewport was, so the next frame takes the terminal's own
     /// row and line 0.
     ///
@@ -189,25 +200,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// anchor left over from a lens read earlier would be re-homed by `canonicalised` onto whatever
     /// block now occupies that row. `⌘K`, a new `curl`, and the fresh response opened sixty lines
     /// down. Anything that makes an absolute row mean something else calls this.
-    /// The display is about to be a different height -- a lens opened or closed, a watch run
-    /// lensed, a fold moved -- and the anchor may or may not still mean anything.
-    ///
-    /// `DisplayCursor.survivesDisplayChange` is the rule, in Core where it is tested: only the
-    /// live-bottom anchor goes. Forgetting every anchor here threw a reader who had opened an
-    /// *earlier* block out of it whenever a *later* one changed -- which is once every five seconds
-    /// while a watch runs.
-    private func forgetViewportAnchorIfItIsOnlyTheLiveBottom() {
-        guard !DisplayCursor.survivesDisplayChange(anchor: viewportAnchor,
-                                                   isDisplayBottom: viewportAnchorIsDisplayBottom)
-        else { return }
-        forgetViewportAnchor()
-    }
-
     private func forgetViewportAnchor() {
         viewportAnchor = nil
         viewportAnchorTop = -1
         viewportAnchorIsDisplayBottom = false
     }
+
     /// A drag over a lensed block's own lines. Not `Selection`: those are absolute rows and cells
     /// of the grid, and these lines exist nowhere in the buffer.
     private var lensSelection: LensSelection?

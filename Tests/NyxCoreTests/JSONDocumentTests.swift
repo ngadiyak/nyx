@@ -193,3 +193,18 @@ private func styles(_ line: JSONDocument.PrettyLine) -> [LensStyle] { line.spans
     #expect(lines.count > 80_000)
     #expect(elapsed < .milliseconds(200), "pretty took \(elapsed)")
 }
+
+/// A tree too deep to print says where it stopped. Returning nothing for the subtree was a silent
+/// lie: the reader saw a `[` that never closed and no sign that anything had been left out.
+@Test func aSubtreeTooDeepToPrintSaysSo() {
+    var value = JSONValue.null
+    for _ in 0 ..< 600 { value = .array([value]) }
+    let lines = JSONDocument.pretty(value)
+    let cut = JSONDocument.maximumDepth + 1
+    #expect(lines.count == cut * 2 + 1)
+    #expect(lines[cut].text == String(repeating: " ", count: cut * 2) + "\u{2026}")
+    #expect(lines[cut].spans.map(\.style) == [.dim])
+    #expect(lines[cut].node == nil)
+    // The brackets above it still close, so the document is not left hanging open.
+    #expect(lines.last?.text == "]")
+}

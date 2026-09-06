@@ -254,7 +254,10 @@ public enum JSONPath {
             }
         case .length:
             switch value {
-            case .string(let text): return [.number(String(text.count))]
+            // Codepoints, which is what jq counts -- and what the API's own documentation counts
+            // when it says a field is at most 255 long. Swift's `count` is graphemes and would
+            // answer 1 for `e` plus a combining acute, which is a different question.
+            case .string(let text): return [.number(String(text.unicodeScalars.count))]
             case .array(let items): return [.number(String(items.count))]
             case .object(let members): return [.number(String(members.count))]
             case .null: return [.number("0")]
@@ -264,7 +267,7 @@ public enum JSONPath {
             }
         case .recurse(let name):
             var out: [JSONValue] = []
-            collect(name, in: value, into: &out)
+            collect(name, in: value, depth: 0, into: &out)
             return out
         case .pipe(let first, let second):
             return evaluate(first, on: value).flatMap { evaluate(second, on: $0) }
@@ -277,9 +280,13 @@ public enum JSONPath {
 
     /// jq's rule: a key that is not there is `null`, not an error and not nothing -- so `.a.b` on a
     /// response missing `a` shows `null` rather than an empty box the reader cannot interpret.
+    ///
+    /// The **last** member of that name, when a body repeats a key. The tree keeps every one of
+    /// them because printing a body is showing what arrived, but a path through it has to answer
+    /// the way jq and every dictionary-building reader answers, which is the last.
     private static func member(_ name: String, of value: JSONValue) -> JSONValue {
         guard case .object(let members) = value else { return .null }
-        return members.first { $0.key == name }?.value ?? .null
+        return members.last { $0.key == name }?.value ?? .null
     }
 
     private static func element(_ position: Int, of value: JSONValue) -> JSONValue {
@@ -306,15 +313,22 @@ public enum JSONPath {
 
     /// Document order: each member is offered, then descended into. A match is descended into as
     /// well, so `..name` under a `name` that is itself an object still finds what is inside it.
-    private static func collect(_ name: String, in value: JSONValue, into out: inout [JSONValue]) {
+    ///
+    /// Stops where the printer stops. This one *is* recursive -- a tree walk with nothing to say
+    /// per level reads far better that way -- so it needs the same guard the reader has, or a
+    /// hand-built tree deeper than 512 would take the stack out from under whatever queue a lens
+    /// is being rendered on.
+    private static func collect(_ name: String, in value: JSONValue, depth: Int,
+                                into out: inout [JSONValue]) {
+        guard depth <= JSONDocument.maximumDepth else { return }
         switch value {
         case .object(let members):
             for member in members {
                 if member.key == name { out.append(member.value) }
-                collect(name, in: member.value, into: &out)
+                collect(name, in: member.value, depth: depth + 1, into: &out)
             }
         case .array(let items):
-            for item in items { collect(name, in: item, into: &out) }
+            for item in items { collect(name, in: item, depth: depth + 1, into: &out) }
         default:
             break
         }

@@ -1597,9 +1597,10 @@ extension TabController: ActionTarget {
             return focusedPane?.remote?.state.stripAction == .takeControl
         case .toggleHTTPLens, .stopWatch:
             // The response plan owns both: one needs a shown response to re-render, the other a
-            // running watch to stop. Neither exists yet, so they are greyed in the menu and in the
-            // palette rather than beeping -- a menu item that is *there* and does nothing is a
-            // promise; one that is greyed is a feature that has not arrived. The bindings stay in
+            // running watch to stop. Neither exists yet, so they are greyed in the menu and absent
+            // from the palette rather than beeping -- a menu item that is *there* and does nothing
+            // is a promise; one that is greyed is a feature that has not arrived, and a palette
+            // row you cannot choose is a wrong answer to what you typed. The bindings stay in
             // place so nothing has to be re-bound when it does.
             return false
         // `newRequest` falls through to here and is right to: a blank request needs nothing to

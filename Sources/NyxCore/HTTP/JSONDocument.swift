@@ -87,6 +87,11 @@ public enum JSONDocument {
     /// mark (Windows services write one) and whitespace at either end (every shell adds a newline).
     /// Trailing anything else is a refusal: a body that is JSON *and then a log line* is not JSON,
     /// and pretty-printing the first half of it would hide the second half entirely.
+    ///
+    /// A key repeated in one object keeps **both** members: this is what the response is, and a
+    /// printer that dropped one would be drawing a body the server did not send. A *path* through
+    /// the tree resolves such a key to the last of them, the way jq does -- see
+    /// `JSONPath.member(_:of:)`.
     public static func parse(_ text: String) -> JSONValue? {
         var reader = Reader(Array(text.utf8))
         reader.skipByteOrderMark()
@@ -150,12 +155,33 @@ public enum JSONDocument {
     /// re-renders on every poll -- and a key that has gone away must not blank the view.
     public static func pretty(_ value: JSONValue, folded: Set<NodePath>) -> [PrettyLine] {
         var lines: [PrettyLine] = []
-        emit(value, key: nil, parent: NodePath([]), step: nil, depth: 0, comma: false,
-             folded: folded, into: &lines)
+        var stack: [Job] = [.value(value, key: nil, parent: NodePath([]), step: nil, depth: 0,
+                                   comma: false)]
+        while let job = stack.popLast() {
+            switch job {
+            case .close(let text, let depth):
+                lines.append(PrettyLine(text: text, depth: depth, spans: [], node: nil,
+                                        childCount: 0))
+            case .value(let value, let key, let parent, let step, let depth, let comma):
+                emit(value, key: key, parent: parent, step: step, depth: depth, comma: comma,
+                     folded: folded, into: &lines, stack: &stack)
+            }
+        }
         return lines
     }
 
-    /// One value, as one line or as a block of them.
+    /// What is left to print. Deliberately a stack of these rather than recursion: the reader
+    /// accepts 512 levels of nesting and a frame of this function is about a kilobyte, so the
+    /// obvious recursive printer ran a 512 KB thread out of stack on a document the reader had just
+    /// said yes to -- a crash, on whatever queue a caller happens to render from.
+    private enum Job {
+        case value(JSONValue, key: String?, parent: NodePath, step: NodePath.Step?, depth: Int,
+                   comma: Bool)
+        /// A container's closing bracket, with its text already built.
+        case close(String, depth: Int)
+    }
+
+    /// One value, as one line or as an opening line plus the jobs that finish it.
     ///
     /// Written flat -- no nested closures over mutable state, no `String(repeating:)` per line, and
     /// the value's own `NodePath` built only when it turns out to be a foldable container -- because
@@ -164,8 +190,8 @@ public enum JSONDocument {
     /// a visible stall on the frame that shows the response.
     private static func emit(_ value: JSONValue, key: String?, parent: NodePath,
                              step: NodePath.Step?, depth: Int, comma: Bool,
-                             folded: Set<NodePath>, into lines: inout [PrettyLine]) {
-        guard depth <= maximumDepth else { return }
+                             folded: Set<NodePath>, into lines: inout [PrettyLine],
+                             stack: inout [Job]) {
         let indent = Indents.of(depth)
         var head = ""
         head.reserveCapacity(64)
@@ -179,6 +205,18 @@ public enum JSONDocument {
         }
         let headCount = depth * 2 + (keySpan.map { $0.range.count + 2 } ?? 0)
         let tail = comma ? "," : ""
+
+        // Deeper than the printer goes, the line says so. Dropping the subtree in silence left a
+        // `[` that never closed and no sign that anything had been left out; a reader would have
+        // taken the document for a short one.
+        guard depth <= maximumDepth else {
+            head += "\u{2026}"
+            var spans = keySpan.map { [$0] } ?? []
+            spans.append(PrettyLine.Span(range: headCount ..< headCount + 1, style: .dim))
+            lines.append(PrettyLine(text: head + tail, depth: depth, spans: spans, node: nil,
+                                    childCount: 0))
+            return
+        }
 
         var count = 0
         var isObject = true
@@ -241,22 +279,24 @@ public enum JSONDocument {
         head += open
         lines.append(PrettyLine(text: head, depth: depth, spans: keySpan.map { [$0] } ?? [],
                                 node: path, childCount: count))
+        // Pushed in reverse so they come back off the stack in the order they were written, and
+        // the closing bracket pushed first so it lands after all of them.
+        stack.append(.close(indent + close + tail, depth: depth))
         switch value {
         case .object(let members):
-            for (offset, member) in members.enumerated() {
-                emit(member.value, key: member.key, parent: path, step: .key(member.key),
-                     depth: depth + 1, comma: offset < count - 1, folded: folded, into: &lines)
+            for offset in stride(from: count - 1, through: 0, by: -1) {
+                stack.append(.value(members[offset].value, key: members[offset].key, parent: path,
+                                    step: .key(members[offset].key), depth: depth + 1,
+                                    comma: offset < count - 1))
             }
         case .array(let items):
-            for (offset, item) in items.enumerated() {
-                emit(item, key: nil, parent: path, step: .index(offset), depth: depth + 1,
-                     comma: offset < count - 1, folded: folded, into: &lines)
+            for offset in stride(from: count - 1, through: 0, by: -1) {
+                stack.append(.value(items[offset], key: nil, parent: path, step: .index(offset),
+                                    depth: depth + 1, comma: offset < count - 1))
             }
         default:
             break
         }
-        lines.append(PrettyLine(text: indent + close + tail, depth: depth, spans: [], node: nil,
-                                childCount: 0))
     }
 
     /// The indents, made once. A `String(repeating:)` per line is an allocation per line, and this

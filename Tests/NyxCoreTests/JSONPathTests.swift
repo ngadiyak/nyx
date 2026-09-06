@@ -140,3 +140,32 @@ private let sample = JSONDocument.parse(sampleText) ?? .null
     #expect(JSONPath.evaluate(parsed ?? .identity, on: sample)
             == [.string("a"), .string("b"), .string("c")])
 }
+
+/// jq counts a string's *codepoints*, and so does this: `length` is asked of a response to compare
+/// it with what the API's own documentation says, and every other tool in that conversation counts
+/// codepoints too. Swift's `count` would say 1 for `e` + a combining acute, which is the answer to
+/// a different question than the one being asked.
+@Test func lengthOfAStringCountsCodepoints() {
+    #expect(JSONPath.evaluate(.length, on: .string("e\u{0301}")) == [.number("2")])
+    #expect(JSONPath.evaluate(.length, on: .string("\u{1F680}")) == [.number("1")])
+    #expect(JSONPath.evaluate(.length, on: .string("abc")) == [.number("3")])
+}
+
+/// A body with the same key twice is legal JSON and does happen. The tree keeps both -- printing
+/// one of them would be printing a body the server did not send -- and a *path* through it takes
+/// the last, which is what jq does and what every JSON reader that builds a dictionary does.
+@Test func aDuplicateKeyTakesTheLast() throws {
+    let value = try #require(JSONDocument.parse("{\"a\":1,\"a\":2}"))
+    #expect(value == JSONValue.object([.init(key: "a", value: .number("1")),
+                                       .init(key: "a", value: .number("2"))]))
+    #expect(JSONPath.evaluate(.key("a"), on: value) == [.number("2")])
+}
+
+/// `..name` walks the whole tree, and the tree can be as deep as the reader allows. It stops where
+/// the printer stops rather than running the stack out on a document built by hand.
+@Test func recurseStopsAtTheDepthLimit() {
+    var value = JSONValue.number("1")
+    for _ in 0 ..< 600 { value = .object([.init(key: "a", value: value)]) }
+    // One match per level, from the root down to the last level the guard allows.
+    #expect(JSONPath.evaluate(.recurse("a"), on: value).count == JSONDocument.maximumDepth + 1)
+}

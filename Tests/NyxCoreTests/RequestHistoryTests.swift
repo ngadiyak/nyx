@@ -291,3 +291,44 @@ private func at(_ secondsAgo: TimeInterval) -> Date { epoch.addingTimeInterval(-
     byTool.setQuery("curl")
     #expect(byTool.selected?.title == "GET api.example.com/users")
 }
+
+// MARK: - What gets remembered is the request, not the run
+
+/// A request run from the workbench and the same one typed by hand are one row, not two.
+///
+/// The line a workbench run puts on the shell carries Nyx's own `-sSi -w '<sentinel>'`, and both
+/// places that record a request see *that* line -- the pane, as the sheet finishes, and the block
+/// reader, off the grid. Stored as it stands, the palette then offered a row whose form showed
+/// flags nobody typed, whose `Save as Button` wrote the sentinel into the config file, and which
+/// counted as a different request from the hand-typed one beside it.
+@Test func aRunAndTheSameRequestTypedByHandAreOneRow() throws {
+    let typed = try #require(CurlCommand.parse("curl -H 'x-a: 1' https://api.example.com/v1/users"))
+    var history = RequestHistory(limit: 10)
+    history.record(RequestRun.commandLine(for: typed), at: at(60))
+    history.record("curl -H 'x-a: 1' https://api.example.com/v1/users", at: at(0))
+    #expect(history.entries.count == 1)
+    let line = try #require(history.entries.first?.line)
+    #expect(!line.contains("nyx-http"))
+    #expect(!line.contains("-sSi"))
+    #expect(line == "curl -H 'x-a: 1' https://api.example.com/v1/users")
+}
+
+/// The other order, because dedup keeps the *newest* spelling: recording the run second must not
+/// put the sentinel back.
+@Test func recordingARunSecondStillStoresTheRequest() throws {
+    let typed = try #require(CurlCommand.parse("curl https://api.example.com/v1/users"))
+    var history = RequestHistory(limit: 10)
+    history.record("curl https://api.example.com/v1/users", at: at(60))
+    history.record(RequestRun.commandLine(for: typed), at: at(0))
+    #expect(history.entries.count == 1)
+    #expect(history.entries.first?.line == "curl https://api.example.com/v1/users")
+}
+
+/// And a line that is not a run keeps every character of what was typed -- the strip is the
+/// inverse of a run, not a normaliser.
+@Test func aLineThatIsNotARunIsStoredVerbatim() {
+    var history = RequestHistory(limit: 10)
+    let line = "curl -sS --compressed 'https://api.example.com/v1/items?page=2'"
+    history.record(line, at: at(0))
+    #expect(history.entries.first?.line == line)
+}

@@ -449,3 +449,24 @@ import Testing
     #expect(model.tabLabel(.headers).count
         == RequestEditorModel(command: empty).tabLabel(.headers).count)
 }
+
+// MARK: - The button a request is saved as
+
+/// What `Save as Button…` prefills, from both the sheet and a block's ⋯ menu.
+///
+/// `command` is `copyLine` -- the request as the user wrote it, on one line. Not `runLine`: a
+/// quick action is a command somebody will read in their config file and may well run outside Nyx,
+/// and `-i` with a nine-variable `-w` format welded on is not a command anybody typed. The name is
+/// the method and where it goes, which is what a button on a bar has room to say.
+@Test func aButtonSavedFromARequestCarriesTheRequestAndNotTheRun() throws {
+    let command = try CurlFixtures.command("01-chrome-copy-as-curl")
+    let model = RequestEditorModel(command: command)
+    let draft = model.quickActionDraft
+    #expect(draft.name == "POST api.example.com/v1/messages")
+    #expect(draft.kind == .send)
+    #expect(draft.command == model.copyLine)
+    #expect(!draft.command.contains("nyx-http"))
+    #expect(!draft.command.contains("-sSi"))
+    // One line, so the `quick =` value it becomes is one line.
+    #expect(!draft.command.contains("\n"))
+}

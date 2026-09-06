@@ -421,3 +421,23 @@ private let stripColumns: [OverlayControls: Int] = [.full: 20, .noCopy: 8, .mini
     #expect(t.command(containingAbsoluteRow: 0).map { t.commandLine(of: $0) }
         == "curl https://example.com/a/b/c")
 }
+
+/// Resizing while the cursor sits at an empty prompt: the `B` is one column past the last cell
+/// there, so the re-wrap loop never reaches it and the past-the-end branch has to place it.
+///
+/// This is the state a terminal spends most of its life in -- a prompt with nothing typed at it --
+/// and getting it wrong means the *next* thing typed cannot be read back as a command line at all:
+/// `currentInput` returns nil, so ⌘E offers the last finished command instead of what is on the
+/// line, and a pasted `curl` gets no pill.
+@Test func aResizeAtABarePromptKeepsTheColumnTheTypingWillStartAt() {
+    let t = makeTerminal(cols: 40, rows: 10, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B"))
+    #expect(t.currentInputStart?.column == 2)
+    t.resize(cols: 30, rows: 10)
+    #expect(t.currentInputStart?.column == 2)
+    // And what is typed afterwards reads back as the command line, which is the point.
+    t.feed("curl https://example.com")
+    #expect(t.currentInput == "curl https://example.com")
+    t.resize(cols: 60, rows: 10)
+    #expect(t.currentInput == "curl https://example.com")
+}

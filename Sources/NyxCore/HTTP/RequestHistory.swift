@@ -68,11 +68,25 @@ public struct RequestHistory: Equatable {
     /// call moves its row to the top instead of adding a second one -- including when the second
     /// spelling differs (`--silent` for `-s`, a different header order). A line that does not
     /// parse as a curl with a URL is not kept at all: it could not be titled, deduped or re-run.
+    ///
+    /// What is stored is the *request*, with Nyx's own run flags taken back off
+    /// (`RequestRun.stripAdditions`). Both callers see the line that was actually run -- the pane,
+    /// as the workbench's sheet finishes, and the block reader, off the grid -- and that line
+    /// carries `-sSi -w '<sentinel>'`. Stored as it stands it leaked everywhere the history goes:
+    /// a palette row whose form showed flags nobody typed, a `Save as Button` that wrote the
+    /// sentinel into the config file, and the same request counted twice because the hand-typed
+    /// spelling and the run one are different commands. Stripping here rather than at each call
+    /// site is the point: the file is one thing, and a second caller added later would otherwise
+    /// have to remember.
     public mutating func record(_ line: String, at: Date) {
         guard limit > 0, line.count <= RequestHistory.maximumLineLength else { return }
-        guard let command = CurlCommand.parse(line) else { return }
+        guard let parsed = CurlCommand.parse(line) else { return }
+        let command = RequestRun.stripAdditions(from: parsed)
+        let stored = command == parsed
+            ? line
+            : command.shellLine(masking: .none, layout: .oneLine)
         entries.removeAll { CurlCommand.parse($0.line) == command }
-        entries.insert(Entry(line: line, at: at), at: 0)
+        entries.insert(Entry(line: stored, at: at), at: 0)
         if entries.count > limit { entries.removeLast(entries.count - limit) }
     }
 

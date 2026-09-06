@@ -136,6 +136,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// How much of the hover strip fits on the row it was placed on. Decided in `render()` by
     /// `CommandBlockChrome.overlayPlacement`; applied after the lock, where AppKit lives.
     private var hoverOverlayControls: OverlayControls = .full
+    /// A finished request read this frame that has not been written to the history yet. Set under
+    /// the session lock by `requestSummary` and drained by `render` once the lock is gone: the
+    /// store writes a file, and a file write must never happen with the session lock held.
+    private var recordAfterFrame: String?
     /// The `curl` a paste has just put on the command line, and the clock reading at which its pill
     /// stops being offered. Nil for every pane that has never had one pasted into it, which is the
     /// state that costs nothing per frame.
@@ -735,6 +739,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         renderer.resetStats()
     }
 
+    /// Writes the request read this frame to the history, outside the session lock. Called from
+    /// `render` and from the context menu, which is the other place a block can be read.
+    private func drainPendingRecord() {
+        guard let line = recordAfterFrame else { return }
+        recordAfterFrame = nil
+        (NSApp.delegate as? AppDelegate)?.requests?.record(line)
+    }
+
     /// What a finished block's request said, for its header -- nil for every block that is not a
     /// curl, which is almost all of them.
     ///
@@ -763,9 +775,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // `shouldRecord` and not `shouldParse`: reading happens again whenever the cache has
             // been trimmed and the block comes back on screen, and recording it again would stamp
             // last Tuesday's request with the time you scrolled past it.
-            if requestCache.shouldRecord(id: id) {
-                (NSApp.delegate as? AppDelegate)?.requests?.record(line)
-            }
+            //
+            // Recorded *after* the lock, in `render`: the store writes a file on its own queue and
+            // takes its own lock, and doing that with the session's held puts a file write between
+            // the PTY reader and every other pane in the window.
+            if requestCache.shouldRecord(id: id) { recordAfterFrame = line }
             // A response big enough to fill the scrollback is not one whose body kind is worth
             // joining into a single string under the session lock. The head and the sentinel are
             // in the first and last rows of it, but reading only those would still walk the whole
@@ -1284,6 +1298,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                blockSummaries: summaries, highlightedRows: self.hoveredBlock?.rows,
                                dirtyRows: self.dirtyRows(of: t, top: top))
         }
+        drainPendingRecord()
         // A running command's elapsed time only moves if something asks for a redraw; nothing else
         // on this row changes while it runs. One timer per pane, alive only while it would do
         // anything -- the idle-CPU cost of a terminal sitting at a prompt must stay at zero.
@@ -1907,6 +1922,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                     httpSummary: httpSummary,
                                     isHTTP: self.requestCache.isRequest(id: id))
             }
+            drainPendingRecord()
             if let header {
                 for (index, entry) in header.actions.enumerated() {
                     if index > 0 && entry.action.startsGroup { menu.addItem(.separator()) }
@@ -3262,7 +3278,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func editAndRun(command: String) -> Bool {
         guard !command.isEmpty else { return false }
         dismissWorkbenchHint()
-        if let parsed = CurlCommand.parse(command),
+        // Stripped here as well as in the history: this is also the palette's only path, and a row
+        // read from a file an older build wrote -- or one recorded by a build without the strip --
+        // would otherwise open a form full of `-i` and a write-out format nobody typed.
+        if let parsed = CurlCommand.parse(command).map(RequestRun.stripAdditions(from:)),
            presentRequestEditor(command: parsed, then: { [weak self] line in
                self?.runFromWorkbench(line)
            }) {

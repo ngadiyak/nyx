@@ -28,9 +28,50 @@ public struct DisplayCursor: Equatable {
     }
 }
 
+public extension DisplayCursor {
+    /// The same anchor after the scrollback ring has thrown `evictedAfter - evictedBefore` rows
+    /// away, or nil when it cannot be kept.
+    ///
+    /// Past capacity every printed row drops the oldest one and absolute row *n* comes to mean the
+    /// row below the one it used to mean -- silently, because the indices stay in range. The pane
+    /// used to answer that by forgetting where the reader was, which is once per row for as long as
+    /// anything is printing into a full buffer: a reader seventy lines into a pretty-printed
+    /// response was put back to line thirteen of it (the row offset is all a bare row can carry)
+    /// continuously, while a build scrolled past in another block.
+    ///
+    /// The rows moved by a known amount, so the anchor moves by the same amount. `line` does not
+    /// move at all: it indexes a lens buffer, which is Nyx's own text and has not been renumbered
+    /// by anything.
+    ///
+    /// **`anchorTop` is returned unchanged, and that is not an oversight.** It is not a position in
+    /// the buffer, it is the key `Terminal.viewportCursor` compares against `viewportTopRow` to
+    /// decide the anchor is still about this viewport -- and `viewportTopRow` is `scrollback.count
+    /// - viewportOffset`, neither term of which moves when a *full* ring evicts a row. Shifting it
+    /// would make every anchor read as stale for exactly the frames this function exists for, and
+    /// the fallback would take over: the bug, one indirection further down.
+    ///
+    /// nil in the two cases where there is nothing to keep: no anchor at all (`anchorTop` below
+    /// zero is the pane's "none yet" marker), or the anchor's own row has left the ring, which
+    /// means the block it pointed at is gone.
+    ///
+    /// A counter that appears to go backwards -- `Terminal.evictedRows` never does, but a caller
+    /// can read the two numbers in the wrong order -- shifts nothing rather than moving rows
+    /// upwards into indices that were never theirs.
+    static func shifted(anchor: DisplayCursor?, anchorTop: Int,
+                        evictedBefore: Int, evictedAfter: Int)
+        -> (anchor: DisplayCursor, anchorTop: Int)? {
+        guard let anchor, anchorTop >= 0 else { return nil }
+        let delta = max(0, evictedAfter - evictedBefore)
+        guard delta > 0 else { return (anchor, anchorTop) }
+        let row = anchor.row - delta
+        guard row >= 0 else { return nil }
+        return (DisplayCursor(row: row, line: anchor.line), anchorTop)
+    }
+}
+
 public extension Terminal {
     /// What the display shows at `cursor`, and where the next display line begins. nil past the end
-    /// of the buffer.
+    /// of the buffer."""
     ///
     /// Stateless, so a cursor anywhere -- the middle of a lens, a wrapped command line, a fold --
     /// answers the same way. That costs a `command(containingAbsoluteRow:)`, which scans back to the

@@ -482,3 +482,68 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
                                   buffers: buffers(2, lines: 5))
     #expect(cursor == DisplayCursor(row: 3, line: 4))
 }
+
+// MARK: - Keeping the anchor across an eviction
+
+/// The ring throwing a row away must not throw the reader's place away with it.
+///
+/// `Pane` forgot the anchor whenever `Terminal.evictedRows` moved, which is once per row for as
+/// long as anything is printing into a full buffer. With no anchor, `viewportCursor` falls back to
+/// the row the terminal is parked on, and a reader seventy lines into a pretty-printed response was
+/// put back to line thirteen of it -- the row offset is all a bare row can carry -- every time
+/// something else printed. The rows moved by a known amount, so the anchor moves by the same
+/// amount and the line index, which indexes a lens buffer rather than the buffer, does not move
+/// at all.
+@Test func anAnchorSurvivesAnEvictionByMovingWithTheRows() {
+    let shifted = DisplayCursor.shifted(anchor: DisplayCursor(row: 120, line: 70), anchorTop: 118,
+                                        evictedBefore: 40, evictedAfter: 55)
+    #expect(shifted?.anchor == DisplayCursor(row: 105, line: 70))
+    // And the top is *not* shifted: it is the key compared against `viewportTopRow`, which is
+    // `scrollback.count - viewportOffset` and does not move when a full ring evicts a row. See
+    // `DisplayCursor.shifted`.
+    #expect(shifted?.anchorTop == 118)
+}
+
+@Test func anAnchorWhoseOwnRowWasEvictedIsForgotten() {
+    // The block it pointed at has left the ring; there is nothing to move it to.
+    #expect(DisplayCursor.shifted(anchor: DisplayCursor(row: 10, line: 70), anchorTop: 8,
+                                  evictedBefore: 0, evictedAfter: 11) == nil)
+    // Exactly at the edge: row 11 with eleven rows gone is row 0, which is still in the buffer.
+    let edge = DisplayCursor.shifted(anchor: DisplayCursor(row: 11, line: 2), anchorTop: 11,
+                                     evictedBefore: 0, evictedAfter: 11)
+    #expect(edge?.anchor == DisplayCursor(row: 0, line: 2))
+    #expect(edge?.anchorTop == 11)
+}
+
+@Test func nothingEvictedLeavesTheAnchorExactlyWhereItWas() {
+    let same = DisplayCursor.shifted(anchor: DisplayCursor(row: 12, line: 3), anchorTop: 10,
+                                     evictedBefore: 7, evictedAfter: 7)
+    #expect(same?.anchor == DisplayCursor(row: 12, line: 3))
+    #expect(same?.anchorTop == 10)
+    // No anchor to move, and a counter that has gone backwards (it never does, but a caller that
+    // read the two numbers in the wrong order must not shift rows upwards).
+    #expect(DisplayCursor.shifted(anchor: nil, anchorTop: 10, evictedBefore: 0, evictedAfter: 5) == nil)
+    #expect(DisplayCursor.shifted(anchor: DisplayCursor(row: 12), anchorTop: 10,
+                                  evictedBefore: 9, evictedAfter: 4)?.anchor == DisplayCursor(row: 12))
+    // An anchor that was never given a top -- `viewportAnchorTop` starts at -1 -- is not an anchor.
+    #expect(DisplayCursor.shifted(anchor: DisplayCursor(row: 12), anchorTop: -1,
+                                  evictedBefore: 0, evictedAfter: 1) == nil)
+}
+
+/// End to end, against a real buffer: the display the shifted anchor produces is the display the
+/// unshifted one produced before the eviction.
+@Test func theShiftedAnchorShowsTheSameLensLines() {
+    let t = session()
+    let choices = lensed(2)
+    let get = buffers(2, lines: 40)
+    let before = DisplayCursor(row: 3, line: 12)
+    let seen = t.displayRows(from: before, count: 6, folding: OutputFolding(), lenses: choices,
+                             buffers: get)
+    // Three rows fall out of the top of the ring.
+    let after = try? #require(DisplayCursor.shifted(anchor: before, anchorTop: 3,
+                                                    evictedBefore: 0, evictedAfter: 3))
+    #expect(after?.anchor == DisplayCursor(row: 0, line: 12))
+    // The same lens lines, which is what the reader is looking at.
+    let lines = seen.compactMap { if case .lens(_, let line) = $0 { return line } else { return nil } }
+    #expect(lines == Array(12..<18))
+}

@@ -125,6 +125,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// would answer exactly what it answered last frame.
     /// -1 so the first prune always runs.
     private var lastPruneEvictedRows = -1
+    /// `Terminal.evictedRows` the last time the viewport anchor was moved to keep up with it. Its
+    /// own counter rather than `lastPruneEvictedRows`, which is only updated on the frames that
+    /// have something to prune: the anchor has to follow the rows on every frame that loses one.
+    private var lastAnchorEvictedRows = -1
     private var lastPruneGeneration: UInt64 = 0
     /// The block under the pointer, re-resolved by `BlockHover` in every frame against that frame's
     /// own blocks and display rows -- so it follows the rows when they scroll and disappears when a
@@ -1742,6 +1746,31 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // pointing at rows that no longer exist.
                 if self.watch != nil { abandonWatch = true }
             }
+            // Rows have gone from under the numbering, so the row the anchor names is not the row
+            // it was chosen on -- it is that many rows further up. Moved rather than forgotten:
+            // forgetting it sent `viewportCursor` back to the terminal's own row, which inside a
+            // lens means the block's row *offset* and not the line the reader was on, so a reader
+            // seventy lines into a response was put back to line thirteen of it once per evicted
+            // row for as long as anything else was printing. See `DisplayCursor.shifted`.
+            //
+            // Before the pruning below and outside its guard: the anchor has to follow the rows on
+            // every frame that loses one, not only on the frames that have a fold or a lens to
+            // prune.
+            if t.evictedRows != self.lastAnchorEvictedRows {
+                let previous = self.lastAnchorEvictedRows
+                self.lastAnchorEvictedRows = t.evictedRows
+                if previous >= 0 {
+                    if let moved = DisplayCursor.shifted(anchor: self.viewportAnchor,
+                                                         anchorTop: self.viewportAnchorTop,
+                                                         evictedBefore: previous,
+                                                         evictedAfter: t.evictedRows) {
+                        self.viewportAnchor = moved.anchor
+                        self.viewportAnchorTop = moved.anchorTop
+                    } else {
+                        self.forgetViewportAnchor()
+                    }
+                }
+            }
             // Folds whose prompt has gone -- evicted from the ring, or overwritten -- are dropped
             // here rather than accumulating over a session, and with them any notification armed
             // for an id that can never finish now.
@@ -1770,9 +1799,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     self.lensBuffers = self.lensBuffers.filter { $0.key >= oldest }
                 }
                 if let field = self.lensFieldBlock, field < oldest { dismissField = true }
-                // Rows have gone from under the numbering, so the row the anchor names is not the
-                // one it was chosen on.
-                self.forgetViewportAnchor()
             }
             // Screen coordinates: `cursor.y` counts from the top of the live screen. The renderer
             // takes it as an index into the lines it is handed, which are display slots, so with a

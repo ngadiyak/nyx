@@ -219,14 +219,16 @@ public enum CommandBlockChrome {
 /// copies, so nothing becomes unreachable. The summary outlives it because while the strip is up it
 /// is the *only* place the exit status is -- the strip suppresses both the Metal summary and the
 /// duration note on that row, so dropping it first meant hovering a crowded failed command replaced
-/// `exit 1 · 8.8s ▾` with `Copy ⋯ ▾` and the exit code was nowhere on screen. The ⋯ menu and the
-/// chevron never go: between them they reach every action the block has.
+/// `exit 1 · 8.8s ▾` with `Copy ⋯ ▾` and the exit code was nowhere on screen. The ⋯ menu, the
+/// chevron and a running watch's **Stop** never go: the first two reach every action the block has,
+/// and Stop is the one control on the strip with a running side effect. Which parts each level
+/// carries is `BlockHeader.showsCopy(at:)` and its neighbours.
 public enum OverlayControls: Equatable, Hashable, CaseIterable {
     /// Summary, Copy, ⋯, chevron.
     case full
     /// Summary, ⋯, chevron.
     case noCopy
-    /// ⋯ and the chevron.
+    /// ⋯, the chevron, and Stop if a watch is running.
     case minimal
 
     /// Richest first, which is the order `overlayPlacement` tries them in.
@@ -417,6 +419,9 @@ public struct BlockHeader: Equatable {
     /// The body is past `LensRendering`'s limits, so there is nothing to show through a lens and
     /// the group says so instead of offering seven rows that would each do nothing.
     public let lensTooLarge: Bool
+    /// Whether the response body is JSON. The `{ }` control promises pretty JSON and nothing else,
+    /// so this is what decides whether it is offered -- see `showsLens(at:)`.
+    public let bodyIsJSON: Bool
     /// Whether an earlier block ran the same request. Only `Diff with Previous Run` needs it, and
     /// only the pane's cache can answer it -- see `RequestSummaryCache.previousRun`.
     ///
@@ -442,11 +447,12 @@ public struct BlockHeader: Equatable {
     public init(id: UInt32, state: State, folded: Bool, hasOutput: Bool, anyFolds: Bool,
                 notifyArmed: Bool, summary: String, httpSummary: HTTPSummary? = nil,
                 isHTTP: Bool = false, lens: ResponseLens? = nil, lensTooLarge: Bool = false,
-                hasPreviousRun: Bool = false, watch: WatchHeader? = nil,
+                bodyIsJSON: Bool = false, hasPreviousRun: Bool = false, watch: WatchHeader? = nil,
                 watchInterval: Double = 5) {
         self.id = id; self.state = state; self.folded = folded; self.hasOutput = hasOutput
         self.anyFolds = anyFolds; self.notifyArmed = notifyArmed
-        self.lens = lens; self.lensTooLarge = lensTooLarge; self.hasPreviousRun = hasPreviousRun
+        self.lens = lens; self.lensTooLarge = lensTooLarge; self.bodyIsJSON = bodyIsJSON
+        self.hasPreviousRun = hasPreviousRun
         self.watch = watch; self.watchInterval = watchInterval
         // And a watch's own sentence replaces the request's, for the same reason: `200 · 142 ms`
         // is already the tail of `watch every 5 s · run 12 · 200 · 142 ms`, and showing both puts
@@ -499,6 +505,45 @@ public struct BlockHeader: Equatable {
         case (false, true): return summary
         case (false, false): return summary + " " + chevron
         }
+    }
+
+    // MARK: - What the hover strip carries
+    //
+    // One place, because two of them come apart. `BlockHeaderView` both *draws* the strip and
+    // *measures* it for `overlayPlacement`, and when the two lists disagreed the placement rule
+    // reserved room for a control that was not drawn, or drew one it had not reserved room for.
+
+    /// Copy is the first control dropped: the ⋯ menu still copies, so nothing becomes unreachable.
+    public func showsCopy(at controls: OverlayControls) -> Bool { controls == .full }
+
+    /// The summary outlives Copy, because while the strip is up it is the *only* place the exit
+    /// status is -- it suppresses both the drawn summary and the duration note on that row.
+    public func showsSummary(at controls: OverlayControls) -> Bool {
+        controls != .minimal && !summary.isEmpty
+    }
+
+    /// The timeline goes with Copy: thirty circles is the widest thing here and the least of what
+    /// the header says, since the sentence beside it already carries the run number and the last
+    /// status.
+    public func showsTimeline(at controls: OverlayControls) -> Bool {
+        controls == .full && !(watch?.dots.isEmpty ?? true)
+    }
+
+    /// **Stop is never dropped.** It is the only control on the strip with a running side effect,
+    /// and a watch you cannot stop from the strip is the one that matters most -- on a command line
+    /// crowded enough for the narrowest strip, the ⋯ menu is the only other way to reach it.
+    public func showsStop(at controls: OverlayControls) -> Bool { watch?.showsStop ?? false }
+
+    /// The `{ }` needs a request, a body a lens can do something with, JSON to pretty-print, and
+    /// room for more than the two controls every block has.
+    ///
+    /// The JSON clause is the point: on a 301 with an HTML body `.pretty` falls through to the raw
+    /// lines, so a button whose tooltip promises pretty JSON did nothing a user could see. A lens
+    /// already open keeps its control whatever the body is -- the button is also how it is turned
+    /// off, and a control that vanishes when pressed strands the reader inside a lens.
+    public func showsLens(at controls: OverlayControls) -> Bool {
+        guard isHTTP, !lensTooLarge, controls != .minimal else { return false }
+        return bodyIsJSON || lens != nil
     }
 
     /// The ⋯ menu, in order, each with whether it can do anything right now.
@@ -581,7 +626,7 @@ public extension CommandBlock {
     func header(now: Double, folding: OutputFolding, notifyArmed: Bool, anyFolds: Bool,
                 hasOutput: Bool, httpSummary: HTTPSummary? = nil,
                 isHTTP: Bool = false, lens: ResponseLens? = nil, lensTooLarge: Bool = false,
-                hasPreviousRun: Bool = false, watch: WatchHeader? = nil,
+                bodyIsJSON: Bool = false, hasPreviousRun: Bool = false, watch: WatchHeader? = nil,
                 watchInterval: Double = 5) -> BlockHeader {
         let state: BlockHeader.State
         let summary: String
@@ -600,7 +645,7 @@ public extension CommandBlock {
                            hasOutput: hasOutput, anyFolds: anyFolds,
                            notifyArmed: notifyArmed, summary: summary, httpSummary: httpSummary,
                            isHTTP: isHTTP, lens: lens, lensTooLarge: lensTooLarge,
-                           hasPreviousRun: hasPreviousRun, watch: watch,
+                           bodyIsJSON: bodyIsJSON, hasPreviousRun: hasPreviousRun, watch: watch,
                            watchInterval: watchInterval)
     }
 }

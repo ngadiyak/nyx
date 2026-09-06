@@ -250,19 +250,24 @@ enum UISnapshot {
         // response at the two narrower strips. The narrow ones are the question: `{ }` is one more
         // control competing for the room `overlayPlacement` was already short of, and `minimal`
         // must not grow by it, or a crowded command line loses another four columns to chrome.
-        let lensStates: [(String, ResponseLens?, Bool, OverlayControls)] = [
-            ("http-lens", nil, false, .full),
-            ("http-lens-on", .pretty, false, .full),
-            ("http-lens-too-large", nil, true, .full),
-            ("http-lens-nocopy", nil, false, .noCopy),
-            ("http-lens-minimal", nil, false, .minimal),
+        let lensStates: [(String, ResponseLens?, Bool, Bool, OverlayControls)] = [
+            ("http-lens", nil, false, true, .full),
+            ("http-lens-on", .pretty, false, true, .full),
+            ("http-lens-too-large", nil, true, true, .full),
+            // A 301 with an HTML body: `.pretty` has nothing to pretty-print, so the control that
+            // promises pretty JSON is not offered rather than offered and inert.
+            ("http-lens-not-json", nil, false, false, .full),
+            ("http-lens-nocopy", nil, false, true, .noCopy),
+            ("http-lens-minimal", nil, false, true, .minimal),
         ]
-        for (name, lens, tooLarge, controls) in lensStates {
+        for (name, lens, tooLarge, json, controls) in lensStates {
             let header = BlockHeader(id: 4, state: .finished, folded: false, hasOutput: true,
                                      anyFolds: false, notifyArmed: false, summary: "",
-                                     httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
-                                                              tone: .success),
-                                     isHTTP: true, lens: lens, lensTooLarge: tooLarge)
+                                     httpSummary: HTTPSummary(text: json ? "200 \u{b7} 142 ms"
+                                                                         : "301 \u{b7} 42 ms",
+                                                              tone: json ? .success : .redirect),
+                                     isHTTP: true, lens: lens, lensTooLarge: tooLarge,
+                                     bodyIsJSON: json)
             let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
             view.appearance = NSAppearance(named: .darkAqua)
             view.update(header: header, controls: controls, palette: palette,
@@ -285,7 +290,8 @@ enum UISnapshot {
                                          anyFolds: false, notifyArmed: false, summary: "",
                                          httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
                                                                   tone: .success),
-                                         isHTTP: true, watch: series.header())
+                                         isHTTP: true, bodyIsJSON: true,
+                                         watch: series.header())
                 let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
                 view.appearance = NSAppearance(named: appearance)
                 view.update(header: header, controls: .full, palette: themePalette,
@@ -298,15 +304,17 @@ enum UISnapshot {
             }
         }
         // The same running series at the two narrower strips: the timeline is the first thing to
-        // go, and Stop survives one step further. These are the pictures that say a watch on a
-        // crowded command line can still be stopped from the strip.
+        // go, and Stop goes nowhere -- it survives to `.minimal`, because a watch you cannot stop
+        // from the strip is the one control here with a running side effect. These are the
+        // pictures that say a watch on a crowded command line can still be stopped from the strip.
         if let running = watchHeaderStates().first(where: { $0.0 == "running" })?.1 {
             for (name, controls) in [("nocopy", OverlayControls.noCopy), ("minimal", .minimal)] {
                 let header = BlockHeader(id: 4, state: .finished, folded: false, hasOutput: true,
                                          anyFolds: false, notifyArmed: false, summary: "",
                                          httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
                                                                   tone: .success),
-                                         isHTTP: true, watch: running.header())
+                                         isHTTP: true, bodyIsJSON: true,
+                                         watch: running.header())
                 let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
                 view.appearance = NSAppearance(named: .darkAqua)
                 view.update(header: header, controls: controls, palette: palette,

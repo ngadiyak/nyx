@@ -889,6 +889,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// Whether this block's body is past what a lens will re-lay-out, which is what the ⋯ menu says
     /// instead of offering seven rows that would each do nothing.
+    /// Whether this block's response body is JSON -- the one thing the `{ }` control can do
+    /// something with. From the cache, never a re-parse: this is asked once per block per frame.
+    func bodyIsJSON(_ id: UInt32) -> Bool {
+        guard case .request(let exchange)? = requestCache.entry(for: id), let exchange else {
+            return false
+        }
+        return exchange.bodyKind == .json
+    }
+
     func lensIsTooLarge(_ id: UInt32) -> Bool {
         guard case .request(let exchange)? = requestCache.entry(for: id), let exchange else {
             return false
@@ -1995,6 +2004,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                           isHTTP: self.requestCache.isRequest(id: block.region.id),
                                           lens: self.lenses.lens(of: block.region.id),
                                           lensTooLarge: self.lensIsTooLarge(block.region.id),
+                                          bodyIsJSON: self.bodyIsJSON(block.region.id),
                                           // Only the ⋯ menu needs it, and finding it parses command
                                           // lines: not a question for sixty frames a second.
                                           hasPreviousRun: false,
@@ -2876,6 +2886,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                     isHTTP: self.requestCache.isRequest(id: id),
                                     lens: self.lenses.lens(of: id),
                                     lensTooLarge: self.lensIsTooLarge(id),
+                                    bodyIsJSON: self.bodyIsJSON(id),
                                     hasPreviousRun: previousRun != nil,
                                     // Right-clicking a watched run has to offer Stop, not a second
                                     // "Run Every 5 s": this menu is built apart from the frame's,

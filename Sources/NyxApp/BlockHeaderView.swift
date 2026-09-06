@@ -135,9 +135,9 @@ final class BlockHeaderView: NSView {
     func width(for controls: OverlayControls, header: BlockHeader, font: NSFont) -> CGFloat {
         let key = WidthKey(controls: controls, summaryCount: header.summary.count,
                            chevron: header.chevron, hasOutput: header.hasOutput,
-                           lens: header.isHTTP && !header.lensTooLarge,
-                           dots: controls == .full ? (header.watch?.dots.count ?? 0) : 0,
-                           stop: header.watch?.showsStop == true && controls != .minimal,
+                           lens: header.showsLens(at: controls),
+                           dots: header.showsTimeline(at: controls) ? header.watch?.dots.count ?? 0 : 0,
+                           stop: header.showsStop(at: controls),
                            font: font.fontName, size: font.pointSize)
         if let cached = widths[key] { return cached }
         let previousHeader = self.header
@@ -164,21 +164,18 @@ final class BlockHeaderView: NSView {
             stack.edgeInsets = NSEdgeInsets(top: 0, left: fade + 4, bottom: 0, right: 4)
             needsLayout = true
         }
+        // Every one of these rules is `BlockHeader`'s, in NyxCore where it is tested. Answering
+        // them here as well is how the strip and `width(for:)` came apart -- and `width(for:)` is
+        // what `overlayPlacement` reserves room from.
         summary.stringValue = header.summary
         summary.font = font
-        summary.isHidden = controls == .minimal || header.summary.isEmpty
-        copyButton.isHidden = controls != .full
-        // A request, with a body a lens can do something with, and room on the strip for more than
-        // the two controls every block has.
-        lensButton.isHidden = !header.isHTTP || header.lensTooLarge || controls == .minimal
-        // The timeline is the first thing to go when the command line is crowded: it is thirty
-        // circles wide, and it is the least of what the header says -- the sentence beside it
-        // already carries the run number and the last status. Stop survives one step further,
-        // because a watch you cannot stop from the strip is the one control here that matters.
-        let timeline = controls == .full ? (header.watch?.dots ?? []) : []
+        summary.isHidden = !header.showsSummary(at: controls)
+        copyButton.isHidden = !header.showsCopy(at: controls)
+        lensButton.isHidden = !header.showsLens(at: controls)
+        let timeline = header.showsTimeline(at: controls) ? (header.watch?.dots ?? []) : []
         dots.update(dots: timeline, palette: palette)
         dots.isHidden = timeline.isEmpty
-        stopButton.isHidden = !(header.watch?.showsStop ?? false) || controls == .minimal
+        stopButton.isHidden = !header.showsStop(at: controls)
         chevronButton.isHidden = !header.hasOutput
     }
 

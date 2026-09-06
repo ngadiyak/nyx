@@ -864,8 +864,9 @@ final class TabController: NSViewController, NSMenuItemValidation {
         let bindings = KeyBindingTable(user: config.keybinds)
         let items = PaletteSource.items(actions: ActionCatalog.allMenuActions,
                                         chord: { bindings.binding(for: $0)?.displayName },
-                                        // The same answer the menu bar gets, so a row that would
-                                        // beep is greyed here instead.
+                                        // The same answer the menu bar gets. A row that would beep
+                                        // is *absent* here rather than greyed: `PaletteSource`
+                                        // filters on this rather than carrying it.
                                         enabled: { [weak self] in self?.canPerform($0) ?? true },
                                         quickActions: quickActions.map {
                                             ($0, QuickActionRunner.shared.isRunning($0))
@@ -1543,10 +1544,15 @@ extension TabController: ActionTarget {
         case .toggleHTTPLens:
             if focusedPane?.toggleLensOfCurrentBlock() != true { NSSound.beep() }
 
-        // Unreachable from the menu and the palette, which grey it (see `canPerform`), but a
-        // `keybind` line reaches `perform` directly -- so the beep stays as the answer to a chord
-        // pressed for a feature that has not arrived.
-        case .stopWatch: NSSound.beep()
+        // Only while the series' own newest run is the last request in the pane: `⌘.` is a chord
+        // people press for many reasons, and one that silently killed a watch they had scrolled
+        // away from would be a stop they never saw. The block header's Stop button has no such
+        // rule -- pressing it names the series.
+        case .stopWatch:
+            guard focusedPane?.canStopWatch == true, focusedPane?.stopWatch(.stopped) == true else {
+                NSSound.beep()
+                return
+            }
         }
     }
 
@@ -1605,10 +1611,9 @@ extension TabController: ActionTarget {
             // the menu and absent from the palette rather than beeping at whoever chose it.
             return focusedPane?.hasResponseToLens == true
         case .stopWatch:
-            // The watch is the one thing the response plan has not built yet: greyed in the menu,
-            // absent from the palette, and its binding still in place so nothing has to be re-bound
-            // when it arrives.
-            return false
+            // A series to stop, on the block it is running in. Without one the row is greyed in
+            // the menu and absent from the palette rather than beeping at whoever chose it.
+            return focusedPane?.canStopWatch == true
         // `newRequest` falls through to here and is right to: a blank request needs nothing to
         // exist but a pane to run it in.
         default:

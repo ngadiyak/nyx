@@ -46,6 +46,20 @@ public struct OutputFolding: Equatable {
         folds[id] = shape
     }
 
+    /// Folds a block unless the user has already opened that one by hand, and says whether
+    /// anything moved.
+    ///
+    /// What a watch series uses to collapse its older runs: twenty runs is twenty screens of the
+    /// same response, and the user is reading the newest. `fold` alone would re-collapse a run
+    /// somebody had just opened to compare against -- every five seconds, for as long as the watch
+    /// lasted -- which is the terminal arguing with you, the same rule `autoFold` was given.
+    @discardableResult
+    public mutating func foldUnlessOpened(_ id: UInt32, _ shape: FoldShape) -> Bool {
+        guard id != 0, !openedByHand.contains(id), folds[id] != shape else { return false }
+        folds[id] = shape
+        return true
+    }
+
     public mutating func unfold(_ id: UInt32) {
         folds[id] = nil
         openedByHand.insert(id)

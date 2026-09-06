@@ -24,6 +24,12 @@ final class BlockHeaderView: NSView {
     /// only where there is room for `Copy`: it is a convenience for a thing the ⋯ menu also does,
     /// and the chevron and the ⋯ are what the strip is for.
     private let lensButton = NSButton(title: "{ }", target: nil, action: nil)
+    /// The watch series' timeline, oldest run first. Its own view because it is the one thing on
+    /// this strip that is neither a label nor a control: see `WatchDotsView`.
+    private let dots = WatchDotsView(frame: .zero)
+    /// Ends the series this block's run belongs to. Unlike `⌘.` it has no "is this the latest
+    /// block" rule: pressing it names the series.
+    private let stopButton = NSButton(title: "Stop", target: nil, action: nil)
     private let chevronButton = NSButton(title: "", target: nil, action: nil)
     private let stack = NSStackView()
     /// The strip's leading edge: two cells of gradient from the terminal's background to nothing.
@@ -54,6 +60,10 @@ final class BlockHeaderView: NSView {
         let chevron: String
         let hasOutput: Bool
         let lens: Bool
+        /// How many dots and whether Stop is up: both change the strip's width, and a width cached
+        /// without them would tell `overlayPlacement` a watch header fits where it does not.
+        let dots: Int
+        let stop: Bool
         let font: String
         let size: CGFloat
     }
@@ -70,7 +80,7 @@ final class BlockHeaderView: NSView {
         // be hidden by it.
         layer = fadeLayer
         isHidden = true
-        for button in [copyButton, lensButton, moreButton, chevronButton] {
+        for button in [copyButton, lensButton, stopButton, moreButton, chevronButton] {
             button.bezelStyle = .inline
             button.controlSize = .small
             button.target = self
@@ -80,6 +90,9 @@ final class BlockHeaderView: NSView {
         copyButton.toolTip = "Copy this command\u{2019}s output"
         lensButton.action = #selector(lensPressed)
         lensButton.setAccessibilityLabel("Toggle pretty response")
+        stopButton.action = #selector(stopPressed)
+        stopButton.toolTip = "Stop watching this request"
+        stopButton.setAccessibilityLabel("Stop watching")
         moreButton.action = #selector(morePressed)
         moreButton.toolTip = "More actions for this command"
         moreButton.setAccessibilityLabel("More actions")
@@ -88,7 +101,8 @@ final class BlockHeaderView: NSView {
         stack.spacing = 6
         stack.alignment = .centerY
         stack.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 4)
-        stack.setViews([summary, copyButton, lensButton, moreButton, chevronButton], in: .center)
+        stack.setViews([dots, summary, copyButton, lensButton, stopButton, moreButton, chevronButton],
+                       in: .center)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
@@ -122,6 +136,8 @@ final class BlockHeaderView: NSView {
         let key = WidthKey(controls: controls, summaryCount: header.summary.count,
                            chevron: header.chevron, hasOutput: header.hasOutput,
                            lens: header.isHTTP && !header.lensTooLarge,
+                           dots: controls == .full ? (header.watch?.dots.count ?? 0) : 0,
+                           stop: header.watch?.showsStop == true && controls != .minimal,
                            font: font.fontName, size: font.pointSize)
         if let cached = widths[key] { return cached }
         let previousHeader = self.header
@@ -155,6 +171,14 @@ final class BlockHeaderView: NSView {
         // A request, with a body a lens can do something with, and room on the strip for more than
         // the two controls every block has.
         lensButton.isHidden = !header.isHTTP || header.lensTooLarge || controls == .minimal
+        // The timeline is the first thing to go when the command line is crowded: it is thirty
+        // circles wide, and it is the least of what the header says -- the sentence beside it
+        // already carries the run number and the last status. Stop survives one step further,
+        // because a watch you cannot stop from the strip is the one control here that matters.
+        let timeline = controls == .full ? (header.watch?.dots ?? []) : []
+        dots.update(dots: timeline, palette: palette)
+        dots.isHidden = timeline.isEmpty
+        stopButton.isHidden = !(header.watch?.showsStop ?? false) || controls == .minimal
         chevronButton.isHidden = !header.hasOutput
     }
 
@@ -192,6 +216,7 @@ final class BlockHeaderView: NSView {
         // button reads correctly against a themed background irrespective of the system appearance.
         style(copyButton, title: "Copy", enabled: copyButton.isEnabled)
         style(moreButton, title: "\u{22EF}", enabled: true)
+        style(stopButton, title: "Stop", enabled: true, tint: palette.readable(1))
         style(chevronButton, title: header.chevron, enabled: true)
         // `{ }` is a toggle, and a toggle drawn identically in both its states is a button that
         // lies about what pressing it will do. The accent is the colour this theme already paints a
@@ -244,6 +269,8 @@ final class BlockHeaderView: NSView {
         guard let header else { return }
         onAction?(.toggleLens, header.id)
     }
+
+    @objc private func stopPressed() { if let header { onAction?(.stopWatch, header.id) } }
 
     @objc private func chevronPressed() {
         guard let header else { return }

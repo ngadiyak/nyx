@@ -212,6 +212,43 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private var hintTimer: Timer?
     /// Ticks once a second while a running command's row is on screen, so its elapsed time moves.
     private var runningTimer: Timer?
+    /// The watch this pane is running, or nil -- which is every pane nobody has asked for one in.
+    /// Kept after it finishes so the newest run's header can go on showing the statistics.
+    private var watch: WatchSeries?
+    /// Alive only while the series is waiting for its next run to fall due. A watch that is
+    /// *running* one has nothing to poll for: the finish arrives with the frame that reads the
+    /// block. See `updateWatchTimer`.
+    private var watchTimer: Timer?
+    /// When a run was typed at the shell and has not been seen to start.
+    ///
+    /// Without it the 250 ms tick would type the command again on every tick until the shell got
+    /// round to echoing an `OSC 133 C` -- four curls a second at a busy prompt. Cleared when the
+    /// run starts, when it finishes (a local request can begin and end between two ticks), and
+    /// after `watchStartTimeout` for the line that never ran at all.
+    private var watchSentAt: Double?
+    /// True for exactly as long as the watch is writing its own run to the shell, so the rule that
+    /// stops a series when the user types does not stop it on the series' own bytes.
+    private var isSendingWatchRun = false
+    /// Runs whose blocks the exchange cache learned this frame. Filled under the session lock by
+    /// `requestSummary` and drained by `render` once the lock is gone: acting on one folds blocks,
+    /// sets a lens and dispatches, none of which may happen with the lock held.
+    private var pendingWatchFinishes: [WatchFinish] = []
+
+    /// One finished run, as the frame that read its block saw it.
+    private struct WatchFinish {
+        let id: UInt32
+        let status: Int?
+        let exitStatus: Int32
+        let timeTotal: Double?
+        /// For `WatchPlan.Condition.bodyContains`/`bodyLacks`.
+        let body: String
+        let at: Double
+    }
+
+    /// How long a typed run may go unstarted before the series tries again. Generous on purpose:
+    /// a shell that is busy, slow to draw, or paused under a `less` has not lost the line, and
+    /// typing a second copy of a request into it would be worse than waiting.
+    private static let watchStartTimeout: Double = 30
     /// Whether a command was running at the last check, to notice the moment a new one starts.
     private var commandWasRunning = false
     /// Notices that a command ended, from nothing but the prompt marks; see `CommandWatcher`.
@@ -591,6 +628,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         displayLink = nil
         runningTimer?.invalidate()
         runningTimer = nil
+        // A series whose pane has gone has nowhere to type; the timer would also keep this whole
+        // terminal alive for as long as it ticked.
+        stopWatch(.paneClosed)
+        watchTimer?.invalidate()
+        watchTimer = nil
         // The pill's expiry timer retains this pane until it fires; a tab closed inside its eight
         // seconds would otherwise keep a whole terminal alive waiting to hide a label.
         hintTimer?.invalidate()
@@ -1071,6 +1113,256 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         window?.makeFirstResponder(self)
     }
 
+    // MARK: - Watching
+    //
+    // The pane owns a timer, a shell and a screen; `WatchSeries` owns every decision -- when the
+    // next run is due, whether it may be sent, which runs fold, what the header says. Nothing here
+    // re-derives any of that: the rules are tested without a terminal, and this is the wiring.
+
+    /// Begins watching `command` in this pane. One series per pane: a second is what the user just
+    /// asked for, so the first is stopped rather than left ticking invisibly behind it.
+    ///
+    /// `firstRunSent` is for the sheet's Repeat menu, which types the request itself so the user
+    /// sees it go. A series starts *due*, so without this the first tick would type a second copy
+    /// of the same request a quarter of a second later.
+    func startWatch(plan: WatchPlan, command: String, firstRunSent: Bool = false) {
+        guard !command.isEmpty else { NSSound.beep(); return }
+        stopWatch(.stopped)
+        let now = watchClock
+        watch = WatchSeries(plan: plan, command: Pane.watchLine(command), startedAt: now)
+        watchSentAt = firstRunSent ? now : nil
+        updateWatchTimer()
+        markDirty()
+    }
+
+    /// The line a series actually types: the request with Nyx's own measurement flags on it.
+    ///
+    /// A watch exists to say what each run answered and how long it took, and a bare `curl URL`
+    /// can say neither -- it prints a body and nothing else, so every run comes back with no
+    /// status and no `time_total`. Measured against the real fixture, a `Run until 200` on a
+    /// hand-typed line never stopped (twenty-one runs and counting) because no run ever had a
+    /// status to compare, and the header read "stopped after 3 runs" where it should have read
+    /// "3 runs · p50 8 ms".
+    ///
+    /// These are the same additions the workbench's own Run makes (`RequestRun.commandLine`), and
+    /// the same ones stripped back out of everything a user copies, exports or saves as a button
+    /// -- so a watch of a block that was already run through the workbench re-types exactly the
+    /// line that is on screen. A command that is not a `curl`, or one with a pipeline, is left
+    /// exactly as it stands.
+    static func watchLine(_ command: String) -> String {
+        guard let parsed = CurlCommand.parse(command) else { return command }
+        return RequestRun.commandLine(for: parsed)
+    }
+
+    /// Ends the series, if there is one still going. False when there was none, so a caller with a
+    /// menu item or a chord can say so instead of pretending it did something.
+    @discardableResult
+    func stopWatch(_ reason: WatchSeries.Finish) -> Bool {
+        guard var series = watch, !series.isFinished else { return false }
+        series.stop(reason)
+        watch = series
+        watchSentAt = nil
+        updateWatchTimer()
+        markDirty()
+        return true
+    }
+
+    /// Whether `⌘.` has a series to stop here.
+    ///
+    /// Only while the series' own newest run is the last request in the pane. `⌘.` is a chord
+    /// people press for lots of reasons, and one that silently killed a watch three screens up --
+    /// after they had gone on to run something else -- would be a stop they could not see.
+    /// A series that has not run anything yet passes: nothing can be later than nothing.
+    var canStopWatch: Bool {
+        guard let series = watch, !series.isFinished else { return false }
+        guard let newest = series.runs.last?.id else { return true }
+        return latestRequestBlock() == newest
+    }
+
+    /// The last block in the pane whose command was a request. Also the fallback `lensTargetBlock`
+    /// uses when there is no pointer, and the same answer for the same reason: "the response you
+    /// were just looking at".
+    private func latestRequestBlock() -> UInt32? {
+        session.withTerminal { t -> UInt32? in
+            t.promptRows.reversed().compactMap { row -> UInt32? in
+                guard let region = t.command(containingAbsoluteRow: row), region.id != 0,
+                      self.requestCache.isRequest(id: region.id) else { return nil }
+                return region.id
+            }.first
+        }
+    }
+
+    /// The header for a block that is a series' newest run, or nil for every other block.
+    ///
+    /// Only the newest: the older runs are ordinary finished requests with their own summaries,
+    /// and a timeline drawn beside each of them would be the same dots twenty times down a screen.
+    private func watchHeader(forBlock id: UInt32) -> WatchHeader? {
+        guard let series = watch, series.runs.last?.id == id else { return nil }
+        return series.header()
+    }
+
+    /// The clock every reading the series is given comes from, so `at` values, deadlines and the
+    /// terminal's own command timings are on one timeline.
+    private var watchClock: Double { session.withTerminal { $0.now() } }
+
+    /// The timer exists only while the series is waiting. No series, or one running or finished,
+    /// and there is nothing to poll for -- the idle cost of a pane must stay at zero.
+    private func updateWatchTimer() {
+        let waiting: Bool = {
+            guard let series = watch, !series.isFinished else { return false }
+            if case .waiting = series.phase { return true }
+            return false
+        }()
+        if waiting, watchTimer == nil {
+            watchTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                self?.watchTick()
+            }
+        } else if !waiting, let timer = watchTimer {
+            timer.invalidate()
+            watchTimer = nil
+        }
+    }
+
+    /// Four times a second while a run is due: is the shell free, and has the interval elapsed?
+    ///
+    /// Both questions are the series'. The one thing decided here is what "at a prompt" means for
+    /// a real shell: no command running, and marks to know it by -- a session with no shell
+    /// integration can never answer it, so a watch there simply never sends.
+    private func watchTick() {
+        guard let series = watch, !series.isFinished else {
+            updateWatchTimer()
+            return
+        }
+        let now = watchClock
+        if let sentAt = watchSentAt {
+            // Typed and not yet seen to start. Give up waiting only after a long time; see
+            // `watchStartTimeout`.
+            if now - sentAt > Pane.watchStartTimeout { watchSentAt = nil }
+            return
+        }
+        let atPrompt: Bool = session.withTerminal { t in
+            t.shellEmitsPromptMarks && t.runningCommand == nil
+        }
+        guard series.shouldSend(now: now, shellAtPrompt: atPrompt) else { return }
+        sendWatchRun(series.command, at: now)
+    }
+
+    /// Types one run at the shell.
+    ///
+    /// Bracketed like every other command Nyx types for the user, because a `\`-continued `curl`
+    /// read back off the grid has real newlines in it and sent raw the shell would start running
+    /// it a fragment at a time. Not through `performPaste`: that arms the `⌘E Workbench` pill for
+    /// any pasted curl, and a pill flashing over the prompt every five seconds for a request the
+    /// user is already watching is chrome arguing with itself.
+    private func sendWatchRun(_ command: String, at now: Double) {
+        let bracketed = session.withTerminal { $0.modes.bracketedPaste }
+        let line = command.replacingOccurrences(of: "\r\n", with: "\r")
+            .replacingOccurrences(of: "\n", with: "\r")
+        var bytes: [UInt8] = []
+        if bracketed { bytes += Array("\u{1B}[200~".utf8) }
+        bytes += Array(line.utf8)
+        if bracketed { bytes += Array("\u{1B}[201~".utf8) }
+        bytes += [0x0D]
+        watchSentAt = now
+        isSendingWatchRun = true
+        send(bytes)
+        isSendingWatchRun = false
+    }
+
+    /// The user has taken the shell back. Called from the two keyboard entry points rather than
+    /// from `send`, because `send` is also how a quick action, a paste and the watch itself write
+    /// to the shell, and none of those is somebody typing.
+    private func stopWatchIfUserTyped() {
+        guard !isSendingWatchRun, let series = watch, !series.isFinished else { return }
+        stopWatch(.userTyped)
+    }
+
+    /// Moves the series on by whatever this frame saw: a run that started, and runs whose blocks
+    /// the cache finished reading. Called from `render` after the session lock.
+    private func advanceWatch(runningCommandID: UInt32?) {
+        guard watch != nil else {
+            pendingWatchFinishes.removeAll()
+            return
+        }
+        if watchSentAt != nil, let id = runningCommandID, var series = watch {
+            series.runStarted(id: id, at: watchClock)
+            watch = series
+            if case .running = series.phase {
+                watchSentAt = nil
+                updateWatchTimer()
+                markDirty()
+            }
+        }
+        guard !pendingWatchFinishes.isEmpty else { return }
+        let finishes = pendingWatchFinishes
+        pendingWatchFinishes.removeAll()
+        for finish in finishes { recordWatchRun(finish) }
+    }
+
+    /// One finished run: told to the series, then shown -- the older runs folded, the newest one
+    /// lensed against the run before it.
+    private func recordWatchRun(_ finish: WatchFinish) {
+        guard var series = watch, !series.isFinished else { return }
+        series.runFinished(id: finish.id, status: finish.status, exitStatus: finish.exitStatus,
+                           timeTotal: finish.timeTotal, body: finish.body, at: finish.at)
+        // The series drops a finish that is not its own; if it did, nothing here should happen
+        // either -- least of all folding somebody else's block.
+        guard series.runs.contains(where: { $0.id == finish.id }) else { return }
+        watch = series
+        watchSentAt = nil
+        var moved = false
+        for (index, run) in series.runs.enumerated() where series.shouldFold(runAt: index) {
+            if folding.foldUnlessOpened(run.id, .all) { moved = true }
+        }
+        // The newest run's lens: what changed since the last one, when both are JSON and there is
+        // a last one. Otherwise the configured default, which `requestSummary` has already armed.
+        if series.runs.last?.id == finish.id, isJSONResponse(finish.id),
+           let previous = previousRun(of: finish.id) {
+            pendingDefaultLens.removeAll { $0 == finish.id }
+            setLens(.diff(previousCommandID: previous), on: finish.id)
+        }
+        updateWatchTimer()
+        if moved { forgetViewportAnchor() }
+        markDirty()
+    }
+
+    /// The `Watch…` popover, over the block's own command row.
+    ///
+    /// A popover anchored to the row rather than a sheet: what is being watched is *this* block,
+    /// and a window-wide sheet loses that. It is `NSPopover`'s job to keep it there while the view
+    /// scrolls, and to take it down on a click outside.
+    private func presentWatchPlanEditor(seed: WatchPlan, command: String, on id: UInt32) {
+        let editor = WatchPlanEditor(seed: seed)
+        editor.onStart = { [weak self] plan in
+            self?.startWatch(plan: plan, command: command)
+        }
+        let popover = NSPopover()
+        popover.contentViewController = editor
+        popover.behavior = .transient
+        // The command row if it is on screen, and the top of the pane if it is not -- the same
+        // rule the filter field follows, and for the same reason: a response scrolled past is
+        // still the one being asked about.
+        var slot = 0
+        if let promptRow = session.withTerminal({ $0.promptRow(ofCommand: id) }) {
+            let top = session.withTerminal { max(0, $0.viewportTopRow) }
+            slot = max(0, min(rows - 1, displaySlot(ofAbsoluteRow: promptRow, viewportTop: top) ?? 0))
+        }
+        let cell = cellSizePoints
+        let y = bounds.height - padding - CGFloat(slot + 1) * cell.height
+        popover.show(relativeTo: NSRect(x: padding, y: y, width: max(1, bounds.width - padding * 2),
+                                        height: cell.height),
+                     of: self, preferredEdge: .maxY)
+    }
+
+    /// Whether a block's response is JSON a lens can re-lay-out -- the precondition for diffing it
+    /// against the run before.
+    private func isJSONResponse(_ id: UInt32) -> Bool {
+        guard case .request(let exchange)? = requestCache.entry(for: id), let exchange else {
+            return false
+        }
+        return exchange.bodyKind == .json && !LensRendering.isTooLarge(exchange)
+    }
+
     /// Writes the request read this frame to the history, outside the session lock. Called from
     /// `render` and from the context menu, which is the other place a block can be read.
     private func drainPendingRecord() {
@@ -1130,6 +1422,18 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             if let exchange, config.httpLens == .pretty, exchange.bodyKind == .json,
                !LensRendering.isTooLarge(exchange) {
                 pendingDefaultLens.append(id)
+            }
+            // And the one moment a watched run is known to have *finished*: reading the block is
+            // what turns a transcript into a status and a timing, so this is where the series
+            // hears about it. Never for a block older than the newest run -- the cache re-reads a
+            // block that comes back on screen after a trim, and an old request handed to a waiting
+            // series would be counted as a run it never made.
+            if let series = watch, !series.isFinished, id >= (series.runs.last?.id ?? 0) {
+                pendingWatchFinishes.append(WatchFinish(id: id, status: exchange?.status,
+                                                        exitStatus: block.region.exitStatus ?? 0,
+                                                        timeTotal: exchange?.timing?.total,
+                                                        body: exchange?.bodyLines.joined(separator: "\n") ?? "",
+                                                        at: t.now()))
             }
         }
         // `.request(nil)` still produces a summary: a curl that could not connect prints no head
@@ -1269,9 +1573,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         var hoverChanged = false
         /// The block the filter field belongs to has been cleared away or evicted; see below.
         var dismissField = false
+        /// The buffer this series' runs lived in has gone; see below.
+        var abandonWatch = false
         // What the buffer looked like when the frame was built. The dirty flags are cleared against
         // it once the frame is on screen, so a write that lands in between keeps its flags.
         var builtAtContentVersion: UInt64 = 0
+        /// Which command the shell says is running, read only while a watch is waiting to see its
+        /// own run start. Acted on after the lock, with everything else the frame noticed.
+        var runningCommandID: UInt32?
         let frame: RenderFrame = session.withTerminal { t in
             // Before anything reads the selection: a cleared scrollback, a reset or an
             // alternate-screen swap leaves it pointing at rows that now hold other content.
@@ -1304,6 +1613,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // rather than done: this runs under the session lock and dismissing touches AppKit.
                 if self.lensFieldBlock != nil { dismissField = true }
                 self.forgetViewportAnchor()
+                // Every block the series made is gone, and its ids now name other rows: kept, its
+                // header would sit on a stranger's command and its folds would collapse one. A
+                // watch cleared out from under itself is stopped and forgotten rather than left
+                // pointing at rows that no longer exist.
+                if self.watch != nil { abandonWatch = true }
             }
             // Folds whose prompt has gone -- evicted from the ring, or overwritten -- are dropped
             // here rather than accumulating over a session, and with them any notification armed
@@ -1561,7 +1875,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                           lensTooLarge: self.lensIsTooLarge(block.region.id),
                                           // Only the ⋯ menu needs it, and finding it parses command
                                           // lines: not a question for sixty frames a second.
-                                          hasPreviousRun: false)
+                                          hasPreviousRun: false,
+                                          watch: self.watchHeader(forBlock: block.region.id),
+                                          watchInterval: self.config.httpWatchInterval)
                 let text = header.summaryWithChevron
                 // Every row of the command line is a candidate, not just the prompt row: a pasted
                 // `curl` wraps, and the row that has room is usually the last one.
@@ -1676,11 +1992,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 let header = block.header(now: t.now(), folding: self.folding, notifyArmed: false,
                                           anyFolds: !self.folding.isEmpty,
                                           hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow),
-                                          httpSummary: self.requestSummary(for: block, in: t))
+                                          httpSummary: self.requestSummary(for: block, in: t),
+                                          watch: self.watchHeader(forBlock: region.id))
                 sticky = (StickyPromptLabel.text(command: t.commandText(of: region),
                                                  exitStatus: pinned.exitStatus, columns: t.cols),
                           pinned.failed, pinned.row, header.summary, header.tone)
             }
+            if self.watchSentAt != nil { runningCommandID = t.runningCommand?.id }
             builtAtContentVersion = t.contentVersion
             return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
                                cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit,
@@ -1690,6 +2008,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                dirtyRows: self.dirtyRows(of: t, top: top))
         }
         drainPendingRecord()
+        if abandonWatch {
+            stopWatch(.stopped)
+            watch = nil
+            pendingWatchFinishes.removeAll()
+            watchSentAt = nil
+            updateWatchTimer()
+        }
+        // Before `applyPendingLenses`: a watched run that is going to open in `diff` takes itself
+        // off the default-lens list, and the default would otherwise win the race and open it in
+        // `pretty` for one frame.
+        advanceWatch(runningCommandID: runningCommandID)
         applyPendingLenses()
         // A running command's elapsed time only moves if something asks for a redraw; nothing else
         // on this row changes while it runs. One timer per pane, alive only while it would do
@@ -1894,6 +2223,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     private func sendKey(_ e: NSEvent) {
         guard let ke = keyEvent(from: e) else { return }
+        stopWatchIfUserTyped()
         // Every mode the encoder needs, read under the one lock: `cursorKeysApp` and `keypadApp`
         // are what DECCKM/DECKPAM asked for, and `modifyOtherKeys` is what an application turned on
         // to be able to tell ctrl+Enter from Enter at all.
@@ -1936,6 +2266,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func insertText(_ string: Any, replacementRange: NSRange) {
         let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
         markedText = ""
+        // Someone is typing at the prompt; a series that went on sending would splice a `curl`
+        // into the middle of their sentence.
+        stopWatchIfUserTyped()
         if let e = currentEvent, e.modifierFlags.contains(.control) || (optionActsAsMeta && e.modifierFlags.contains(.option)) {
             sendKey(e)
             markDirty()
@@ -2421,7 +2754,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                     isHTTP: self.requestCache.isRequest(id: id),
                                     lens: self.lenses.lens(of: id),
                                     lensTooLarge: self.lensIsTooLarge(id),
-                                    hasPreviousRun: previousRun != nil)
+                                    hasPreviousRun: previousRun != nil,
+                                    // Right-clicking a watched run has to offer Stop, not a second
+                                    // "Run Every 5 s": this menu is built apart from the frame's,
+                                    // and a header without the series is a menu that disagrees
+                                    // with the strip over the same block.
+                                    watch: self.watchHeader(forBlock: id),
+                                    watchInterval: self.config.httpWatchInterval)
             }
             drainPendingRecord()
             if let header {
@@ -3490,6 +3829,19 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         case .copyHeaders:
             guard let text = responseText(of: id, headersOnly: true) else { NSSound.beep(); return }
             copyToPasteboard(text)
+        case .runEvery(let seconds):
+            // The block's own command line, not a rebuilt one: the twentieth run has to be the
+            // same request as the first, or the numbers in the header compare two things.
+            startWatch(plan: WatchPlan(interval: seconds, stop: .never),
+                       command: session.withTerminal { $0.commandLine(of: region) })
+        case .watch(let seed):
+            let command = session.withTerminal { $0.commandLine(of: region) }
+            guard !command.isEmpty else { NSSound.beep(); return }
+            presentWatchPlanEditor(seed: seed, command: command, on: id)
+        // The Stop button and the menu row always stop, wherever the block is: unlike `⌘.`, the
+        // press names the series it belongs to.
+        case .stopWatch:
+            if !stopWatch(.stopped) { NSSound.beep() }
         // The body is past what a lens will re-lay-out. The row says so and still does the thing
         // that works on a response that size.
         case .lensUnavailable: saveOutput(ofCommand: id)
@@ -3998,13 +4350,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let editor = RequestEditor(command: command, palette: Pane.resolvedPalette(for: config),
                                    watchInterval: config.httpWatchInterval)
         editor.onSaveToProject = { [weak self] _, line in self?.appendToProjectFile(line) }
-        editor.onWatch = { [weak editor] plan in
-            guard let line = editor?.runLine else { return }
-            // Repeating a request belongs to the response side, which does not exist yet. Running
-            // it once and saying what was asked for is a feature doing less than it promises; a
-            // menu item that silently did nothing would be a defect.
-            NSLog("Nyx: repeat requested (%@) — running once for now", plan.summary)
+        editor.onWatch = { [weak self, weak editor] request in
+            guard let self, let line = editor?.runLine else { return }
+            // Typed first, so the user sees the request go the moment the sheet closes, and the
+            // history records it the way every other run is recorded. The series is then told the
+            // first run is already out: it starts *due*, and without this it would type a second
+            // copy of the same request a quarter of a second later.
             run(line)
+            self.startWatch(plan: Pane.plan(for: request, interval: self.config.httpWatchInterval),
+                            command: line, firstRunSent: true)
         }
 
         // The same sheet-window mechanics as `presentCommandEditor`, for the same reasons: this
@@ -4028,6 +4382,19 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         window.beginSheet(sheet) { _ in }
         return true
+    }
+
+    /// What the sheet's Repeat menu asked for, as a plan the pane can run.
+    ///
+    /// The sheet knows nothing about series, and the interval belongs to the configuration, so the
+    /// conversion lives here rather than in either -- and `Run 10 times` carries the interval too,
+    /// because ten runs still have to be spaced.
+    static func plan(for request: WatchPlanRequest, interval: Double) -> WatchPlan {
+        switch request {
+        case .every(let seconds): return WatchPlan(interval: seconds, stop: .never)
+        case .times(let count): return WatchPlan(interval: interval, stop: .count(count))
+        case .untilStatus(let code): return WatchPlan(interval: interval, stop: .until(.status(code)))
+        }
     }
 
     /// Appends one `quick = …` line to the project's `.nyx` file, creating it when there is none.

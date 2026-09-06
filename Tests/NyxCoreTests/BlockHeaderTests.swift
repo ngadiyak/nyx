@@ -184,6 +184,9 @@ private func httpSummary(_ text: String, _ tone: HTTPSummary.Tone) -> HTTPSummar
         .runAgain, .editAndRun,
         .openInWorkbench, .copyAs(.httpie), .copyAs(.fetch), .copyAs(.pythonRequests), .copyAs(.go),
         .saveAsButton, .saveToProject,
+        // The two watch rows close the Request group; `theWatchActionsAreInTheRequestGroup` is
+        // where their own rules live.
+        .runEvery(seconds: 5), .watch(WatchPlan(interval: 5, stop: .never)),
         // The Lens group follows it; `lensGroupForHTTPBlocks` is where its own rules live.
         .setLens(.raw), .setLens(.pretty), .setLens(.headers), .setLens(.body),
         .setLens(.filter("")), .setLens(.grep("")), .setLens(.diff(previousCommandID: 0)),
@@ -266,6 +269,7 @@ private func httpHeader(lens: ResponseLens? = nil, tooLarge: Bool = false,
         .runAgain, .editAndRun,
         .openInWorkbench, .copyAs(.httpie), .copyAs(.fetch), .copyAs(.pythonRequests), .copyAs(.go),
         .saveAsButton, .saveToProject,
+        .runEvery(seconds: 5), .watch(WatchPlan(interval: 5, stop: .never)),
         .setLens(.raw), .setLens(.pretty), .setLens(.headers), .setLens(.body),
         .setLens(.filter("")), .setLens(.grep("")), .setLens(.diff(previousCommandID: 0)),
         .copyBody, .copyHeaders,
@@ -331,4 +335,64 @@ private func httpHeader(lens: ResponseLens? = nil, tooLarge: Bool = false,
     #expect(BlockAction.copyBody.title == "Copy Body")
     #expect(BlockAction.copyHeaders.title == "Copy Headers")
     #expect(BlockAction.toggleLens.title == "Toggle Pretty Response")
+}
+
+/// A watched run's header says what the series is doing instead of what the one request answered.
+///
+/// The substitution is the point: `200 · 142 ms` is already inside `watch every 5 s · run 12 · 200
+/// · 142 ms`, and printing both would put the same status on the row twice.
+@Test func watchHeaderReplacesSummary() {
+    var series = WatchSeries(plan: WatchPlan(interval: 5, stop: .never), command: "curl x",
+                             startedAt: 0)
+    series.runStarted(id: 4, at: 0)
+    series.runFinished(id: 4, status: 200, exitStatus: 0, timeTotal: 0.142, body: "", at: 1)
+    let watched = block(region()).header(now: 100, folding: OutputFolding(), notifyArmed: false,
+                                         anyFolds: false, hasOutput: true,
+                                         httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
+                                                                  tone: .success),
+                                         isHTTP: true, watch: series.header())
+    #expect(watched.summary == "watch every 5 s \u{b7} run 1 \u{b7} 200 \u{b7} 142 ms")
+    #expect(watched.watch?.showsStop == true)
+    #expect(watched.watch?.dots == [.success])
+    // The colour still comes from the request: a watch of a failing endpoint must not read green.
+    #expect(watched.tone == .success)
+    // Without a watch the HTTP summary is what it always was.
+    let plain = block(region()).header(now: 100, folding: OutputFolding(), notifyArmed: false,
+                                       anyFolds: false, hasOutput: true,
+                                       httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
+                                                                tone: .success),
+                                       isHTTP: true)
+    #expect(plain.summary == "200 \u{b7} 142 ms")
+    #expect(plain.watch == nil)
+}
+
+/// While a series is running its block offers Stop; otherwise a request block offers to start one.
+@Test func theWatchActionsAreInTheRequestGroup() {
+    var series = WatchSeries(plan: WatchPlan(interval: 5, stop: .never), command: "curl x",
+                             startedAt: 0)
+    series.runStarted(id: 4, at: 0)
+    let watching = block(region()).header(now: 100, folding: OutputFolding(), notifyArmed: false,
+                                          anyFolds: false, hasOutput: true, isHTTP: true,
+                                          watch: series.header())
+    let watchingActions = watching.actions.map(\.action)
+    #expect(watchingActions.contains(.stopWatch))
+    #expect(!watchingActions.contains { if case .runEvery = $0 { return true } else { return false } })
+
+    let idle = httpHeader()
+    let idleActions = idle.actions.map(\.action)
+    #expect(idleActions.contains(.runEvery(seconds: 5)))
+    #expect(idleActions.contains(.watch(WatchPlan(interval: 5, stop: .never))))
+    #expect(!idleActions.contains(.stopWatch))
+    // Between the request group's last row and the lens group's first, so neither group grows a
+    // stray separator.
+    let names = idleActions.map { idle.title(for: $0) }
+    #expect(names.firstIndex(of: "Run Every 5 s") == names.firstIndex(of: "Save to Project\u{2026}").map { $0 + 1 })
+    #expect(BlockAction.runEvery(seconds: 5).title == "Run Every 5 s")
+    #expect(BlockAction.runEvery(seconds: 0.5).title == "Run Every 0.5 s")
+    #expect(BlockAction.watch(WatchPlan(interval: 5, stop: .never)).title == "Watch\u{2026}")
+    #expect(BlockAction.stopWatch.title == "Stop Watching")
+    // A block that is not a request cannot be watched: the rows are absent, not greyed.
+    let plain = block(region()).header(now: 100, folding: OutputFolding(), notifyArmed: false,
+                                       anyFolds: false, hasOutput: true)
+    #expect(!plain.actions.contains { if case .runEvery = $0.action { return true } else { return false } })
 }

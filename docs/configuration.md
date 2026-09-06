@@ -54,7 +54,7 @@ so that template and this page are the two places a new key must be added.
 | `remote-snapshot-lines` | `2000` | Lines of scrollback a host sends a client as the initial snapshot before switching to the live stream. Clamped to 100–20000 |
 | `http-lens` | `pretty` | Which lens a finished `curl`'s response opens in: `pretty` (the JSON body reformatted, foldable, with the headers on one line and the phase latencies underneath) or `raw` (the rows exactly as they arrived). Only applies to a JSON body small enough to re-lay-out; everything else stays raw. `⌘⇧J` flips one response between the two without touching this |
 | `http-hint` | `true` | Show the `⌘E Workbench` pill at the end of a `curl` that has just been **pasted**, for eight seconds or until the next key press. Typing one by hand does not raise it |
-| `http-watch-interval` | `5` | Seconds between polls while a `--watch` request is running. Clamped to 1–3600 |
+| `http-watch-interval` | `5` | Seconds between the *end* of one watched run and the start of the next -- what the block menu's `Run Every 5 s` row, the workbench's `Repeat ▸ Run 10 times` and the `Watch…` popover all open on. Clamped to 1–3600; the popover accepts 0.5–3600 for one series without changing the setting |
 | `http-history` | `50` | How many requests the palette's Requests section remembers. `0` turns the feature off. Clamped to 0–500 |
 
 Booleans accept `true`/`false`, `yes`/`no`, `1`/`0`, `on`/`off`.
@@ -145,7 +145,7 @@ A user binding beats a default for the same chord; the last line in the file win
 | `remote_pair` | — | Opens the pairing sheet, either side |
 | `remote_take_control` | — | On an observed remote tab, takes over as writer |
 | `toggle_http_lens` | ⌘⇧J | Flips the response under the pointer -- or the last one in the pane -- between `pretty` and `raw`. Greyed when the pane has no request to show |
-| `stop_watch` | ⌘. | Stops a running `--watch` request. **Greyed in the menu and absent from the palette until the response plan lands**; the binding is live and beeps |
+| `stop_watch` | ⌘. | Stops the watch running in this pane, while its newest run is still the last request in it. Greyed in the menu and absent from the palette when there is no such series; the block header's own **Stop** button has no such rule and always stops the series it belongs to |
 
 The menu is generated from `ActionCatalog.sections`, so every action is discoverable there with
 its current chord, and the settings window's Keys page lists them all.

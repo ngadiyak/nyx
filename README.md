@@ -54,6 +54,16 @@ project's `.nyx`. `⌘⇧P` remembers the last fifty requests you ran, on any ta
 through the same form. Nothing is guessed and nothing is sent anywhere: it is your `curl`,
 re-typed for you.
 
+**The response is a document, and it can repeat.** A finished request opens pretty-printed and
+foldable in place of the single line it arrived as; `⌘⇧J` flips back to the raw rows, and the `⋯`
+menu reads the same body as headers only, body only, a jq-style filter, a search, or a diff against
+the previous run of the same request. `Run Every 5 s` in that menu -- or `Watch…`, or `Repeat` in
+the workbench -- runs it again on a schedule: every run is an ordinary block, the older ones fold
+away except the one where the status changed, the newest opens on the diff, and its header carries
+a timeline of coloured dots, `watch every 5 s · run 12 · 200 · 142 ms`, and a Stop button. It only
+ever types at a prompt, never over a command you are writing, and it stops the moment you type
+anything yourself.
+
 **Finding things.** `⌘F` searches the buffer, with a toggle that widens it to every pane in every
 tab. `⌘⇧P` is a palette over actions, themes, tabs, your own buttons and paired Macs' sessions.
 With nothing typed it lists them in menu order rather than shortest-name-first, so the sections

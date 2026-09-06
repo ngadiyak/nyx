@@ -273,6 +273,73 @@ enum UISnapshot {
             write(view, named: "block-header-\(name)-dark", into: directory,
                   background: palette.background)
         }
+        // The watched block's header, running and finished, in both appearances. Two questions:
+        // whether the dots read as a timeline (and whether the hollow "running" one is legible
+        // against the filled ones) and whether the whole strip -- timeline, sentence, Stop, ⋯,
+        // chevron -- is still a width `overlayPlacement` can find room for on a command line.
+        for (name, series) in watchHeaderStates() {
+            for (appearanceName, appearance, themePalette) in
+                [("dark", NSAppearance.Name.darkAqua, palette),
+                 ("light", .aqua, Themes.builtin["nyx-light"] ?? palette)] {
+                let header = BlockHeader(id: 4, state: .finished, folded: false, hasOutput: true,
+                                         anyFolds: false, notifyArmed: false, summary: "",
+                                         httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
+                                                                  tone: .success),
+                                         isHTTP: true, watch: series.header())
+                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
+                view.appearance = NSAppearance(named: appearance)
+                view.update(header: header, controls: .full, palette: themePalette,
+                            font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+                let size = view.intrinsicContentSize
+                view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
+                view.layoutSubtreeIfNeeded()
+                write(view, named: "block-header-watch-\(name)-\(appearanceName)", into: directory,
+                      background: themePalette.background)
+            }
+        }
+        // The same running series at the two narrower strips: the timeline is the first thing to
+        // go, and Stop survives one step further. These are the pictures that say a watch on a
+        // crowded command line can still be stopped from the strip.
+        if let running = watchHeaderStates().first(where: { $0.0 == "running" })?.1 {
+            for (name, controls) in [("nocopy", OverlayControls.noCopy), ("minimal", .minimal)] {
+                let header = BlockHeader(id: 4, state: .finished, folded: false, hasOutput: true,
+                                         anyFolds: false, notifyArmed: false, summary: "",
+                                         httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
+                                                                  tone: .success),
+                                         isHTTP: true, watch: running.header())
+                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
+                view.appearance = NSAppearance(named: .darkAqua)
+                view.update(header: header, controls: controls, palette: palette,
+                            font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+                let size = view.intrinsicContentSize
+                view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
+                view.layoutSubtreeIfNeeded()
+                write(view, named: "block-header-watch-running-\(name)", into: directory,
+                      background: palette.background)
+            }
+        }
+        // The `Watch…` popover, in both appearances, on the stop rule that has the most in it:
+        // every row is up, and the sentence at the foot is what the header will then say.
+        for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
+            let view = WatchPlanEditor.snapshotView(seed: WatchPlan(interval: 5, stop: .never)) { model in
+                model.stop = .until
+                model.condition = .status
+                model.value = "200"
+            }
+            view.appearance = NSAppearance(named: appearance)
+            view.layoutSubtreeIfNeeded()
+            write(view, named: "watch-plan-editor-\(name)", into: directory,
+                  background: windowGround(appearance))
+        }
+        // And the one state that has to be unmistakable: a field that cannot be read, with Start
+        // greyed and the sentence saying which box to look at.
+        let invalid = WatchPlanEditor.snapshotView(seed: WatchPlan(interval: 5, stop: .never)) { model in
+            model.interval = "0"
+        }
+        invalid.appearance = NSAppearance(named: .darkAqua)
+        invalid.layoutSubtreeIfNeeded()
+        write(invalid, named: "watch-plan-editor-invalid-dark", into: directory,
+              background: windowGround(.darkAqua))
         // The lit `{ }` in the other appearance too, because its colour is the theme's accent and
         // the accent is chosen against the theme's background: this is the picture that says the
         // "on" state is still legible when the ground is white.
@@ -829,6 +896,35 @@ enum UISnapshot {
             // request evidently did.
             ("http-exit", header(9, "200 \u{b7} 245 ms \u{b7} exit 56", .failure)),
         ]
+    }
+
+    /// A watch part-way through and the same watch stopped: the two states the header has.
+    ///
+    /// Twelve runs rather than two, because the timeline is the thing being looked at and a strip
+    /// of two dots says nothing about how thirty will read. One 503 in the middle and one still
+    /// running at the end, so all four dot kinds are in one picture.
+    private static func watchHeaderStates() -> [(String, WatchSeries)] {
+        func series(running: Bool) -> WatchSeries {
+            var s = WatchSeries(plan: WatchPlan(interval: 5, stop: .never), command: "curl x",
+                                startedAt: 0)
+            let statuses = [200, 200, 200, 503, 301, 200, 200, 200, 200, 200, 200]
+            var clock = 0.0
+            for (index, status) in statuses.enumerated() {
+                let id = UInt32(index + 1)
+                s.runStarted(id: id, at: clock)
+                clock += 0.142
+                s.runFinished(id: id, status: status, exitStatus: 0,
+                              timeTotal: 0.1 + Double(index) * 0.01, body: "", at: clock)
+                clock += 5
+            }
+            if running {
+                s.runStarted(id: 99, at: clock)
+            } else {
+                s.stop(.stopped)
+            }
+            return s
+        }
+        return [("running", series(running: true)), ("finished", series(running: false))]
     }
 
     /// One picture per state the remote strip can be in. The live *writer* is deliberately not

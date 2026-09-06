@@ -132,3 +132,23 @@ private func region(output: Int, id: UInt32 = 7) -> CommandRegion {
     #expect(!quiet)
     #expect(f.isEmpty)
 }
+
+/// A watch folds its older runs, but never one the reader has opened to look at.
+@Test func foldUnlessOpenedLeavesAHandOpenedBlockAlone() {
+    var f = OutputFolding()
+    let first = f.foldUnlessOpened(7, .all)
+    #expect(first)
+    #expect(f.shape(of: 7) == .all)
+    // Idempotent: the same instruction on the next run of the series changes nothing, so the pane
+    // is not asked to redraw for it.
+    let again = f.foldUnlessOpened(7, .all)
+    #expect(!again)
+
+    f.unfold(7)
+    let refused = f.foldUnlessOpened(7, .all)
+    #expect(!refused)
+    #expect(!f.isFolded(7))
+    // Id 0 is "no command"; folding it would collapse whatever the buffer had at that index.
+    let zero = f.foldUnlessOpened(0, .all)
+    #expect(!zero)
+}

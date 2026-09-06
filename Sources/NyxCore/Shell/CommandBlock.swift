@@ -278,6 +278,16 @@ public enum BlockAction: Equatable {
     /// the pane fills in from its own cache, which is the only thing that knows which run came
     /// before this one.
     case setLens(ResponseLens), toggleLens, copyBody, copyHeaders
+    /// Start this request again on a schedule. `runEvery` is the one-click form -- the configured
+    /// interval, running until stopped -- and `watch` opens the popover on the plan it carries, so
+    /// the menu row is built from the same default the popover then shows.
+    ///
+    /// The plan on `watch` is a *seed*, not the plan that will run: a menu built when nobody has
+    /// filled the form in yet cannot carry the answer to it, and a case that pretended to would be
+    /// a row that starts a watch the user never described.
+    case runEvery(seconds: Double), watch(WatchPlan)
+    /// Offered in place of the two above while this block's series is still going.
+    case stopWatch
     /// What the Lens group becomes when the body is too large to re-lay-out: one row that says so
     /// and still does the thing that works. A case of its own rather than a second `.saveOutput`,
     /// because a menu row's title and its group break are properties of the action, and the two
@@ -307,6 +317,12 @@ public enum BlockAction: Equatable {
         case .toggleLens: return "Toggle Pretty Response"
         case .copyBody: return "Copy Body"
         case .copyHeaders: return "Copy Headers"
+        // The same words the header will then show ("watch every 5 s"), so the row a user pressed
+        // and the sentence they end up reading are one plan described once.
+        case .runEvery(let seconds): return "Run Every \(WatchPlan.secondsText(seconds)) s"
+        case .watch: return "Watch\u{2026}"
+        // The same title as the `stop_watch` action in the palette and the menu bar.
+        case .stopWatch: return "Stop Watching"
         case .lensUnavailable: return "Body too large for lenses \u{2014} Save Output\u{2026}"
         case .toggleFold: return "Fold Output"
         case .toggleFoldAll: return "Fold Everything Long"
@@ -409,6 +425,15 @@ public struct BlockHeader: Equatable {
     /// frame builds leaves it false and whoever opens a menu fills it in. Left as a `let`, the row
     /// was greyed on every hover strip whatever the pane knew, and the feature read as unbuilt.
     public var hasPreviousRun: Bool
+    /// The watch series this block is the newest run of, or nil -- which is every block in every
+    /// pane where nobody has asked for one. Only the *newest* run carries it: the older runs of a
+    /// series are ordinary finished requests, and a timeline drawn beside each of them would be the
+    /// same twenty dots twenty times down the screen.
+    public let watch: WatchHeader?
+    /// What `Run Every … s` offers, from `http-watch-interval`. Carried rather than defaulted at
+    /// the menu, so the row, the popover it sits beside and the settings window cannot name three
+    /// different intervals.
+    public let watchInterval: Double
 
     /// `httpSummary`, when there is one, *replaces* `summary` rather than sitting beside it: a
     /// request's status and latency are what the user ran the command to find out, and two sources
@@ -417,11 +442,16 @@ public struct BlockHeader: Equatable {
     public init(id: UInt32, state: State, folded: Bool, hasOutput: Bool, anyFolds: Bool,
                 notifyArmed: Bool, summary: String, httpSummary: HTTPSummary? = nil,
                 isHTTP: Bool = false, lens: ResponseLens? = nil, lensTooLarge: Bool = false,
-                hasPreviousRun: Bool = false) {
+                hasPreviousRun: Bool = false, watch: WatchHeader? = nil,
+                watchInterval: Double = 5) {
         self.id = id; self.state = state; self.folded = folded; self.hasOutput = hasOutput
         self.anyFolds = anyFolds; self.notifyArmed = notifyArmed
         self.lens = lens; self.lensTooLarge = lensTooLarge; self.hasPreviousRun = hasPreviousRun
-        self.summary = httpSummary?.text ?? summary
+        self.watch = watch; self.watchInterval = watchInterval
+        // And a watch's own sentence replaces the request's, for the same reason: `200 · 142 ms`
+        // is already the tail of `watch every 5 s · run 12 · 200 · 142 ms`, and showing both puts
+        // the status on the row twice.
+        self.summary = watch?.text ?? httpSummary?.text ?? summary
         self.httpSummary = httpSummary
         // A block that produced a response is a request whatever the caller says: the summary could
         // not have been made otherwise, and a menu that disagreed with the row above it would be
@@ -482,6 +512,15 @@ public struct BlockHeader: Equatable {
             list.append((.openInWorkbench, true))
             list += ExportFormat.allCases.map { (.copyAs($0), true) }
             list += [(.saveAsButton, true), (.saveToProject, true)]
+            // One row or two, never all three: while a series is running the only thing anyone
+            // wants from this block is to stop it, and offering "Run Every 5 s" beside a watch
+            // already running is two ways to start a second one.
+            if watch?.showsStop == true {
+                list.append((.stopWatch, true))
+            } else {
+                list += [(.runEvery(seconds: watchInterval), true),
+                         (.watch(WatchPlan(interval: watchInterval, stop: .never)), true)]
+            }
             if lensTooLarge {
                 list.append((.lensUnavailable, hasOutput))
             } else {
@@ -538,7 +577,8 @@ public extension CommandBlock {
     func header(now: Double, folding: OutputFolding, notifyArmed: Bool, anyFolds: Bool,
                 hasOutput: Bool, httpSummary: HTTPSummary? = nil,
                 isHTTP: Bool = false, lens: ResponseLens? = nil, lensTooLarge: Bool = false,
-                hasPreviousRun: Bool = false) -> BlockHeader {
+                hasPreviousRun: Bool = false, watch: WatchHeader? = nil,
+                watchInterval: Double = 5) -> BlockHeader {
         let state: BlockHeader.State
         let summary: String
         if isRunning {
@@ -556,7 +596,8 @@ public extension CommandBlock {
                            hasOutput: hasOutput, anyFolds: anyFolds,
                            notifyArmed: notifyArmed, summary: summary, httpSummary: httpSummary,
                            isHTTP: isHTTP, lens: lens, lensTooLarge: lensTooLarge,
-                           hasPreviousRun: hasPreviousRun)
+                           hasPreviousRun: hasPreviousRun, watch: watch,
+                           watchInterval: watchInterval)
     }
 }
 

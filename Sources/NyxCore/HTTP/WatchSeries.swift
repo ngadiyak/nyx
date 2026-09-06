@@ -385,3 +385,47 @@ public struct WatchSeries: Equatable {
         return sorted[Swift.min(Swift.max(rank - 1, 0), sorted.count - 1)]
     }
 }
+
+/// What a watched block's header shows: the dots, the sentence, and whether there is still
+/// something to stop.
+///
+/// A value rather than the `WatchSeries` itself, for the reason every other `BlockHeader` field is
+/// one: the header is compared on every frame to decide whether the strip needs re-styling, and a
+/// series compares its whole run list. Three small fields is the comparison that costs nothing.
+public struct WatchHeader: Equatable {
+    /// `WatchSeries.headerText`.
+    public let text: String
+    /// Oldest first, the order they happened in.
+    public let dots: [WatchSeries.Dot]
+    /// A series that has stopped has nothing to stop; the header stays to show the statistics.
+    public let showsStop: Bool
+
+    public init(text: String, dots: [WatchSeries.Dot], showsStop: Bool) {
+        self.text = text; self.dots = dots; self.showsStop = showsStop
+    }
+}
+
+public extension WatchSeries {
+    /// The header for this series' newest run.
+    ///
+    /// Thirty dots is the spec's number and about ten seconds of a one-second watch: enough that
+    /// the shape of a flapping endpoint is visible, few enough that the strip still fits on a
+    /// command line. The caller may ask for fewer; nothing may ask for more without the strip
+    /// growing past the row it is drawn on.
+    func header(dots n: Int = 30) -> WatchHeader {
+        WatchHeader(text: headerText, dots: timeline(last: n), showsStop: !isFinished)
+    }
+}
+
+public extension WatchSeries.Dot {
+    /// The colour ladder every other block status already comes down, so a dot and the summary
+    /// beside it cannot disagree about whether a run went well.
+    var tone: SummaryTone {
+        switch self {
+        case .success: return .success
+        case .redirect: return .redirect
+        case .failure: return .failure
+        case .running: return .running
+        }
+    }
+}

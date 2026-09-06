@@ -17,9 +17,8 @@ final class RequestEditor: NSViewController {
     /// pane can treat the two sheets the same way.
     var onFinish: ((String?) -> Void)?
 
-    /// A repeated run the response side will own. Until it does, the pane runs the request once
-    /// and says in the log what was asked for: a menu item that quietly does nothing is worse than
-    /// one that does less than it promises.
+    /// What the Repeat menu asked for. The sheet knows nothing about series, timers or blocks: it
+    /// hands over the request and the pane, which owns the shell, starts the watch.
     var onWatch: ((WatchPlanRequest) -> Void)?
 
     /// `(name, "quick = …")` for the project's `.nyx` file. The controller never touches a file --
@@ -171,9 +170,6 @@ final class RequestEditor: NSViewController {
     private lazy var previewHeight =
         preview.heightAnchor.constraint(equalToConstant: RequestEditor.previewDesignHeight)
 
-    /// What the Repeat menu says while the response side does not exist.
-    static let comingWithTheResponsePlan = "Coming with lenses and watch"
-
     /// What the Response popup says when a pipeline has already taken the answer away.
     static let unavailableWithAPipeline = "Unavailable with a pipeline"
 
@@ -259,25 +255,14 @@ final class RequestEditor: NSViewController {
         // face is a disclosure arrow says nothing about what is behind it.
         let repeats = NSPopUpButton(frame: .zero, pullsDown: true)
         repeats.addItem(withTitle: "Repeat")
-        // Disabled, not removed. Repeating a request is the response plan's, and running it *once*
-        // while a menu says "Run 10 times" is a feature lying about what it did. Left in view and
-        // greyed, with a tooltip that says when it arrives: a menu item that vanishes teaches
-        // nobody anything, and one that is there and does less than it says is worse.
         repeats.menu?.autoenablesItems = false
         for (title, plan) in [("Run every…", WatchPlanRequest.every(seconds: watchInterval)),
                               ("Run 10 times", .times(10)),
                               ("Run until 200", .untilStatus(200))] {
-            let entry = item(title, #selector(runWatch(_:)), plan)
-            entry.isEnabled = false
-            entry.toolTip = RequestEditor.comingWithTheResponsePlan
-            repeats.menu?.addItem(entry)
+            repeats.menu?.addItem(item(title, #selector(runWatch(_:)), plan))
         }
-        // The control itself, not only its items: a pull-down that opens onto three greyed lines
-        // is a worse answer than one that is plainly not ready.
-        repeats.isEnabled = false
-        repeats.toolTip = RequestEditor.comingWithTheResponsePlan
-        repeats.setAccessibilityLabel("Run this request repeatedly \u{2014} "
-            + RequestEditor.comingWithTheResponsePlan)
+        repeats.toolTip = "Run this request on a schedule; each run is a block"
+        repeats.setAccessibilityLabel("Run this request repeatedly")
 
         let run = NSButton(title: "Run", target: self, action: #selector(runOnce))
         // ⌘⏎, not ⏎. A plain Return here is a key equivalent, and a key equivalent is offered the

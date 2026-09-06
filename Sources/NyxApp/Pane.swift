@@ -1129,16 +1129,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// `firstRunSent` is for the sheet's Repeat menu, which types the request itself so the user
     /// sees it go. A series starts *due*, so without this the first tick would type a second copy
     /// of the same request a quarter of a second later.
-    func startWatch(plan: WatchPlan, command: String, firstRunSent: Bool = false) {
-        guard !command.isEmpty else { NSSound.beep(); return }
+    @discardableResult
+    func startWatch(plan: WatchPlan, command: String, firstRunSent: Bool = false) -> Bool {
+        guard !command.isEmpty else { NSSound.beep(); return false }
         // A series only ever sends at a prompt, and a shell that emits no marks can never say it
         // is at one -- so a watch here would sit on a 250 ms timer until the pane closed and never
-        // send a thing. Refused with the reason rather than started: silence is a defect, and this
-        // is reachable from the sheet's Repeat menu in *any* pane, including one running a shell
-        // Nyx has no hooks in.
-        guard session.withTerminal({ $0.shellEmitsPromptMarks }) else {
+        // send a thing. Refused rather than started; callers that have something to undo first ask
+        // `canWatch` instead, so the refusal happens before anything has been run.
+        guard canWatch else {
             reportWatchRefused()
-            return
+            return false
         }
         stopWatch(.stopped)
         let now = watchClock
@@ -1146,11 +1146,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         watchSentAt = firstRunSent ? now : nil
         updateWatchTimer()
         markDirty()
+        return true
     }
 
-    /// Says why a watch cannot start here. The same shape as `reportProjectWrite`: an alert on the
-    /// sheet that asked when there is one, because an alert on the window behind a sheet is queued
-    /// until that sheet closes and reads as nothing having happened.
+    /// Whether a watch could run in this pane at all: the shell has to mark its prompts, because
+    /// "is the shell free?" is the one question a series asks before every send.
+    var canWatch: Bool { session.withTerminal { $0.shellEmitsPromptMarks } }
+
+    /// Says why a watch cannot start here.
+    ///
+    /// On the *window*, never on a sheet attached to it. `reportProjectWrite` puts its alert on
+    /// `window.attachedSheet` because the sheet that asked stays up; this refusal's one caller is
+    /// the request sheet's Repeat menu, which closes itself in the very next statement -- and an
+    /// alert hosted by a sheet that is then ended is created, never shown, and its completion
+    /// never runs. The user saw nothing at all. So: the window, and after the sheet has gone --
+    /// see `presentRequestEditor`, which holds the refusal until `beginSheet`'s completion.
     private func reportWatchRefused() {
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -1159,8 +1169,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             + "prompt, and this shell does not tell Nyx where its prompts are. Set "
             + "shell-integration = auto and open a new tab, or run the request from a pane that "
             + "has it."
-        if let host = window?.attachedSheet ?? window {
-            alert.beginSheetModal(for: host) { _ in }
+        if let window {
+            alert.beginSheetModal(for: window) { _ in }
         } else {
             NSSound.beep()
         }
@@ -4442,8 +4452,18 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let editor = RequestEditor(command: command, palette: Pane.resolvedPalette(for: config),
                                    watchInterval: config.httpWatchInterval)
         editor.onSaveToProject = { [weak self] _, line in self?.appendToProjectFile(line) }
+        // Set by `onWatch` when the pane cannot watch, and acted on once the sheet has ended: see
+        // `reportWatchRefused` for why the alert cannot go up while the sheet is still there.
+        var refusedWatch = false
         editor.onWatch = { [weak self, weak editor] request in
             guard let self, let line = editor?.runLine else { return }
+            // Asked *before* the request is run. "Run 10 times" that cannot watch and runs the
+            // request once anyway is a menu item doing a tenth of what it says and then going
+            // quiet -- a refusal means zero runs, and the sentence that follows says why.
+            guard self.canWatch else {
+                refusedWatch = true
+                return
+            }
             // Typed first, so the user sees the request go the moment the sheet closes, and the
             // history records it the way every other run is recorded. The series is then told the
             // first run is already out: it starts *due*, and without this it would type a second
@@ -4472,7 +4492,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             guard let line else { return }
             run(line)
         }
-        window.beginSheet(sheet) { _ in }
+        // The completion runs when the sheet has ended, which is the earliest moment an alert can
+        // be put on this window and actually be seen.
+        window.beginSheet(sheet) { [weak self] _ in
+            guard refusedWatch else { return }
+            self?.reportWatchRefused()
+        }
         return true
     }
 

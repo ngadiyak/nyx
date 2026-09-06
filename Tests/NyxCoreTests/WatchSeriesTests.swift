@@ -284,6 +284,11 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
     series.runFinished(id: 4, status: 200, exitStatus: 0, timeTotal: 0.1, body: "", at: 1)
     // Back to waiting: a stranger's block that finishes now is not a run of this series.
     #expect(!series.owns(finishedBlock: 5, outstanding: false))
+    // And the outstanding case has a floor. A block older than a run already recorded is never
+    // the run just typed: the pane's exchange cache is trimmed, and a trimmed block that scrolls
+    // back on screen is read again -- which without this counted last Tuesday's request as a run.
+    #expect(!series.owns(finishedBlock: 3, outstanding: true))
+    #expect(series.owns(finishedBlock: 5, outstanding: true))
 
     series.stop(.stopped)
     #expect(!series.owns(finishedBlock: 4, outstanding: true))

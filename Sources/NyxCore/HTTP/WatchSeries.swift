@@ -294,12 +294,17 @@ public struct WatchSeries: Equatable {
     /// button, a paste or the workbench's own Run reaches the shell without stopping a *waiting*
     /// series, and the stranger's block became the series' newest run -- taking the header, the
     /// dots and the Stop button, folding the real newest run, and counting a request nobody
-    /// watched into the statistics and the stop rule. An id comparison cannot tell them apart:
-    /// every later block has a larger id, which is exactly what a stranger's has too.
+    /// watched into the statistics and the stop rule. An id comparison alone cannot tell them
+    /// apart: every later block has a larger id, which is exactly what a stranger's has too.
+    ///
+    /// The outstanding case still has a floor, and needs one: a block *older* than a run already
+    /// recorded is never this run. The pane's exchange cache is trimmed, and a trimmed block that
+    /// comes back on screen is read again -- so without the floor an old request scrolling past
+    /// during the gap between typing a run and seeing it start would be counted as that run.
     public func owns(finishedBlock id: UInt32, outstanding: Bool) -> Bool {
         guard !isFinished else { return false }
         if case .running(let expected) = phase { return expected == id }
-        return outstanding
+        return outstanding && id >= (runs.last?.id ?? 0)
     }
 
     /// Ends the series. The first reason wins: a watch that stopped because the user typed did not

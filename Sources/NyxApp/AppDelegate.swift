@@ -43,6 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Turning the setting off forgets the file there and then, so it cannot come back to
             // life a fortnight later when it is turned on again.
             if !config.restoreSession { self?.sessionStore.clear() }
+            // `http-history` turned down has to forget the trimmed requests now, not just stop
+            // writing them back next time one runs.
+            self?.requests?.applyLimit(config.httpHistory)
         }
         // Renders the chrome to PNGs and exits. The build machine denies screen recording, so this
         // is the only way to look at the design at all; see `UISnapshot`.
@@ -56,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let coordinator = RemoteCoordinator(config: configStore.config)
         coordinator.onChange = { [weak self] in self?.remoteChanged() }
         remote = coordinator
-        requests = RequestHistoryStore.standard()
+        requests = RequestHistoryStore.standard(limit: configStore.config.httpHistory)
         configStore.startWatching()
         openInitialWindows()
         NSApp.activate(ignoringOtherApps: true)

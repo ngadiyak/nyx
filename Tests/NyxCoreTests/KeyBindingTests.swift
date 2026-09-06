@@ -141,6 +141,9 @@ private func p(_ s: String) -> KeyBinding? { KeyBinding.parse(s) }
         .ungroupTab, .toggleTabGroup,
         // Remote actions ship with no default chord (spec §5.3/§5.4): menu and palette only.
         .remoteSessions, .remotePair, .remoteTakeControl,
+        // Task 9 gives this its own editor; a bare "new request" chord competing with ⌘E and ⌘N
+        // for a feature the palette and menu already reach is not worth a default yet.
+        .newRequest,
     ]
     for action in ActionCatalog.allMenuActions where !expectedUnbound.contains(action) {
         #expect(table.binding(for: action) != nil, "\(action.configName) lost its shortcut")
@@ -171,4 +174,19 @@ private func p(_ s: String) -> KeyBinding? { KeyBinding.parse(s) }
     #expect(p("cmd+shift+m=remote_sessions")?.action == .remoteSessions)
     #expect(p("cmd+shift+m=remote_pair")?.action == .remotePair)
     #expect(p("cmd+shift+m=remote_take_control")?.action == .remoteTakeControl)
+}
+
+// MARK: - Curl workbench
+
+@Test func defaultChords() {
+    let table = KeyBindingTable(user: [])
+    #expect(table.action(for: .char("j"), modifiers: [.cmd, .shift]) == .toggleHTTPLens)
+    #expect(table.action(for: .char("."), modifiers: [.cmd]) == .stopWatch)
+    #expect(table.binding(for: .newRequest) == nil)
+}
+
+@Test func httpActionNamesRoundTripFromTheConfigSpelling() {
+    #expect(p("cmd+shift+j=new_request")?.action == .newRequest)
+    #expect(p("cmd+shift+j=toggle_http_lens")?.action == .toggleHTTPLens)
+    #expect(p("cmd+.=stop_watch")?.action == .stopWatch)
 }

@@ -106,6 +106,29 @@ private func table(_ lines: String...) -> KeyBindingTable {
     #expect(t.action(for: .char("d"), modifiers: [.cmd, .ctrl]) == .splitRight)
 }
 
+/// The curl-workbench actions: a new request lives in Shell, the response toggles in Go, in the
+/// spots the brief names -- after `saveScrollback` and after `notifyWhenDone`, so a user scanning
+/// either menu top to bottom finds them where the neighbouring, already-familiar action is.
+@Test func newActionsAreInTheCatalogue() {
+    #expect(ActionCatalog.allMenuActions.contains(.newRequest))
+    #expect(ActionCatalog.allMenuActions.contains(.toggleHTTPLens))
+    #expect(ActionCatalog.allMenuActions.contains(.stopWatch))
+
+    let shell = ActionCatalog.sections.first { $0.title == "Shell" }!
+    let shellActions = shell.actions
+    let saveScrollbackIndex = shellActions.firstIndex(of: .saveScrollback)!
+    let newRequestIndex = shellActions.firstIndex(of: .newRequest)!
+    #expect(newRequestIndex > saveScrollbackIndex)
+
+    let go = ActionCatalog.sections.first { $0.title == "Go" }!
+    let goActions = go.actions
+    let notifyIndex = goActions.firstIndex(of: .notifyWhenDone)!
+    let toggleLensIndex = goActions.firstIndex(of: .toggleHTTPLens)!
+    let stopWatchIndex = goActions.firstIndex(of: .stopWatch)!
+    #expect(toggleLensIndex > notifyIndex)
+    #expect(stopWatchIndex > notifyIndex)
+}
+
 @Test func blockActionsSitTogetherInTheGoMenu() {
     let go = ActionCatalog.sections.first { $0.title == "Go" }!
     #expect(go.actions.contains(.copyBlockMarkdown))

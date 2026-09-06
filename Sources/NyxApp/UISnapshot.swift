@@ -685,7 +685,7 @@ enum UISnapshot {
     /// whenever it is taken.
     private static func requestPalettePanel(palette: Palette) -> NSView {
         let now = Date()
-        var history = RequestHistory(limit: RequestHistory.defaultLimit)
+        var history = RequestHistory(limit: Config.defaults.httpHistory)
         history.record("curl -sS https://api.example.com/v1/organisations/acme/projects/nyx/deployments",
                        at: now.addingTimeInterval(-86_400 * 3))
         history.record("curl https://admin:hunter2secret@staging.example.com/v1/health",

@@ -3008,6 +3008,22 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
     }
 
+    /// `new_request`: opens the command editor pre-filled with `curl `, ready for a URL and flags.
+    ///
+    /// Task 9 replaces this with the request editor -- a form for the method, headers and body,
+    /// not a text box that happens to start with the word `curl`. Until then this is the one path
+    /// that actually starts a request from nothing, so it goes through the same editor and the
+    /// same run path as every other command rather than being a dead menu item.
+    @discardableResult
+    func newRequest() -> Bool {
+        return presentCommandEditor(text: "curl ", heading: "New request", runTitle: "Run") {
+            [weak self] edited in
+            guard let self else { return }
+            let bracketed = self.session.withTerminal { $0.modes.bracketedPaste }
+            self.performPaste(edited, bracketed: bracketed)
+        }
+    }
+
     @discardableResult
     private func presentCommandEditor(text: String, heading: String, runTitle: String,
                                       then run: @escaping (String) -> Void) -> Bool {

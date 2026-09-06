@@ -223,6 +223,7 @@ private let scalarDefaultFileKeys = [
     "word-separators",
     "open-file-command",
     "remote", "remote-device-name", "remote-relay", "remote-relay-token", "remote-snapshot-lines",
+    "http-lens", "http-hint", "http-watch-interval", "http-history",
 ]
 
 @Test func theDefaultFileTextParsesBackToTheDefaults() {
@@ -271,7 +272,8 @@ private let scalarDefaultFileKeys = [
                 "bell", "confirm-close-process", "restore-session", "clipboard-read", "tab-bar",
                 "window-decorations",
                 "word-separators", "open-file-command", "keybind", "palette",
-                "remote", "remote-device-name", "remote-relay", "remote-relay-token", "remote-snapshot-lines"] {
+                "remote", "remote-device-name", "remote-relay", "remote-relay-token", "remote-snapshot-lines",
+                "http-lens", "http-hint", "http-watch-interval", "http-history"] {
         #expect(Config.defaultFileText.contains(key), "default file does not mention \(key)")
     }
 }
@@ -423,4 +425,50 @@ private let scalarDefaultFileKeys = [
     let (c, d) = parse("remote-snapshot-lines = many")
     #expect(c.remoteSnapshotLines == 2000)
     #expect(d.count == 1)
+}
+
+// MARK: - HTTP
+
+@Test func httpKeysHaveDefaults() {
+    #expect(Config.defaults.httpLens == .pretty)
+    #expect(Config.defaults.httpHint)
+    #expect(Config.defaults.httpWatchInterval == 5)
+    #expect(Config.defaults.httpHistory == 50)
+}
+
+@Test func httpKeysParse() {
+    let (c, d) = parse("""
+    http-lens = raw
+    http-hint = off
+    http-watch-interval = 10
+    http-history = 200
+    """)
+    #expect(d.isEmpty)
+    #expect(c.httpLens == .raw)
+    #expect(!c.httpHint)
+    #expect(c.httpWatchInterval == 10)
+    #expect(c.httpHistory == 200)
+}
+
+@Test func httpBadValuesDiagnose() {
+    let (c0, d0) = parse("http-lens = fancy")
+    #expect(c0.httpLens == .pretty)
+    #expect(d0.count == 1)
+
+    let (c1, d1) = parse("http-hint = maybe")
+    #expect(c1.httpHint)
+    #expect(d1.count == 1)
+
+    // Clamped rather than rejected, like the other numeric ranges in this file.
+    #expect(parse("http-watch-interval = 0").0.httpWatchInterval == 1)
+    #expect(parse("http-watch-interval = 999999").0.httpWatchInterval == 3600)
+    let (c2, d2) = parse("http-watch-interval = never")
+    #expect(c2.httpWatchInterval == 5)
+    #expect(d2.count == 1)
+
+    #expect(parse("http-history = -3").0.httpHistory == 0)
+    #expect(parse("http-history = 999999").0.httpHistory == 500)
+    let (c3, d3) = parse("http-history = many")
+    #expect(c3.httpHistory == 50)
+    #expect(d3.count == 1)
 }

@@ -28,6 +28,9 @@ public enum TerminalAction: String, Equatable, CaseIterable {
     case remoteSessions = "remote_sessions"
     case remotePair = "remote_pair"
     case remoteTakeControl = "remote_take_control"
+    case newRequest = "new_request"
+    case toggleHTTPLens = "toggle_http_lens"
+    case stopWatch = "stop_watch"
 }
 
 /// A parsed `modifier+modifier+key=action` line from the config's `keybind` setting.
@@ -168,5 +171,13 @@ public struct KeyBinding: Equatable {
         KeyBinding(key: .char("r"), modifiers: [.cmd, .shift], action: .renameTab),
         KeyBinding(key: .char("g"), modifiers: [.cmd, .ctrl], action: .groupTab),
         KeyBinding(key: .up, modifiers: [.cmd, .shift], action: .foldCommand),
+        // ⌘. is the system's standard "cancel" chord, but nothing here can steal it out from under
+        // a sheet: the pane's own `keyDown` never fires while a sheet is key (it is not the first
+        // responder), and the menu equivalent resolves `performTerminalAction:` by walking the *key*
+        // window's responder chain, which cannot reach `TabController` while a sheet -- a separate
+        // window -- is key. A sheet's Cancel button, and its own window's default handling of ⌘.,
+        // always gets the keystroke first.
+        KeyBinding(key: .char("."), modifiers: [.cmd], action: .stopWatch),
+        KeyBinding(key: .char("j"), modifiers: [.cmd, .shift], action: .toggleHTTPLens),
     ]
 }

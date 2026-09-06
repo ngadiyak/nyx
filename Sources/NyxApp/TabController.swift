@@ -1500,6 +1500,8 @@ extension TabController: ActionTarget {
         case .saveCommandOutput: if focusedPane?.saveLastCommandOutput() != true { NSSound.beep() }
         case .notifyWhenDone: if focusedPane?.armNotificationForRunningCommand() != true { NSSound.beep() }
         case .saveScrollback: saveScrollback()
+        // Task 9 replaces this with the request editor.
+        case .newRequest: if focusedPane?.newRequest() != true { NSSound.beep() }
 
         case .copy: focusedPane?.copy(nil)
         case .paste:
@@ -1531,6 +1533,12 @@ extension TabController: ActionTarget {
             // Beeps on a local pane and on one that is already writing: there is nothing to take,
             // and the menu item is greyed out for exactly this reason.
             if focusedPane?.takeControl() != true { NSSound.beep() }
+
+        // The response plan (Task 10+) implements both of these against a live watch and a shown
+        // response; until then there is nothing for either to act on, and a beep says the key was
+        // heard rather than doing nothing at all.
+        case .toggleHTTPLens: NSSound.beep()
+        case .stopWatch: NSSound.beep()
         }
     }
 

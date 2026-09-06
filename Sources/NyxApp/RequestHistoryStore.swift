@@ -21,9 +21,9 @@ final class RequestHistoryStore {
     private var history: RequestHistory
     private static let queue = DispatchQueue(label: "nyx.request-history", qos: .utility)
 
-    /// The file beside the config, under the built-in limit. Task 8 replaces `defaultLimit` with
-    /// the `http_history` config key.
-    static func standard(limit: Int = RequestHistory.defaultLimit) -> RequestHistoryStore {
+    /// The file beside the config, under `limit` -- the `http-history` config key, defaulting to
+    /// `Config.defaults.httpHistory` for the one caller (a snapshot run) that has no config to ask.
+    static func standard(limit: Int = Config.defaults.httpHistory) -> RequestHistoryStore {
         RequestHistoryStore(url: RequestHistoryPath.resolve(
             environment: ProcessInfo.processInfo.environment, home: NSHomeDirectory()), limit: limit)
     }
@@ -32,6 +32,22 @@ final class RequestHistoryStore {
         self.url = url
         let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         history = RequestHistory.parse(text, limit: limit)
+    }
+
+    /// Applies a changed `http-history` limit on reload: entries past the new limit are dropped
+    /// immediately rather than waiting for the next request, and the file is rewritten to match --
+    /// turning the limit down and reloading has to actually forget the trimmed requests, not just
+    /// stop them from being written back next time.
+    func applyLimit(_ limit: Int) {
+        guard limit != history.limit else { return }
+        let before = history
+        var next = RequestHistory(limit: limit)
+        for entry in before.entries.reversed() { next.record(entry.line, at: entry.at) }
+        history = next
+        guard history != before else { return }
+        let text = history.serialised()
+        let url = self.url
+        RequestHistoryStore.queue.async { RequestHistoryStore.write(text, to: url) }
     }
 
     /// Newest first, the way the palette shows them.

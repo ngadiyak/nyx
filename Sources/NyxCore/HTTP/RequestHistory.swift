@@ -43,10 +43,6 @@ public struct RequestHistory: Equatable {
         }
     }
 
-    /// How many requests are kept until Task 8's `http_history` config key can say otherwise.
-    /// Fifty is about a fortnight of ordinary use and a file under 10 KB.
-    public static let defaultLimit = 50
-
     /// How many lines of the file are worth reading to find `limit` requests: enough that a list
     /// of near-duplicates still fills the palette, few enough that a foreign file cannot stall
     /// launch.

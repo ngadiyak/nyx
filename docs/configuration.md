@@ -52,8 +52,12 @@ so that template and this page are the two places a new key must be added.
 | `remote-relay` | `wss://nyx.agentforge.cc/v1/ws` | The relay's WebSocket URL |
 | `remote-relay-token` | — | The relay's shared secret, checked before pairing is even possible. Not comment-stripped, so `#` is allowed |
 | `remote-snapshot-lines` | `2000` | Lines of scrollback a host sends a client as the initial snapshot before switching to the live stream. Clamped to 100–20000 |
+| `http-lens` | `pretty` | `pretty` (reformat a JSON response body), `raw` (exactly as received). `toggle_http_lens` flips it for one response |
+| `http-hint` | `true` | Offer the request-workbench hint when a curl command is typed |
+| `http-watch-interval` | `5` | Seconds between polls while a `--watch` request is running. Clamped to 1–3600 |
+| `http-history` | `50` | How many requests the palette's Requests section remembers. `0` turns the feature off. Clamped to 0–500 |
 
-Booleans accept `true`/`false`, `yes`/`no`, `1`/`0`.
+Booleans accept `true`/`false`, `yes`/`no`, `1`/`0`, `on`/`off`.
 
 Remote sessions need both `remote = on` and a non-empty `remote-relay-token`: without the token the
 relay closes the socket before the handshake, so connecting would be a guaranteed failure reported
@@ -136,9 +140,12 @@ A user binding beats a default for the same chord; the last line in the file win
 | `save_command_output` | — | Writes the last command's output to a file the user chooses |
 | `notify_when_done` | — | Arm a notification for the command running now, however short it turns out |
 | `save_scrollback` | — | Writes the transcript to a file the user chooses |
+| `new_request` | — | Opens the command editor pre-filled with `curl `. Task 9 replaces this with a dedicated request editor |
 | `remote_sessions` | — | Opens the command palette's Remote section. Settings → Remote also gets you there |
 | `remote_pair` | — | Opens the pairing sheet, either side |
 | `remote_take_control` | — | On an observed remote tab, takes over as writer |
+| `toggle_http_lens` | ⌘⇧J | Flips a shown response between `pretty` and `raw`. Implemented alongside the response view |
+| `stop_watch` | ⌘. | Stops a running `--watch` request. Implemented alongside the response view |
 
 The menu is generated from `ActionCatalog.sections`, so every action is discoverable there with
 its current chord, and the settings window's Keys page lists them all.
@@ -179,8 +186,8 @@ moves its line to the top rather than adding a second one; sameness is what the 
 
 The file is written at mode `0600` and holds the command lines exactly as they ran, credentials
 included -- the same words as your shell history, and for the same reason: what comes back out of
-the palette has to be the request that worked. What the palette *shows* is masked. Fifty requests
-are kept.
+the palette has to be the request that worked. What the palette *shows* is masked. `http-history`
+(default `50`) says how many are kept; turning it down forgets the extra requests immediately.
 
 ## Environment variables
 

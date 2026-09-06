@@ -13,6 +13,9 @@ import NyxCore
 final class BlockHeaderView: NSView {
     var onAction: ((BlockAction, UInt32) -> Void)?
     var onToggleFold: ((UInt32, Bool) -> Void)?
+    /// Whether an earlier block ran this same request, asked when the ⋯ menu opens. See
+    /// `menuHeader()` for why it is not on the header the frame built.
+    var onNeedsPreviousRun: ((UInt32) -> Bool)?
 
     private let summary = NSTextField(labelWithString: "")
     private let copyButton = NSButton(title: "Copy", target: nil, action: nil)
@@ -190,6 +193,18 @@ final class BlockHeaderView: NSView {
         style(copyButton, title: "Copy", enabled: copyButton.isEnabled)
         style(moreButton, title: "\u{22EF}", enabled: true)
         style(chevronButton, title: header.chevron, enabled: true)
+        // `{ }` is a toggle, and a toggle drawn identically in both its states is a button that
+        // lies about what pressing it will do. The accent is the colour this theme already paints a
+        // running toggle and a selected row in, so a response being read through a lens says so the
+        // way everything else in Nyx says "on". It also has to go through `style` at all: an
+        // unstyled title paints in the system's `labelColor`, which on a dark theme under Light
+        // Mode is black on near-black -- the mistake the comment above was written for.
+        let lensOn = header.lens != nil
+        style(lensButton, title: "{ }", enabled: true,
+              tint: lensOn ? palette.accent : palette.foreground)
+        lensButton.toolTip = lensOn ? "Show this response as it arrived"
+                                    : "Show this response as pretty JSON"
+        lensButton.setAccessibilityLabel(lensOn ? "Show raw response" : "Show pretty response")
         // Left to right: nothing, then the strip's own ground, held to the right-hand edge. The
         // stops are placed in `layout()`, where the width is known.
         let ground = nsColor(palette.background, alpha: 1).cgColor
@@ -203,8 +218,9 @@ final class BlockHeaderView: NSView {
 
     /// Sets a button's title through `attributedTitle` so its colour comes from the pane's palette
     /// rather than the system appearance's `labelColor`, and so a disabled control visibly dims.
-    private func style(_ button: NSButton, title: String, enabled: Bool) {
-        let color = nsColor(enabled ? palette.foreground : palette.noteForeground, alpha: 1)
+    private func style(_ button: NSButton, title: String, enabled: Bool, tint: RGB? = nil) {
+        let color = nsColor(enabled ? (tint ?? palette.foreground) : palette.noteForeground,
+                            alpha: 1)
         let font = button.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize(for: button.controlSize))
         button.attributedTitle = NSAttributedString(string: title, attributes: [.foregroundColor: color, .font: font])
     }
@@ -245,8 +261,21 @@ final class BlockHeaderView: NSView {
         init(action: BlockAction, id: UInt32) { self.action = action; self.id = id }
     }
 
+    /// The header the ⋯ menu is built from: the one the frame drew, plus the one answer that is too
+    /// expensive to have per frame.
+    ///
+    /// `hasPreviousRun` means parsing every cached command line (`RequestSummaryCache.previousRun`),
+    /// so `render` leaves it false and it is asked for here, on the press. Without this the strip's
+    /// `Diff with Previous Run` was greyed on every block however many earlier runs there were --
+    /// only the right-click menu, which asks the same question at the same moment, ever enabled it.
+    private func menuHeader() -> BlockHeader? {
+        guard var header else { return nil }
+        header.hasPreviousRun = onNeedsPreviousRun?(header.id) ?? false
+        return header
+    }
+
     @objc private func morePressed() {
-        guard let header else { return }
+        guard let header = menuHeader() else { return }
         let menu = NSMenu()
         for (index, entry) in header.actions.enumerated() {
             if index > 0 && entry.action.startsGroup { menu.addItem(.separator()) }

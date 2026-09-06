@@ -245,6 +245,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         addSubview(stickyStrip)
         blockHeader.onAction = { [weak self] action, id in self?.perform(action, on: id) }
         blockHeader.onToggleFold = { [weak self] id, full in self?.toggleFold(ofCommand: id, full: full) }
+        blockHeader.onNeedsPreviousRun = { [weak self] id in self?.previousRun(of: id) != nil }
         addSubview(blockHeader)
         workbenchHint.onPress = { [weak self] in self?.openWorkbenchFromHint() }
         addSubview(workbenchHint)
@@ -1024,7 +1025,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // region, so a run this large simply gets the ordinary summary.
             let exchange = block.region.outputRows.count > Pane.requestOutputRowLimit
                 ? nil
-                : HTTPExchange.parse(lines: t.outputText(of: block.region).components(separatedBy: "\n"))
+                // The *logical* lines, not the rows: a JSON body is one line however wide the pane
+                // is, and reading it as rows puts a newline inside a string literal, which no JSON
+                // parser accepts. See `Terminal.outputLines(of:)`.
+                : HTTPExchange.parse(lines: t.outputLines(of: block.region))
             requestCache.remember(.request(exchange), line: line, for: id)
             requestCache.trim(to: Pane.requestCacheLimit)
             // The one moment a response exists and nobody has looked at it yet, which is where the

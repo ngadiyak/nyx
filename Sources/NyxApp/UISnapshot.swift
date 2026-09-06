@@ -243,6 +243,55 @@ enum UISnapshot {
                       background: palette.background)
             }
         }
+        // The strip on a request, which is the only block that gets a `{ }`. Five pictures: the
+        // control's three states at the full strip -- a response that can be lensed, one already
+        // being read through a lens, and a body too large for one, where the button is gone rather
+        // than greyed because there is nothing behind it at all -- and then the same lensable
+        // response at the two narrower strips. The narrow ones are the question: `{ }` is one more
+        // control competing for the room `overlayPlacement` was already short of, and `minimal`
+        // must not grow by it, or a crowded command line loses another four columns to chrome.
+        let lensStates: [(String, ResponseLens?, Bool, OverlayControls)] = [
+            ("http-lens", nil, false, .full),
+            ("http-lens-on", .pretty, false, .full),
+            ("http-lens-too-large", nil, true, .full),
+            ("http-lens-nocopy", nil, false, .noCopy),
+            ("http-lens-minimal", nil, false, .minimal),
+        ]
+        for (name, lens, tooLarge, controls) in lensStates {
+            let header = BlockHeader(id: 4, state: .finished, folded: false, hasOutput: true,
+                                     anyFolds: false, notifyArmed: false, summary: "",
+                                     httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
+                                                              tone: .success),
+                                     isHTTP: true, lens: lens, lensTooLarge: tooLarge)
+            let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
+            view.appearance = NSAppearance(named: .darkAqua)
+            view.update(header: header, controls: controls, palette: palette,
+                        font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+            let size = view.intrinsicContentSize
+            view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
+            view.layoutSubtreeIfNeeded()
+            write(view, named: "block-header-\(name)-dark", into: directory,
+                  background: palette.background)
+        }
+        // The lit `{ }` in the other appearance too, because its colour is the theme's accent and
+        // the accent is chosen against the theme's background: this is the picture that says the
+        // "on" state is still legible when the ground is white.
+        if let lightPalette = Themes.builtin["nyx-light"] {
+            let header = BlockHeader(id: 4, state: .finished, folded: false, hasOutput: true,
+                                     anyFolds: false, notifyArmed: false, summary: "",
+                                     httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
+                                                              tone: .success),
+                                     isHTTP: true, lens: .pretty)
+            let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
+            view.appearance = NSAppearance(named: .aqua)
+            view.update(header: header, controls: .full, palette: lightPalette,
+                        font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+            let size = view.intrinsicContentSize
+            view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
+            view.layoutSubtreeIfNeeded()
+            write(view, named: "block-header-http-lens-on-light", into: directory,
+                  background: lightPalette.background)
+        }
         // The gutter's four marks, in one picture. A no-output command's dot is identical to any
         // other succeeded one on purpose -- it is a record of what happened, and the difference is
         // that it offers no tooltip, no pointing hand and no accessibility button, none of which a

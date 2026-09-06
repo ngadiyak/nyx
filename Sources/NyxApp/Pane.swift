@@ -3024,6 +3024,88 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
     }
 
+    /// Opens the request workbench on a parsed `curl`, and hands whatever the sheet finishes with
+    /// to `run` -- the same contract `presentCommandEditor` has.
+    ///
+    /// The fallback is the point of the return value: a request that cannot be shown as a form is
+    /// still shown as a command line, because a user who asked to edit a request must never be
+    /// answered with nothing at all. Only `UISnapshot` reaches this today; Task 10 wires the key,
+    /// the pill, the block menu and the palette to it.
+    @discardableResult
+    func presentRequestEditor(command: CurlCommand, then run: @escaping (String) -> Void) -> Bool {
+        let text = command.shellLine(masking: .none, layout: .multiline)
+        guard let window else {
+            return presentCommandEditor(text: text, heading: "Edit and run", runTitle: "Run",
+                                        then: run)
+        }
+        let editor = RequestEditor(command: command, palette: Pane.resolvedPalette(for: config),
+                                   watchInterval: config.httpWatchInterval)
+        editor.onSaveToProject = { [weak self] _, line in self?.appendToProjectFile(line) }
+        editor.onWatch = { [weak editor] plan in
+            guard let line = editor?.runLine else { return }
+            // Repeating a request belongs to the response side, which does not exist yet. Running
+            // it once and saying what was asked for is a feature doing less than it promises; a
+            // menu item that silently did nothing would be a defect.
+            NSLog("Nyx: repeat requested (%@) — running once for now", plan.summary)
+            run(line)
+        }
+
+        // The same sheet-window mechanics as `presentCommandEditor`, for the same reasons: this
+        // window's content is a view, so there is no presenting controller, and the window retains
+        // `contentViewController` but not a bare `contentView`'s controller.
+        let size = editor.view.frame.size == .zero ? NSSize(width: 720, height: 480) : editor.view.frame.size
+        let sheet = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                             styleMask: [.titled, .fullSizeContentView, .resizable],
+                             backing: .buffered, defer: false)
+        sheet.contentViewController = editor
+        sheet.titlebarAppearsTransparent = true
+        sheet.isReleasedWhenClosed = false
+
+        editor.onFinish = { [weak window] line in
+            window?.endSheet(sheet)
+            guard let line else { return }
+            run(line)
+        }
+        window.beginSheet(sheet) { _ in }
+        return true
+    }
+
+    /// Appends one `quick = …` line to the project's `.nyx` file, creating it when there is none.
+    ///
+    /// Written through the same file the approval gate reads, so the digest changes and the gate
+    /// asks again before the button is offered -- including when Nyx is the one that wrote it.
+    /// Nothing here is silent: no directory, or a file that will not take the line, says so.
+    private func appendToProjectFile(_ line: String) {
+        guard let directory = workingDirectory else {
+            reportProjectWrite("This pane does not know which directory it is in, so there is no "
+                + "project to save to. Shell integration reports the directory.")
+            return
+        }
+        var text = ProjectApprovalsStore.shared.projectFile(in: directory) ?? ""
+        if !text.isEmpty, !text.hasSuffix("\n") { text += "\n" }
+        text += line + "\n"
+        let url = URL(fileURLWithPath: directory).appendingPathComponent(ProjectActionsFile.name)
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            reportProjectWrite("\(url.path) could not be written: \(error.localizedDescription)")
+        }
+    }
+
+    private func reportProjectWrite(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Could not save to the project"
+        alert.informativeText = message
+        // On the sheet that asked, when there is one: an alert on the window behind it would be
+        // queued until that sheet closed, which reads as nothing having happened.
+        if let host = window?.attachedSheet ?? window {
+            alert.beginSheetModal(for: host) { _ in }
+        } else {
+            NSSound.beep()
+        }
+    }
+
     @discardableResult
     private func presentCommandEditor(text: String, heading: String, runTitle: String,
                                       then run: @escaping (String) -> Void) -> Bool {

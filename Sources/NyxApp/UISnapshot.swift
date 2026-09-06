@@ -80,6 +80,14 @@ enum UISnapshot {
             write(commandEditorSheet(palette: palette, appearance),
                   named: "sheet-command-editor-\(name)", into: directory,
                   background: windowGround(appearance))
+            // One picture per tab of the request editor: a tab nobody renders is a tab whose
+            // badge, spacing and empty state nobody has looked at. All five on the same request --
+            // Chrome's own "Copy as cURL", which is the shape most of these sheets will open on.
+            for tab in RequestEditorModel.Tab.allCases {
+                write(requestEditorSheet(palette: palette, appearance, tab: tab),
+                      named: "request-editor-\(tab.rawValue.lowercased())-\(name)",
+                      into: directory, background: windowGround(appearance))
+            }
             for (stateName, state) in pairingStates() {
                 write(pairingSheetView(state: state, appearance),
                       named: "pairing-\(stateName)-\(name)", into: directory,
@@ -95,6 +103,27 @@ enum UISnapshot {
             writeSettings(into: directory, appearance: appearance, suffix: "-off-\(name)",
                           remoteOn: false, remotePageOnly: true)
         }
+        // The request whose output is piped somewhere else: the one state of this sheet that says
+        // something is unavailable, and the only way to see whether the note reads as a note.
+        write(requestEditorSheet(palette: palette, .darkAqua, tab: .options,
+                                 line: "curl -s https://api.example.com/v1/items | jq '.items[]'"),
+              named: "request-editor-pipeline-note-dark", into: directory,
+              background: windowGround(.darkAqua))
+        // Two states the Chrome request has nothing to show for: a masked credential in a table,
+        // and a masked one in the Auth tab. Masking is the thing this sheet must not get wrong,
+        // and a picture with no secret in it proves nothing about it.
+        write(requestEditorSheet(palette: palette, .darkAqua, tab: .headers,
+                                 line: "curl -H 'X-API-Key: 4f9c2b7ae1d84c6f' "
+                                     + "-H 'Cookie: session=8a1f3c9d2e; theme=dark' "
+                                     + "-H 'Accept: application/json' https://api.example.com/v1/items"),
+              named: "request-editor-headers-secret-dark", into: directory,
+              background: windowGround(.darkAqua))
+        write(requestEditorSheet(palette: palette, .darkAqua, tab: .auth,
+                                 line: "curl -u sk_test_4eC39HqLyjWDarjtT1zdp7dc: "
+                                     + "-d amount=2000 https://api.stripe.com/v1/charges"),
+              named: "request-editor-auth-basic-dark", into: directory,
+              background: windowGround(.darkAqua))
+
         // The remote strip is an `NSButton` on a theme-coloured band, so unlike the block header it
         // is *not* the same picture in both appearances: the button's bezel follows the system.
         for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
@@ -384,6 +413,48 @@ enum UISnapshot {
         view.layoutSubtreeIfNeeded()
         // A text view generates its glyphs lazily, on the first real display pass, so without this
         // the sheet renders as an empty box and the one thing it is for cannot be looked at.
+        for textView in descendants(of: view).compactMap({ $0 as? NSTextView }) {
+            textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+        }
+        return view
+    }
+
+    /// Chrome's "Copy as cURL" of a real request, inline rather than read from the test bundle:
+    /// the app cannot see `Tests/NyxCoreTests/Fixtures`, and this is fixture 01 verbatim -- the
+    /// long header list, the `$'…'` body with a newline in it, and `--compressed`.
+    private static let chromeCurl = #"""
+    curl 'https://api.example.com/v1/messages' \
+      -H 'accept: */*' \
+      -H 'accept-language: en-US,en;q=0.9' \
+      -H 'cache-control: no-cache' \
+      -H 'content-type: application/json' \
+      -H 'origin: https://app.example.com' \
+      -H 'pragma: no-cache' \
+      -H 'priority: u=1, i' \
+      -H 'referer: https://app.example.com/' \
+      -H 'sec-ch-ua: "Chromium";v="128", "Not;A=Brand";v="24"' \
+      -H 'sec-ch-ua-mobile: ?0' \
+      -H 'sec-ch-ua-platform: "macOS"' \
+      -H 'sec-fetch-dest: empty' \
+      -H 'sec-fetch-mode: cors' \
+      -H 'sec-fetch-site: same-site' \
+      --data-raw $'{"model":"claude-opus","stream":true,"messages":[{"role":"user","content":"hi\nthere"}]}' \
+      --compressed
+    """#
+
+    private static func requestEditorSheet(palette: Palette, _ appearance: NSAppearance.Name,
+                                           tab: RequestEditorModel.Tab,
+                                           line: String = chromeCurl) -> NSView {
+        guard let command = CurlCommand.parse(line) else { return NSView() }
+        let controller = RequestEditor(command: command, palette: palette)
+        let view = controller.view
+        view.appearance = NSAppearance(named: appearance)
+        view.frame = NSRect(x: 0, y: 0, width: 720, height: 480)
+        controller.show(tab: tab)
+        view.layoutSubtreeIfNeeded()
+        // The preview and the body are text views, which generate their glyphs on the first real
+        // display pass: without this the two boxes render empty, and they are the two boxes this
+        // sheet exists for.
         for textView in descendants(of: view).compactMap({ $0 as? NSTextView }) {
             textView.layoutManager?.ensureLayout(for: textView.textContainer!)
         }

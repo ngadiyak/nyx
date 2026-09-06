@@ -311,25 +311,30 @@ public extension Terminal {
     /// It used to carry the `.dim` *attribute* as well, and dimmed bright black read as a comment
     /// the shell had printed rather than as the one thing on that row you are meant to click.
     ///
-    /// The grey is `LensPalette.dimColour` -- resolved against this terminal's palette, not
-    /// `.indexed(8)` handed to the renderer raw, which is bright black on the theme's background
-    /// and measured 1.91:1 on nyx-dark. It is the same grey a lens' own `▸ […] 40 items` is drawn
-    /// in, because they are the same control in two places and two greys on one screen read as two
-    /// different kinds of thing.
+    /// **All three are resolved**, because a placeholder is text and every one of its states has to
+    /// be readable on every theme. They were `.indexed(3)`, `.indexed(1)` and `.indexed(8)` handed
+    /// to the renderer raw: bright black is 1.91:1 on nyx-dark, gruvbox-dark's red is 2.69:1 and
+    /// solarized-dark's 3.25 -- on the row that says a *failed* command is hidden behind it -- and
+    /// nyx-light's amber is 4.29. Red and amber come down `SummaryTone`, so "the same three the
+    /// spine uses" is now true rather than nearly true; the grey is `LensPalette.dimColour`, so it
+    /// is the same grey a lens' own `▸ […] 40 items` is drawn in -- they are one control in two
+    /// places, and two greys on one screen read as two different kinds of thing.
     ///
-    /// `dim` is a parameter so the frame path can resolve it once rather than walking the readable
+    /// `dim` is a parameter so the frame path can resolve it once rather than walking the blend
     /// ladder for every placeholder row on screen; nil resolves it here, which is what a caller
-    /// with one row to draw wants.
+    /// with one row to draw wants. Red and amber need no such treatment: `SummaryTone.color` is a
+    /// handful of contrast ratios and stops at the first, whereas the grey's ceiling can cost
+    /// twenty blends.
     func foldPlaceholderRow(hiddenRows: Int, status: BlockStatus, dim: RGB? = nil) -> Row {
         var row = Row(cols: cols)
         var cell = Cell()
+        let resolved: RGB
         switch status {
-        case .running: cell.fg = .indexed(3)
-        case .failed: cell.fg = .indexed(1)
-        case .succeeded:
-            let grey = dim ?? LensPalette.dimColour(in: palette)
-            cell.fg = .rgb(grey.r, grey.g, grey.b)
+        case .running: resolved = SummaryTone.running.color(in: palette)
+        case .failed: resolved = SummaryTone.failure.color(in: palette)
+        case .succeeded: resolved = dim ?? LensPalette.dimColour(in: palette)
         }
+        cell.fg = .rgb(resolved.r, resolved.g, resolved.b)
         cell.attrs = [.italic]
         for (column, scalar) in OutputFolding.placeholder(hiddenRows: hiddenRows).unicodeScalars.enumerated() {
             guard column < cols else { break }

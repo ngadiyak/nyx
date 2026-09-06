@@ -421,3 +421,49 @@ func theDisplayPathRendersAWatchSeries() throws {
     #expect(display.filter { if case .fold = $0 { return true } else { return false } }.count == 3)
     #expect(display.contains { if case .lens = $0 { return true } else { return false } })
 }
+
+/// The three colours a fold placeholder can be, in one picture, in both themes.
+///
+/// A placeholder is text, and all three of its states have to be readable on every theme. They were
+/// `.indexed(8)`, `.indexed(1)` and `.indexed(3)` handed to the renderer raw: 1.91:1 for the grey
+/// on nyx-dark, 2.69 for gruvbox-dark's red, 4.29 for nyx-light's amber. Nothing pictured the red or
+/// the amber at all, which is how they stayed that way.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["NYX_SNAPSHOT"] != nil))
+func theDisplayPathRendersEveryFoldPlaceholderTone() throws {
+    try FileManager.default.createDirectory(atPath: lensOutDir, withIntermediateDirectories: true)
+    let cols = 74, rows = 12
+    let grid = try LensGrid(cols: cols, rows: rows)
+    let t = Terminal(cols: cols, rows: rows, scrollbackLimit: 500)
+    // Succeeded, failed, and one still running -- a folded build is a live tail, so the amber has
+    // to say "this is still going" from the placeholder alone.
+    t.feed(displayMark("A") + "$ " + displayMark("B") + "make test\r\n" + displayMark("C"))
+    for i in 1...8 { t.feed("test \(i) passed\r\n") }
+    t.feed(displayMark("D", 0))
+    t.feed(displayMark("A") + "$ " + displayMark("B") + "make lint\r\n" + displayMark("C"))
+    for i in 1...8 { t.feed("lint error \(i)\r\n") }
+    t.feed(displayMark("D", 1))
+    t.feed(displayMark("A") + "$ " + displayMark("B") + "npm install\r\n" + displayMark("C"))
+    for i in 1...8 { t.feed("fetching package \(i)\r\n") }
+
+    var folding = OutputFolding()
+    var ids: [UInt32] = []
+    for promptRow in t.promptRows {
+        guard let region = t.command(containingAbsoluteRow: promptRow), region.id != 0 else { continue }
+        folding.fold(region.id, .all)
+        ids.append(region.id)
+    }
+    #expect(ids.count == 3)
+    let themes: [(String, Palette)] = [("dark", try #require(Themes.builtin["nyx-dark"])),
+                                       ("light", try #require(Themes.builtin["nyx-light"]))]
+    for (themeName, palette) in themes {
+        t.palette = palette
+        grid.draw(t, from: DisplayCursor(row: 0), folding: folding, lenses: LensChoices(),
+                  buffers: [:], palette: palette, named: "display-fold-tones-\(themeName)")
+    }
+    let display = t.displayRows(from: DisplayCursor(row: 0), count: rows, folding: folding,
+                                lenses: LensChoices(), buffers: { _ in nil })
+    let statuses = display.compactMap { row -> BlockStatus? in
+        if case .fold(_, _, let status) = row { return status } else { return nil }
+    }
+    #expect(statuses == [.succeeded, .failed, .running])
+}

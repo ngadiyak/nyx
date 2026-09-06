@@ -92,13 +92,16 @@ private func folded(_ ids: UInt32..., shape: FoldShape = .all) -> OutputFolding 
     #expect(!row.cells[0].attrs.contains(.dim))
     #expect(row.cells[0].attrs.contains(.italic))
 
+    // Resolved down the same ladder the spine and the block summary come down, which is what
+    // "the same three the spine uses" always claimed and did not do: `.indexed(1)` raw is
+    // gruvbox-dark's red at 2.69:1 against its own background.
     let failed = t.foldPlaceholderRow(hiddenRows: 10, status: .failed)
-    #expect(failed.cells[0].fg == .indexed(1))
+    #expect(failed.cells[0].fg == colour(SummaryTone.failure.color(in: t.palette)))
     #expect(!failed.cells[0].attrs.contains(.dim))
     #expect(failed.cells[0].attrs.contains(.italic))
 
     let running = t.foldPlaceholderRow(hiddenRows: 10, status: .running)
-    #expect(running.cells[0].fg == .indexed(3))     // the amber the spine uses for the same state
+    #expect(running.cells[0].fg == colour(SummaryTone.running.color(in: t.palette)))
     #expect(running.cells[0].attrs.contains(.italic))
 }
 
@@ -297,9 +300,32 @@ private func runningInATallPane() -> Terminal {
 @Test func theFoldPlaceholderIsTheSameDimAsALensPlaceholder() {
     for (name, palette) in Themes.builtin {
         let t = Terminal(cols: 40, rows: 4, scrollbackLimit: 50, palette: palette)
-        let colour = t.foldPlaceholderRow(hiddenRows: 10, status: .succeeded).cells[0].fg
-        #expect(colour == LensPalette.forTheme(palette).dim, "\(name)")
-        #expect(colour.kind == .rgb, "\(name)")
-        #expect(RGB.contrast(RGB(colour.r, colour.g, colour.b), palette.background) >= 4.5, "\(name)")
+        let fg = t.foldPlaceholderRow(hiddenRows: 10, status: .succeeded).cells[0].fg
+        #expect(fg == LensPalette.forTheme(palette).dim, "\(name)")
+        #expect(fg.kind == .rgb, "\(name)")
     }
 }
+
+/// And a placeholder is *text* in every one of its three states, so all three have to be readable
+/// on every theme.
+///
+/// `.failed` and `.running` were `.indexed(1)` and `.indexed(3)` handed to the renderer raw --
+/// gruvbox-dark's red is 2.69:1 against its own background and solarized-dark's is 3.25, on the row
+/// that says a *failed* command is hidden behind it. The `readable` ladder picks the bright variant
+/// where it is worth the change of hue and lifts towards the foreground where neither reaches the
+/// floor, which is what the block summary and the spine already do for the same three states.
+@Test func everyPlaceholderToneIsReadableInEveryBuiltInTheme() {
+    for (name, palette) in Themes.builtin {
+        let t = Terminal(cols: 40, rows: 4, scrollbackLimit: 50, palette: palette)
+        for status in [BlockStatus.succeeded, .failed, .running] {
+            let fg = t.foldPlaceholderRow(hiddenRows: 10, status: status).cells[0].fg
+            #expect(fg.kind == .rgb, "\(name) \(status)")
+            let contrast = RGB.contrast(RGB(fg.r, fg.g, fg.b), palette.background)
+            #expect(contrast >= 4.5, "\(name) \(status): \(contrast)")
+        }
+    }
+}
+
+
+/// `Color` from an `RGB`, for comparing a cell's foreground against a resolved colour.
+private func colour(_ rgb: RGB) -> Color { .rgb(rgb.r, rgb.g, rgb.b) }

@@ -111,6 +111,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// The last frame's display rows, so a click can tell which visible row is a fold placeholder
     /// and which command it stands for. Empty whenever nothing is folded.
     private var foldRowsOnScreen: [DisplayRow] = []
+    /// A row inside each block the last frame drew, by command id.
+    ///
+    /// A fold placeholder and a lens line are not rows of the buffer, and the pointer has to be
+    /// answered with *something*: without this, a click on one fell back to `viewportTop + slot`,
+    /// which names whatever block happens to occupy that row -- so a right-click two thirds of the
+    /// way down a hundred-line lens offered the next command's actions, Re-run included. Built here,
+    /// from the blocks the frame already walked, because asking the buffer for a prompt row whose
+    /// command line is scrolled off the top means scanning the whole scrollback.
+    private var displayBlockRows: [UInt32: Int] = [:]
     /// What the buffer had evicted the last time folds and armed notifications were pruned. Nothing
     /// else can retire a command id, so an unchanged pair means the walk to find the oldest one
     /// would answer exactly what it answered last frame.
@@ -163,6 +172,19 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// a jump to a search match -- is told apart from one this pane chose. See `viewportCursor(in:)`.
     private var viewportAnchor: DisplayCursor?
     private var viewportAnchorTop = -1
+
+    /// Forgets where in the display the viewport was, so the next frame takes the terminal's own
+    /// row and line 0.
+    ///
+    /// The staleness check in `viewportCursor(in:)` compares a *row*, and rows are reused: a session
+    /// that has not overflowed its window has `viewportTopRow == 0` from beginning to end, so an
+    /// anchor left over from a lens read earlier would be re-homed by `canonicalised` onto whatever
+    /// block now occupies that row. `⌘K`, a new `curl`, and the fresh response opened sixty lines
+    /// down. Anything that makes an absolute row mean something else calls this.
+    private func forgetViewportAnchor() {
+        viewportAnchor = nil
+        viewportAnchorTop = -1
+    }
     /// A drag over a lensed block's own lines. Not `Selection`: those are absolute rows and cells
     /// of the grid, and these lines exist nowhere in the buffer.
     private var lensSelection: LensSelection?
@@ -829,6 +851,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         lenses.set(chosen, for: id)
         if chosen == nil { lensBuffers[id] = nil }
         if lensSelection?.commandID == id { lensSelection = nil }
+        // The display under the viewport is about to be a different height: a line offset chosen
+        // against the old one would put the reader somewhere they did not ask to be.
+        forgetViewportAnchor()
         rebuildLens(for: id)
         markDirty()
     }
@@ -1268,6 +1293,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // And the field, which is a filter on a response that no longer exists. Flagged
                 // rather than done: this runs under the session lock and dismissing touches AppKit.
                 if self.lensFieldBlock != nil { dismissField = true }
+                self.forgetViewportAnchor()
             }
             // Folds whose prompt has gone -- evicted from the ring, or overwritten -- are dropped
             // here rather than accumulating over a session, and with them any notification armed
@@ -1297,6 +1323,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     self.lensBuffers = self.lensBuffers.filter { $0.key >= oldest }
                 }
                 if let field = self.lensFieldBlock, field < oldest { dismissField = true }
+                // Rows have gone from under the numbering, so the row the anchor names is not the
+                // one it was chosen on.
+                self.forgetViewportAnchor()
             }
             // Screen coordinates: `cursor.y` counts from the top of the live screen. The renderer
             // takes it as an index into the lines it is handed, which are display slots, so with a
@@ -1447,6 +1476,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                              mouseReporting: t.modes.mouse != .none,
                                                              hasMarks: t.shellEmitsPromptMarks)
             let blocks = chromeAllowed ? t.visibleBlocks(from: windowTop, through: lastRowOnScreen) : []
+            self.displayBlockRows = Dictionary(blocks.map { ($0.region.id, $0.region.promptRow) },
+                                               uniquingKeysWith: { first, _ in first })
             // Which block the pointer is on, decided here rather than in `mouseMoved`, against the
             // very blocks and display rows this frame is about to draw.
             //
@@ -1885,7 +1916,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // Typing both jumps the viewport back to the live screen and drops the selection: the text
         // it pointed at is about to move, and every terminal drops it here.
         clearSelection()
-        session.withTerminal { $0.scrollViewportToBottom() }
+        scrollDisplayToBottom()
         session.send(bytes)
         markDirty()
     }
@@ -1955,10 +1986,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                       padding: Double(padding), viewportTop: t.viewportTopRow,
                                       cols: t.cols, totalRows: t.totalRows)
         // `PointerMap` counts rows down from the viewport top, which stops being the same thing as
-        // counting absolute rows the moment something is folded: the rows under the pointer are
-        // whatever the folds left on screen.
-        guard !folding.isEmpty,
-              let absolute = absoluteRow(forVisibleRow: hit.row - t.viewportTopRow, in: t)
+        // counting absolute rows the moment anything is folded *or lensed*: the rows under the
+        // pointer are whatever the display left on screen. Gated on `folding` alone, a pane with
+        // only a lens open answered with the rows the lens replaced, so a drag selected text nobody
+        // could see, a link hit-test read the wrong row, and a right-click two thirds of the way
+        // down a long lens offered the *next* command's actions -- Re-run included.
+        guard let absolute = pointerRow(forVisibleRow: hit.row - t.viewportTopRow, in: t)
         else { return hit }
         return AbsolutePosition(row: absolute, col: hit.col)
     }
@@ -2294,14 +2327,38 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
     }
 
+    /// Puts the last display line on the last row of the window. What "the viewport goes back to the
+    /// live screen" means now that the display is not the rows -- see `Terminal.displayBottomCursor`
+    /// for why the prompt wins over the top of a long response.
+    private func scrollDisplayToBottom() {
+        session.withTerminal { t in
+            t.scrollViewportToBottom()
+            self.viewportAnchor = t.displayBottomCursor(folding: self.folding, lenses: self.lenses,
+                                                        viewportRows: t.rows,
+                                                        buffers: { self.lensBuffers[$0] })
+            self.viewportAnchorTop = t.viewportTopRow
+        }
+    }
+
     /// Where the top of the viewport is in the display sequence: the terminal's own row plus how far
     /// into that row's lens we are. The line is dropped whenever the row moved without us -- new
     /// output at the bottom, a resize, a scroll to a search match, a jump to a prompt -- because it
     /// describes a position this pane chose and that row is no longer it.
+    ///
+    /// With no anchor and the terminal already at its own bottom, the answer is the *display*
+    /// bottom rather than the terminal's top row. That is the case every time output arrives while
+    /// the reader is pinned to the live screen, and it is the case the frame after a finished `curl`
+    /// opens its lens: without it a response taller than the window pushed the shell prompt off the
+    /// end and the pane stopped showing what was being typed.
     private func viewportCursor(in t: Terminal) -> DisplayCursor {
         let top = max(0, t.viewportTopRow)
         guard let anchor = viewportAnchor, viewportAnchorTop == top else {
-            return DisplayCursor(row: top)
+            // Lenses only. A fold can only make the display *shorter* than the rows it stands in
+            // for, so the terminal's own bottom is still the display's; a lens is the one thing that
+            // can put lines below the last row of the buffer.
+            guard t.viewportOffset == 0, !lenses.isEmpty else { return DisplayCursor(row: top) }
+            return t.displayBottomCursor(folding: folding, lenses: lenses, viewportRows: t.rows,
+                                         buffers: { self.lensBuffers[$0] })
         }
         return t.canonicalised(anchor, folding: folding, lenses: lenses,
                                buffers: { self.lensBuffers[$0] })
@@ -2446,11 +2503,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         guard allowed, let point = lastPointerPoint, bounds.contains(point) else { return nil }
         let visible = visibleRow(at: point)
         let pointerRow: Int?
-        if let visible, foldRowsOnScreen.indices.contains(visible),
-           case .fold(let commandID, _, _) = foldRowsOnScreen[visible] {
-            // The pointer is on a fold placeholder, which has no absolute row of its own: it
-            // stands for the block whose output it hides, so hover that block directly.
-            pointerRow = blocks.first { $0.region.id == commandID }?.visibleRows.lowerBound
+        let standIn: UInt32? = visible.flatMap { slot in
+            guard foldRowsOnScreen.indices.contains(slot) else { return nil }
+            switch foldRowsOnScreen[slot] {
+            // Neither a fold placeholder nor a lens line has an absolute row of its own: each stands
+            // for the block whose output it replaced, so hover that block directly. Without the lens
+            // half of this, reading a pretty-printed response with its command row scrolled off the
+            // top produced no tint and no hover strip -- no `{ }`, no Copy, no Lens menu -- which is
+            // every control the response has.
+            case .fold(let commandID, _, _): return commandID
+            case .lens(let commandID, _): return commandID
+            case .row: return nil
+            }
+        }
+        if let standIn {
+            pointerRow = blocks.first { $0.region.id == standIn }?.visibleRows.lowerBound
         } else {
             let absolute = visible.flatMap { self.absoluteRow(forVisibleRow: $0, in: t) }
             pointerRow = absolute.map { $0 - viewportTop }
@@ -3075,8 +3142,24 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         toggleFold(ofCommand: id, full: false)
     }
 
-    /// Which absolute row a visible row is showing, through whatever folds are in force. nil for a
-    /// row that is showing a fold placeholder rather than a row of the buffer.
+    /// The absolute row a *pointer* on this slot should be taken to mean.
+    ///
+    /// The same as `absoluteRow(forVisibleRow:)` for a slot that is a row, and the block's own
+    /// prompt row for one that is not: a fold placeholder and a lens line stand for a block, and
+    /// everything asking this -- the right-click menu, a drag, a link hit test -- wants the block
+    /// they stand for rather than the row that would have been there without them.
+    private func pointerRow(forVisibleRow row: Int, in t: Terminal) -> Int? {
+        guard !foldRowsOnScreen.isEmpty else { return t.viewportTopRow + row }
+        guard foldRowsOnScreen.indices.contains(row) else { return nil }
+        switch foldRowsOnScreen[row] {
+        case .row(let absolute): return absolute
+        case .fold(let id, _, _): return displayBlockRows[id]
+        case .lens(let id, _): return displayBlockRows[id]
+        }
+    }
+
+    /// Which absolute row a visible row is showing, through whatever the display put on screen. nil
+    /// for a slot showing a fold placeholder or a lens line -- neither is a row of the buffer.
     private func absoluteRow(forVisibleRow row: Int, in t: Terminal) -> Int? {
         // Keyed off the display the last frame actually built, not off `folding`: a pane with a lens
         // open and nothing folded also draws through the display map, and subtracting the viewport

@@ -76,7 +76,7 @@ public extension DisplayCursor {
 
 public extension Terminal {
     /// What the display shows at `cursor`, and where the next display line begins. nil past the end
-    /// of the buffer."""
+    /// of the buffer.
     ///
     /// Stateless, so a cursor anywhere -- the middle of a lens, a wrapped command line, a fold --
     /// answers the same way. That costs a `command(containingAbsoluteRow:)`, which scans back to the

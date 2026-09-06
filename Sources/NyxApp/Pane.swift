@@ -896,8 +896,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// The lens a block is being read through, for its header and its menu.
     func lens(of id: UInt32) -> ResponseLens? { lenses.lens(of: id) }
 
-    /// Whether this block's body is past what a lens will re-lay-out, which is what the ⋯ menu says
-    /// instead of offering seven rows that would each do nothing.
     /// Whether this block's response body is JSON -- the one thing the `{ }` control can do
     /// something with. From the cache, never a re-parse: this is asked once per block per frame.
     func bodyIsJSON(_ id: UInt32) -> Bool {
@@ -907,6 +905,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return exchange.bodyKind == .json
     }
 
+    /// Whether this block's body is past what a lens will re-lay-out, which is what the ⋯ menu says
+    /// instead of offering seven rows that would each do nothing.
     func lensIsTooLarge(_ id: UInt32) -> Bool {
         guard case .request(let exchange)? = requestCache.entry(for: id), let exchange else {
             return false

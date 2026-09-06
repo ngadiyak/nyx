@@ -53,8 +53,10 @@ private let sample = JSONDocument.parse(sampleText) ?? .null
     #expect(JSONPath.parse("..name.x") == nil)
 }
 
-/// The one sentence the box shows when it cannot help, and it names the tool that can.
-@Test func unsupportedSaysWhereToGo() {
+/// The one sentence the box shows when it cannot help. It does *not* name the way out: the button
+/// that is the way out sits immediately beside it, and saying "Run with jq" in both made the
+/// sentence read as an instruction to press itself.
+@Test func unsupportedSaysOnlyThat() {
     #expect(JSONPath.unsupportedMessage == "Not supported here.")
 }
 

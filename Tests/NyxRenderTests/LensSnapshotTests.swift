@@ -151,3 +151,267 @@ func lensesRenderInBothThemes() throws {
     // The picture is only worth looking at if all of it is in the picture.
     #expect(pretty.count < rows)
 }
+
+// MARK: - The display path, drawn
+
+/// The same renderer, fed by `Terminal.displayRows` instead of by hand.
+///
+/// `lensesRenderInBothThemes` builds its frame from one synthesised command row and a `LensBuffer`,
+/// so it pictures the *lens* and nothing around it: no scrollback, no wrapped rows, no wide cells,
+/// no fold, no viewport that can be in the wrong place. Every defect the display cursor can produce
+/// -- two rows in one slot, a lens line drawn over a raw row, a wide cell's spacer as a glyph, the
+/// caret on a lens line -- is invisible to it, because none of that code runs.
+///
+/// This walks the real path: a `Terminal` with thousands of rows in it, wrapped lines, CJK and
+/// emoji, a lens taller than the window, and eight viewport positions from the top of the buffer to
+/// the display bottom -- the same call `Pane.render` makes, into the same `RenderFrame`.
+private struct LensGrid {
+    let device: MTLDevice
+    let fonts: FontSet
+    let renderer: Renderer
+    let texture: MTLTexture
+    let cols: Int, rows: Int, pad: Int
+    let width: Int, height: Int
+
+    init(cols: Int, rows: Int) throws {
+        device = try #require(MTLCreateSystemDefaultDevice())
+        fonts = FontSet(family: "Menlo", pointSize: 13, scale: 2)
+        renderer = try Renderer(device: device, fonts: fonts)
+        self.cols = cols; self.rows = rows; pad = 12
+        width = fonts.metrics.width * cols + pad * 2
+        height = fonts.metrics.height * rows + pad * 2
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
+                                                                  width: width, height: height,
+                                                                  mipmapped: false)
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .managed
+        texture = try #require(device.makeTexture(descriptor: descriptor))
+    }
+
+    /// Exactly what `Pane.render` does with a display: rows from the buffer, folds as placeholders,
+    /// lens lines from the buffer, and the caret through `DisplayRows.cursorSlot`.
+    func draw(_ terminal: Terminal, from cursor: DisplayCursor, folding: OutputFolding,
+              lenses: LensChoices, buffers: [UInt32: LensBuffer], palette: Palette,
+              named name: String) {
+        let display = terminal.displayRows(from: cursor, count: rows, folding: folding,
+                                           lenses: lenses, buffers: { buffers[$0] })
+        let lensPalette = LensPalette.forTheme(palette)
+        var lines = display.map { row -> Row in
+            switch row {
+            case .row(let absolute): return terminal.absoluteRow(absolute) ?? Row(cols: cols)
+            case .fold(_, let hidden, let status):
+                return terminal.foldPlaceholderRow(hiddenRows: hidden, status: status)
+            case .lens(let id, let index):
+                return buffers[id]?.row(index, cols: cols, palette: lensPalette) ?? Row(cols: cols)
+            }
+        }
+        lines += Array(repeating: Row(cols: cols), count: max(0, rows - lines.count))
+        let caret = terminal.scrollback.count + terminal.screen.cursor.y
+        let cursorSlot = DisplayRows.cursorSlot(absoluteRow: caret, in: display)
+            .map { Cursor(x: terminal.screen.cursor.x, y: $0) }
+        let frame = RenderFrame(cols: cols, rows: rows, lines: lines, graphemes: terminal.graphemes,
+                                palette: palette, cursor: cursorSlot, cursorShape: .block,
+                                focused: true, preedit: nil)
+        let commands = renderer.queue.makeCommandBuffer()!
+        renderer.render(frame, to: texture, commandBuffer: commands, padding: pad)
+        let blit = commands.makeBlitCommandEncoder()!
+        blit.synchronize(resource: texture)
+        blit.endEncoding()
+        commands.commit()
+        commands.waitUntilCompleted()
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        texture.getBytes(&bytes, bytesPerRow: width * 4,
+                         from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        lensPNG(bytes, width: width, height: height, to: lensOutDir + "/\(name).png")
+    }
+}
+
+private func displayMark(_ letter: String, _ status: Int32? = nil) -> String {
+    "\u{1b}]133;\(status.map { "\(letter);\($0)" } ?? letter)\u{7}"
+}
+
+/// The pane a reader actually has: a long build above, a `curl` with a lens on it, and a prompt
+/// below. Wrapped lines and wide glyphs are in the big block on purpose -- a display walk that
+/// mishandles either shows it as a doubled row or a spacer drawn as a glyph.
+private func displayFixture(cols: Int, rows: Int, bigRows: Int)
+    -> (terminal: Terminal, curlID: UInt32, bigID: UInt32) {
+    let t = Terminal(cols: cols, rows: rows, scrollbackLimit: 8_000)
+    t.feed(displayMark("A") + "$ " + displayMark("B") + "echo hello\r\n" + displayMark("C"))
+    t.feed("hello\r\n" + displayMark("D", 0))
+    t.feed(displayMark("A") + "$ " + displayMark("B") + "cat build.log\r\n" + displayMark("C"))
+    for i in 1...bigRows {
+        switch i % 4 {
+        case 0:
+            // Longer than the pane: the terminal wraps it, and the two rows are one logical line.
+            t.feed("line \(i): a message long enough that the terminal has to wrap it onto a "
+                   + "second row of the grid, which is the case a display walk gets wrong\r\n")
+        case 1: t.feed("line \(i): 日本語のテキストと絵文字 \u{1F680}\u{1F525} wide cells\r\n")
+        default: t.feed("line \(i): ordinary output\r\n")
+        }
+    }
+    t.feed(displayMark("D", 0))
+    t.feed(displayMark("A") + "$ " + displayMark("B") + "curl -sSi https://api.example.com/v1/users\r\n"
+           + displayMark("C"))
+    t.feed("HTTP/2 200\r\n{\"page\":1,\"users\":[…]}\r\n" + displayMark("D", 0))
+    t.feed(displayMark("A") + "$ " + displayMark("B") + "echo done\r\n" + displayMark("C"))
+    t.feed("done\r\n" + displayMark("D", 0))
+    t.feed(displayMark("A") + "$ ")
+    let curl = t.command(containingAbsoluteRow: t.totalRows - 1)
+        .flatMap { t.previousCommand(of: $0) }
+        .flatMap { t.previousCommand(of: $0) }
+    let big = curl.flatMap { t.previousCommand(of: $0) }
+    return (t, curl?.id ?? 0, big?.id ?? 0)
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["NYX_SNAPSHOT"] != nil))
+func theDisplayPathRendersFromEveryViewportPosition() throws {
+    try FileManager.default.createDirectory(atPath: lensOutDir, withIntermediateDirectories: true)
+    let cols = 74, rows = 18
+    let grid = try LensGrid(cols: cols, rows: rows)
+    let (t, curlID, bigID) = displayFixture(cols: cols, rows: rows, bigRows: 1_200)
+    #expect(curlID != 0)
+    #expect(bigID != 0)
+    let curl = try #require(t.promptRow(ofCommand: curlID).flatMap { t.command(containingAbsoluteRow: $0) })
+    let lensStart = try #require(curl.outputStart)
+
+    // Sixty lines standing in for two rows: a lens taller than the window, which is the shape that
+    // made viewport arithmetic in absolute rows unworkable in the first place.
+    var lenses = LensChoices()
+    lenses.set(.pretty, for: curlID)
+    let lines = (0..<60).map { index -> LensLine in
+        LensLine(index == 0 ? "\u{25B8} 5 headers \u{b7} content-type: application/json"
+                            : "  \"key\(index)\": \"日本語 value \(index)\",")
+    }
+    let buffers = [curlID: LensBuffer(commandID: curlID, lens: .pretty, lines: lines,
+                                      contentVersion: t.contentVersion)]
+    let themes: [(String, Palette)] = [("dark", try #require(Themes.builtin["nyx-dark"])),
+                                       ("light", try #require(Themes.builtin["nyx-light"]))]
+    let empty = OutputFolding()
+
+    let positions: [(String, DisplayCursor)] = [
+        ("top", DisplayCursor(row: 0)),
+        ("in-big-output", DisplayCursor(row: lensStart - 600)),
+        ("before-lens", DisplayCursor(row: lensStart - 1)),
+        ("lens-start", DisplayCursor(row: lensStart)),
+        ("lens-middle", DisplayCursor(row: lensStart, line: 30)),
+        ("lens-end", DisplayCursor(row: lensStart, line: lines.count - 1)),
+        ("after-lens", DisplayCursor(row: curl.endRow + 1)),
+        ("display-bottom", t.displayBottomCursor(folding: empty, lenses: lenses,
+                                                 viewportRows: rows, buffers: { buffers[$0] })),
+    ]
+    for (themeName, palette) in themes {
+        for (name, cursor) in positions {
+            grid.draw(t, from: cursor, folding: empty, lenses: lenses, buffers: buffers,
+                      palette: palette, named: "display-\(name)-\(themeName)")
+        }
+    }
+
+    // Non-visual, so the pictures are not the only thing holding this up: every position produces
+    // exactly one display line per slot, and none of them puts two absolute rows in one frame.
+    for (label, cursor) in positions {
+        let display = t.displayRows(from: cursor, count: rows, folding: empty, lenses: lenses,
+                                    buffers: { buffers[$0] })
+        // A window's worth, except at the very end of the buffer, where there is less left than a
+        // window and the pane pads with blanks -- which is the picture `after-lens` is of.
+        #expect(display.count <= rows, "\(label)")
+        #expect(!display.isEmpty, "\(label)")
+        var seen = Set<Int>()
+        for entry in display {
+            if case .row(let absolute) = entry {
+                #expect(seen.insert(absolute).inserted, "row \(absolute) twice in one frame")
+            }
+        }
+    }
+    // The lens really is taller than the window, or none of the middle positions mean anything.
+    #expect(lines.count > rows)
+    // And the display bottom keeps the shell's prompt on screen rather than the head of the
+    // response -- the rule `displayBottomCursor` exists for. It lands inside the lens.
+    let bottom = try #require(positions.last?.1)
+    #expect(bottom.row == lensStart)
+    #expect(bottom.line > 0)
+    let fromBottom = t.displayRows(from: bottom, count: rows, folding: empty, lenses: lenses,
+                                   buffers: { buffers[$0] })
+    #expect(fromBottom.count == rows)
+    #expect(fromBottom.last == .row(t.totalRows - 1))
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["NYX_SNAPSHOT"] != nil))
+func theDisplayPathRendersAFoldOpeningAndClosing() throws {
+    try FileManager.default.createDirectory(atPath: lensOutDir, withIntermediateDirectories: true)
+    let cols = 74, rows = 18
+    let grid = try LensGrid(cols: cols, rows: rows)
+    let (t, curlID, bigID) = displayFixture(cols: cols, rows: rows, bigRows: 60)
+    var lenses = LensChoices()
+    lenses.set(.headers, for: curlID)
+    let buffers = [curlID: LensBuffer(commandID: curlID, lens: .headers, lines: [
+        LensLine("HTTP/2 200"),
+        LensLine("content-type: application/json; charset=utf-8"),
+        LensLine("\u{21AA} 301 \u{2192} https://api.example.com/v1/users"),
+    ], contentVersion: t.contentVersion)]
+    var folded = OutputFolding()
+    folded.fold(bigID, .all)
+    let themes: [(String, Palette)] = [("dark", try #require(Themes.builtin["nyx-dark"])),
+                                       ("light", try #require(Themes.builtin["nyx-light"]))]
+    // The frame the fold is on and the frame it has just come off, from the same cursor: the
+    // second is the transition, where a stale slot would show a placeholder over a real row.
+    let big = try #require(t.promptRow(ofCommand: bigID).flatMap { t.command(containingAbsoluteRow: $0) })
+    let cursor = DisplayCursor(row: big.promptRow)
+    for (themeName, palette) in themes {
+        grid.draw(t, from: cursor, folding: folded, lenses: lenses, buffers: buffers,
+                  palette: palette, named: "display-folded-\(themeName)")
+        grid.draw(t, from: cursor, folding: OutputFolding(), lenses: lenses, buffers: buffers,
+                  palette: palette, named: "display-unfolded-\(themeName)")
+    }
+    let withFold = t.displayRows(from: cursor, count: rows, folding: folded, lenses: lenses,
+                                 buffers: { buffers[$0] })
+    #expect(withFold.contains { if case .fold = $0 { return true } else { return false } })
+    let without = t.displayRows(from: cursor, count: rows, folding: OutputFolding(), lenses: lenses,
+                                buffers: { buffers[$0] })
+    #expect(!without.contains { if case .fold = $0 { return true } else { return false } })
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["NYX_SNAPSHOT"] != nil))
+func theDisplayPathRendersAWatchSeries() throws {
+    try FileManager.default.createDirectory(atPath: lensOutDir, withIntermediateDirectories: true)
+    let cols = 74, rows = 18
+    let grid = try LensGrid(cols: cols, rows: rows)
+    // Four runs of the same request, the older three folded, a diff lens on the newest: what a
+    // watching pane looks like after a minute.
+    let t = Terminal(cols: cols, rows: rows, scrollbackLimit: 2_000)
+    var ids: [UInt32] = []
+    for run in 1...4 {
+        t.feed(displayMark("A") + "$ " + displayMark("B")
+               + "curl -sSi https://api.example.com/health\r\n" + displayMark("C"))
+        t.feed("HTTP/2 \(run == 3 ? 503 : 200)\r\n{\"n\":\(run),\"state\":\"ready\"}\r\n")
+        t.feed(displayMark("D", 0))
+        if let region = t.command(containingAbsoluteRow: t.totalRows - 1) { ids.append(region.id) }
+    }
+    t.feed(displayMark("A") + "$ ")
+    #expect(ids.count == 4)
+    var folding = OutputFolding()
+    for id in ids.dropLast() { folding.fold(id, .all) }
+    var lenses = LensChoices()
+    let newest = try #require(ids.last)
+    lenses.set(.diff(previousCommandID: ids[2]), for: newest)
+    let buffers = [newest: LensBuffer(commandID: newest, lens: .diff(previousCommandID: ids[2]),
+                                      lines: [
+        LensLine("1 line changed \u{b7} status 503 \u{2192} 200 \u{b7} 310 ms \u{2192} 142 ms"),
+        LensLine("  {"),
+        LensLine("-   \"n\": 3,"),
+        LensLine("+   \"n\": 4,"),
+        LensLine("    \"state\": \"ready\""),
+        LensLine("  }"),
+    ], contentVersion: t.contentVersion)]
+    let themes: [(String, Palette)] = [("dark", try #require(Themes.builtin["nyx-dark"])),
+                                       ("light", try #require(Themes.builtin["nyx-light"]))]
+    let cursor = t.displayBottomCursor(folding: folding, lenses: lenses, viewportRows: rows,
+                                       buffers: { buffers[$0] })
+    for (themeName, palette) in themes {
+        grid.draw(t, from: cursor, folding: folding, lenses: lenses, buffers: buffers,
+                  palette: palette, named: "display-watch-\(themeName)")
+    }
+    let display = t.displayRows(from: cursor, count: rows, folding: folding, lenses: lenses,
+                                buffers: { buffers[$0] })
+    #expect(display.filter { if case .fold = $0 { return true } else { return false } }.count == 3)
+    #expect(display.contains { if case .lens = $0 { return true } else { return false } })
+}

@@ -5,7 +5,7 @@ import Foundation
 /// Deliberately a *subset*. The field above a response is one line wide and the person typing in it
 /// wants `.items[] | .id`, not a program; implementing more of jq badly would mean a filtered list
 /// with no way to tell it was filtered wrongly. Anything outside the subset is refused at parse
-/// time, and the box says `unsupportedMessage` -- which names the tool that can do it.
+/// time, and the box says `unsupportedMessage`, with the `Run with jq` button beside it.
 ///
 /// Where the two differ inside the subset it is said at the member that differs (`keys` does not
 /// sort). Everything else follows jq: iteration fans a value out into several, a missing key is
@@ -32,10 +32,12 @@ public enum JSONPath {
         case chain([Expr])
     }
 
-    /// What the box says when the text is jq but not *this* jq. It names the way out: the workbench
-    /// can run the request through a real jq, and a message that only said "unsupported" would
-    /// leave the reader to guess that.
-    public static let unsupportedMessage = "Not supported here — Run with jq"
+    /// What the box says when the text is jq but not *this* jq.
+    ///
+    /// The sentence does not name the way out, because the button that *is* the way out sits
+    /// immediately beside it: "Not supported here — Run with jq" next to a button labelled `Run
+    /// with jq` said the same three words twice and read as an instruction to press the sentence.
+    public static let unsupportedMessage = "Not supported here."
 
     // MARK: - Parsing
 

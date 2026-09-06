@@ -55,7 +55,7 @@ private let sample = JSONDocument.parse(sampleText) ?? .null
 
 /// The one sentence the box shows when it cannot help, and it names the tool that can.
 @Test func unsupportedSaysWhereToGo() {
-    #expect(JSONPath.unsupportedMessage == "Not supported here — Run with jq")
+    #expect(JSONPath.unsupportedMessage == "Not supported here.")
 }
 
 // MARK: - Evaluating

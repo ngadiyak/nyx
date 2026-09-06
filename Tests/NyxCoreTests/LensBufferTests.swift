@@ -118,3 +118,69 @@ private func text(_ row: Row) -> String {
     #expect(buffer([line]).line(0)?.node == node)
     #expect(buffer([line]).line(0)?.depth == 1)
 }
+
+// MARK: - Cells, not characters
+
+/// The terminal measures in cells and so must this: `日` is two columns wide, so ten of them fill a
+/// twenty-column pane. Measured in Characters they filled ten, and every glyph after the first
+/// would have been drawn over its neighbour and the row run past the edge of the pane.
+@Test func aWideGlyphTakesTwoCells() {
+    let row = buffer([LensLine("日本語")]).row(0, cols: 10, palette: .standard)
+    #expect(row.cells[0].content == "日".unicodeScalars.first!.value)
+    #expect(row.cells[0].attrs.contains(.wide))
+    #expect(row.cells[1].content == 0)
+    #expect(row.cells[1].attrs.contains(.wideSpacer))
+    #expect(row.cells[2].content == "本".unicodeScalars.first!.value)
+    #expect(row.cells[2].attrs.contains(.wide))
+    #expect(row.cells[4].content == "語".unicodeScalars.first!.value)
+    // Six columns used by three characters, and the rest of the row is empty.
+    #expect(row.cells[6].content == 0)
+    #expect(!row.cells[6].attrs.contains(.wideSpacer))
+}
+
+/// The cut is in columns too, and a wide glyph that would straddle it is dropped rather than half
+/// drawn: half of a `日` is a different character.
+@Test func theCutCountsColumns() {
+    let row = buffer([LensLine("日本語")]).row(0, cols: 4, palette: .standard)
+    #expect(row.cells[0].content == "日".unicodeScalars.first!.value)
+    #expect(row.cells[1].attrs.contains(.wideSpacer))
+    #expect(row.cells[2].content == 0, "本 would straddle the ellipsis, so it is not drawn at all")
+    #expect(row.cells[3].content == 0x2026)
+    #expect(row.cells.count == 4)
+}
+
+/// A line whose display width is exactly the pane's is not cut.
+@Test func aLineThatExactlyFillsIsNotCut() {
+    let row = buffer([LensLine("日本語")]).row(0, cols: 6, palette: .standard)
+    #expect(row.cells[4].content == "語".unicodeScalars.first!.value)
+    #expect(row.cells[5].attrs.contains(.wideSpacer))
+    #expect(!row.cells.contains { $0.content == 0x2026 })
+}
+
+/// Spans are Character offsets and cells are columns: the two walk together, so a colour still
+/// lands on the glyph it belongs to when a wide one has moved everything after it along.
+@Test func aSpanOverAWideGlyphColoursTheRightCells() {
+    let line = LensLine("\"🚀\": 1",
+                        spans: [.init(range: 0 ..< 3, style: .key),
+                                .init(range: 5 ..< 6, style: .number)])
+    let row = buffer([line]).row(0, cols: 20, palette: .standard)
+    #expect(row.cells[0].fg == .indexed(4))          // the opening quote
+    #expect(row.cells[1].fg == .indexed(4))          // the emoji, two cells wide
+    #expect(row.cells[1].attrs.contains(.wide))
+    #expect(row.cells[2].attrs.contains(.wideSpacer))
+    #expect(row.cells[2].fg == .indexed(4), "the spacer carries the lead cell's colour")
+    #expect(row.cells[3].fg == .indexed(4))          // the closing quote
+    #expect(row.cells[4].fg == .default)             // the colon
+    #expect(row.cells[6].fg == .indexed(3))          // `1`, one column later than its Character
+    #expect(row.cells[6].content == UInt32(UInt8(ascii: "1")))
+}
+
+/// And the ordinary case is untouched: an ASCII line is one cell per character, as it always was.
+@Test func anASCIILineIsUnchanged() {
+    let line = LensLine("  \"a\": 1", spans: [.init(range: 2 ..< 5, style: .key)])
+    let row = buffer([line]).row(0, cols: 12, palette: .standard)
+    #expect(text(row) == "  \"a\": 1")
+    #expect(row.cells[2].fg == .indexed(4))
+    #expect(row.cells[7].content == UInt32(UInt8(ascii: "1")))
+    #expect(!row.cells.contains { $0.attrs.contains(.wide) || $0.attrs.contains(.wideSpacer) })
+}

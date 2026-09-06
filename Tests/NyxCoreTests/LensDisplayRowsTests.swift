@@ -225,3 +225,41 @@ private func buffers(_ id: UInt32, lines: Int) -> (UInt32) -> LensBuffer? {
     #expect(t.lensedCommand(containingOutputRow: 13, lenses: choices, buffers: get) == nil)
     #expect(t.lensedCommand(containingOutputRow: 5, lenses: LensChoices(), buffers: get) == nil)
 }
+
+/// A buffer with no lines is not a lens: it would take the block's output off the screen and put
+/// nothing in its place, which reads as a command that printed nothing. The raw rows stand until
+/// there is something to show instead.
+@Test func anEmptyBufferShowsRaw() {
+    let t = session()
+    let empty = LensBuffer(commandID: 2, lens: .pretty, lines: [], contentVersion: 0)
+    let rows = t.displayRows(from: 0, count: 6, folding: OutputFolding(), lenses: lensed(2),
+                             buffers: { $0 == 2 ? empty : nil })
+    #expect(rows == (0..<6).map { .row($0) })
+    #expect(t.lensedCommand(containingOutputRow: 5, lenses: lensed(2),
+                            buffers: { $0 == 2 ? empty : nil }) == nil)
+}
+
+/// A viewport that starts on a *wrapped command line* -- between the prompt and the output --
+/// shows the raw rows rather than the lens, because the mapping only replaces output when it walks
+/// past the block's own prompt row. The fold path has the same hole and has always had it. Written
+/// down here rather than discovered later; the scroll snapping keeps a viewport off that row.
+@Test func aViewportOnAWrappedCommandLineShowsRaw() {
+    let t = makeTerminal(cols: 10, rows: 6, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "curl a-long-url\r\n" + mark("C"))
+    t.feed("{\"a\":1}\r\nsecond\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    let region = t.command(containingAbsoluteRow: 0)
+    #expect(region?.promptRow == 0)
+    #expect(region?.outputRows.lowerBound == 2, "the command line wrapped onto row 1")
+
+    // From the prompt: the command line stays and the output becomes the lens.
+    let fromTop = t.displayRows(from: 0, count: 5, folding: OutputFolding(), lenses: lensed(1),
+                                buffers: buffers(1, lines: 2))
+    #expect(fromTop.prefix(4) == [.row(0), .row(1),
+                                  .lens(commandID: 1, line: 0), .lens(commandID: 1, line: 1)])
+
+    // From the continuation row: raw, and the lens is not applied at all.
+    let fromWrap = t.displayRows(from: 1, count: 3, folding: OutputFolding(), lenses: lensed(1),
+                                 buffers: buffers(1, lines: 2))
+    #expect(fromWrap == [.row(1), .row(2), .row(3)])
+}

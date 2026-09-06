@@ -97,34 +97,65 @@ public struct LensBuffer: Equatable {
     /// the pane is cut with `…` in the last cell, which is visibly a cut rather than a shorter
     /// value than the one that arrived.
     ///
+    /// Measured in **cells**, not Characters, exactly as the terminal measures: `日` is two columns
+    /// wide, so the lead cell is marked `.wide` and the one after it `.wideSpacer` -- the pair the
+    /// renderer already understands. Counting Characters instead put ten `日` in a ten-column pane:
+    /// every glyph after the first drawn over its neighbour, the cut in the wrong place, and the
+    /// row running past the edge. Two indices walk together for that reason: the spans step by
+    /// Character, the cells by column.
+    ///
     /// A Character that is more than one scalar (a combining accent, a flag, a ZWJ sequence) is
     /// drawn as its first scalar: the grapheme table those belong in is the *terminal's*, and this
-    /// runs without one. It costs an accent in a string value and keeps every span offset -- which
-    /// are Character offsets -- pointing at the cell the reader sees.
+    /// runs without one. It costs an accent in a string value and keeps every span pointing at the
+    /// glyph it belongs to. A Character of zero width takes no cell at all.
     public func row(_ index: Int, cols: Int, palette: LensPalette) -> Row {
         var row = Row(cols: cols)
         guard cols > 0, let line = line(index) else { return row }
-        let characters = Array(line.text)
-        let cut = characters.count > cols
-        let drawn = cut ? cols - 1 : characters.count
 
+        var total = 0
+        for character in line.text { total += LensBuffer.width(of: character) }
+        let cut = total > cols
+        // One column is the ellipsis'. A glyph that would straddle that boundary is dropped rather
+        // than half drawn: half a `日` is a different character.
+        let budget = cut ? cols - 1 : cols
+
+        var column = 0
+        var offset = 0
         var spanIndex = 0
-        var cell = Cell()
-        for column in 0 ..< drawn {
+        for character in line.text {
             // The spans arrive in order and do not overlap, so one cursor over them is enough --
-            // a search per column would make a wide pane quadratic in the line's span count.
-            while spanIndex < line.spans.count, line.spans[spanIndex].range.upperBound <= column {
+            // a search per character would make a wide pane quadratic in the line's span count.
+            while spanIndex < line.spans.count, line.spans[spanIndex].range.upperBound <= offset {
                 spanIndex += 1
             }
-            cell.fg = .default
-            cell.attrs = []
-            if spanIndex < line.spans.count, line.spans[spanIndex].range.contains(column) {
-                let style = line.spans[spanIndex].style
+            let style = spanIndex < line.spans.count && line.spans[spanIndex].range.contains(offset)
+                ? line.spans[spanIndex].style
+                : nil
+            offset += 1
+
+            let width = LensBuffer.width(of: character)
+            guard width > 0 else { continue }
+            guard column + width <= budget else { break }
+            var cell = Cell()
+            if let style {
                 cell.fg = palette.colour(for: style) ?? .default
                 cell.attrs = palette.attributes(for: style)
             }
-            cell.content = characters[column].unicodeScalars.first?.value ?? 0
-            row.cells[column] = cell
+            cell.content = character.unicodeScalars.first?.value ?? 0
+            if width == 2 {
+                cell.attrs.insert(.wide)
+                row.cells[column] = cell
+                // The follower carries the lead's colours -- it is what the renderer fills the
+                // second column's background from -- and none of its content.
+                var spacer = cell
+                spacer.content = 0
+                spacer.attrs.remove(.wide)
+                spacer.attrs.insert(.wideSpacer)
+                row.cells[column + 1] = spacer
+            } else {
+                row.cells[column] = cell
+            }
+            column += width
         }
         if cut {
             var ellipsis = Cell()
@@ -133,6 +164,17 @@ public struct LensBuffer: Equatable {
             row.cells[cols - 1] = ellipsis
         }
         return row
+    }
+
+    /// A Character's width in cells, through the same table the terminal uses. The single-scalar
+    /// case -- which is nearly every character of nearly every line -- answers without building a
+    /// `String`, because this runs per character per row per frame.
+    private static func width(of character: Character) -> Int {
+        let scalars = character.unicodeScalars
+        if let only = scalars.first, scalars.index(after: scalars.startIndex) == scalars.endIndex {
+            return CharWidth.width(only)
+        }
+        return CharWidth.width(of: String(character))
     }
 
     /// The text of a range of lines, for copying. Clamped rather than trapped: a selection outlives

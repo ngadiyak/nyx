@@ -153,14 +153,16 @@ public extension Terminal {
     /// row is never inside a lens: the command line stays on screen above its response.
     ///
     /// nil when the command has no lens, when its buffer has not been built yet (the rows show raw
-    /// until it is), or when it has printed nothing for a lens to replace.
+    /// until it is), when that buffer has no lines -- taking the output off the screen and putting
+    /// nothing in its place reads as a command that printed nothing -- or when the command has
+    /// printed nothing for a lens to replace.
     func lensedCommand(containingOutputRow row: Int, lenses: LensChoices,
                        buffers: (UInt32) -> LensBuffer?) -> (region: CommandRegion, buffer: LensBuffer)? {
         guard !lenses.isEmpty, shellEmitsPromptMarks,
               let region = command(containingAbsoluteRow: row),
               lenses.lens(of: region.id) != nil,
               region.outputRows.contains(row),
-              let buffer = buffers(region.id) else { return nil }
+              let buffer = buffers(region.id), buffer.lineCount > 0 else { return nil }
         return (region, buffer)
     }
 
@@ -217,6 +219,12 @@ public extension Terminal {
                 guard !hidden.isEmpty else { row += 1; continue }
                 // A wrapped command line lies between the prompt and its output; it belongs to the
                 // command, not to what it printed, and stays on screen.
+                //
+                // A viewport whose *top* is one of those continuation rows is a known hole, in both
+                // this branch and the lens one below: neither the fold nor the lens is applied,
+                // because the replacement only happens when the walk passes the block's prompt row,
+                // and the rows below come out raw. It is one row wide, it has always been here, and
+                // the scroll snapping is what keeps a viewport off it.
                 var next = row + 1
                 while next < hidden.lowerBound && out.count < count {
                     out.append(.row(next))
@@ -228,7 +236,8 @@ public extension Terminal {
                 row = hidden.upperBound
                 continue
             }
-            guard let buffer = buffers(id), !region.outputRows.isEmpty else { row += 1; continue }
+            guard let buffer = buffers(id), buffer.lineCount > 0,
+                  !region.outputRows.isEmpty else { row += 1; continue }
             var next = row + 1
             while next < region.outputRows.lowerBound && out.count < count {
                 out.append(.row(next))

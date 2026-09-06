@@ -131,12 +131,28 @@ public struct RequestEditorModel: Equatable {
     }
 
     /// Writes the parts back into `raw` and `string` so the URL field, the serialiser and the run
-    /// line all agree after a query edit.
+    /// line all agree after a query edit. Draft rows are left out: a row whose name has not been
+    /// typed yet must not turn the URL field into `…?=`.
     private mutating func syncURLText() {
         guard queryIsEditable else { return }
-        let rebuilt = command.url.rebuilt
-        command.url.raw = ShellWord(rebuilt)
-        command.url.string = rebuilt
+        var parts = command.url
+        parts.query = parts.query.filter { !$0.name.isEmpty }
+        command.url.raw = ShellWord(parts.rebuilt)
+        command.url.string = parts.rebuilt
+    }
+
+    /// The command without its half-typed rows.
+    ///
+    /// Pressing `+` puts a row in the table before it has a name, and that row has to be somewhere
+    /// the table can see it -- so it lives in `command` like any other, and everything that leaves
+    /// this sheet (the preview, the run line, the copy, an export, a saved button) goes through
+    /// here instead. Without it, `+` followed by Run sent `?=`, and `-H ';'` -- which curl rejects
+    /// outright -- for a header the user had not finished typing.
+    public var serialisedCommand: CurlCommand {
+        var serialised = command
+        serialised.url.query = serialised.url.query.filter { !$0.name.isEmpty }
+        serialised.headers = serialised.headers.filter { !$0.name.isEmpty }
+        return serialised
     }
 
     // MARK: - Params
@@ -244,6 +260,16 @@ public struct RequestEditorModel: Equatable {
         }
     }
 
+    /// Adds a header only when the request does not already have one by that name: a header the
+    /// user wrote is the deliberate one, and an implied default must not overwrite it.
+    private mutating func setHeaderIfAbsent(name: String, value: String) {
+        guard !command.headers.contains(where: { $0.name.lowercased() == name.lowercased() }) else {
+            return
+        }
+        command.headers.append(CurlCommand.Header(name: name, value: ShellWords.word(literal: value),
+                                                  removes: false))
+    }
+
     // MARK: - The body
 
     /// The body as editable text: every `-d` joined the way curl joins them, or the one word a
@@ -297,16 +323,37 @@ public struct RequestEditorModel: Equatable {
     /// type comes from the popup beside it and replaces any header already there -- two
     /// `Content-Type` headers is a request whose meaning depends on which one the server reads.
     public mutating func setBodyText(_ text: String, contentType: String?) {
+        // `--json` sends `Content-Type` *and* `Accept` by itself. Rewriting the body as
+        // `--data-raw` takes both of those away, so both are written out here -- an edited request
+        // that quietly stopped asking for JSON back is a different request from the one that was
+        // pasted. An `Accept` the user already has is left alone; theirs is the deliberate one.
+        var wasJSON = false
+        if case .json = command.body { wasJSON = true }
+
         if let contentType, !contentType.isEmpty {
             setHeader(name: "Content-Type", value: contentType)
+        }
+        if wasJSON {
+            setHeaderIfAbsent(name: "Accept", value: "application/json")
         }
         guard !text.isEmpty else {
             // An emptied box means "no body". `--data-raw ''` would keep making this a POST with
             // a zero-length body, which is not what deleting the text means.
             command.body = nil
+            // `-X GET` was only there to override the POST the body implied. With the body gone it
+            // is a word that changes nothing, and the command stops round-tripping to itself.
+            normaliseMethod()
             return
         }
         command.body = .raw(ShellWords.word(literal: text))
+    }
+
+    /// Drops an explicit `-X` that says exactly what curl would do anyway.
+    private mutating func normaliseMethod() {
+        guard let method = command.method else { return }
+        var without = command
+        without.method = nil
+        if without.effectiveMethod == method { command.method = nil }
     }
 
     /// Re-indents a JSON body, keeping the keys in the order they were written. Returns false --
@@ -397,49 +444,61 @@ public struct RequestEditorModel: Equatable {
     /// would leave every run of this command with no status, no timings and no summary at all.
     public static let statusOnlyWriteOut = "%{http_code}\\n" + RequestRun.writeOutArgument
 
+    /// Where "body only" sends the headers. `-D /dev/null` is the whole mechanism: `RequestRun`
+    /// adds `-i` to any standalone command that is not already dumping its headers somewhere, so
+    /// clearing `-i` alone got it added straight back and the mode did nothing a user could see.
+    public static let discardHeaders = "/dev/null"
+
     public var outputMode: OutputMode {
         if let file = command.output.file {
-            return file.text == "/dev/null" ? .statusOnly : .saveBody
+            return file.text == Self.discardHeaders ? .statusOnly : .saveBody
         }
-        return command.flags.contains(.include) ? .headersAndBody : .bodyOnly
+        return command.output.dumpHeaders?.text == Self.discardHeaders ? .bodyOnly : .headersAndBody
     }
 
-    /// Rewrites `-i`, `-o` and `-w` for the chosen mode. `saveBody` with no path chosen leaves the
-    /// command exactly as it was: a request whose body goes to a file nobody named is worse than
-    /// no change.
+    /// Rewrites `-i`, `-D`, `-o` and `-w` for the chosen mode. `saveBody` with no path chosen
+    /// leaves the command exactly as it was: a request whose body goes to a file nobody named is
+    /// worse than no change.
     public mutating func setOutputMode(_ m: OutputMode, savePath: String?) {
         switch m {
         case .headersAndBody:
             command.output.file = nil
+            clearDiscardedHeaders()
+            // Said out loud rather than left to `RequestRun`, which adds `-i` only to a command
+            // that stands alone: a piped request would otherwise show a mode it does not have.
             command.flags.insert(.include)
             clearStatusWriteOut()
         case .bodyOnly:
             command.output.file = nil
             command.flags.remove(.include)
+            command.output.dumpHeaders = ShellWord(Self.discardHeaders)
             clearStatusWriteOut()
         case .statusOnly:
-            command.output.file = ShellWord("/dev/null")
+            clearDiscardedHeaders()
+            command.output.file = ShellWord(Self.discardHeaders)
             command.output.writeOut = ShellWord(Self.statusOnlyWriteOut)
         case .saveBody:
             guard let savePath, !savePath.isEmpty else { return }
+            clearDiscardedHeaders()
             command.output.file = ShellWords.word(literal: savePath)
             clearStatusWriteOut()
         }
-    }
-
-    /// The one thing about the output mode a user could otherwise only find out by running it:
-    /// Nyx adds `-i` back when it runs the command for itself, because the response pane is built
-    /// out of the headers. The mode still governs the line that is copied, exported or sent.
-    public var outputNote: String? {
-        guard outputMode == .bodyOnly, RequestRun.additions(for: command).include else { return nil }
-        return "Nyx still adds -i when it runs this, so the response can be read."
     }
 
     private mutating func clearStatusWriteOut() {
         if command.output.writeOut?.text == Self.statusOnlyWriteOut { command.output.writeOut = nil }
     }
 
+    /// Only Nyx's own `-D /dev/null` goes; a `-D headers.txt` the user wrote is theirs.
+    private mutating func clearDiscardedHeaders() {
+        if command.output.dumpHeaders?.text == Self.discardHeaders { command.output.dumpHeaders = nil }
+    }
+
     // MARK: - Badges, previews and lines
+
+    /// The flags the Options tab has a checkbox for, in the order they are drawn.
+    public static let optionFlags: [CurlCommand.Flags] = [.location, .insecure, .compressed,
+                                                          .verbose, .fail]
 
     /// How many things each tab is holding, for the segmented control's labels ("Headers 14").
     public var tabBadges: [Tab: Int] {
@@ -448,28 +507,30 @@ public struct RequestEditorModel: Equatable {
             .headers: headerRows(revealed: true).count,
             .body: command.body == nil ? 0 : 1,
             .auth: command.auth == .none ? 0 : 1,
-            .options: command.flags.rawValue.nonzeroBitCount
+            // Only what the Options tab actually has a control for. Counting every flag made the
+            // badge say `1` for a `-s` nothing on the tab could show, let alone turn off.
+            .options: Self.optionFlags.filter { command.flags.contains($0) }.count
                 + (command.timing.maxTime == nil ? 0 : 1)
                 + (command.timing.retry == nil ? 0 : 1)
-                + (command.output.file == nil ? 0 : 1),
+                + (outputMode == .headersAndBody ? 0 : 1),
         ]
     }
 
     /// The command as a `\`-continued block with every credential masked. For reading only.
-    public var preview: String { command.shellLine(masking: .display, layout: .multiline) }
+    public var preview: String { serialisedCommand.shellLine(masking: .display, layout: .multiline) }
 
     /// The same block with the credentials in it. Shown only when the sheet is revealing secrets.
-    public var revealedPreview: String { command.shellLine(masking: .none, layout: .multiline) }
+    public var revealedPreview: String { serialisedCommand.shellLine(masking: .none, layout: .multiline) }
 
     /// The user's own command, one line, nothing added: what `Copy` puts on the pasteboard.
-    public var copyLine: String { command.shellLine(masking: .none, layout: .oneLine) }
+    public var copyLine: String { serialisedCommand.shellLine(masking: .none, layout: .oneLine) }
 
     /// The line Nyx would actually run, with the workbench's `-sS -i -w` additions.
-    public var runLine: String { RequestRun.commandLine(for: command) }
+    public var runLine: String { RequestRun.commandLine(for: serialisedCommand) }
 
     /// What the run cannot show, and why -- a pipeline or a redirection takes the headers and the
     /// timings away. Nil when nothing is missing.
-    public var runNote: String? { RequestRun.note(for: command) }
+    public var runNote: String? { RequestRun.note(for: serialisedCommand) }
 
     /// The name a button saved from this request gets by default: the method and where it goes.
     public var suggestedActionName: String {

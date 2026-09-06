@@ -3029,8 +3029,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     ///
     /// The fallback is the point of the return value: a request that cannot be shown as a form is
     /// still shown as a command line, because a user who asked to edit a request must never be
-    /// answered with nothing at all. Only `UISnapshot` reaches this today; Task 10 wires the key,
-    /// the pill, the block menu and the palette to it.
+    /// answered with nothing at all.
+    ///
+    /// Nothing calls this yet -- the snapshots build the sheet directly, without a pane. Task 10
+    /// is what makes it reachable: the paste hint, `⌘⇧V` on a curl, the block menu's "Open in
+    /// Workbench", the palette's request rows and the New Request action all land here.
     @discardableResult
     func presentRequestEditor(command: CurlCommand, then run: @escaping (String) -> Void) -> Bool {
         let text = command.shellLine(masking: .none, layout: .multiline)
@@ -3061,8 +3064,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         sheet.titlebarAppearsTransparent = true
         sheet.isReleasedWhenClosed = false
 
-        editor.onFinish = { [weak window] line in
-            window?.endSheet(sheet)
+        // Both captures weak: the window retains the sheet while it is attached and the sheet
+        // retains the editor, so a strong `sheet` here would be the editor holding its own window
+        // through the closure it stores -- a cycle that outlives the sheet it was made for.
+        editor.onFinish = { [weak window, weak sheet] line in
+            if let sheet { window?.endSheet(sheet) }
             guard let line else { return }
             run(line)
         }

@@ -78,8 +78,8 @@ final class RequestEditor: NSViewController {
     private let maxTimeField = NSTextField(frame: .zero)
     private let retryField = NSTextField(frame: .zero)
     private let outputPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let outputNote = NSTextField(wrappingLabelWithString: "")
 
+    private weak var projectItem: NSMenuItem?
     private let revealBox = NSButton(checkboxWithTitle: "Reveal secrets", target: nil, action: nil)
     private let runNote = NSTextField(labelWithString: "")
     private let preview = NSTextView.scrollableTextView()
@@ -197,12 +197,16 @@ final class RequestEditor: NSViewController {
 
         let save = NSPopUpButton(frame: .zero, pullsDown: true)
         save.addItem(withTitle: "Save")
+        // Manual enabling: a pull-down enables its items from the responder chain by default,
+        // which would leave "Save to Project…" live in a pane that has no project to save to.
+        save.menu?.autoenablesItems = false
         for (title, action) in [("Save as Button…", #selector(saveAsButton)),
                                 ("Save to Project…", #selector(saveToProject))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             save.menu?.addItem(item)
         }
+        projectItem = save.menu?.items.last
         save.setAccessibilityLabel("Save this request")
 
         // A labelled pull-down rather than a bare chevron beside `Run`: a control whose whole
@@ -218,7 +222,14 @@ final class RequestEditor: NSViewController {
         repeats.toolTip = "Run this request more than once"
 
         let run = NSButton(title: "Run", target: self, action: #selector(runOnce))
+        // ⌘⏎, not ⏎. A plain Return here is a key equivalent, and a key equivalent is offered the
+        // event before the first responder is: with `"\r"` alone the sheet ran and closed the
+        // moment anyone pressed Return inside the body, so a two-line JSON body could not be
+        // typed at all. Return still runs the request from the URL field, where it means that --
+        // see `control(_:textView:doCommandBy:)`.
         run.keyEquivalent = "\r"
+        run.keyEquivalentModifierMask = [.command]
+        run.toolTip = "⌘⏎ — or ⏎ in the URL field"
 
         let row = NSStackView(views: [cancel, NSView(), copy, export, save, repeats, run])
         row.orientation = .horizontal
@@ -338,9 +349,6 @@ final class RequestEditor: NSViewController {
         outputPopup.action = #selector(outputChanged)
         outputPopup.setAccessibilityLabel("Show the response as")
 
-        outputNote.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        outputNote.textColor = .secondaryLabelColor
-
         let switches = NSStackView(views: [followBox, insecureBox, compressedBox, verboseBox, failBox])
         switches.orientation = .vertical
         switches.alignment = .leading
@@ -363,7 +371,7 @@ final class RequestEditor: NSViewController {
         row.alignment = .top
         row.spacing = 28
 
-        return column([row, outputNote, NSView()], flexible: nil)
+        return column([row, NSView()], flexible: nil)
     }
 
     /// A vertical stack whose children span its width, with one of them allowed to grow.
@@ -485,14 +493,17 @@ final class RequestEditor: NSViewController {
         setIfChanged(maxTimeField, model.command.timing.maxTime.map(Self.number) ?? "")
         setIfChanged(retryField, model.command.timing.retry.map(String.init) ?? "")
         outputPopup.selectItem(withTitle: model.outputMode.rawValue)
-        outputNote.stringValue = model.outputNote ?? ""
-        outputNote.isHidden = model.outputNote == nil
 
         revealBox.state = revealed ? .on : .off
         runNote.stringValue = model.runNote.map { "⚠︎ " + $0 } ?? ""
         runNote.isHidden = model.runNote == nil
-        previewTextView.string = revealed ? model.revealedPreview : model.preview
+        // Only when it differs: reassigning the string scrolls a long preview back to the top,
+        // and every keystroke in a table cell comes through here.
+        setIfChanged(previewTextView, revealed ? model.revealedPreview : model.preview)
         previewTextView.setAccessibilityValue(previewTextView.string)
+        // Nothing is wired to the project file unless a pane wired it: a menu item that beeps is
+        // a menu item that looked available.
+        projectItem?.isEnabled = onSaveToProject != nil
     }
 
     /// Writing a field that is being typed into moves the caret to the end and eats the keystroke,
@@ -529,6 +540,17 @@ final class RequestEditor: NSViewController {
         guard urlField.stringValue != model.urlString else { return }
         model.setURLString(urlField.stringValue)
         render()
+    }
+
+    /// Ends whatever is being edited, so the model holds it.
+    ///
+    /// A field's action fires when its editing ends, and until then the model has the *previous*
+    /// value: Run, Copy, Export and both Saves all read the model, and all four would otherwise
+    /// have used a body, a header or a timeout the user could see on screen but had not tabbed
+    /// out of. Resigning first responder is what makes the field editor give it up.
+    private func commitEdits() {
+        view.window?.makeFirstResponder(nil)
+        commitURL()
     }
 
     @objc private func revealChanged() {
@@ -625,8 +647,11 @@ final class RequestEditor: NSViewController {
     @objc private func cancel() { onFinish?(nil) }
 
     @objc private func runOnce() {
-        commitURL()
-        guard !model.command.url.host.isEmpty || !model.command.url.raw.text.isEmpty else {
+        commitEdits()
+        // `https://` parses, has a scheme and a non-empty raw word, and is not a request. A URL
+        // written as a variable has no host to check and is left alone.
+        let url = model.serialisedCommand.url
+        guard !url.host.isEmpty || url.raw.containsVariable else {
             NSSound.beep()
             view.window?.makeFirstResponder(urlField)
             return
@@ -635,6 +660,7 @@ final class RequestEditor: NSViewController {
     }
 
     @objc private func copyCommand() {
+        commitEdits()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(model.copyLine, forType: .string)
     }
@@ -642,8 +668,10 @@ final class RequestEditor: NSViewController {
     @objc private func exportAs(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let format = ExportFormat(rawValue: raw) else { return }
+        commitEdits()
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(RequestExport.render(model.command, as: format), forType: .string)
+        NSPasteboard.general.setString(RequestExport.render(model.serialisedCommand, as: format),
+                                       forType: .string)
     }
 
     private func item(_ title: String, _ action: Selector, _ plan: WatchPlanRequest) -> NSMenuItem {
@@ -661,7 +689,7 @@ final class RequestEditor: NSViewController {
 
     @objc private func runWatch(_ sender: NSMenuItem) {
         guard let plan = (sender.representedObject as? Plan)?.request else { return }
-        commitURL()
+        commitEdits()
         guard case .every = plan else {
             finishWatch(plan)
             return
@@ -673,21 +701,34 @@ final class RequestEditor: NSViewController {
     /// session in every window, which is the rule `confirmPaste` follows for the same reason.
     private func askForInterval() {
         guard let window = view.window else { return finishWatch(.every(seconds: watchInterval)) }
-        let alert = NSAlert()
-        alert.messageText = "Run this request repeatedly"
-        alert.informativeText = "How many seconds between runs?"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 80, height: 22))
-        field.stringValue = Self.number(watchInterval)
-        field.alignment = .right
-        field.describeForAccessibility("Seconds between runs", role: .textField)
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Start")
-        alert.addButton(withTitle: "Cancel")
+        let (alert, field) = RequestEditor.intervalPrompt(seconds: watchInterval)
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
             let seconds = Double(field.stringValue) ?? self.watchInterval
             self.finishWatch(.every(seconds: max(0.5, seconds)))
         }
+    }
+
+    /// The prompt itself, built apart from the presenting so a snapshot renders the alert this
+    /// sheet really shows rather than a copy of it that can drift.
+    static func intervalPrompt(seconds: Double) -> (NSAlert, NSTextField) {
+        let alert = NSAlert()
+        alert.messageText = "Run this request repeatedly"
+        alert.informativeText = "How many seconds between runs?"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 80, height: 22))
+        field.stringValue = number(seconds)
+        field.alignment = .right
+        field.describeForAccessibility("Seconds between runs", role: .textField)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Start")
+        alert.addButton(withTitle: "Cancel")
+        return (alert, field)
+    }
+
+    /// The button this request would be saved as, prefilled the way `Save as Button…` prefills it.
+    /// One place, so the sheet and its picture cannot disagree.
+    func quickActionDraft() -> QuickAction {
+        QuickAction(name: model.suggestedActionName, kind: .send, command: model.copyLine)
     }
 
     private func finishWatch(_ plan: WatchPlanRequest) {
@@ -699,9 +740,8 @@ final class RequestEditor: NSViewController {
     // MARK: - Saving
 
     @objc private func saveAsButton() {
-        commitURL()
-        let editor = QuickActionEditor(editing: QuickAction(name: model.suggestedActionName,
-                                                            kind: .send, command: model.copyLine))
+        commitEdits()
+        let editor = QuickActionEditor(editing: quickActionDraft())
         editor.onFinish = { [weak self] action in
             self?.dismiss(editor)
             guard let action else { return }
@@ -714,18 +754,13 @@ final class RequestEditor: NSViewController {
     }
 
     @objc private func saveToProject() {
-        commitURL()
-        let editor = QuickActionEditor(editing: QuickAction(name: model.suggestedActionName,
-                                                            kind: .send, command: model.copyLine))
+        commitEdits()
+        let editor = QuickActionEditor(editing: quickActionDraft())
         editor.onFinish = { [weak self] action in
             self?.dismiss(editor)
             guard let self, let action else { return }
-            guard let save = self.onSaveToProject else {
-                // No pane, no directory, nothing to write to: say so rather than appearing to save.
-                NSSound.beep()
-                return
-            }
-            save(action.name, "quick = " + action.configValue)
+            // The menu item is disabled without one, so this is belt and braces.
+            self.onSaveToProject?(action.name, "quick = " + action.configValue)
         }
         presentAsSheet(editor)
     }
@@ -910,8 +945,12 @@ final class FieldTable: NSView, NSTableViewDataSource, NSTableViewDelegate {
     @objc private func addRow() {
         owner?.tableAdded(kind: kind)
         // Straight into the new row's name: a row added and left empty is a row that says nothing.
-        let index = editableCount
-        if index < table.numberOfRows { table.editColumn(0, row: index, with: nil, select: true) }
+        // `editableCount` has already been updated by the re-render above, so the row that was
+        // just appended is the last editable one -- not the one after it, which is either past the
+        // end or the first of the derived rows nothing can type into.
+        let index = editableCount - 1
+        guard index >= 0, index < table.numberOfRows else { return }
+        table.editColumn(0, row: index, with: nil, select: true)
     }
 
     @objc private func removeRow() {

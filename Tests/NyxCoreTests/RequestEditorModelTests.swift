@@ -238,10 +238,21 @@ import Testing
     }
     model.setOutputMode(.headersAndBody, savePath: nil)
     #expect(model.command.output.file == nil)
+    #expect(model.command.output.dumpHeaders == nil)
     #expect(model.command.flags.contains(.include))
+
     model.setOutputMode(.bodyOnly, savePath: nil)
     #expect(!model.command.flags.contains(.include))
-    #expect(model.outputNote != nil, "Nyx adds -i back when it runs the command; say so")
+    // The whole mechanism: without somewhere for the headers to go, `RequestRun` adds `-i` back
+    // and "Body only" is a menu item that changes nothing a user can see.
+    #expect(model.command.output.dumpHeaders?.text == "/dev/null")
+    #expect(!RequestRun.additions(for: model.command).include)
+    #expect(model.runLine.contains("-D /dev/null"))
+    #expect(!model.runLine.contains("-i"))
+
+    // And it goes away again, rather than sitting in a saved command forever.
+    model.setOutputMode(.headersAndBody, savePath: nil)
+    #expect(model.command.output.dumpHeaders == nil)
 
     // Asked to save with nowhere to save it, the command is left alone rather than quietly
     // becoming a request whose body goes nowhere.
@@ -282,6 +293,11 @@ import Testing
     #expect(github.tabBadges[.body] == 0)
     #expect(github.tabBadges[.auth] == 1)
     #expect(github.tabBadges[.options] == 1, "-L")
+
+    // `-s` has no checkbox on the tab, so counting it would put a number on a tab that shows
+    // nothing to explain it.
+    let piped = RequestEditorModel(command: try CurlFixtures.command("10-pipeline"))
+    #expect(piped.tabBadges[.options] == 0)
 
     var timed = github
     timed.setTiming(maxTime: 30, retry: 2)
@@ -332,4 +348,62 @@ import Testing
 
     let bare = RequestEditorModel(command: try #require(CurlCommand.parse("curl -X POST https://x")))
     #expect(bare.suggestedActionName == "POST x")
+}
+
+
+// MARK: - Half-typed rows
+
+@Test func draftRowsStayInTheTableAndOutOfTheCommand() throws {
+    var model = RequestEditorModel(command: try #require(CurlCommand.parse("curl https://x/y")))
+    model.setQuery([CurlCommand.QueryItem(name: "", value: "")])
+    model.setHeaders([CurlCommand.Header(name: "", value: ShellWord(""), removes: false)])
+
+    // The rows are in the table, because that is where they are being typed.
+    #expect(model.paramRows(revealed: true).count == 1)
+    #expect(model.headerRows(revealed: true).count == 1)
+
+    // And in nothing that leaves the sheet: `?=` and `-H ';'` -- which curl rejects outright --
+    // are what a user got by pressing + and then Run.
+    #expect(model.urlString == "https://x/y")
+    #expect(model.copyLine == "curl https://x/y")
+    #expect(!model.preview.contains("?="))
+    #expect(!model.revealedPreview.contains("-H"))
+    #expect(!model.runLine.contains("?="))
+    #expect(!model.runLine.contains("';'"))
+
+    // Typing a name is all it takes for the row to count.
+    model.setQuery([CurlCommand.QueryItem(name: "debug", value: "1")])
+    #expect(model.urlString == "https://x/y?debug=1")
+    #expect(model.copyLine.contains("https://x/y?debug=1"))
+}
+
+@Test func editingAJSONBodyKeepsBothHeadersCurlImplied() throws {
+    var model = RequestEditorModel(command: try CurlFixtures.command("08-json-flag"))
+    #expect(model.headerRows(revealed: true).map(\.name) == ["Content-Type", "Accept"])
+
+    model.setBodyText("{\"x\":2}", contentType: "application/json")
+    // `--json` sent both by itself; `--data-raw` sends neither unless they are written out.
+    #expect(model.command.headers.map(\.name) == ["Content-Type", "Accept"])
+    #expect(model.command.headers.allSatisfy { $0.value.text == "application/json" })
+
+    // An Accept the user wrote is theirs, and is not overwritten.
+    var mine = RequestEditorModel(command: try #require(CurlCommand.parse("curl --json '{\"x\":1}' -H 'Accept: text/plain' https://x/y")))
+    mine.setBodyText("{\"x\":2}", contentType: "application/json")
+    #expect(mine.command.headers.first { $0.name == "Accept" }?.value.text == "text/plain")
+}
+
+@Test func removingTheBodyDropsTheMethodItForced() throws {
+    var model = RequestEditorModel(command: try #require(CurlCommand.parse("curl -X GET -d 'a=1' https://x/y")))
+    #expect(model.command.method == "GET")
+    model.setBodyText("", contentType: nil)
+    #expect(model.command.body == nil)
+    // `-X GET` was there to beat the POST the body implied. It now says nothing, and a command
+    // that grows a word every time it is edited stops being the one that was pasted.
+    #expect(model.command.method == nil)
+    #expect(model.copyLine == "curl https://x/y")
+
+    // A method that is *not* the default stays.
+    var deleting = RequestEditorModel(command: try #require(CurlCommand.parse("curl -X DELETE -d 'a=1' https://x/y")))
+    deleting.setBodyText("", contentType: nil)
+    #expect(deleting.command.method == "DELETE")
 }

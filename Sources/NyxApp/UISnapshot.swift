@@ -103,6 +103,17 @@ enum UISnapshot {
             writeSettings(into: directory, appearance: appearance, suffix: "-off-\(name)",
                           remoteOn: false, remotePageOnly: true)
         }
+        // The two things the sheet puts *on top of itself*. A sheet over a sheet cannot be drawn
+        // into one bitmap -- `cacheDisplay` renders one view tree, and the second sheet lives in
+        // its own window -- so each is pictured on its own, built by the same code the sheet runs.
+        for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
+            write(saveAsButtonSheet(palette: palette, appearance),
+                  named: "request-editor-save-as-button-\(name)", into: directory,
+                  background: windowGround(appearance))
+            write(intervalPromptView(appearance), named: "request-editor-run-every-\(name)",
+                  into: directory, background: windowGround(appearance))
+        }
+
         // The request whose output is piped somewhere else: the one state of this sheet that says
         // something is unavailable, and the only way to see whether the note reads as a note.
         write(requestEditorSheet(palette: palette, .darkAqua, tab: .options,
@@ -458,6 +469,34 @@ enum UISnapshot {
         for textView in descendants(of: view).compactMap({ $0 as? NSTextView }) {
             textView.layoutManager?.ensureLayout(for: textView.textContainer!)
         }
+        return view
+    }
+
+    /// `Save as Button…`: the quick-action sheet as the request editor prefills it -- the name it
+    /// suggests and the one-line command, which is the longest thing that field ever holds.
+    private static func saveAsButtonSheet(palette: Palette, _ appearance: NSAppearance.Name) -> NSView {
+        guard let command = CurlCommand.parse(chromeCurl) else { return NSView() }
+        let request = RequestEditor(command: command, palette: palette)
+        _ = request.view      // the draft is read from the model, which the view's load fills in
+        let controller = QuickActionEditor(editing: request.quickActionDraft())
+        let view = controller.view
+        view.appearance = NSAppearance(named: appearance)
+        view.frame = NSRect(x: 0, y: 0, width: 460, height: 232)
+        view.layoutSubtreeIfNeeded()
+        return view
+    }
+
+    /// `Run every…`: the alert's own content view, so the picture is the prompt the sheet shows
+    /// rather than a rebuilt likeness of it.
+    private static func intervalPromptView(_ appearance: NSAppearance.Name) -> NSView {
+        let (alert, _) = RequestEditor.intervalPrompt(seconds: 5)
+        // Without this the alert is pictured half-built: the accessory view unplaced, an empty
+        // button where the second one will go, and the suppression checkbox's placeholder text
+        // showing. `layout()` is what running the alert would do before it appeared.
+        alert.layout()
+        guard let view = alert.window.contentView else { return NSView() }
+        view.appearance = NSAppearance(named: appearance)
+        view.layoutSubtreeIfNeeded()
         return view
     }
 

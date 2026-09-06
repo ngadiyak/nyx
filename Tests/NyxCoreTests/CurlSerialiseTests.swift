@@ -193,16 +193,14 @@ import Testing
 }
 
 @Test func anEmptyPasswordIsNotGivenAFakeMask() throws {
-    // Fixture 04's `-u sk_...:` has no password. Masking "" to four bullets would invent a secret
-    // that is not there, and the line would stop being the one on screen.
-    //
-    // It also pins a known leak: the masking rules cover the *password* half of `-u`, and Stripe
-    // puts its live secret key in the *user* half, so `.display` still shows it in full. Widening
-    // the rule is a one-line change in `maskedBasic`; it needs a ruling, not a guess.
+    // Fixture 04's `-u sk_...:` has no password -- the secret is the user half, masked by
+    // `aTokenAsUserIsMaskedWhenThePasswordIsEmpty`. What this pins is the other half: bullets
+    // *after* the colon would invent a password that was never there, and a reader would go
+    // looking for a credential that does not exist.
     let command = try CurlFixtures.command("04-stripe-basic-auth")
     let out = command.shellLine(masking: .display, layout: .oneLine)
-    #expect(out.contains("-u sk_test_4eC39HqLyjWDarjtT1zdp7dc:"))
-    #expect(!out.contains("••••"))
+    #expect(!out.contains(":••••"))
+    #expect(out.contains("p7dc:'"))   // the line still ends at the colon
 }
 
 @Test func maskingDoesNotChangeTheModel() throws {
@@ -213,4 +211,56 @@ import Testing
         let again = try CurlFixtures.command(name)
         #expect(again == command)
     }
+}
+
+// MARK: - Rulings on round 1 of the Task 3 review
+
+@Test func everyMultilineBlockContinuesOnEveryLineButTheLast() throws {
+    // Fixture 01's body carries a real newline; before `$'...'` quoting it put a bare line in the
+    // middle of the block. This is the law that catches it for every fixture, not just that one.
+    for name in CurlFixtures.all {
+        let command = try CurlFixtures.command(name)
+        let lines = command.shellLine(masking: .none, layout: .multiline).components(separatedBy: "\n")
+        for line in lines.dropLast() {
+            #expect(line.hasSuffix(" \\"), "\(name): line does not continue: \(line)")
+        }
+        #expect(!(lines.last ?? "").hasSuffix("\\"), "\(name): last line continues into nothing")
+    }
+}
+
+@Test func aTokenAsUserIsMaskedWhenThePasswordIsEmpty() throws {
+    // Stripe, Twilio and friends put the live secret in the *user* half and leave the password
+    // empty. The trailing colon is what says "this is the token-as-user idiom".
+    let command = try CurlFixtures.command("04-stripe-basic-auth")
+    let out = command.shellLine(masking: .display, layout: .oneLine)
+    #expect(out.contains("-u '••••p7dc:'"))
+    #expect(!out.contains("sk_test_4eC39HqLyjWDarjtT1zdp7dc"))
+}
+
+@Test func aUserWithNoColonIsNotMasked() throws {
+    // No password half at all: curl prompts for it, so the user is just a username.
+    let command = try #require(CurlCommand.parse("curl -u nik https://x/y"))
+    #expect(command.shellLine(masking: .display, layout: .oneLine) == "curl -u nik https://x/y")
+}
+
+@Test func aRealPasswordMasksOnlyThePassword() throws {
+    let command = try #require(CurlCommand.parse("curl -u nik:hunter2 https://x/y"))
+    #expect(command.shellLine(masking: .display, layout: .oneLine) == "curl -u 'nik:••••' https://x/y")
+}
+
+@Test func aTokenAsUserThatIsAVariableIsNotMasked() throws {
+    let command = try #require(CurlCommand.parse("curl -u $STRIPE_KEY: https://x/y"))
+    #expect(command.shellLine(masking: .display, layout: .oneLine).contains("$STRIPE_KEY:"))
+}
+
+@Test func cookieValuesAreMaskedOneByOne() throws {
+    let command = try #require(CurlCommand.parse("curl -b 'session=0123456789abcd; theme=dark' https://x/y"))
+    let out = command.shellLine(masking: .display, layout: .oneLine)
+    #expect(out.contains("-b 'session=••••abcd; theme=••••'"))
+}
+
+@Test func aCookieFileIsNotMasked() throws {
+    // `-b` with no `=` names a file to read cookies from; there is no secret in the path.
+    let command = try #require(CurlCommand.parse("curl -b cookies.txt https://x/y"))
+    #expect(command.shellLine(masking: .display, layout: .oneLine) == "curl -b cookies.txt https://x/y")
 }

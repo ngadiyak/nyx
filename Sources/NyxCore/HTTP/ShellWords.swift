@@ -224,6 +224,15 @@ public enum ShellWords {
         }
 
         let t = word.text
+        if t.unicodeScalars.contains(where: isControl) {
+            // A newline inside single quotes is legal and reads back correctly, but it puts a bare
+            // line in the middle of `shellLine`'s `\`-continued block, which looks like a broken
+            // paste. `$'...'` keeps every group on one line. Nyx targets zsh and bash, where this
+            // is available; POSIX `sh` is not a target. Note this branch sits *after* the variable
+            // one on purpose: `$'...'` does not expand variables, so a word carrying a live
+            // reference must keep its double quotes even when it also holds a newline.
+            return ansiCQuoted(t)
+        }
         if !t.isEmpty, t.unicodeScalars.allSatisfy(isBareSafe) {
             return t
         }
@@ -231,6 +240,35 @@ public enum ShellWords {
             return "\"" + escapedForDoubleQuotes(t) + "\""
         }
         return "'" + t + "'"
+    }
+
+    /// C0 controls plus DEL: the characters that would otherwise be written into the output
+    /// literally, where a newline breaks the line structure and the rest are invisible.
+    private static func isControl(_ s: Unicode.Scalar) -> Bool {
+        s.value < 0x20 || s.value == 0x7F
+    }
+
+    /// Writes `text` as `$'...'`, the inverse of `scanAnsiCQuoted`. Every control character gets an
+    /// escape -- the common three by name, the rest as exactly two hex digits, which matters
+    /// because the scanner reads *at most* two and a shorter form would swallow a following digit.
+    private static func ansiCQuoted(_ text: String) -> String {
+        var out = "$'"
+        for s in text.unicodeScalars {
+            switch s {
+            case "\n": out += "\\n"
+            case "\t": out += "\\t"
+            case "\r": out += "\\r"
+            case "\\": out += "\\\\"
+            case "'": out += "\\'"
+            default:
+                if isControl(s) {
+                    out += "\\x" + String(format: "%02x", s.value)
+                } else {
+                    out.unicodeScalars.append(s)
+                }
+            }
+        }
+        return out + "'"
     }
 
     /// Characters a curl argument can carry unquoted without a shell reinterpreting them:

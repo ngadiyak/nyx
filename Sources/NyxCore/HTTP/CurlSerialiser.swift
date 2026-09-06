@@ -122,7 +122,7 @@ extension CurlCommand {
         groups.append(time)
 
         var jar: [String] = []
-        if let send = cookies.send { jar += ["-b", ShellWords.quote(send)] }
+        if let send = cookies.send { jar += ["-b", ShellWords.quote(maskedCookie(send, masking: masking))] }
         if let store = cookies.jar { jar += ["-c", ShellWords.quote(store)] }
         groups.append(jar)
 
@@ -173,11 +173,17 @@ extension CurlCommand {
         return ShellWord(pieces: [.text(header.name + ": ")] + value.pieces)
     }
 
+    /// `-u user:password`, with one wrinkle that matters: an empty *but present* password -- the
+    /// trailing colon in `-u sk_test_…:` -- is the token-as-user idiom Stripe and Twilio use, so
+    /// there the secret is the *user* half and that is what gets masked. `-u nik` with no colon at
+    /// all is a plain username (curl prompts for the password) and stays as written, as does a
+    /// user that is a variable reference rather than a value.
     private func basicWord(user: String, password: ShellWord?, masking: Masking) -> ShellWord {
         guard let password else { return ShellWord(user) }
-        // An empty password is written as the bare trailing colon curl expects, and is never
-        // masked: bullets there would show a credential that does not exist.
-        if password.text.isEmpty && !password.containsVariable { return ShellWord(user + ":") }
+        if password.text.isEmpty && !password.containsVariable {
+            let shown = masking == .display && !user.contains("$") ? SecretMasking.masked(user) : user
+            return ShellWord(shown + ":")
+        }
         let shown = maskedSecret(password, masking: masking)
         return ShellWord(pieces: [.text(user + ":")] + shown.pieces)
     }
@@ -193,6 +199,13 @@ extension CurlCommand {
     private func maskedHeader(name: String, value: ShellWord, masking: Masking) -> ShellWord {
         guard masking == .display, !value.containsVariable else { return value }
         return ShellWord(SecretMasking.maskedHeaderValue(name: name, value: value.text))
+    }
+
+    /// `-b` carries either a cookie string or the name of a cookie file. The string is a header's
+    /// worth of credentials; the filename is a path.
+    private func maskedCookie(_ word: ShellWord, masking: Masking) -> ShellWord {
+        guard masking == .display, !word.containsVariable else { return word }
+        return ShellWord(SecretMasking.maskedCookieString(word.text))
     }
 
     private func maskedParameter(_ word: ShellWord, masking: Masking) -> ShellWord {

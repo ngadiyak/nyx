@@ -71,6 +71,20 @@ public enum SecretMasking {
         secretParameters.contains(name.lowercased())
     }
 
+    /// Masks every value in a `name=value; name2=value2` cookie string, separators and spacing
+    /// kept as written. Text with no `=` anywhere is a *filename* -- curl's `-b` takes either --
+    /// and a path holds no secret, so it is returned untouched.
+    static func maskedCookieString(_ text: String) -> String {
+        guard text.contains("=") else { return text }
+        return text.split(separator: ";", omittingEmptySubsequences: false).map { part in
+            let body = part.drop { $0 == " " || $0 == "\t" }
+            let lead = String(part.prefix(part.count - body.count))
+            guard let equals = body.firstIndex(of: "=") else { return String(part) }
+            let name = String(body[body.startIndex ..< equals])
+            return lead + name + "=" + masked(String(body[body.index(after: equals)...]))
+        }.joined(separator: ";")
+    }
+
     /// Masks the value half of a `name=value` parameter word when the name says it is a secret.
     /// A word with no `=` has no name to judge, so it is left alone.
     static func maskedParameter(_ text: String) -> String {

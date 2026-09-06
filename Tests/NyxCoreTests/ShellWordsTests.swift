@@ -125,3 +125,40 @@ import Testing
     #expect(ShellWord(pieces: []) == ShellWord(""))
     #expect(ShellWords.quote(ShellWord(pieces: [])) == "''")
 }
+
+@Test func controlCharactersUseAnsiCQuoting() {
+    // A newline inside single quotes is legal and round-trips, but it puts a bare line in the
+    // middle of a `\`-continued block, which reads as a broken paste. `$'...'` keeps the block
+    // one line per group. Nyx targets zsh and bash, where this is available.
+    #expect(ShellWords.quote(ShellWord("a\nb")) == "$'a\\nb'")
+    #expect(ShellWords.quote(ShellWord("a\tb")) == "$'a\\tb'")
+    #expect(ShellWords.quote(ShellWord("a\rb")) == "$'a\\rb'")
+    #expect(ShellWords.quote(ShellWord("a\u{0B}b")) == "$'a\\x0bb'")
+    #expect(ShellWords.quote(ShellWord("a\u{7F}b")) == "$'a\\x7fb'")
+    // Backslash and single quote have to be escaped or the word ends early.
+    #expect(ShellWords.quote(ShellWord("a'b\nc")) == "$'a\\'b\\nc'")
+    #expect(ShellWords.quote(ShellWord("a\\b\nc")) == "$'a\\\\b\\nc'")
+}
+
+@Test func ansiCQuotingRoundTrips() {
+    for text in ["a\nb", "a\tb", "{\"x\":\"hi\nthere\"}", "a'b\nc", "a\\b\nc",
+                 "a\u{0B}b", "a\u{7F}b", "$HOME\nliteral"] {
+        let word = ShellWord(text)
+        let quoted = ShellWords.quote(word)
+        #expect(ShellWords.split(quoted) == [word], "did not round-trip: \(quoted)")
+    }
+}
+
+@Test func aWordWithBothAVariableAndANewlineStaysDoubleQuoted() {
+    // `$'...'` does not expand variables, so a live reference has to keep the double quotes even
+    // though the newline then sits inside the block. Correctness beats tidiness here.
+    let word = ShellWord(pieces: [.text("a\nb "), .variable("$T")])
+    let quoted = ShellWords.quote(word)
+    #expect(quoted.hasPrefix("\""))
+    #expect(ShellWords.split(quoted) == [word])
+}
+
+@Test func aWordWithNoControlCharactersIsUnchanged() {
+    #expect(ShellWords.quote(ShellWord("plain")) == "plain")
+    #expect(ShellWords.quote(ShellWord("{\"a\":1}")) == "'{\"a\":1}'")
+}

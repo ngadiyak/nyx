@@ -542,6 +542,10 @@ enum UISnapshot {
             ("http-success", header(6, "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json", .success)),
             ("http-redirect", header(7, "301 \u{b7} 31 ms \u{b7} 178 B", .redirect)),
             ("http-failure", header(8, "500 \u{b7} 1.4 s \u{b7} 2.0 KB \u{b7} json", .failure)),
+            // The server answered and the command still failed -- `-o` could not write the file,
+            // the transfer was cut short. Red, because a failed command is never green, and the
+            // status is kept because "which request was it that failed" is the next question.
+            ("http-exit", header(9, "200 \u{b7} 245 ms \u{b7} exit 56 \u{b7} connection reset", .failure)),
         ]
     }
 

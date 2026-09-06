@@ -124,27 +124,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private var headersOnScreen: [Int: BlockHeader] = [:]
     /// The cell range of each summary on its row, for the chevron click target.
     private var summaryColumnsOnScreen: [Int: Range<Int>] = [:]
-    /// What a finished curl block's transcript said, by command id. A key is present only for a
-    /// block whose command line *is* a curl; a nil value is a curl whose output held neither a
-    /// status line nor a sentinel (a failed connection, a `-o` into a file with an explicit `-w`).
-    ///
-    /// Parsing means building the block's whole output as a string and walking it -- far too much
-    /// to do per frame. A finished block's output cannot change, so one entry answers forever;
-    /// `exchangesContentVersion` is what keeps even the *attempt* off the frame path while the
-    /// buffer is still.
-    private var exchanges: [UInt32: HTTPExchange?] = [:]
-    /// The blocks already found not to be curl, so `CurlCommand.parse` and the string build behind
-    /// `Terminal.commandLine(of:)` run once per block rather than once per content change. This is
-    /// the common case: on a screen of ordinary commands the request workbench costs one set
-    /// lookup per block.
-    private var notRequestBlocks: Set<UInt32> = []
-    /// The content version the caches were last allowed to grow at. Equal means nothing has been
-    /// written to the buffer since, so no block can have finished and there is nothing new to
-    /// parse -- the whole feature costs a `UInt64` comparison on a still screen.
-    private var exchangesContentVersion: UInt64 = .max
-    /// Only visible finished blocks are ever parsed, so this grows by the handful; the cap is for
-    /// a session that scrolls through thousands of requests without ever clearing.
-    private static let exchangeCacheLimit = 512
+    /// What each finished block on screen turned out to be: a request and what it said, or not a
+    /// request at all. One reading per block, ever -- see `RequestSummaryCache`, which owns that
+    /// rule and is tested on its own.
+    private var requestCache = RequestSummaryCache()
+    /// Only visible finished blocks are ever read, so this grows by the handful; the cap is for a
+    /// session that scrolls through thousands of requests without ever clearing.
+    private static let requestCacheLimit = 512
     /// How much of the hover strip fits on the row it was placed on. Decided in `render()` by
     /// `CommandBlockChrome.overlayPlacement`; applied after the lock, where AppKit lives.
     private var hoverOverlayControls: OverlayControls = .full
@@ -732,43 +718,34 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// What a finished block's request said, for its header -- nil for every block that is not a
     /// curl, which is almost all of them.
     ///
-    /// `mayParse` is false on a frame whose `contentVersion` has not moved: nothing has been written
-    /// to the buffer, so no block can have finished and no cached answer can have become wrong.
-    /// That, and `blocks` being empty for a shell with no prompt marks, are what keep this off the
-    /// render path -- the bench must not know this feature exists.
+    /// A block is read the first frame it is on screen and finished, and never again: after that
+    /// this is one dictionary lookup per visible block. `blocks` is empty for a shell with no
+    /// prompt marks, so a session without integration never reaches here at all.
     ///
     /// Only *finished* blocks: a half-written transcript would parse to a head with no body and put
     /// a status on the row that the response has not actually finished delivering.
-    private func requestSummary(for block: CommandBlock, in t: Terminal, mayParse: Bool) -> HTTPSummary? {
+    private func requestSummary(for block: CommandBlock, in t: Terminal) -> HTTPSummary? {
         let id = block.region.id
-        guard id != 0, !block.isRunning, block.region.outputStart != nil,
-              !notRequestBlocks.contains(id) else { return nil }
+        guard id != 0, !block.isRunning, block.region.outputStart != nil else { return nil }
 
-        let exchange: HTTPExchange?
-        if let cached = exchanges[id] {
-            exchange = cached
-        } else {
-            guard mayParse else { return nil }
+        if requestCache.shouldParse(id: id) {
             guard CurlDetection.isCurl(t.commandLine(of: block.region)) else {
-                notRequestBlocks.insert(id)
+                requestCache.remember(.notARequest, for: id)
                 return nil
             }
             // A response big enough to fill the scrollback is not one whose body kind is worth
             // joining into a single string under the session lock. The head and the sentinel are
             // in the first and last rows of it, but reading only those would still walk the whole
             // region, so a run this large simply gets the ordinary summary.
-            let rows = block.region.outputRows
-            exchange = rows.count > Pane.requestOutputRowLimit
+            let exchange = block.region.outputRows.count > Pane.requestOutputRowLimit
                 ? nil
                 : HTTPExchange.parse(lines: t.outputText(of: block.region).components(separatedBy: "\n"))
-            if exchanges.count >= Pane.exchangeCacheLimit {
-                exchanges.removeAll(keepingCapacity: true)
-                notRequestBlocks.removeAll(keepingCapacity: true)
-            }
-            exchanges[id] = exchange
+            requestCache.remember(.request(exchange), for: id)
+            requestCache.trim(to: Pane.requestCacheLimit)
         }
-        // `exchange` may be nil and still produce a summary: a curl that could not connect prints
-        // no head and no sentinel, and "exit 7 · connection refused" is the entire point of it.
+        // `.request(nil)` still produces a summary: a curl that could not connect prints no head
+        // and no sentinel, and "exit 7 · connection refused" is the entire point of it.
+        guard case .request(let exchange) = requestCache.entry(for: id) else { return nil }
         return HTTPSummary.make(exchange: exchange, exitStatus: block.region.exitStatus,
                                 duration: block.region.duration)
     }
@@ -846,7 +823,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let bufferMoved = t.evictedRows != self.lastPruneEvictedRows
                 || t.scrollbackGeneration != self.lastPruneGeneration
             if bufferMoved, !(self.folding.isEmpty && self.armedNotifications.isEmpty
-                                && self.exchanges.isEmpty && self.notRequestBlocks.isEmpty) {
+                                && self.requestCache.isEmpty) {
                 self.lastPruneEvictedRows = t.evictedRows
                 self.lastPruneGeneration = t.scrollbackGeneration
                 let oldest = t.oldestCommandID
@@ -854,12 +831,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 if !self.armedNotifications.isEmpty {
                     self.armedNotifications = self.armedNotifications.filter { $0 >= oldest }
                 }
-                // A parsed exchange outlives the rows it was read from by exactly nothing: once the
-                // block is evicted its id can never come back, and the entry is a leak.
-                if !self.exchanges.isEmpty { self.exchanges = self.exchanges.filter { $0.key >= oldest } }
-                if !self.notRequestBlocks.isEmpty {
-                    self.notRequestBlocks = self.notRequestBlocks.filter { $0 >= oldest }
-                }
+                // A reading outlives the rows it was made from by exactly nothing: once the block
+                // is evicted its id can never come back, and the entry is a leak.
+                self.requestCache.prune(olderThan: oldest)
             }
             // Screen coordinates: `cursor.y` counts from the top of the live screen. The renderer
             // takes it as an index into the lines it is handed, which are display slots, so with a
@@ -1046,20 +1020,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             var notesSpokenFor: Set<Int> = []
             let overlayFont = NSFont.monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular)
             let cellWidth = self.cellSizePoints.width
-            // A finished curl's transcript is read at most once per block, and only on a frame
-            // where something was actually written to the buffer. On a still screen -- which is
-            // every frame of a scroll, a resize, a hover or a blinking cursor -- this is false and
-            // nothing below it does any work at all.
-            let mayParseRequests = t.contentVersion != self.exchangesContentVersion
-            self.exchangesContentVersion = t.contentVersion
             summaries = blocks.compactMap { block -> (row: Int, text: String, color: RGB)? in
                 guard block.showsHeader, let promptSlot = screenRow(block.region.promptRow) else { return nil }
                 let header = block.header(now: now, folding: self.folding,
                                           notifyArmed: self.armedNotifications.contains(block.region.id),
                                           anyFolds: !self.folding.isEmpty,
                                           hasOutput: t.commandHasOutput(atAbsoluteRow: block.region.promptRow),
-                                          httpSummary: self.requestSummary(for: block, in: t,
-                                                                           mayParse: mayParseRequests))
+                                          httpSummary: self.requestSummary(for: block, in: t))
                 let text = header.summaryWithChevron
                 // Every row of the command line is a candidate, not just the prompt row: a pasted
                 // `curl` wraps, and the row that has room is usually the last one.
@@ -1167,8 +1134,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 let header = block.header(now: t.now(), folding: self.folding, notifyArmed: false,
                                           anyFolds: !self.folding.isEmpty,
                                           hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow),
-                                          httpSummary: self.requestSummary(for: block, in: t,
-                                                                           mayParse: mayParseRequests))
+                                          httpSummary: self.requestSummary(for: block, in: t))
                 sticky = (StickyPromptLabel.text(command: t.commandText(of: region),
                                                  exitStatus: pinned.exitStatus, columns: t.cols),
                           pinned.failed, pinned.row, header.summary, header.tone)

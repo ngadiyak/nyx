@@ -71,7 +71,14 @@ private func sentinel(status: Int = 200, total: Double = 0.142, size: Int = 1229
     ]))
     #expect(exchange.final?.status == 200)
     #expect(exchange.final?.headers.count == 1)
-    #expect(exchange.bodyLines == ["<html></html>"])
+    // `<html></html>` keeps its first character: the marker is `< `, with the space, and stripping
+    // a bare `<` turned the response into `html></html>`.
+    //
+    // curl's closing line stays in the body on purpose. Chatter is only stripped before the body
+    // begins, because inside one a leading `* ` is a bullet and a leading `> ` is a quote -- an
+    // extra visible line is a far smaller loss than a silently missing one.
+    #expect(exchange.bodyLines == ["<html></html>",
+                                   "* Connection #0 to host example.com left intact"])
     #expect(exchange.timing == nil)
 }
 
@@ -209,4 +216,100 @@ private func sentinel(status: Int = 200, total: Double = 0.142, size: Int = 1229
     #expect(exchange.timing?.appConnect == 0.108482)
     #expect(exchange.timing?.startTransfer == 0.157108)
     #expect(exchange.timing?.sizeDownload == 61)
+}
+
+/// A response body that quotes HTTP itself -- a log file, an RFC, a proxy's own transcript -- must
+/// not have its quoted status line believed. `curl -i` of a server log turned `HTTP/1.1 503` in the
+/// text into the response's status and threw the real body away.
+@Test func aStatusLineInsideTheBodyIsNotAHead() throws {
+    let exchange = try #require(HTTPExchange.parse(lines: [
+        "HTTP/1.1 200 OK",
+        "Content-Type: text/plain",
+        "",
+        "line one",
+        "HTTP/1.1 503 Service Unavailable",
+        "x-fake: yes",
+        "",
+        "line two",
+    ]))
+    #expect(exchange.status == 200)
+    #expect(exchange.redirects.isEmpty)
+    #expect(exchange.bodyLines.count == 5)
+    #expect(exchange.bodyLines == ["line one", "HTTP/1.1 503 Service Unavailable", "x-fake: yes",
+                                   "", "line two"])
+}
+
+/// The same rule from the other side: a head *is* accepted straight after one whose body was empty,
+/// which is what a redirect chain and a `100 Continue` both look like.
+@Test func aHeadIsAcceptedWhileTheBodyIsStillEmpty() throws {
+    let exchange = try #require(HTTPExchange.parse(lines: [
+        "HTTP/1.1 302 Found",
+        "Location: /next",
+        "",
+        "HTTP/1.1 302 Found",
+        "Location: /last",
+        "",
+        "HTTP/1.1 200 OK",
+        "",
+        "done",
+    ]))
+    #expect(exchange.redirects.count == 2)
+    #expect(exchange.status == 200)
+    #expect(exchange.bodyLines == ["done"])
+}
+
+/// Anything printed before the first status line is curl's or the shell's, not the response: it
+/// must not count as a body and lock the real head out.
+@Test func chatterBeforeTheFirstHeadDoesNotBlockIt() throws {
+    let exchange = try #require(HTTPExchange.parse(lines: [
+        "Note: Unnecessary use of -X or --request, GET is already inferred.",
+        "HTTP/1.1 200 OK",
+        "",
+        "body",
+    ]))
+    #expect(exchange.status == 200)
+    #expect(exchange.bodyLines == ["body"])
+}
+
+/// `-v` chatter is stripped only while curl is still talking about the connection and the headers.
+/// Once the body has started, a line beginning `* ` or `> ` is the *body's* -- a Markdown bullet, a
+/// quoted mail, a diff -- and eating it loses the response.
+@Test func verboseMarkersInsideABodyAreKept() throws {
+    let exchange = try #require(HTTPExchange.parse(lines: [
+        "* Connected to example.com (93.184.216.34) port 443",
+        "> GET /notes.md HTTP/2",
+        ">",
+        "< HTTP/2 200",
+        "< content-type: text/markdown",
+        "<",
+        "# Notes",
+        "* one",
+        "> quoted",
+    ]))
+    #expect(exchange.final?.status == 200)
+    #expect(exchange.bodyLines == ["# Notes", "* one", "> quoted"])
+}
+
+/// `curl -o file` that could not write the file prints its own error to the terminal and the
+/// sentinel says `application/json` -- about the body it sent to the file, not about the error text
+/// on screen. Believing it labelled `curl: (56) Failure writing output` as JSON.
+@Test func aContentTypeForABodyThatWentElsewhereDoesNotLabelWhatIsOnScreen() throws {
+    let exchange = try #require(HTTPExchange.parse(lines: [
+        "curl: (56) Failure writing output to destination, passed 61 returned 4294967295",
+        "",
+        "\(RequestRun.sentinelPrefix)200 0.155 0.003 0.049 0.106 0.150 0 0 application/json",
+    ]))
+    #expect(exchange.bodyKind == .text)
+    #expect(exchange.status == 200)
+}
+
+/// The case that rule must not break: a plain `curl -w …` with no `-i` has no head either, and its
+/// body *is* on screen -- `size_download` is what says which of the two this is.
+@Test func aHeadlessBodyThatWasDownloadedKeepsItsContentType() throws {
+    let exchange = try #require(HTTPExchange.parse(lines: [
+        "{\"ok\":true}",
+        "",
+        "\(RequestRun.sentinelPrefix)200 0.155 0.003 0.049 0.106 0.150 11 0 application/json",
+    ]))
+    #expect(exchange.bodyKind == .json)
 }

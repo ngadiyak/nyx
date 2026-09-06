@@ -110,6 +110,19 @@ public struct HTTPExchange: Equatable {
         return type
     }
 
+    /// The content type, but only when it describes the text *on screen*.
+    ///
+    /// With no head and nothing downloaded, curl sent the body somewhere else -- a file, `/dev/null`
+    /// -- and whatever is in the block is curl's or the shell's own words. `curl -o /nowhere/x`
+    /// prints `curl: (56) Failure writing output …` and a sentinel saying `application/json`, and
+    /// labelling that error line as JSON put ` · json` in the header of a request that delivered
+    /// nothing. A head means the response came to the terminal; a non-zero `size_download` means
+    /// something was downloaded to it.
+    private var contentTypeOfWhatIsOnScreen: String? {
+        guard final != nil || (timing?.sizeDownload ?? 0) > 0 else { return nil }
+        return contentType
+    }
+
     /// What a non-zero curl exit code means, in the words a user can act on.
     ///
     /// Only the codes that name a *cause*. "exit 22" (an HTTP error under `-f`) is deliberately
@@ -148,6 +161,7 @@ public struct HTTPExchange: Equatable {
         /// cannot be attributed to the response that follows.
         var skippingInterim = false
         var inHeaders = false
+        var sawHead = false
         var body: [String] = []
         var timing: Timing?
 
@@ -160,23 +174,41 @@ public struct HTTPExchange: Equatable {
                 continue
             }
 
-            if verbose {
+            // Whether the response's *body* has started yet. Everything before that is either the
+            // prologue (curl or the shell talking before the first status line), a set of headers,
+            // or the gap between a redirect and what it pointed at -- and both of the rules below
+            // turn on being in one of those rather than in the body.
+            let beforeTheBody = !sawHead || inHeaders || body.isEmpty
+
+            if verbose && beforeTheBody {
                 // `* ` is curl's connection log and `> ` is the request it sent; neither is the
                 // response. `< ` marks a response header, and what follows it is one.
                 //
                 // The *space* is what makes a marker a marker. `<html></html>` is a body line that
                 // begins with `<`, and stripping one character off it because the transcript is
                 // verbose turned the response into `html></html>`.
+                //
+                // Only before the body: inside one, `* ` is a Markdown bullet and `> ` is a quote,
+                // and dropping those loses the response. The price is curl's closing `* Connection
+                // #0 … left intact`, which stays in the body -- a visible extra line, against a
+                // silently missing one.
                 if isMarker(line, "*") || isMarker(line, ">") { continue }
                 if isMarker(line, "<") { line = String(line.dropFirst(min(2, line.count))) }
             }
 
-            if let head = parseHead(line) {
+            // A status line is only a head where one can legally be: before the first, or in the
+            // gap between a head and the body it never produced (a redirect chain, a `100
+            // Continue`). Once the body has a line in it, `HTTP/1.1 503 Service Unavailable` is
+            // text -- an RFC, a server log, a proxy transcript -- and believing it replaced the
+            // real status with a quoted one and dropped everything that had been read so far.
+            if beforeTheBody, let head = parseHead(line) {
                 if let current, !skippingInterim { heads.append(current) }
                 skippingInterim = (100..<200).contains(head.status)
                 current = skippingInterim ? nil : head
                 inHeaders = true
-                // A redirect's own body belongs to the redirect, not to what it pointed at.
+                sawHead = true
+                // A redirect's own body belongs to the redirect, not to what it pointed at. (Empty
+                // already in every case that reaches here except the prologue, which is not body.)
                 body.removeAll(keepingCapacity: true)
                 continue
             }
@@ -215,7 +247,7 @@ public struct HTTPExchange: Equatable {
         // that rule here.
         var exchange = HTTPExchange(redirects: Array(heads.dropLast()), final: heads.last,
                                     bodyLines: body, bodyKind: .empty, timing: timing)
-        exchange.bodyKind = bodyKind(of: body, contentType: exchange.contentType)
+        exchange.bodyKind = bodyKind(of: body, contentType: exchange.contentTypeOfWhatIsOnScreen)
         return exchange
     }
 

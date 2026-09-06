@@ -99,3 +99,31 @@ private func exchange(status: Int, total: Double, size: Int, type: String, body:
     #expect(HTTPSummary.sizeText(1024 * 1024) == "1.0 MB")
     #expect(HTTPSummary.sizeText(3 * 1024 * 1024 + 512 * 1024) == "3.5 MB")
 }
+
+/// curl exited non-zero *and* the server answered: `-o` could not write the file (23), the transfer
+/// was cut short (18), the timeout fired mid-body (28). A green `200 · …` there says the request
+/// worked when the command did not.
+@Test func aNonZeroExitIsNeverGreen() throws {
+    let ok = exchange(status: 200, total: 0.142, size: 1229, type: "application/json",
+                      body: "{\"ok\":true}")
+    let failed = try #require(HTTPSummary.make(exchange: ok, exitStatus: 23, duration: 0.2))
+    #expect(failed.text == "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json \u{b7} exit 23")
+    #expect(failed.tone == .failure)
+}
+
+/// And when curl's code has a meaning, the summary says it -- "exit 28" alone is a number to look
+/// up, "timed out" is the answer.
+@Test func aKnownExitReasonIsAppendedAfterTheStatus() throws {
+    let ok = exchange(status: 200, total: 2.0, size: 0, type: "text/plain", body: "")
+    let failed = try #require(HTTPSummary.make(exchange: ok, exitStatus: 28, duration: 2.1))
+    #expect(failed.text == "200 \u{b7} 2.0 s \u{b7} exit 28 \u{b7} timed out")
+    #expect(failed.tone == .failure)
+}
+
+/// A 3xx with a non-zero exit is a failure too: the tone follows the command, not the class.
+@Test func aFailedRedirectIsAFailureNotARedirect() throws {
+    let moved = exchange(status: 302, total: 0.02, size: 0, type: "text/html", body: "")
+    let failed = try #require(HTTPSummary.make(exchange: moved, exitStatus: 47, duration: 0.1))
+    #expect(failed.tone == .failure)
+    #expect(failed.text == "302 \u{b7} 20 ms \u{b7} exit 47")
+}

@@ -29,16 +29,28 @@ public struct HTTPSummary: Equatable {
     /// it includes process start-up and the shell's own overhead -- which is why `time_total` wins
     /// whenever it is there.
     public static func make(exchange: HTTPExchange?, exitStatus: Int32?, duration: Double?) -> HTTPSummary? {
+        let failed = (exitStatus ?? 0) != 0
         if let exchange, let status = exchange.status {
             var text = "\(status)"
             if let time = timeText(exchange.timing?.total ?? duration) { text += " \u{b7} " + time }
             if let size = exchange.timing.flatMap({ sizeText($0.sizeDownload) }) { text += " \u{b7} " + size }
             if exchange.bodyKind == .json { text += " \u{b7} json" }
-            return HTTPSummary(text: text, tone: tone(forStatus: status))
+            // A server that answered and a command that failed are two different facts, and both
+            // are the user's news: `-o` could not write the file (23), the transfer was cut short
+            // (18), the timeout fired part way through the body (28). Showing only the 200 -- in
+            // green -- said the request worked when the command did not. A failed command is never
+            // green, whatever the status class says.
+            if let exitStatus, failed {
+                text += " \u{b7} exit \(exitStatus)"
+                if let reason = HTTPExchange.curlFailureReason(exitStatus: exitStatus) {
+                    text += " \u{b7} " + reason
+                }
+            }
+            return HTTPSummary(text: text, tone: failed ? .failure : tone(forStatus: status))
         }
         // curl never got an answer. The exit code is the only thing that says why, and on its own
         // it is a number nobody remembers -- 6, 7 and 60 are three completely different problems.
-        if let exitStatus, exitStatus != 0 {
+        if let exitStatus, failed {
             let reason = HTTPExchange.curlFailureReason(exitStatus: exitStatus)
             return HTTPSummary(text: reason.map { "exit \(exitStatus) \u{b7} \($0)" } ?? "exit \(exitStatus)",
                                tone: .failure)

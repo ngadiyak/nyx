@@ -151,3 +151,21 @@ private func httpSummary(_ text: String, _ tone: HTTPSummary.Tone) -> HTTPSummar
     #expect(SummaryTone.failure.color(in: palette) == palette.readable(1))
     #expect(SummaryTone.plain.color(in: palette) == palette.noteForeground)
 }
+
+/// A curl that answered 200 but exited non-zero is a failed command, and the block that shows it
+/// must not be green. The tone comes from the summary, so this is the one place it can go wrong.
+@Test func aRequestThatAnsweredButFailedIsColouredAsAFailure() throws {
+    let exchange = HTTPExchange.parse(lines: [
+        "HTTP/2 200",
+        "content-type: application/json",
+        "",
+        "{\"ok\":true}",
+        "",
+        "\(RequestRun.sentinelPrefix)200 0.142 0.003 0.049 0.106 0.140 1229 0 application/json",
+    ])
+    let summary = try #require(HTTPSummary.make(exchange: exchange, exitStatus: 23, duration: 0.2))
+    let h = block(region(status: 23)).header(now: 100, folding: OutputFolding(), notifyArmed: false,
+                                             anyFolds: false, hasOutput: true, httpSummary: summary)
+    #expect(h.tone == .failure)
+    #expect(h.summary.hasSuffix("exit 23"))
+}

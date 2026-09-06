@@ -301,15 +301,24 @@ public struct PairingFlow: Equatable {
     /// was just handed -- e.g. by `UISnapshot`, which pictures every state directly and never runs
     /// a real flow -- without needing a live `PairingFlow` instance to read it off of.
     ///
-    /// `side` matters for exactly one state. `.idle` on the host is a sheet nobody is looking at
-    /// (the host's sheet only opens once a code has been requested), but `.idle` on the client *is*
-    /// the sheet: the code field, waiting to be typed into. With no title and no body it opened as
-    /// a blank box with a text field in the middle of it and no word about what to put there.
+    /// `side` matters for exactly one state. `.idle` on the client *is* the sheet: the code field,
+    /// waiting to be typed into. With no title and no body it opened as a blank box with a text
+    /// field in the middle of it and no word about what to put there.
+    ///
+    /// **No state is blank**, including the host's `.idle`, which is the instant between the sheet
+    /// going up and the relay being asked. It answered `("", "", nil)` -- every control hidden --
+    /// so whenever `pairAsHost` bailed before asking (remote switched on with no relay token, a bad
+    /// relay URL, an identity that would not load) the user got a seventy-five-point empty box with
+    /// a Cancel button in it and no word about what had happened. The presentation is gated on the
+    /// connection now, and this is the second half of the same fix: a state that cannot render
+    /// blank cannot produce that sheet again by some other route.
     public static func sheetText(for state: State,
                                  side: Side = .host) -> (title: String, body: String, primary: String?) {
         switch state {
         case .idle:
-            guard side == .client else { return ("", "", nil) }
+            guard side == .client else {
+                return ("Pair with another device", "Getting a code from the relay", nil)
+            }
             // A default button, not only the field's own Return: the sheet opened with a text field
             // and two buttons neither of which submitted it, so the only way forward was a key
             // nothing on screen mentioned.

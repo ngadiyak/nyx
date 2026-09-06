@@ -765,6 +765,12 @@ enum UISnapshot {
     /// not the events that got it there.
     private static func pairingStates() -> [(String, PairingFlow.State)] {
         [
+            // The two states nothing pictured, which is why nobody saw that the host's `.idle`
+            // rendered as an empty box: every control hidden, seventy-five points tall, one
+            // Cancel button. It is the sheet a user got by pressing Pair with remote switched on
+            // and no relay token in the field.
+            ("host-idle", .idle),
+            ("opening", .opening("K7M4QZ", expires: Date().addingTimeInterval(300))),
             ("code", .showingCode("K7M4QZ", expires: Date().addingTimeInterval(300))),
             ("requested", .requested(peerID: "peer-device-id", peerName: "Nik's MacBook Pro")),
             ("confirming", .confirming(peerID: "peer-device-id", peerName: "Nik's MacBook Pro",

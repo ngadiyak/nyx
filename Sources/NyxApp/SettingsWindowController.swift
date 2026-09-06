@@ -28,6 +28,8 @@ final class SettingsWindowController: NSWindowController {
     /// Everything on the Remote page below the checkbox: it all follows "Enable remote sessions",
     /// because a page of live-looking fields that do nothing is a page that reads as broken.
     private var remoteBodyControls: [NSControl] = []
+    /// The two pairing buttons, which need more than the switch: see `refreshRemoteEnabled`.
+    private var remotePairControls: [NSControl] = []
     private var pairedRows: [PairedDevice] = []
     private let removePairedButton = NSButton()
     private let remoteStatusLabel = NSTextField(labelWithString: "")
@@ -300,7 +302,12 @@ final class SettingsWindowController: NSWindowController {
         // off is to say so.
         remoteBodyControls = ["remote-device-name", "remote-relay", "remote-relay-token",
                               "remote-snapshot-lines"].compactMap { controls[$0] }
-            + [removePairedButton, pairHostButton, pairClientButton]
+            + [removePairedButton]
+        // The pair buttons follow `shouldRun`, not the switch. The switch alone was enough to
+        // enable them while `pairAsHost` bailed on the missing token, so pressing one opened an
+        // empty sheet -- the switch's own page says what is missing, and the buttons are dead
+        // until it is there.
+        remotePairControls = [pairHostButton, pairClientButton]
 
         let view = NSView()
         for subview in [grid, remoteStatusLabel, pairedLabel, pairedScroll, removePairedButton,
@@ -362,6 +369,8 @@ final class SettingsWindowController: NSWindowController {
     private func refreshRemoteEnabled() {
         let on = config.remote == .on
         for control in remoteBodyControls { control.isEnabled = on }
+        let canPair = RemoteCoordinatorPolicy.shouldRun(config: config)
+        for control in remotePairControls { control.isEnabled = canPair }
         // The stepper is a second control beside its field, registered under its own key by
         // `stepperField`; a subview scan would break the first time the row's layout changed.
         controls["remote-snapshot-lines.stepper"]?.isEnabled = on
@@ -470,8 +479,8 @@ final class SettingsWindowController: NSWindowController {
     /// is shown, so the sheet reads "Requesting a code from the relay" for as long as that takes --
     /// a code shown before the relay has it is one the other Mac would be told does not exist.
     @objc private func pairAsHost(_ sender: Any?) {
-        guard let coordinator else {
-            NSSound.beep()
+        guard let coordinator, coordinator.isRunning else {
+            reportPairingUnavailable()
             return
         }
         presentPairing(side: .host)
@@ -479,12 +488,26 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func pairAsClient(_ sender: Any?) {
-        guard let coordinator else {
-            NSSound.beep()
+        guard let coordinator, coordinator.isRunning else {
+            reportPairingUnavailable()
             return
         }
         presentPairing(side: .client)
         coordinator.pairAsClient()
+    }
+
+    /// There is nothing to pair over: no coordinator, or one that is not connected to a relay --
+    /// remote switched on with no token, a relay URL that does not resolve, an identity file that
+    /// would not load.
+    ///
+    /// The sheet used to go up first and `pairAsHost` bail afterwards, leaving an empty box with a
+    /// Cancel button and no word about why. What the user needs is the page's own status line
+    /// ("Paste the relay token to connect"), so this brings that forward and refreshes it rather
+    /// than presenting anything.
+    private func reportPairingUnavailable() {
+        selectRemotePage()
+        refreshRemoteStatus()
+        NSSound.beep()
     }
 
     private func presentPairing(side: PairingFlow.Side) {

@@ -21,11 +21,15 @@ final class WatchPlanEditor: NSViewController, NSTextFieldDelegate {
     private let valueField = NSTextField()
     private let summary = NSTextField(labelWithString: "")
     private let problem = NSTextField(labelWithString: "")
+    /// The red beside the sentence rather than under it. See `problem`'s colour below.
+    private let problemIcon = NSImageView()
     private let startButton = NSButton(title: "Start", target: nil, action: nil)
     /// The count row and the condition row, shown one at a time: a form that offers every field of
     /// every stop rule at once is three questions where the user was asked one.
     private var countRow = NSStackView()
     private var conditionRow = NSStackView()
+    /// The warning glyph and its sentence, shown and hidden together.
+    private var problemRow = NSStackView()
 
     init(seed: WatchPlan) {
         self.model = WatchPlanEditor.model(from: seed)
@@ -87,15 +91,27 @@ final class WatchPlanEditor: NSViewController, NSTextFieldDelegate {
                                     .firstIndex(of: model.condition) ?? 0)
         conditionPopUp.setAccessibilityLabel("The condition to wait for")
 
-        summary.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-        // The system accent, not the terminal's: the popover is system chrome on a system ground,
-        // and a theme colour chosen for contrast against a *terminal* background was unreadable
-        // here -- nyx-dark's pale blue on the light window ground.
-        summary.textColor = .controlAccentColor
+        summary.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        // `secondaryLabelColor`, not the accent, and not semibold. The accent measured 3.19:1 on
+        // the popover's own ground (3.46 in Light Mode) -- below the 4.5 a line of text needs --
+        // and it is the colour macOS uses for links, on a sentence that is not one. The sentence
+        // is a restatement of the rows above it: quiet is what it should be, and legible is what
+        // it was not.
+        summary.textColor = .secondaryLabelColor
         summary.setAccessibilityLabel("What this watch will do")
         problem.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        problem.textColor = .systemRed
+        // `labelColor` with the red carried by the symbol beside it. `systemRed` as *text* measured
+        // 3.69:1 here, so the one sentence that has to be read was the least readable thing in the
+        // popover; a red glyph next to full-contrast text says "error" without spending the
+        // contrast on saying it.
+        problem.textColor = .labelColor
         problem.setAccessibilityLabel("Why this cannot start")
+        problemIcon.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill",
+                                    accessibilityDescription: nil)
+        problemIcon.contentTintColor = .systemRed
+        problemIcon.symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: NSFont.smallSystemFontSize, weight: .regular)
+        problemIcon.setAccessibilityElement(false)
         // Wrapping, not truncating: the sentences say what a field will accept, which is useless
         // cut off at "Seconds must be a number betwee…".
         problem.lineBreakMode = .byWordWrapping
@@ -108,6 +124,9 @@ final class WatchPlanEditor: NSViewController, NSTextFieldDelegate {
 
         countRow = row("Runs", countField)
         conditionRow = row(nil, conditionPopUp, valueField)
+        problemRow = row(nil, problemIcon, problem)
+        // The icon sits on the first line of a wrapped sentence, not on its middle.
+        problemRow.alignment = .firstBaseline
 
         let content = NSStackView(views: [
             row("Every", intervalField, label("seconds")),
@@ -115,7 +134,7 @@ final class WatchPlanEditor: NSViewController, NSTextFieldDelegate {
             countRow,
             conditionRow,
             summary,
-            problem,
+            problemRow,
             row(nil, NSView(), startButton),
         ])
         content.orientation = .vertical
@@ -211,7 +230,7 @@ final class WatchPlanEditor: NSViewController, NSTextFieldDelegate {
         // a gap where the sentence is not.
         summary.isHidden = summary.stringValue.isEmpty
         problem.stringValue = model.problem ?? ""
-        problem.isHidden = model.problem == nil
+        problemRow.isHidden = model.problem == nil
         startButton.isEnabled = model.plan != nil
     }
 

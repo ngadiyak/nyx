@@ -12,6 +12,11 @@ public enum PaletteItemKind: Equatable {
     /// A session on a paired device: attach to it. `sessionID` is empty for the placeholder row an
     /// offline device shows, which nothing can attach to.
     case remoteSession(deviceID: String, sessionID: String)
+    /// A request from `RequestHistory`, by `RequestHistory.identifier(for:)`. An id rather than a
+    /// position, because the list moves under an open palette every time a curl finishes in any
+    /// tab; an id rather than the line, because the line can carry a credential. The caller reads
+    /// the real line back with `RequestHistory.line(for:)`, and beeps when it is gone.
+    case request(id: String)
 }
 
 /// One row of the command palette.
@@ -151,14 +156,28 @@ public struct CommandPalette: Equatable {
 
 /// Building the palette's list out of what a window knows.
 ///
-/// Here rather than in the app so the order -- actions, quick actions, themes, then tabs -- and the
-/// way each kind is labelled are pinned by a test instead of by whoever last edited the view.
+/// Here rather than in the app so the order -- actions, quick actions, themes, tabs, remote
+/// sessions, then requests -- and the way each kind is labelled are pinned by a test instead of by
+/// whoever last edited the view. Each new section goes on the end: a row that moves is a habit
+/// broken, and the sections people reach for blind are the oldest ones.
 public enum PaletteSource {
+    /// `enabled` is the same answer the menu bar gets from `ActionTarget.canPerform`, and an
+    /// action it refuses is left *out* rather than greyed.
+    ///
+    /// A menu is a fixed list read by position, so a greyed item there is a landmark: "that lives
+    /// here, and here is why it is unavailable". A palette is a list you produce by typing, and a
+    /// result you cannot choose is a wrong answer to what you asked -- in a fresh window
+    /// twenty-nine rows were grey, which is a third of the panel. The rows that arrive already
+    /// built (`remote`, `requests`) keep whatever they say about themselves: the Remote section's
+    /// placeholders are disabled *and* worth showing, because their text is the explanation for the
+    /// section being empty.
     public static func items(actions: [TerminalAction], chord: (TerminalAction) -> String?,
+                             enabled: (TerminalAction) -> Bool = { _ in true },
                              quickActions: [(action: QuickAction, isRunning: Bool)] = [],
                              themes: [String], tabTitles: [String],
-                             remote: [PaletteItem] = []) -> [PaletteItem] {
-        actions.map { PaletteItem.action($0, chord: chord($0)) }
+                             remote: [PaletteItem] = [],
+                             requests: [PaletteItem] = []) -> [PaletteItem] {
+        actions.filter(enabled).map { PaletteItem.action($0, chord: chord($0)) }
             + quickActions.enumerated().map {
                 PaletteItem.quickAction($0.element.action, index: $0.offset,
                                         isRunning: $0.element.isRunning)
@@ -166,5 +185,6 @@ public enum PaletteSource {
             + themes.map(PaletteItem.theme)
             + tabTitles.enumerated().map { PaletteItem.tab($0.offset, title: $0.element) }
             + remote
+            + requests
     }
 }

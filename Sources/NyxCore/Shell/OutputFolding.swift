@@ -16,6 +16,11 @@ public enum DisplayRow: Equatable {
     /// status -- the placeholder is drawn in the block's own colour, and the region is in hand here,
     /// where the entry is built, rather than on the render path.
     case fold(commandID: UInt32, hiddenRows: Int, status: BlockStatus)
+    /// One line of a command's response, shown through a lens in place of the rows it was read
+    /// from. Carries the command's id for the same reason `fold` does -- the rows underneath shift
+    /// -- and the line's index into that command's `LensBuffer` rather than the line itself, so a
+    /// display is a small value that does not copy a two-megabyte rendering per frame.
+    case lens(commandID: UInt32, line: Int)
 }
 
 /// Which commands' output is collapsed, and how.
@@ -39,6 +44,20 @@ public struct OutputFolding: Equatable {
     public mutating func fold(_ id: UInt32, _ shape: FoldShape) {
         guard id != 0 else { return }
         folds[id] = shape
+    }
+
+    /// Folds a block unless the user has already opened that one by hand, and says whether
+    /// anything moved.
+    ///
+    /// What a watch series uses to collapse its older runs: twenty runs is twenty screens of the
+    /// same response, and the user is reading the newest. `fold` alone would re-collapse a run
+    /// somebody had just opened to compare against -- every five seconds, for as long as the watch
+    /// lasted -- which is the terminal arguing with you, the same rule `autoFold` was given.
+    @discardableResult
+    public mutating func foldUnlessOpened(_ id: UInt32, _ shape: FoldShape) -> Bool {
+        guard id != 0, !openedByHand.contains(id), folds[id] != shape else { return false }
+        folds[id] = shape
+        return true
     }
 
     public mutating func unfold(_ id: UInt32) {
@@ -135,84 +154,187 @@ public struct OutputFolding: Equatable {
 public extension Terminal {
     /// The folded command whose *hidden* rows cover `row`, and those rows. A prompt row and a kept
     /// tail row are never inside a fold.
-    func foldedCommand(containingOutputRow row: Int, folding: OutputFolding)
+    func foldedCommand(containingOutputRow row: Int, folding: OutputFolding,
+                       memo: CommandRegionMemo? = nil)
         -> (region: CommandRegion, hidden: Range<Int>)? {
         guard !folding.isEmpty, shellEmitsPromptMarks,
-              let region = command(containingAbsoluteRow: row),
+              let region = region(containing: row, memo: memo ?? CommandRegionMemo()),
               let shape = folding.shape(of: region.id) else { return nil }
         let hidden = OutputFolding.hiddenRange(of: region, shape: shape)
         return hidden.contains(row) ? (region, hidden) : nil
     }
 
-    /// Exactly what a viewport `count` rows tall shows from absolute row `top`. With nothing folded
-    /// it is the plain range and no buffer walk, which is the path every ordinary frame takes.
-    func displayRows(from top: Int, count: Int, folding: OutputFolding) -> [DisplayRow] {
-        guard count > 0 else { return [] }
-        guard !folding.isEmpty else { return (0..<count).map { .row(top + $0) } }
+    /// The lensed command whose *output* rows cover `row`, and the lines to show instead. A prompt
+    /// row is never inside a lens: the command line stays on screen above its response.
+    ///
+    /// nil when the command has no lens, when its buffer has not been built yet (the rows show raw
+    /// until it is), when that buffer has no lines -- taking the output off the screen and putting
+    /// nothing in its place reads as a command that printed nothing -- or when the command has
+    /// printed nothing for a lens to replace.
+    func lensedCommand(containingOutputRow row: Int, lenses: LensChoices,
+                       buffers: (UInt32) -> LensBuffer?,
+                       memo: CommandRegionMemo? = nil) -> (region: CommandRegion, buffer: LensBuffer)? {
+        guard !lenses.isEmpty, shellEmitsPromptMarks,
+              let region = region(containing: row, memo: memo ?? CommandRegionMemo()),
+              lenses.lens(of: region.id) != nil,
+              region.outputRows.contains(row),
+              let buffer = buffers(region.id), buffer.lineCount > 0 else { return nil }
+        return (region, buffer)
+    }
 
-        var out: [DisplayRow] = []
-        var row = max(0, top)
-        if let (region, hidden) = foldedCommand(containingOutputRow: row, folding: folding) {
-            out.append(.fold(commandID: region.id, hiddenRows: hidden.count, status: region.status))
-            row = hidden.upperBound
+    /// Exactly what a viewport `count` rows tall shows from `cursor`. With nothing folded and
+    /// nothing lensed it is the plain range and no buffer walk, which is the path every ordinary
+    /// frame takes.
+    ///
+    /// A lensed block's output rows are replaced by its buffer's lines: the prompt and the command
+    /// line stay, then every line of the lens, then the row after the block. **A lens is not the
+    /// same height as what it replaces**, which is why the viewport is addressed by `DisplayCursor`
+    /// rather than by an absolute row -- see that type for what addressing it by row cost.
+    ///
+    /// One walk for every case, `displayEntry` per display line. The earlier version replaced a
+    /// block's output only where the walk passed its *prompt* row, which left a hole one row wide:
+    /// a viewport whose top was a wrapped continuation of the command line showed the whole block
+    /// raw, fold and lens alike. Entering a block at any of its rows is the same question now, so
+    /// the hole is gone by construction.
+    func displayRows(from cursor: DisplayCursor, count: Int, folding: OutputFolding,
+                     lenses: LensChoices = LensChoices(),
+                     buffers: (UInt32) -> LensBuffer? = { _ in nil },
+                     memo: CommandRegionMemo? = nil) -> [DisplayRow] {
+        guard count > 0 else { return [] }
+        guard !folding.isEmpty || !lenses.isEmpty else {
+            return (0..<count).map { .row(max(0, cursor.row) + $0) }
         }
+        let memo = memo ?? CommandRegionMemo()
+        var out: [DisplayRow] = []
+        var position = DisplayCursor(row: max(0, cursor.row), line: cursor.line)
+        // The entry. A display cursor may sit anywhere inside a block -- halfway down a lens, on a
+        // wrapped command line, inside a fold -- and only `displayEntry` answers from an arbitrary
+        // position. It costs a scan back to the block's prompt each step, which inside the block is
+        // the length of its command line and outside it is the length of the block, so the walk uses
+        // it exactly until it is past the block it started in and then hands over to the loop below.
+        if let region = region(containing: position.row, memo: memo),
+           folding.shape(of: region.id) != nil || lenses.lens(of: region.id) != nil {
+            while out.count < count, position.row <= region.endRow,
+                  let (entry, next) = displayEntry(at: position, folding: folding, lenses: lenses,
+                                                   buffers: buffers, memo: memo) {
+                out.append(entry)
+                position = next
+            }
+        }
+        var row = position.row
         while out.count < count && row < totalRows {
             out.append(.row(row))
-            let line = absoluteRow(row)
-            guard let id = line?.commandID, id != 0, let shape = folding.shape(of: id),
-                  let region = command(containingAbsoluteRow: row), region.promptRow == row else {
+            // Two dictionary lookups before any region walk: `commandID` is stamped on prompt rows
+            // only, so this is also what limits the walk to entering a block where it begins.
+            guard let id = absoluteRow(row)?.commandID, id != 0 else { row += 1; continue }
+            let shape = folding.shape(of: id)
+            let lensed = lenses.lens(of: id) != nil
+            guard shape != nil || lensed,
+                  let region = region(containing: row, memo: memo), region.promptRow == row else {
                 row += 1
                 continue
             }
-            let hidden = OutputFolding.hiddenRange(of: region, shape: shape)
-            guard !hidden.isEmpty else { row += 1; continue }
-            // A wrapped command line lies between the prompt and its output; it belongs to the
-            // command, not to what it printed, and stays on screen.
+            // A folded block shows its fold, not its lens: both say "show me less", and the fold is
+            // the one whose placeholder the reader can click to undo.
+            if let shape {
+                let hidden = OutputFolding.hiddenRange(of: region, shape: shape)
+                guard !hidden.isEmpty else { row += 1; continue }
+                // A wrapped command line lies between the prompt and its output; it belongs to the
+                // command, not to what it printed, and stays on screen.
+                var next = row + 1
+                while next < hidden.lowerBound && out.count < count {
+                    out.append(.row(next))
+                    next += 1
+                }
+                if out.count < count {
+                    out.append(.fold(commandID: id, hiddenRows: hidden.count, status: region.status))
+                }
+                row = hidden.upperBound
+                continue
+            }
+            guard let buffer = buffers(id), buffer.lineCount > 0,
+                  !region.outputRows.isEmpty else { row += 1; continue }
             var next = row + 1
-            while next < hidden.lowerBound && out.count < count {
+            while next < region.outputRows.lowerBound && out.count < count {
                 out.append(.row(next))
                 next += 1
             }
-            if out.count < count {
-                out.append(.fold(commandID: id, hiddenRows: hidden.count, status: region.status))
+            var index = 0
+            while index < buffer.lineCount && out.count < count {
+                out.append(.lens(commandID: id, line: index))
+                index += 1
             }
-            row = hidden.upperBound
+            row = region.endRow + 1
         }
         return out
     }
 
+    /// The same, from an absolute row: what everything that still scrolls to a *place* rather than
+    /// by an amount asks for. A row inside a lens keeps its proportional position; see
+    /// `displayCursor(atAbsoluteRow:)`.
+    func displayRows(from top: Int, count: Int, folding: OutputFolding,
+                     lenses: LensChoices = LensChoices(),
+                     buffers: (UInt32) -> LensBuffer? = { _ in nil },
+                     memo: CommandRegionMemo? = nil) -> [DisplayRow] {
+        guard count > 0 else { return [] }
+        guard !folding.isEmpty || !lenses.isEmpty else { return (0..<count).map { .row(top + $0) } }
+        let memo = memo ?? CommandRegionMemo()
+        let cursor = displayCursor(atAbsoluteRow: max(0, top), folding: folding, lenses: lenses,
+                                   buffers: buffers, memo: memo)
+        return displayRows(from: cursor, count: count, folding: folding, lenses: lenses,
+                           buffers: buffers, memo: memo)
+    }
+
     /// The rows to draw for a range of the buffer; used where a fixed count is not wanted.
-    func displayRows(in range: Range<Int>, folding: OutputFolding) -> [DisplayRow] {
-        guard !folding.isEmpty else { return range.map { .row($0) } }
-        return displayRows(from: range.lowerBound, count: range.count, folding: folding)
+    func displayRows(in range: Range<Int>, folding: OutputFolding,
+                     lenses: LensChoices = LensChoices(),
+                     buffers: (UInt32) -> LensBuffer? = { _ in nil }) -> [DisplayRow] {
+        guard !folding.isEmpty || !lenses.isEmpty else { return range.map { .row($0) } }
+        return displayRows(from: range.lowerBound, count: range.count, folding: folding,
+                           lenses: lenses, buffers: buffers)
             .filter { if case .row(let r) = $0 { return range.contains(r) } else { return true } }
     }
 
-    /// Moves the viewport off hidden rows in the direction the user was scrolling, so a fold of two
-    /// thousand rows is not two thousand wheel clicks. Returns whether it moved.
-    @discardableResult
-    func snapViewportOutOfFold(movingUp: Bool, folding: OutputFolding) -> Bool {
-        guard let (region, hidden) = foldedCommand(containingOutputRow: viewportTopRow, folding: folding)
-        else { return false }
-        return scrollToAbsoluteRow(movingUp ? region.promptRow : hidden.upperBound, margin: 0)
-    }
+    // `snapViewportOutOfFold` used to live here: after a scroll by rows it dragged a viewport top
+    // that had landed inside a fold back out of it, so two thousand hidden rows were not two
+    // thousand wheel clicks. `Terminal.advance(_:by:)` makes the whole idea unnecessary -- a fold is
+    // one display line to step over and a lens is as many lines as it has -- and its lens branch was
+    // actively wrong: it jumped the reader *past* a lensed block, which is precisely the content
+    // they were trying to scroll through.
 
     /// The placeholder as a row of cells, so it is drawn through the ordinary row path and nothing
     /// in NyxRender learns what a fold is.
     ///
     /// Italic, and in the block's own status colour -- the same three the spine uses: red for a
     /// failure, amber while the command is still running (a folded build is a live tail, and grey
-    /// beside an amber spine said two different things about one block), bright black otherwise.
-    /// It used to be dim as well, and dimmed bright black read as a comment the shell had printed
-    /// rather than as the one thing on that row you are meant to click.
-    func foldPlaceholderRow(hiddenRows: Int, status: BlockStatus) -> Row {
+    /// beside an amber spine said two different things about one block), the theme's dim otherwise.
+    /// It used to carry the `.dim` *attribute* as well, and dimmed bright black read as a comment
+    /// the shell had printed rather than as the one thing on that row you are meant to click.
+    ///
+    /// **All three are resolved**, because a placeholder is text and every one of its states has to
+    /// be readable on every theme. They were `.indexed(3)`, `.indexed(1)` and `.indexed(8)` handed
+    /// to the renderer raw: bright black is 1.91:1 on nyx-dark, gruvbox-dark's red is 2.69:1 and
+    /// solarized-dark's 3.25 -- on the row that says a *failed* command is hidden behind it -- and
+    /// nyx-light's amber is 4.29. Red and amber come down `SummaryTone`, so "the same three the
+    /// spine uses" is now true rather than nearly true; the grey is `LensPalette.dimColour`, so it
+    /// is the same grey a lens' own `▸ […] 40 items` is drawn in -- they are one control in two
+    /// places, and two greys on one screen read as two different kinds of thing.
+    ///
+    /// `dim` is a parameter so the frame path can resolve it once rather than walking the blend
+    /// ladder for every placeholder row on screen; nil resolves it here, which is what a caller
+    /// with one row to draw wants. Red and amber need no such treatment: `SummaryTone.color` is a
+    /// handful of contrast ratios and stops at the first, whereas the grey's ceiling can cost
+    /// twenty blends.
+    func foldPlaceholderRow(hiddenRows: Int, status: BlockStatus, dim: RGB? = nil) -> Row {
         var row = Row(cols: cols)
         var cell = Cell()
+        let resolved: RGB
         switch status {
-        case .running: cell.fg = .indexed(3)
-        case .failed: cell.fg = .indexed(1)
-        case .succeeded: cell.fg = .indexed(8)
+        case .running: resolved = SummaryTone.running.color(in: palette)
+        case .failed: resolved = SummaryTone.failure.color(in: palette)
+        case .succeeded: resolved = dim ?? LensPalette.dimColour(in: palette)
         }
+        cell.fg = .rgb(resolved.r, resolved.g, resolved.b)
         cell.attrs = [.italic]
         for (column, scalar) in OutputFolding.placeholder(hiddenRows: hiddenRows).unicodeScalars.enumerated() {
             guard column < cols else { break }
@@ -274,7 +396,10 @@ public enum DisplayRows {
             switch entry {
             case .row(let absolute):
                 guard visibleRows.contains(absolute - viewportTop) else { continue }
-            case .fold(let id, _, _):
+            case .fold(let id, _, _), .lens(let id, _):
+                // A lens line stands in for this block's output exactly as a fold placeholder
+                // stands in for its hidden rows: both belong to the block, and its spine and its
+                // hover have to cover them.
                 guard id == commandID else { continue }
             }
             if first == nil { first = slot }

@@ -1,0 +1,6 @@
+http \
+  GET https://api.example.com/search \
+  'q==hello world' \
+  lang==en \
+  Accept:application/json
+# not translated: -s, -S

@@ -170,3 +170,14 @@ private func mark(_ letter: String, _ status: Int32? = nil) -> String {
     #expect(CommandNotificationRule.shouldNotify(long, armed: [], windowFocused: false, minimumDuration: 10))
     #expect(!CommandNotificationRule.shouldNotify(long, armed: [], windowFocused: true, minimumDuration: 10))
 }
+
+/// A notification is one line of text in a system banner. A `\`-continued command read off the
+/// grid has newlines in it, and `summarise` has to flatten them the way it flattens any other run
+/// of whitespace -- a banner cannot show a second line, and the first would simply be cut.
+@Test func aMultiLineCommandIsOneLineInANotification() {
+    let body = CommandNotification.body(command: "curl 'https://api.example.com/x' \\\n  -H 'a: 1'",
+                                        exitStatus: 0)
+    let oneLine = !body.contains(where: \.isNewline)
+    #expect(oneLine)
+    #expect(body == "curl 'https://api.example.com/x' \\ -H 'a: 1'")
+}

@@ -136,8 +136,13 @@ final class PromptGutterView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard cellHeight > 0, bounds.width > 0 else { return }
-        let inset: CGFloat = 1
-        let width = max(1, bounds.width - inset * 2)
+        // The capsule's geometry is `PromptGutter.markRect`, not the view's bounds: the bounds are
+        // the *hit area*, which is wider than the mark, and drawing to them would have made the
+        // dots fatter every time the target got easier to hit.
+        let capsule = PromptGutter.markRect(gutterWidth: Double(bounds.width))
+        guard capsule.width > 0 else { return }
+        let inset = CGFloat(capsule.x)
+        let width = CGFloat(capsule.width)
         // The theme's own green and red, so the gutter matches whatever the shell prints, in
         // whichever of the normal and bright variants reads on this background. Both resolved
         // before the loop: `readable` compares two contrast ratios, which is not much, and is not

@@ -125,6 +125,22 @@ import Testing
     #expect(diff.deferredNotes.isEmpty)
 }
 
+@Test func httpChangeIsReported() {
+    for mutate: (inout Config) -> Void in [
+        { $0.httpLens = .raw },
+        { $0.httpHint = false },
+        { $0.httpWatchInterval = 10 },
+        { $0.httpHistory = 200 },
+    ] {
+        var c = Config.defaults
+        mutate(&c)
+        let diff = ConfigDiff(from: .defaults, to: c)
+        #expect(diff.httpChanged)
+        #expect(!diff.fontChanged && !diff.paletteChanged && !diff.remoteChanged)
+        #expect(!diff.isEmpty)
+    }
+}
+
 @Test func remoteSettingsSetOnlyRemoteChanged() {
     for mutate: (inout Config) -> Void in [
         { $0.remote = .on },

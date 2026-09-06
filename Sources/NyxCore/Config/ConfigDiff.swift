@@ -26,6 +26,11 @@ public struct ConfigDiff: Equatable {
     /// deferred note -- unlike `scrollback-lines`, every one of these takes effect immediately, by
     /// tearing down and rebuilding the relay connection, not just for a future session.
     public var remoteChanged: Bool
+    /// `http-lens`, `http-hint`, `http-watch-interval`, `http-history`. Read at the point of use --
+    /// the next response drawn, the next curl typed, the next poll, the next write to the history
+    /// file -- so nothing here is rebuilt; the flag exists so a reviewer can name the four keys
+    /// that reach this one place instead of grepping for each of them separately.
+    public var httpChanged: Bool
 
     public init(from old: Config, to new: Config) {
         fontChanged = old.fontFamily != new.fontFamily || old.fontSize != new.fontSize
@@ -43,13 +48,16 @@ public struct ConfigDiff: Equatable {
         remoteChanged = old.remote != new.remote || old.remoteDeviceName != new.remoteDeviceName
             || old.remoteRelay != new.remoteRelay || old.remoteRelayToken != new.remoteRelayToken
             || old.remoteSnapshotLines != new.remoteSnapshotLines
+        httpChanged = old.httpLens != new.httpLens || old.httpHint != new.httpHint
+            || old.httpWatchInterval != new.httpWatchInterval || old.httpHistory != new.httpHistory
     }
 
     /// True when nothing that `apply` acts on changed at all (e.g. only `shell` or `bell` changed,
     /// which are read at the point of use and need no rebuild).
     public var isEmpty: Bool {
         !(fontChanged || geometryChanged || paletteChanged || cursorChanged || scrollbackChanged
-            || windowAppearanceChanged || windowDecorationsChanged || foldingChanged || remoteChanged)
+            || windowAppearanceChanged || windowDecorationsChanged || foldingChanged || remoteChanged
+            || httpChanged)
     }
 
     /// Settings that changed but only take effect for a new session or window, so silently doing

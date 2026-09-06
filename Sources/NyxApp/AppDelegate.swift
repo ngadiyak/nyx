@@ -11,6 +11,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// question. Windows reach it through `NSApp.delegate`, the way they already reach everything
     /// else that is the application's rather than a window's.
     private(set) var remote: RemoteCoordinator?
+    /// The requests this Mac has run, behind the palette's Requests section. One per application
+    /// for the same reason the remote coordinator is: it is one file, and two stores would each
+    /// rewrite the other's list. nil in a snapshot run, which must not write anything.
+    private(set) var requests: RequestHistoryStore?
     /// The session file, beside the config. See `SessionStore`.
     private let sessionStore = SessionStore.standard()
     /// A save is already queued; see `sessionChanged`.
@@ -39,6 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Turning the setting off forgets the file there and then, so it cannot come back to
             // life a fortnight later when it is turned on again.
             if !config.restoreSession { self?.sessionStore.clear() }
+            // `http-history` turned down has to forget the trimmed requests now, not just stop
+            // writing them back next time one runs.
+            self?.requests?.applyLimit(config.httpHistory)
         }
         // Renders the chrome to PNGs and exits. The build machine denies screen recording, so this
         // is the only way to look at the design at all; see `UISnapshot`.
@@ -52,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let coordinator = RemoteCoordinator(config: configStore.config)
         coordinator.onChange = { [weak self] in self?.remoteChanged() }
         remote = coordinator
+        requests = RequestHistoryStore.standard(limit: configStore.config.httpHistory)
         configStore.startWatching()
         openInitialWindows()
         NSApp.activate(ignoringOtherApps: true)

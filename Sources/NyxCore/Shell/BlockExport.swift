@@ -31,4 +31,37 @@ public extension Terminal {
         while lines.last == "" { lines.removeLast() }
         return lines.joined(separator: "\n")
     }
+
+    /// The output as the **logical** lines the program printed: a row the terminal wrapped is the
+    /// middle of a line and joins with nothing, a row the program ended is a line of its own.
+    ///
+    /// `outputText` above is the *visual* transcript -- what is on the screen, one string per row --
+    /// which is right for pasting into a chat message and wrong for anything that has to read the
+    /// output as data. A JSON body is one line however wide the pane is, and splitting it at column
+    /// 80 puts a newline inside a string literal: `JSONDocument.parse` refuses control characters in
+    /// strings, so the pretty lens degraded to raw for every response longer than one row -- which
+    /// is every response anybody actually looks at. Two rules, the same pair `Terminal.text(in:)`
+    /// and `commandLine(of:)` already apply: only an unwrapped row has padding to strip, because a
+    /// wrapped one is full to its last column by definition.
+    func outputLines(of region: CommandRegion) -> [String] {
+        let rows = region.outputRows
+        guard !rows.isEmpty else { return [] }
+        var lines: [String] = []
+        var current = ""
+        for row in rows {
+            var piece = rowText(absoluteRow: row).text
+            let wrapped = absoluteRow(row)?.wrapped ?? false
+            if !wrapped { while piece.hasSuffix(" ") { piece.removeLast() } }
+            current += piece
+            if !wrapped {
+                lines.append(current)
+                current = ""
+            }
+        }
+        // A run that ends on a wrapped row -- output still arriving, or a last row exactly filled --
+        // still has a line in hand.
+        if !current.isEmpty { lines.append(current) }
+        while lines.last == "" { lines.removeLast() }
+        return lines
+    }
 }

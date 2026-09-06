@@ -142,6 +142,14 @@ public enum ConfigParser {
                 config.remoteRelayToken = value
             case "remote-snapshot-lines":
                 if let i = Int(value) { config.remoteSnapshotLines = min(max(i, 100), 20_000) } else { badValue() }
+            case "http-lens":
+                if let lens = HTTPLens(rawValue: value.lowercased()) { config.httpLens = lens } else { badValue() }
+            case "http-hint":
+                if let b = parseBool(value) { config.httpHint = b } else { badValue() }
+            case "http-watch-interval":
+                if let d = Double(value) { config.httpWatchInterval = min(max(d, 1), 3600) } else { badValue() }
+            case "http-history":
+                if let i = Int(value) { config.httpHistory = min(max(i, 0), 500) } else { badValue() }
             default:
                 diagnostics.append(ConfigDiagnostic(line: lineNumber, message: "unknown setting '\(key)'"))
             }
@@ -152,8 +160,8 @@ public enum ConfigParser {
 
     private static func parseBool(_ value: String) -> Bool? {
         switch value.lowercased() {
-        case "true", "yes", "1": return true
-        case "false", "no", "0": return false
+        case "true", "yes", "1", "on": return true
+        case "false", "no", "0", "off": return false
         default: return nil
         }
     }

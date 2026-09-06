@@ -36,7 +36,14 @@ public enum SessionSummary {
     /// `Terminal.lastFinishedCommand` names the region; `commandLine(of:)` reads the text back out
     /// of the grid. Neither call needs anything this type does not already have a reference to.
     public static func lastCommand(in t: Terminal) -> String? {
-        t.lastFinishedCommand.map { t.commandLine(of: $0) }
+        // Collapsed to one line: `commandLine(of:)` gives back a `\`-continued command with its
+        // real newlines, and this is a *row* in another Mac's palette. A newline in it would be
+        // drawn as a box or would end the row early.
+        t.lastFinishedCommand.map {
+            t.commandLine(of: $0).split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .joined(separator: " ")
+        }
     }
 
     private static func branch(fromHead head: String) -> String {

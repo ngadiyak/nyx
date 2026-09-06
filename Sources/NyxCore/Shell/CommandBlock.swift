@@ -174,13 +174,27 @@ public enum CommandBlockChrome {
     /// aligned to the last column can never begin left of `lastUsedColumn + 1`). nil when not even
     /// the ⋯ and the chevron fit anywhere on the command.
     ///
-    /// A pane narrower than the smallest strip therefore shows no strip at all, and that is the
-    /// decision rather than a gap: the chevron on the command row, the status mark in the gutter,
-    /// ⌘⇧↑ and the right-click menu all still fold the block, and a strip drawn anyway would cover
-    /// the command it describes.
+    /// `fallbackToTail` decides what happens when no row has room for even the ⋯ and the chevron.
+    ///
+    /// The hover strip passes true: the minimal strip then goes over the tail of the **last** row
+    /// anyway, because the command it covers is the one that needs it most -- a request run from
+    /// the workbench is a single line hundreds of characters long, it fills every row it touches,
+    /// and its ⋯ menu is the only place "Open in Workbench", the four exports and "Save as Button"
+    /// are. Four cells are hidden *while the pointer is on the block* and come back the moment it
+    /// leaves; a menu that could not be opened at all would not come back.
+    ///
+    /// Everything else passes false, and the workbench pill is why the parameter exists. The pill
+    /// appears on its own, with no pointer anywhere near it, and covering four cells of a command
+    /// somebody is still typing -- to advertise a feature they did not ask for -- is not a trade
+    /// anyone agreed to. No room, no pill.
+    ///
+    /// A pane narrower than the smallest strip gets nothing either way: the strip would begin off
+    /// the left edge. The chevron on the command row, the status mark in the gutter, ⌘⇧↑ and the
+    /// right-click menu all still fold the block.
     public static func overlayPlacement(commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
                                         stripColumns: [OverlayControls: Int],
-                                        cols: Int) -> OverlayPlacement? {
+                                        cols: Int,
+                                        fallbackToTail: Bool) -> OverlayPlacement? {
         for row in commandRows.reversed() {
             let free = cols - row.lastUsedColumn - 1
             guard free > 0 else { continue }
@@ -189,7 +203,9 @@ public enum CommandBlockChrome {
                 return OverlayPlacement(row: row.absoluteRow, controls: controls)
             }
         }
-        return nil
+        guard fallbackToTail, let last = commandRows.last, let minimal = stripColumns[.minimal],
+              minimal > 0, minimal <= cols else { return nil }
+        return OverlayPlacement(row: last.absoluteRow, controls: .minimal)
     }
 }
 
@@ -203,14 +219,16 @@ public enum CommandBlockChrome {
 /// copies, so nothing becomes unreachable. The summary outlives it because while the strip is up it
 /// is the *only* place the exit status is -- the strip suppresses both the Metal summary and the
 /// duration note on that row, so dropping it first meant hovering a crowded failed command replaced
-/// `exit 1 · 8.8s ▾` with `Copy ⋯ ▾` and the exit code was nowhere on screen. The ⋯ menu and the
-/// chevron never go: between them they reach every action the block has.
+/// `exit 1 · 8.8s ▾` with `Copy ⋯ ▾` and the exit code was nowhere on screen. The ⋯ menu, the
+/// chevron and a running watch's **Stop** never go: the first two reach every action the block has,
+/// and Stop is the one control on the strip with a running side effect. Which parts each level
+/// carries is `BlockHeader.showsCopy(at:)` and its neighbours.
 public enum OverlayControls: Equatable, Hashable, CaseIterable {
     /// Summary, Copy, ⋯, chevron.
     case full
     /// Summary, ⋯, chevron.
     case noCopy
-    /// ⋯ and the chevron.
+    /// ⋯, the chevron, and Stop if a watch is running.
     case minimal
 
     /// Richest first, which is the order `overlayPlacement` tries them in.
@@ -253,6 +271,30 @@ public struct SummaryPlacement: Equatable {
 public enum BlockAction: Equatable {
     case copyCommand, copyOutput, copyMarkdown, saveOutput
     case runAgain, editAndRun
+    /// The Request group, offered only on a block whose command was a `curl` -- see
+    /// `BlockHeader.isHTTP`. These are the four things you can do to a *request* that mean nothing
+    /// for `make test`: open it as a form, take it to another tool, keep it as a button.
+    case openInWorkbench, copyAs(ExportFormat), saveAsButton, saveToProject
+    /// The Lens group, on the same blocks. `setLens` carries the lens the row stands for -- an
+    /// empty `filter`/`grep` string means "open the field", and the id in `diff` is a placeholder
+    /// the pane fills in from its own cache, which is the only thing that knows which run came
+    /// before this one.
+    case setLens(ResponseLens), toggleLens, copyBody, copyHeaders
+    /// Start this request again on a schedule. `runEvery` is the one-click form -- the configured
+    /// interval, running until stopped -- and `watch` opens the popover on the plan it carries, so
+    /// the menu row is built from the same default the popover then shows.
+    ///
+    /// The plan on `watch` is a *seed*, not the plan that will run: a menu built when nobody has
+    /// filled the form in yet cannot carry the answer to it, and a case that pretended to would be
+    /// a row that starts a watch the user never described.
+    case runEvery(seconds: Double), watch(WatchPlan)
+    /// Offered in place of the two above while this block's series is still going.
+    case stopWatch
+    /// What the Lens group becomes when the body is too large to re-lay-out: one row that says so
+    /// and still does the thing that works. A case of its own rather than a second `.saveOutput`,
+    /// because a menu row's title and its group break are properties of the action, and the two
+    /// occurrences would have had to share them.
+    case lensUnavailable
     case toggleFold, toggleFoldAll
     case notifyWhenDone(armed: Bool)
 
@@ -265,6 +307,25 @@ public enum BlockAction: Equatable {
         case .saveOutput: return "Save Output\u{2026}"
         case .runAgain: return "Run This Command Again"
         case .editAndRun: return "Edit and Run This Command\u{2026}"
+        case .openInWorkbench: return "Open in Workbench\u{2026}"
+        // The same names the workbench's own Export menu uses, because they are the same act
+        // reached from somewhere else: two words for one thing is two things to learn.
+        case .copyAs(let format): return "Copy as \(format.title)"
+        case .saveAsButton: return "Save as Button\u{2026}"
+        case .saveToProject: return "Save to Project\u{2026}"
+        // The lens names itself: the menu row, the `⌘⇧J` menu item and the palette row are the
+        // same words for the same thing.
+        case .setLens(let lens): return lens.title
+        case .toggleLens: return "Toggle Pretty Response"
+        case .copyBody: return "Copy Body"
+        case .copyHeaders: return "Copy Headers"
+        // The same words the header will then show ("watch every 5 s"), so the row a user pressed
+        // and the sentence they end up reading are one plan described once.
+        case .runEvery(let seconds): return "Run Every \(WatchPlan.secondsText(seconds)) s"
+        case .watch: return "Watch\u{2026}"
+        // The same title as the `stop_watch` action in the palette and the menu bar.
+        case .stopWatch: return "Stop Watching"
+        case .lensUnavailable: return "Body too large for lenses \u{2014} Save Output\u{2026}"
         case .toggleFold: return "Fold Output"
         case .toggleFoldAll: return "Fold Everything Long"
         case .notifyWhenDone: return "Notify When Done"
@@ -274,9 +335,50 @@ public enum BlockAction: Equatable {
     /// Where a separator goes in the menu: before the first action of each group after the first.
     public var startsGroup: Bool {
         switch self {
-        case .runAgain, .toggleFold, .notifyWhenDone: return true
+        case .runAgain, .openInWorkbench, .toggleFold, .notifyWhenDone, .lensUnavailable: return true
+        case .setLens(.raw): return true
         default: return false
         }
+    }
+}
+
+/// What colour a block's summary is drawn in, as a meaning rather than as an index.
+///
+/// One ladder for the three places a summary appears -- the glyphs Metal draws at the end of the
+/// command row, the hover strip's label, and the pinned sticky strip's note. Each of them used to
+/// pick its own colour from `failed`/`isRunning`, which is three chances to disagree, and the HTTP
+/// summary adds a fourth state that none of them would have known about.
+public enum SummaryTone: Equatable {
+    /// A finished command with nothing remarkable to say -- the duration alone.
+    case plain
+    /// Still going.
+    case running
+    /// 2xx.
+    case success
+    /// 3xx.
+    case redirect
+    /// A non-zero exit, or a 4xx/5xx.
+    case failure
+
+    /// `Palette.readable(n)` rather than `colors[n]`: gruvbox's red is 2.7:1 against its own
+    /// background and unreadable as a line of text, and this is text.
+    ///
+    /// And then `RGB.readable` on top of it, because picking is not enough. `Palette.readable`
+    /// chooses between a colour and its bright variant; where *neither* reaches 4.5:1 it hands
+    /// back the better of two unreadable colours, and nine of the built-in theme/tone pairs are in
+    /// exactly that position -- Solarized Dark's red pair is 3.25:1 and 3.26:1, so a failed
+    /// request's `404 · 12 ms` was drawn at 3.25:1, *worse* than the body text around it, on the
+    /// one line that exists to be noticed. Lifting towards the theme's own foreground keeps the
+    /// hue as far as the floor allows and only moves a colour that could not be read.
+    public func color(in palette: Palette) -> RGB {
+        let picked: RGB
+        switch self {
+        case .plain: picked = palette.noteForeground
+        case .running, .redirect: picked = palette.readable(3)
+        case .success: picked = palette.readable(2)
+        case .failure: picked = palette.readable(1)
+        }
+        return RGB.readable(picked, on: palette.background, towards: palette.foreground)
     }
 }
 
@@ -299,11 +401,88 @@ public struct BlockHeader: Equatable {
     /// and nothing for a quick success -- a status that appears the instant you press return is
     /// noise. Computed by `CommandBlock.header(now:...)`, stored here so the view compares one value.
     public let summary: String
+    /// What the block's curl said, when the block was one. nil for everything else, which is almost
+    /// every block.
+    public let httpSummary: HTTPSummary?
+    /// Whether the block's command line was a `curl` -- which is what the Request group in the ⋯
+    /// menu turns on.
+    ///
+    /// Separate from `httpSummary != nil`, and it has to be: a request that could not connect, or
+    /// one whose response was too large to read, is still a request you want to open in the
+    /// workbench and still has no summary to show. The caller carries the bool because deciding it
+    /// costs a `CurlCommand.parse` of a string built from the grid; the pane keeps it beside the
+    /// exchange in `RequestSummaryCache` so it is decided once per block rather than once per frame.
+    public let isHTTP: Bool
+    /// Which lens this block's response is being read through. nil is raw -- the rows as the
+    /// terminal has them -- which is what every block starts as and what most stay as.
+    public let lens: ResponseLens?
+    /// The body is past `LensRendering`'s limits, so there is nothing to show through a lens and
+    /// the group says so instead of offering seven rows that would each do nothing.
+    public let lensTooLarge: Bool
+    /// Whether the response body is JSON. The `{ }` control promises pretty JSON and nothing else,
+    /// so this is what decides whether it is offered -- see `showsLens(at:)`.
+    public let bodyIsJSON: Bool
+    /// Whether an earlier block ran the same request. Only `Diff with Previous Run` needs it, and
+    /// only the pane's cache can answer it -- see `RequestSummaryCache.previousRun`.
+    ///
+    /// `var` because it is answered *late*: finding the previous run parses every cached command
+    /// line, which is right once on a menu press and wrong sixty times a second, so the header the
+    /// frame builds leaves it false and whoever opens a menu fills it in. Left as a `let`, the row
+    /// was greyed on every hover strip whatever the pane knew, and the feature read as unbuilt.
+    public var hasPreviousRun: Bool
+    /// The watch series this block is the newest run of, or nil -- which is every block in every
+    /// pane where nobody has asked for one. Only the *newest* run carries it: the older runs of a
+    /// series are ordinary finished requests, and a timeline drawn beside each of them would be the
+    /// same twenty dots twenty times down the screen.
+    public let watch: WatchHeader?
+    /// What `Run Every … s` offers, from `http-watch-interval`. Carried rather than defaulted at
+    /// the menu, so the row, the popover it sits beside and the settings window cannot name three
+    /// different intervals.
+    public let watchInterval: Double
 
+    /// `httpSummary`, when there is one, *replaces* `summary` rather than sitting beside it: a
+    /// request's status and latency are what the user ran the command to find out, and two sources
+    /// for one string is two ways for the command row, the hover strip and the sticky strip to
+    /// disagree about what a block did.
     public init(id: UInt32, state: State, folded: Bool, hasOutput: Bool, anyFolds: Bool,
-                notifyArmed: Bool, summary: String) {
+                notifyArmed: Bool, summary: String, httpSummary: HTTPSummary? = nil,
+                isHTTP: Bool = false, lens: ResponseLens? = nil, lensTooLarge: Bool = false,
+                bodyIsJSON: Bool = false, hasPreviousRun: Bool = false, watch: WatchHeader? = nil,
+                watchInterval: Double = 5) {
         self.id = id; self.state = state; self.folded = folded; self.hasOutput = hasOutput
-        self.anyFolds = anyFolds; self.notifyArmed = notifyArmed; self.summary = summary
+        self.anyFolds = anyFolds; self.notifyArmed = notifyArmed
+        self.lens = lens; self.lensTooLarge = lensTooLarge; self.bodyIsJSON = bodyIsJSON
+        self.hasPreviousRun = hasPreviousRun
+        self.watch = watch; self.watchInterval = watchInterval
+        // And a watch's own sentence replaces the request's, for the same reason: `200 · 142 ms`
+        // is already the tail of `watch every 5 s · run 12 · 200 · 142 ms`, and showing both puts
+        // the status on the row twice.
+        self.summary = watch?.text ?? httpSummary?.text ?? summary
+        self.httpSummary = httpSummary
+        // A block that produced a response is a request whatever the caller says: the summary could
+        // not have been made otherwise, and a menu that disagreed with the row above it would be
+        // the pane's cache being wrong in the one place a user can see it.
+        self.isHTTP = isHTTP || httpSummary != nil
+    }
+
+    /// The colour meaning for this block's summary: the request's, when it made one, and otherwise
+    /// what the command's own state says. One property, so the three places that draw a summary
+    /// cannot pick three different colours for the same block.
+    public var tone: SummaryTone {
+        // A watch's sentence describes the series, not its latest run: `11 runs · p50 150 ms ·
+        // p95 200 ms · 1 failure` drawn in success green is a sentence whose last three words say
+        // something failed.
+        if let watch { return watch.tone }
+        if let httpSummary {
+            switch httpSummary.tone {
+            case .success: return .success
+            case .redirect: return .redirect
+            case .failure: return .failure
+            }
+        }
+        if failed { return .failure }
+        if isRunning { return .running }
+        return .plain
     }
 
     public var isRunning: Bool { if case .running = state { return true } else { return false } }
@@ -328,13 +507,82 @@ public struct BlockHeader: Equatable {
         }
     }
 
+    // MARK: - What the hover strip carries
+    //
+    // One place, because two of them come apart. `BlockHeaderView` both *draws* the strip and
+    // *measures* it for `overlayPlacement`, and when the two lists disagreed the placement rule
+    // reserved room for a control that was not drawn, or drew one it had not reserved room for.
+
+    /// Copy is the first control dropped: the ⋯ menu still copies, so nothing becomes unreachable.
+    public func showsCopy(at controls: OverlayControls) -> Bool { controls == .full }
+
+    /// The summary outlives Copy, because while the strip is up it is the *only* place the exit
+    /// status is -- it suppresses both the drawn summary and the duration note on that row.
+    public func showsSummary(at controls: OverlayControls) -> Bool {
+        controls != .minimal && !summary.isEmpty
+    }
+
+    /// The timeline goes with Copy: thirty circles is the widest thing here and the least of what
+    /// the header says, since the sentence beside it already carries the run number and the last
+    /// status.
+    public func showsTimeline(at controls: OverlayControls) -> Bool {
+        controls == .full && !(watch?.dots.isEmpty ?? true)
+    }
+
+    /// **Stop is never dropped.** It is the only control on the strip with a running side effect,
+    /// and a watch you cannot stop from the strip is the one that matters most -- on a command line
+    /// crowded enough for the narrowest strip, the ⋯ menu is the only other way to reach it.
+    public func showsStop(at controls: OverlayControls) -> Bool { watch?.showsStop ?? false }
+
+    /// The `{ }` needs a request, a body a lens can do something with, JSON to pretty-print, and
+    /// room for more than the two controls every block has.
+    ///
+    /// The JSON clause is the point: on a 301 with an HTML body `.pretty` falls through to the raw
+    /// lines, so a button whose tooltip promises pretty JSON did nothing a user could see. A lens
+    /// already open keeps its control whatever the body is -- the button is also how it is turned
+    /// off, and a control that vanishes when pressed strands the reader inside a lens.
+    public func showsLens(at controls: OverlayControls) -> Bool {
+        guard isHTTP, !lensTooLarge, controls != .minimal else { return false }
+        return bodyIsJSON || lens != nil
+    }
+
     /// The ⋯ menu, in order, each with whether it can do anything right now.
+    ///
+    /// The Request group is *absent* on an ordinary block rather than greyed out. A disabled item
+    /// says "this could apply here and does not"; "Copy as Python requests" could never apply to
+    /// `make test`, and eight dead rows under every menu in the terminal is the kind of chrome that
+    /// makes a menu not worth opening.
     public var actions: [(action: BlockAction, enabled: Bool)] {
         var list: [(BlockAction, Bool)] = [
             (.copyCommand, true), (.copyOutput, hasOutput), (.copyMarkdown, true), (.saveOutput, hasOutput),
             (.runAgain, !isRunning), (.editAndRun, !isRunning),
-            (.toggleFold, hasOutput), (.toggleFoldAll, true),
         ]
+        if isHTTP {
+            list.append((.openInWorkbench, true))
+            list += ExportFormat.allCases.map { (.copyAs($0), true) }
+            list += [(.saveAsButton, true), (.saveToProject, true)]
+            // One row or two, never all three: while a series is running the only thing anyone
+            // wants from this block is to stop it, and offering "Run Every 5 s" beside a watch
+            // already running is two ways to start a second one.
+            if watch?.showsStop == true {
+                list.append((.stopWatch, true))
+            } else {
+                list += [(.runEvery(seconds: watchInterval), true),
+                         (.watch(WatchPlan(interval: watchInterval, stop: .never)), true)]
+            }
+            if lensTooLarge {
+                list.append((.lensUnavailable, hasOutput))
+            } else {
+                list += [(.setLens(.raw), true), (.setLens(.pretty), true),
+                         (.setLens(.headers), true), (.setLens(.body), true),
+                         (.setLens(.filter("")), true), (.setLens(.grep("")), true),
+                         // The id is filled in by whoever performs it; what this row carries is
+                         // "diff", and whether it can be pressed at all.
+                         (.setLens(.diff(previousCommandID: 0)), hasPreviousRun),
+                         (.copyBody, true), (.copyHeaders, true)]
+            }
+        }
+        list += [(.toggleFold, hasOutput), (.toggleFoldAll, true)]
         if isRunning { list.append((.notifyWhenDone(armed: notifyArmed), true)) }
         return list.map { (action: $0.0, enabled: $0.1) }
     }
@@ -346,6 +594,22 @@ public struct BlockHeader: Equatable {
         default: return action.title
         }
     }
+
+    /// Whether a menu row should carry a checkmark. The lens rows are a radio group -- one of them
+    /// is what you are looking at -- and `Raw` is ticked when no lens is set, because raw is not
+    /// the absence of a choice, it is one of the choices.
+    ///
+    /// A filter or a find is ticked by its *kind*: the row opens the field, and `Filter…` with
+    /// `.a.b` in it is still the filter row. Titles are unique per case, which is why they are what
+    /// is compared -- a `case` match would have to spell out the payload it is deliberately
+    /// ignoring.
+    public func isChecked(_ action: BlockAction) -> Bool {
+        switch action {
+        case .setLens(let candidate): return (lens ?? .raw).title == candidate.title
+        case .notifyWhenDone(let armed): return armed
+        default: return false
+        }
+    }
 }
 
 public extension CommandBlock {
@@ -355,8 +619,15 @@ public extension CommandBlock {
     /// gutter's actionability and `toggleFold`'s precondition also use. Not `region.outputRows`:
     /// a command whose `C` has arrived but which has printed nothing has output rows and nothing in
     /// them, and a chevron there folds blank lines.
+    ///
+    /// `httpSummary` defaults to nil because almost no block has one and the caller that does --
+    /// the pane, which parses a finished curl's transcript at most once -- is the only one that can
+    /// afford to look.
     func header(now: Double, folding: OutputFolding, notifyArmed: Bool, anyFolds: Bool,
-                hasOutput: Bool) -> BlockHeader {
+                hasOutput: Bool, httpSummary: HTTPSummary? = nil,
+                isHTTP: Bool = false, lens: ResponseLens? = nil, lensTooLarge: Bool = false,
+                bodyIsJSON: Bool = false, hasPreviousRun: Bool = false, watch: WatchHeader? = nil,
+                watchInterval: Double = 5) -> BlockHeader {
         let state: BlockHeader.State
         let summary: String
         if isRunning {
@@ -372,7 +643,10 @@ public extension CommandBlock {
         }
         return BlockHeader(id: region.id, state: state, folded: folding.isFolded(region.id),
                            hasOutput: hasOutput, anyFolds: anyFolds,
-                           notifyArmed: notifyArmed, summary: summary)
+                           notifyArmed: notifyArmed, summary: summary, httpSummary: httpSummary,
+                           isHTTP: isHTTP, lens: lens, lensTooLarge: lensTooLarge,
+                           bodyIsJSON: bodyIsJSON, hasPreviousRun: hasPreviousRun, watch: watch,
+                           watchInterval: watchInterval)
     }
 }
 

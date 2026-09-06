@@ -183,7 +183,27 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
 // MARK: - sheetText
 
 @Test func sheetTextPerState() {
-    #expect(PairingFlow(side: .host).sheetText == ("", "", nil))
+    // No state renders blank. The host's `.idle` is the instant between the sheet going up and the
+    // relay being asked, and it used to be ("", "", nil): every control hidden, so the sheet was a
+    // seventy-five-point empty box with a Cancel button. That is also what a user saw for as long
+    // as the sheet stayed up when `pairAsHost` bailed -- remote on, no relay token.
+    #expect(PairingFlow(side: .host).sheetText
+            == ("Pair with another device", "Getting a code from the relay", nil))
+    // Nothing here is empty in any state, which is the property that made the empty sheet
+    // possible.
+    for state in [PairingFlow.State.idle, .opening("K7M4QZ", expires: Date()),
+                  .showingCode("K7M4QZ", expires: Date()),
+                  .joining(code: "K7M4QZ"),
+                  .requested(peerID: "p", peerName: "Mac"),
+                  .confirming(peerID: "p", peerName: "Mac", fingerprint: "a-b-c",
+                              mine: false, theirs: false),
+                  .paired(peerID: "p", peerName: "Mac"),
+                  .failed("no")] {
+        for side in [PairingFlow.Side.host, .client] {
+            let text = PairingFlow.sheetText(for: state, side: side)
+            #expect(!text.title.isEmpty, "\(side) \(state)")
+        }
+    }
     // The client's idle state is a sheet somebody is looking at with a code field in it, so unlike
     // the host's it has to say what to type and where the other Mac shows it.
     #expect(PairingFlow(side: .client).sheetText

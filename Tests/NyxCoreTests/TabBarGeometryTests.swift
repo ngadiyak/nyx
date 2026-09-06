@@ -211,11 +211,23 @@ private let barHeight = 28.0
 /// The `+` is how a tab gets opened with the mouse. Dropping it when the bar is busy takes it away
 /// exactly when reaching for it any other way is hardest.
 @Test func theNewTabButtonSurvivesACrowdedBar() {
+    let barWidth = 900.0, buttonWidth = 26.0
     for count in [1, 8, 20, 60] {
-        let rect = TabBarGeometry.trailingRect(buttonWidth: 26, barWidth: 900, barHeight: 28,
-                                               slotCount: count, leading: 120, headerHeight: 0)
+        let rect = TabBarGeometry.trailingRect(buttonWidth: buttonWidth, barWidth: barWidth,
+                                               barHeight: 28, slotCount: count, leading: 120,
+                                               headerHeight: 0)
         #expect(rect != nil, "\(count) tabs")
-        #expect(rect?.x == 900 - 26)
+        // Unwrapped into a local, and against a `Double` expression rather than `900 - 26`.
+        //
+        // This is the "874.0 == 874" flake that has been treated as unexplained since 2026-09-04.
+        // It is the *spelling*: `#expect(rect?.x == 900 - 26)` -- an `Optional<Double>` against a
+        // constant-folded integer-literal expression -- failed 6 times in 12 isolated runs of the
+        // same binary at rest, while `#expect(rect?.x == 874.0)` and the hoisted form below failed
+        // 0 in 12 each. Nothing in `TabBarGeometry` is involved: `trailingRect` is
+        // `PaneRect(x: barWidth - buttonWidth, …)` with literal arguments. Hoist the optional and
+        // the comparison is the one the source says it is.
+        let x = rect?.x ?? -1
+        #expect(x == barWidth - buttonWidth, "\(count) tabs")
     }
 }
 

@@ -80,7 +80,14 @@ extension Terminal {
         let cursorPhysical = scrollback.count + s.cursor.y
 
         // 2. Logical lines.
-        struct Line { var cells: [Cell]; var mark: UInt8; var exitStatus: Int32?; var commandStatus: Int32?; var commandDuration: Double?; var commandID: UInt32 }
+        struct Line {
+            var cells: [Cell]; var mark: UInt8; var exitStatus: Int32?; var commandStatus: Int32?
+            var commandDuration: Double?; var commandID: UInt32
+            /// Where the shell said its prompt ends, as an offset into `cells` -- the same space
+            /// `cursorOffset` uses, because the answer has to survive being re-wrapped at a
+            /// different width exactly the way the caret does.
+            var inputOffset: Int?
+        }
         var lines: [Line] = []
         var current: [Cell] = []
         var currentMark: UInt8 = 0
@@ -88,6 +95,7 @@ extension Terminal {
         var currentCommandStatus: Int32?
         var currentDuration: Double?
         var currentCommandID: UInt32 = 0
+        var currentInputOffset: Int?
         var cursorLine = 0
         var cursorOffset = 0
         for (i, row) in physical.enumerated() {
@@ -99,6 +107,11 @@ extension Terminal {
             if currentCommandStatus == nil { currentCommandStatus = row.commandStatus }
             if currentDuration == nil { currentDuration = row.commandDuration }
             if currentCommandID == 0 { currentCommandID = row.commandID }
+            // The `B` mark, carried like the others -- without it every command in the buffer came
+            // back with the prompt welded to the front of it after any resize.
+            if currentInputOffset == nil, let column = row.inputStartColumn {
+                currentInputOffset = current.count + column
+            }
             if i == cursorPhysical {
                 cursorLine = lines.count
                 cursorOffset = current.count + s.cursor.x
@@ -112,8 +125,10 @@ extension Terminal {
                 lines.append(Line(cells: current, mark: currentMark, exitStatus: currentStatus,
                                   commandStatus: currentCommandStatus,
                                   commandDuration: currentDuration,
-                                  commandID: currentCommandID))
+                                  commandID: currentCommandID,
+                                  inputOffset: currentInputOffset))
                 current = []
+                currentInputOffset = nil
                 currentMark = 0
                 currentStatus = nil
                 currentCommandStatus = nil
@@ -135,6 +150,7 @@ extension Terminal {
             row.commandDuration = line.commandDuration
             var x = 0
             var placedCursor = false
+            var placedInput = line.inputOffset == nil
             var index = 0
             while index < line.cells.count {
                 let c = line.cells[index]
@@ -150,6 +166,12 @@ extension Terminal {
                     newCursor = Cursor(x: x, y: out.count)
                     placedCursor = true
                 }
+                // On whichever row the command's first character has landed, at the column it
+                // starts in there.
+                if !placedInput, index == line.inputOffset {
+                    row.inputStartColumn = x
+                    placedInput = true
+                }
                 row.cells[x] = c
                 if w == 2 {
                     var sp = Cell(); sp.bg = c.bg; sp.attrs.insert(.wideSpacer)
@@ -162,6 +184,13 @@ extension Terminal {
                 var cx = x + max(0, cursorOffset - line.cells.count)
                 if cx >= newCols { cx = newCols - 1; pendingWrap = true }
                 newCursor = Cursor(x: cx, y: out.count)
+            }
+            // A prompt whose command is empty -- the row the user is typing at right now -- has its
+            // `B` one past the last cell, so the loop above never reaches it. It goes at the end of
+            // the last row of the line, which is exactly where the next character will be typed.
+            if !placedInput {
+                row.inputStartColumn = min(x + max(0, (line.inputOffset ?? 0) - line.cells.count),
+                                           newCols - 1)
             }
             out.append(row)
         }

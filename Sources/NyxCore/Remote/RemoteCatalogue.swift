@@ -157,15 +157,11 @@ public struct RemoteCatalogue: Equatable {
     }
 
     /// A human relative time for a palette row -- exact timestamps are not something you read at a
-    /// glance across a busy list. Buckets get coarser as they get older: minutes are worth counting
-    /// precisely, days are not.
+    /// glance across a busy list. The buckets are `RelativeAge`'s, shared with the Requests
+    /// section, so one palette cannot describe the same moment two ways. An unparseable timestamp
+    /// yields `""`, which `detail(for:)` leaves out of the row entirely.
     public static func relative(_ iso8601: String, now: Date) -> String {
         guard let date = ISO8601DateFormatter().date(from: iso8601) else { return "" }
-        let elapsed = now.timeIntervalSince(date)
-        if elapsed < 60 { return "just now" }
-        if elapsed < 3600 { return "\(Int(elapsed) / 60) min ago" }
-        if elapsed < 86400 { return "\(Int(elapsed) / 3600) h ago" }
-        if elapsed < 172_800 { return "yesterday" }
-        return "\(Int(elapsed) / 86400) days ago"
+        return RelativeAge.text(from: date, to: now)
     }
 }

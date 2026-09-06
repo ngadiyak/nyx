@@ -43,6 +43,27 @@ which source yours and then add `OSC 133` hooks; nothing in your home directory 
 there. Paste several lines and they open in an editor first — a shell's line editor is a poor place
 to change one value in the middle of a long request. `⌘⇧V` opens the editor for any paste.
 
+**A `curl` is a form, not a wall of quotes.** Paste one and a `⌘E Workbench` pill appears at the
+end of the line; press it, or `⌘E`, and the request opens as what it always was — method, URL,
+query parameters, headers, body, credentials, options — each in a field you can change, with a live
+preview of exactly the command that will run. Tokens and passwords are bulleted until you ask to
+see them. Run it and its block header says `200 · 142 ms · 1.2 KB · json` instead of a duration.
+The `⋯` menu on any block that ran a `curl` reopens it in the workbench, copies it as HTTPie,
+JavaScript `fetch`, Python `requests` or Go, or keeps it as a button on the tab bar or in the
+project's `.nyx`. `⌘⇧P` remembers the last fifty requests you ran, on any tab, and re-runs them
+through the same form. Nothing is guessed and nothing is sent anywhere: it is your `curl`,
+re-typed for you.
+
+**The response is a document, and it can repeat.** A finished request opens pretty-printed and
+foldable in place of the single line it arrived as; `⌘⇧J` flips back to the raw rows, and the `⋯`
+menu reads the same body as headers only, body only, a jq-style filter, a search, or a diff against
+the previous run of the same request. `Run Every 5 s` in that menu -- or `Watch…`, or `Repeat` in
+the workbench -- runs it again on a schedule: every run is an ordinary block, the older ones fold
+away except the one where the status changed, the newest opens on the diff, and its header carries
+a timeline of coloured dots, `watch every 5 s · run 12 · 200 · 142 ms`, and a Stop button. It only
+ever types at a prompt, never over a command you are writing, and it stops the moment you type
+anything yourself.
+
 **Finding things.** `⌘F` searches the buffer, with a toggle that widens it to every pane in every
 tab. `⌘⇧P` is a palette over actions, themes, tabs, your own buttons and paired Macs' sessions.
 With nothing typed it lists them in menu order rather than shortest-name-first, so the sections

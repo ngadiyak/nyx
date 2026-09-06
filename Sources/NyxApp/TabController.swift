@@ -864,12 +864,17 @@ final class TabController: NSViewController, NSMenuItemValidation {
         let bindings = KeyBindingTable(user: config.keybinds)
         let items = PaletteSource.items(actions: ActionCatalog.allMenuActions,
                                         chord: { bindings.binding(for: $0)?.displayName },
+                                        // The same answer the menu bar gets. A row that would beep
+                                        // is *absent* here rather than greyed: `PaletteSource`
+                                        // filters on this rather than carrying it.
+                                        enabled: { [weak self] in self?.canPerform($0) ?? true },
                                         quickActions: quickActions.map {
                                             ($0, QuickActionRunner.shared.isRunning($0))
                                         },
                                         themes: Pane.themes.names,
                                         tabTitles: tabs.map(\.title),
-                                        remote: appDelegate?.remote?.paletteItems() ?? [])
+                                        remote: appDelegate?.remote?.paletteItems() ?? [],
+                                        requests: appDelegate?.requests?.paletteItems() ?? [])
         openPalette(items: items)
     }
 
@@ -936,6 +941,17 @@ final class TabController: NSViewController, NSMenuItemValidation {
             let described = coordinator.describe(deviceID: deviceID, sessionID: sessionID)
             openRemote(deviceID: deviceID, sessionID: sessionID, hostName: described.hostName,
                        title: described.title)
+        case .request(let id):
+            // The row carries an id, not the line: what it shows is masked and what runs must not
+            // be, so the real line is read back here. Nil means the request was trimmed off the
+            // end while the panel was open -- a beep, not somebody else's command.
+            guard let line = appDelegate?.requests?.line(for: id), let pane = focusedPane else {
+                NSSound.beep()
+                return
+            }
+            // Opens the workbench: every line in this section parsed as a `curl` on the way in, so
+            // `editAndRun` routes all of them to the form rather than to the plain text box.
+            if !pane.editAndRun(command: line) { NSSound.beep() }
         }
     }
 
@@ -1489,6 +1505,7 @@ extension TabController: ActionTarget {
         case .saveCommandOutput: if focusedPane?.saveLastCommandOutput() != true { NSSound.beep() }
         case .notifyWhenDone: if focusedPane?.armNotificationForRunningCommand() != true { NSSound.beep() }
         case .saveScrollback: saveScrollback()
+        case .newRequest: if focusedPane?.newRequest() != true { NSSound.beep() }
 
         case .copy: focusedPane?.copy(nil)
         case .paste:
@@ -1520,6 +1537,22 @@ extension TabController: ActionTarget {
             // Beeps on a local pane and on one that is already writing: there is nothing to take,
             // and the menu item is greyed out for exactly this reason.
             if focusedPane?.takeControl() != true { NSSound.beep() }
+
+        // The block under the pointer, else the last request in the pane: pretty ↔ raw. Beeps when
+        // the pane has no response to show -- the menu and the palette already grey it there, and a
+        // `keybind` line reaches `perform` directly.
+        case .toggleHTTPLens:
+            if focusedPane?.toggleLensOfCurrentBlock() != true { NSSound.beep() }
+
+        // Only while the series' own newest run is the last request in the pane: `⌘.` is a chord
+        // people press for many reasons, and one that silently killed a watch they had scrolled
+        // away from would be a stop they never saw. The block header's Stop button has no such
+        // rule -- pressing it names the series.
+        case .stopWatch:
+            guard focusedPane?.canStopWatch == true, focusedPane?.stopWatch(.stopped) == true else {
+                NSSound.beep()
+                return
+            }
         }
     }
 
@@ -1573,6 +1606,16 @@ extension TabController: ActionTarget {
             // Only on a remote pane that is observing. On a local pane, or one already writing,
             // there is nothing to take.
             return focusedPane?.remote?.state.stripAction == .takeControl
+        case .toggleHTTPLens:
+            // A response to look at. Without one there is nothing to flip, and the row is greyed in
+            // the menu and absent from the palette rather than beeping at whoever chose it.
+            return focusedPane?.hasResponseToLens == true
+        case .stopWatch:
+            // A series to stop, on the block it is running in. Without one the row is greyed in
+            // the menu and absent from the palette rather than beeping at whoever chose it.
+            return focusedPane?.canStopWatch == true
+        // `newRequest` falls through to here and is right to: a blank request needs nothing to
+        // exist but a pane to run it in.
         default:
             return focusedPane != nil
         }

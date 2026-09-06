@@ -28,6 +28,8 @@ final class SettingsWindowController: NSWindowController {
     /// Everything on the Remote page below the checkbox: it all follows "Enable remote sessions",
     /// because a page of live-looking fields that do nothing is a page that reads as broken.
     private var remoteBodyControls: [NSControl] = []
+    /// The two pairing buttons, which need more than the switch: see `refreshRemoteEnabled`.
+    private var remotePairControls: [NSControl] = []
     private var pairedRows: [PairedDevice] = []
     private let removePairedButton = NSButton()
     private let remoteStatusLabel = NSTextField(labelWithString: "")
@@ -138,6 +140,11 @@ final class SettingsWindowController: NSWindowController {
             row("", checkbox("restore-session", title: "Reopen windows and tabs on launch")),
             row("", checkbox("mouse-scroll-alt-screen", title: "Scroll wheel sends arrows in full-screen apps")),
             row("", checkbox("clipboard-read", title: "Allow programs to read the clipboard")),
+            // Under the checkbox it explains, not at the foot of a page whose last four settings
+            // are about something else entirely.
+            (NSGridCell.emptyContentView,
+             footnote("Off by default: any program in the terminal could then see whatever you "
+                      + "last copied.")),
             row("Option key", popUp("option-as-meta", options: ["none", "left", "right", "both"])),
             row("Bell", popUp("bell", options: ["visual", "sound", "none"])),
             row("Multi-line paste", popUp("multiline-paste", options: ["edit", "confirm", "direct"])),
@@ -145,7 +152,17 @@ final class SettingsWindowController: NSWindowController {
                 unit: "lines"),
             row("Auto-fold output over", stepperField("fold-long-output", min: 0, max: 1_000_000, step: 50),
                 unit: "lines (0 = never)"),
-        ], note: "Letting programs read the clipboard is off by default: any program in the terminal could then see whatever you last copied.")
+            sectionHeader("Requests"),
+            row("Response body", popUp("http-lens", titled: [
+                ("Pretty JSON", "pretty"),
+                ("Raw", "raw"),
+            ])),
+            row("", checkbox("http-hint", title: "Offer the workbench when a curl is pasted")),
+            row("Watch every", stepperField("http-watch-interval", min: 1, max: 3600, step: 1),
+                unit: "seconds"),
+            row("Remember", stepperField("http-history", min: 0, max: 500, step: 5),
+                unit: "requests (0 = off)"),
+        ], note: "")
     }
 
     private func keysPage() -> NSView {
@@ -285,7 +302,12 @@ final class SettingsWindowController: NSWindowController {
         // off is to say so.
         remoteBodyControls = ["remote-device-name", "remote-relay", "remote-relay-token",
                               "remote-snapshot-lines"].compactMap { controls[$0] }
-            + [removePairedButton, pairHostButton, pairClientButton]
+            + [removePairedButton]
+        // The pair buttons follow `shouldRun`, not the switch. The switch alone was enough to
+        // enable them while `pairAsHost` bailed on the missing token, so pressing one opened an
+        // empty sheet -- the switch's own page says what is missing, and the buttons are dead
+        // until it is there.
+        remotePairControls = [pairHostButton, pairClientButton]
 
         let view = NSView()
         for subview in [grid, remoteStatusLabel, pairedLabel, pairedScroll, removePairedButton,
@@ -347,6 +369,8 @@ final class SettingsWindowController: NSWindowController {
     private func refreshRemoteEnabled() {
         let on = config.remote == .on
         for control in remoteBodyControls { control.isEnabled = on }
+        let canPair = RemoteCoordinatorPolicy.shouldRun(config: config)
+        for control in remotePairControls { control.isEnabled = canPair }
         // The stepper is a second control beside its field, registered under its own key by
         // `stepperField`; a subview scan would break the first time the row's layout changed.
         controls["remote-snapshot-lines.stepper"]?.isEnabled = on
@@ -455,8 +479,8 @@ final class SettingsWindowController: NSWindowController {
     /// is shown, so the sheet reads "Requesting a code from the relay" for as long as that takes --
     /// a code shown before the relay has it is one the other Mac would be told does not exist.
     @objc private func pairAsHost(_ sender: Any?) {
-        guard let coordinator else {
-            NSSound.beep()
+        guard let coordinator, coordinator.isRunning else {
+            reportPairingUnavailable()
             return
         }
         presentPairing(side: .host)
@@ -464,12 +488,26 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func pairAsClient(_ sender: Any?) {
-        guard let coordinator else {
-            NSSound.beep()
+        guard let coordinator, coordinator.isRunning else {
+            reportPairingUnavailable()
             return
         }
         presentPairing(side: .client)
         coordinator.pairAsClient()
+    }
+
+    /// There is nothing to pair over: no coordinator, or one that is not connected to a relay --
+    /// remote switched on with no token, a relay URL that does not resolve, an identity file that
+    /// would not load.
+    ///
+    /// The sheet used to go up first and `pairAsHost` bail afterwards, leaving an empty box with a
+    /// Cancel button and no word about why. What the user needs is the page's own status line
+    /// ("Paste the relay token to connect"), so this brings that forward and refreshes it rather
+    /// than presenting anything.
+    private func reportPairingUnavailable() {
+        selectRemotePage()
+        refreshRemoteStatus()
+        NSSound.beep()
     }
 
     private func presentPairing(side: PairingFlow.Side) {
@@ -535,24 +573,48 @@ final class SettingsWindowController: NSWindowController {
         grid.columnSpacing = 12
         grid.column(at: 0).xPlacement = .trailing
 
-        let noteLabel = NSTextField(wrappingLabelWithString: note)
-        noteLabel.translatesAutoresizingMaskIntoConstraints = false
-        noteLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        noteLabel.textColor = .secondaryLabelColor
+        // A section header owns its whole row: both cells merged, left-aligned to the page margin,
+        // with air above it. Sitting in the second column it was indented to wherever the controls
+        // happened to start and read as another setting's label rather than as the name of what
+        // follows -- which is exactly what the Remote page's "Paired devices" does not do.
+        for (index, row) in rows.enumerated()
+        where row.0.identifier == SettingsWindowController.sectionHeaderIdentifier {
+            grid.row(at: index).mergeCells(in: NSRange(location: 0, length: 2))
+            grid.cell(atColumnIndex: 0, rowIndex: index).xPlacement = .leading
+            if index > 0 { grid.row(at: index).topPadding = 10 }
+        }
 
         let view = NSView()
         view.addSubview(grid)
-        view.addSubview(noteLabel)
         NSLayoutConstraint.activate([
             grid.topAnchor.constraint(equalTo: view.topAnchor, constant: 18),
             grid.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
             grid.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -18),
+        ])
+        guard !note.isEmpty else {
+            grid.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -16).isActive = true
+            return view
+        }
+        let noteLabel = footnote(note)
+        view.addSubview(noteLabel)
+        NSLayoutConstraint.activate([
             noteLabel.topAnchor.constraint(greaterThanOrEqualTo: grid.bottomAnchor, constant: 16),
             noteLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
             noteLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
             noteLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16),
         ])
         return view
+    }
+
+    /// A small grey sentence. Used for a page's closing note and for the one footnote that belongs
+    /// to a single checkbox rather than to the page.
+    private func footnote(_ text: String) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.textColor = .secondaryLabelColor
+        label.preferredMaxLayoutWidth = 420
+        return label
     }
 
     /// A label beside a control -- and the same words attached to the control itself.
@@ -567,19 +629,27 @@ final class SettingsWindowController: NSWindowController {
     /// neither the unit nor that zero means off. It goes into the control's accessibility name too,
     /// so the same sentence reaches VoiceOver, and the label itself is not an element: announced on
     /// its own between two numbers it reads as another value.
-    private func row(_ label: String, _ control: NSView, unit: String? = nil) -> (NSView, NSView) {
+    /// `greyed` is for a row whose control is disabled: AppKit greys the control itself and leaves
+    /// every label around it in full contrast, so a disabled row read as an ordinary one whose
+    /// value happened to be uneditable. The label and the unit are what a person actually scans
+    /// down the left edge, so they are what has to say "not yet".
+    private func row(_ label: String, _ control: NSView, unit: String? = nil,
+                     greyed: Bool = false) -> (NSView, NSView) {
         var control = control
         if let unit {
             let suffix = NSTextField(labelWithString: unit)
             suffix.identifier = SettingsWindowController.unitLabelIdentifier
             suffix.setAccessibilityElement(false)
+            if greyed { suffix.textColor = .disabledControlTextColor }
             let stack = NSStackView(views: [control, suffix])
             stack.orientation = .horizontal
             stack.spacing = 6
             control = stack
         }
         if !label.isEmpty { describe(control, as: unit.map { "\(label), \($0)" } ?? label) }
-        return (NSTextField(labelWithString: label.isEmpty ? "" : label + ":"), control)
+        let title = NSTextField(labelWithString: label.isEmpty ? "" : label + ":")
+        if greyed { title.textColor = .disabledControlTextColor }
+        return (title, control)
     }
 
     private static let unitLabelIdentifier = NSUserInterfaceItemIdentifier("unit-label")
@@ -643,6 +713,39 @@ final class SettingsWindowController: NSWindowController {
         controls[key] = button
         return button
     }
+
+    /// A popup whose menu text isn't the config spelling itself -- `pretty`/`raw` says less on its
+    /// own in a menu than "Pretty JSON"/"Raw" does. `value(of:for:)` and `set(_:_:)` consult
+    /// `popUpTitledValues` for a key registered here instead of writing the title straight through.
+    private func popUp(_ key: String, titled options: [(title: String, value: String)]) -> NSPopUpButton {
+        let button = NSPopUpButton()
+        button.addItems(withTitles: options.map(\.title))
+        button.target = self
+        button.action = #selector(controlChanged(_:))
+        button.identifier = NSUserInterfaceItemIdentifier(key)
+        controls[key] = button
+        popUpTitledValues[key] = options
+        return button
+    }
+
+    private var popUpTitledValues: [String: [(title: String, value: String)]] = [:]
+
+    /// A section name inside a page, e.g. "Requests" above the four curl-workbench settings: this
+    /// page mixes several unrelated toggles in one flat list, and a group of keys that arrived
+    /// together reads as an unexplained jump without something naming what changed.
+    ///
+    /// Exactly the Remote page's "Paired devices": semibold at the small system size, in the full
+    /// label colour, flush with the page's left margin. Grey and indented -- which is what this was
+    /// -- makes a heading look like a disabled setting.
+    private func sectionHeader(_ title: String) -> (NSView, NSView) {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        label.identifier = SettingsWindowController.sectionHeaderIdentifier
+        label.setAccessibilityRole(.staticText)
+        return (label, NSGridCell.emptyContentView)
+    }
+
+    private static let sectionHeaderIdentifier = NSUserInterfaceItemIdentifier("section-header")
 
     private func checkbox(_ key: String, title: String) -> NSButton {
         let button = NSButton(checkboxWithTitle: title, target: self, action: #selector(controlChanged(_:)))
@@ -753,6 +856,9 @@ final class SettingsWindowController: NSWindowController {
         switch sender {
         case let button as NSPopUpButton:
             let title = button.titleOfSelectedItem ?? ""
+            if let mapped = popUpTitledValues[key] {
+                return mapped.first { $0.title == title }?.value ?? ""
+            }
             // "none" for a theme override means "no override", which is an absent line rather than
             // a value -- but the file may already carry one, so write the empty string, which the
             // parser reads back as unset.
@@ -822,6 +928,10 @@ final class SettingsWindowController: NSWindowController {
         set("multiline-paste", c.multilinePaste.rawValue)
         set("fold-keep-lines", Double(c.foldKeepLines), decimals: 0)
         set("fold-long-output", Double(c.foldLongOutput), decimals: 0)
+        set("http-lens", c.httpLens.rawValue)
+        set("http-hint", c.httpHint)
+        set("http-watch-interval", c.httpWatchInterval, decimals: 0)
+        set("http-history", Double(c.httpHistory), decimals: 0)
 
         set("remote", c.remote == .on)
         set("remote-device-name", c.remoteDeviceName)
@@ -857,6 +967,11 @@ final class SettingsWindowController: NSWindowController {
     private func set(_ key: String, _ title: String?) {
         guard let button = controls[key] as? NSPopUpButton else {
             if let field = controls[key] as? NSTextField { field.stringValue = title ?? "" }
+            return
+        }
+        if let mapped = popUpTitledValues[key] {
+            let wantedTitle = mapped.first { $0.value == title }?.title ?? mapped.first?.title ?? ""
+            if button.itemTitles.contains(wantedTitle) { button.selectItem(withTitle: wantedTitle) }
             return
         }
         let wanted = title ?? SettingsWindowController.noneTitle

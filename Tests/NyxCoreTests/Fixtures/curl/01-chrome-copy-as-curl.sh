@@ -1,0 +1,17 @@
+curl 'https://api.example.com/v1/messages' \
+  -H 'accept: */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'cache-control: no-cache' \
+  -H 'content-type: application/json' \
+  -H 'origin: https://app.example.com' \
+  -H 'pragma: no-cache' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://app.example.com/' \
+  -H 'sec-ch-ua: "Chromium";v="128", "Not;A=Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "macOS"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-site' \
+  --data-raw $'{"model":"claude-opus","stream":true,"messages":[{"role":"user","content":"hi\nthere"}]}' \
+  --compressed

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import NyxCore
 
@@ -152,4 +153,71 @@ private func palette(_ titles: [String]) -> CommandPalette {
     var p = CommandPalette(items: [PaletteItem.quickAction(toggle, index: 0, isRunning: true)])
     p.setQuery("caffeine")
     #expect(p.selected?.kind == .quickAction(0))
+}
+
+// MARK: - Requests
+
+/// Newest category last, again: the Requests section goes after Remote, so nothing a user already
+/// reaches by muscle memory moves when it appears.
+@Test func requestsComeAfterRemote() {
+    let remote = PaletteItem.remoteSession(deviceID: "d", sessionID: "s", title: "iMac · zsh",
+                                           detail: "")
+    var history = RequestHistory(limit: 10)
+    history.record("curl https://api.example.com/users", at: Date(timeIntervalSince1970: 1_000))
+    let requests = history.paletteItems(now: Date(timeIntervalSince1970: 1_030))
+    let items = PaletteSource.items(actions: [.newTab], chord: { _ in nil },
+                                    themes: ["dracula"], tabTitles: ["zsh"], remote: [remote],
+                                    requests: requests)
+    let id = RequestHistory.identifier(for: "curl https://api.example.com/users")
+    #expect(items.map(\.kind) == [.action(.newTab), .theme("dracula"), .tab(0),
+                                  .remoteSession(deviceID: "d", sessionID: "s"), .request(id: id)])
+    #expect(items.last?.title == "GET api.example.com/users")
+    #expect(items.last?.detail == "Request \u{b7} just now")
+}
+
+/// A window with no history is the ordinary palette: the parameter defaults to nothing, so no
+/// caller has to pass an empty list to keep the list it already had.
+@Test func aWindowWithNoRequestsGetsNoSection() {
+    let items = PaletteSource.items(actions: [.newTab], chord: { _ in nil },
+                                    themes: [], tabTitles: [])
+    #expect(items.map(\.kind) == [.action(.newTab)])
+}
+
+// MARK: - What the palette may offer
+
+/// An action the window cannot perform right now is not a row at all.
+///
+/// It was a *greyed* row, which is right for a menu and wrong for a search: a menu is a fixed list
+/// you scan by position, so a greyed item is a landmark saying "that lives here". A palette is a
+/// list you produce by typing, and in a fresh window twenty-nine of its rows were grey -- Tab 7
+/// with three tabs open, Focus Left with one pane, Copy with nothing selected. A search result that
+/// cannot be chosen is a wrong answer to what you typed.
+@Test func actionsTheWindowCannotPerformAreNotOffered() {
+    let refused: Set<TerminalAction> = [.toggleHTTPLens, .stopWatch, .copy]
+    let items = PaletteSource.items(actions: [.copy, .paste, .toggleHTTPLens, .stopWatch, .newRequest],
+                                    chord: { _ in nil },
+                                    enabled: { !refused.contains($0) },
+                                    themes: [], tabTitles: [])
+    #expect(items.map(\.kind) == [.action(.paste), .action(.newRequest)])
+}
+
+/// With no opinion offered, everything is: the closure defaults to yes, so a caller that has
+/// nothing to say about availability gets the whole catalogue.
+@Test func withoutAnOpinionEveryActionIsOffered() {
+    let items = PaletteSource.items(actions: [.copy, .paste], chord: { _ in nil },
+                                    themes: [], tabTitles: [])
+    #expect(items.count == 2)
+}
+
+/// The Remote section's placeholder rows stay, disabled, because they are not offers -- they are
+/// the section explaining why it is empty. "Mac mini (office) — offline" removed from the list is
+/// a user searching for their Mac and finding nothing at all.
+@Test func remotePlaceholderRowsSurviveTheFilter() {
+    let placeholder = PaletteItem.remoteSession(deviceID: "D1", sessionID: "", title: "Mac mini — offline",
+                                                detail: "offline", isEnabled: false)
+    let items = PaletteSource.items(actions: [.copy], chord: { _ in nil }, enabled: { _ in false },
+                                    themes: [], tabTitles: [], remote: [placeholder])
+    #expect(items.count == 1)
+    #expect(items.first?.kind == .remoteSession(deviceID: "D1", sessionID: ""))
+    #expect(items.first?.isEnabled == false)
 }

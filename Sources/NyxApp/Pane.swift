@@ -99,6 +99,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private let remoteStrip = RemoteStripView(frame: .zero)
     /// The hovered block's Copy/⋯/chevron strip, drawn over its command row the same way.
     private let blockHeader = BlockHeaderView(frame: .zero)
+    /// `⌘E Workbench`, at the end of a `curl` that has just been pasted. See `WorkbenchHint`.
+    private let workbenchHint = WorkbenchHintView(frame: .zero)
     /// The prompt row the strip currently names, for its click.
     private var stickyPromptRow: Int?
     /// Which commands' output is collapsed. Empty for almost every pane that ever exists, which is
@@ -109,11 +111,24 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// The last frame's display rows, so a click can tell which visible row is a fold placeholder
     /// and which command it stands for. Empty whenever nothing is folded.
     private var foldRowsOnScreen: [DisplayRow] = []
+    /// A row inside each block the last frame drew, by command id.
+    ///
+    /// A fold placeholder and a lens line are not rows of the buffer, and the pointer has to be
+    /// answered with *something*: without this, a click on one fell back to `viewportTop + slot`,
+    /// which names whatever block happens to occupy that row -- so a right-click two thirds of the
+    /// way down a hundred-line lens offered the next command's actions, Re-run included. Built here,
+    /// from the blocks the frame already walked, because asking the buffer for a prompt row whose
+    /// command line is scrolled off the top means scanning the whole scrollback.
+    private var displayBlockRows: [UInt32: Int] = [:]
     /// What the buffer had evicted the last time folds and armed notifications were pruned. Nothing
     /// else can retire a command id, so an unchanged pair means the walk to find the oldest one
     /// would answer exactly what it answered last frame.
     /// -1 so the first prune always runs.
     private var lastPruneEvictedRows = -1
+    /// `Terminal.evictedRows` the last time the viewport anchor was moved to keep up with it. Its
+    /// own counter rather than `lastPruneEvictedRows`, which is only updated on the frames that
+    /// have something to prune: the anchor has to follow the rows on every frame that loses one.
+    private var lastAnchorEvictedRows = -1
     private var lastPruneGeneration: UInt64 = 0
     /// The block under the pointer, re-resolved by `BlockHover` in every frame against that frame's
     /// own blocks and display rows -- so it follows the rows when they scroll and disappears when a
@@ -124,11 +139,143 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private var headersOnScreen: [Int: BlockHeader] = [:]
     /// The cell range of each summary on its row, for the chevron click target.
     private var summaryColumnsOnScreen: [Int: Range<Int>] = [:]
+    /// What each finished block on screen turned out to be: a request and what it said, or not a
+    /// request at all. One reading per block, ever -- see `RequestSummaryCache`, which owns that
+    /// rule and is tested on its own.
+    private var requestCache = RequestSummaryCache()
+    /// Only visible finished blocks are ever read, so this grows by the handful; the cap is for a
+    /// session that scrolls through thousands of requests without ever clearing.
+    private static let requestCacheLimit = 512
+    /// Which responses are being read through which lens, and what is folded inside them. Empty in
+    /// every pane nobody has run a `curl` in, which is what keeps the render path unchanged: the
+    /// lens-aware branch is behind the same `isEmpty` the folds are.
+    private var lenses = LensChoices()
+    /// The lines each lensed block is showing, by command id. Built off the main thread and stored
+    /// here; the frame reads it and nothing else writes it.
+    private var lensBuffers: [UInt32: LensBuffer] = [:]
+    /// Rendering a response is a JSON parse and a pretty-print of a body that can be megabytes.
+    /// Serial, so two rebuilds of the same block cannot land out of order, and `.userInitiated`
+    /// because someone is waiting for it -- they just chose the lens.
+    private let lensQueue = DispatchQueue(label: "nyx.lens", qos: .userInitiated)
+    /// Blocks whose lines are being built right now, and blocks whose input changed while that was
+    /// happening.
+    ///
+    /// A rendering is a JSON parse and a pretty-print of the whole body; a burst of fold clicks --
+    /// which is how anyone reads a large response -- would otherwise queue one per click and make
+    /// the reader wait for four answers they no longer want. One in flight, one remembered, and the
+    /// remembered one runs from the state as it is when the first lands.
+    private var lensRebuilds: Set<UInt32> = []
+    private var lensRebuildsAgain: Set<UInt32> = []
+    /// The display position this pane last scrolled to, and the terminal viewport top it was chosen
+    /// against.
+    ///
+    /// Two numbers because the two can differ: a lens on the *live screen* can be longer than the
+    /// rows it replaced, and reading its tail means a display top below the last row the terminal
+    /// can be scrolled to (`viewportOffset` bottoms out at 0). The terminal clamps, this does not,
+    /// and the recorded top is how a viewport the terminal moved on its own -- new output, a resize,
+    /// a jump to a search match -- is told apart from one this pane chose. See `viewportCursor(in:)`.
+    private var viewportAnchor: DisplayCursor?
+    private var viewportAnchorTop = -1
+    /// Whether the anchor is what "go to the live screen" recorded rather than a place the reader
+    /// scrolled to. `send` does that on every keystroke, and such an anchor must not outlive the
+    /// bottom moving -- see `Terminal.viewportCursor`.
+    private var viewportAnchorIsDisplayBottom = false
+
+    /// For a display that is about to be a different height -- a lens opened or closed, a watch run
+    /// lensed, a fold moved. Only the live-bottom anchor goes; a reader's own place is kept, and
+    /// `canonicalised` clamps it against the buffers as they are. The rule is
+    /// `DisplayCursor.survivesDisplayChange`, in Core where it is tested.
+    private func forgetViewportAnchorIfItIsOnlyTheLiveBottom() {
+        guard !DisplayCursor.survivesDisplayChange(anchor: viewportAnchor,
+                                                   isDisplayBottom: viewportAnchorIsDisplayBottom)
+        else { return }
+        forgetViewportAnchor()
+    }
+
+    /// Forgets where in the display the viewport was, so the next frame takes the terminal's own
+    /// row and line 0.
+    ///
+    /// The staleness check in `viewportCursor(in:)` compares a *row*, and rows are reused: a session
+    /// that has not overflowed its window has `viewportTopRow == 0` from beginning to end, so an
+    /// anchor left over from a lens read earlier would be re-homed by `canonicalised` onto whatever
+    /// block now occupies that row. `⌘K`, a new `curl`, and the fresh response opened sixty lines
+    /// down. Anything that makes an absolute row mean something else calls this.
+    private func forgetViewportAnchor() {
+        viewportAnchor = nil
+        viewportAnchorTop = -1
+        viewportAnchorIsDisplayBottom = false
+    }
+
+    /// A drag over a lensed block's own lines. Not `Selection`: those are absolute rows and cells
+    /// of the grid, and these lines exist nowhere in the buffer.
+    private var lensSelection: LensSelection?
+    /// The `Filter…` / `Find in Body…` field, while one is open, and the block it belongs to.
+    private var lensField: LensFieldView?
+    private var lensFieldBlock: UInt32?
+    /// Requests read this frame that should open in the configured lens. Applied by `render` once
+    /// the session lock is gone -- the same arrangement the request history has, and for the same
+    /// reason: nothing that dispatches may run with the lock held.
+    private var pendingDefaultLens: [UInt32] = []
     /// How much of the hover strip fits on the row it was placed on. Decided in `render()` by
     /// `CommandBlockChrome.overlayPlacement`; applied after the lock, where AppKit lives.
     private var hoverOverlayControls: OverlayControls = .full
+    /// A finished request read this frame that has not been written to the history yet. Set under
+    /// the session lock by `requestSummary` and drained by `render` once the lock is gone: the
+    /// store writes a file, and a file write must never happen with the session lock held.
+    private var recordAfterFrame: String?
+    /// The `curl` a paste has just put on the command line, and the clock reading at which its pill
+    /// stops being offered. Nil for every pane that has never had one pasted into it, which is the
+    /// state that costs nothing per frame.
+    private var hintCommand: String?
+    private var hintExpiry: Double = 0
+    /// Fires once, when the pill's welcome runs out: nothing else would ask for the redraw that
+    /// takes it off an otherwise idle screen.
+    private var hintTimer: Timer?
     /// Ticks once a second while a running command's row is on screen, so its elapsed time moves.
     private var runningTimer: Timer?
+    /// The watch this pane is running, or nil -- which is every pane nobody has asked for one in.
+    /// Kept after it finishes so the newest run's header can go on showing the statistics.
+    private var watch: WatchSeries?
+    /// The Watch popover while one is up, so Start can close it -- see `presentWatchPlanEditor`.
+    private var watchPopover: NSPopover?
+    /// Alive only while the series is waiting for its next run to fall due. A watch that is
+    /// *running* one has nothing to poll for: the finish arrives with the frame that reads the
+    /// block. See `updateWatchTimer`.
+    private var watchTimer: Timer?
+    /// When a run was typed at the shell and has not been seen to start.
+    ///
+    /// Without it the 250 ms tick would type the command again on every tick until the shell got
+    /// round to echoing an `OSC 133 C` -- four curls a second at a busy prompt. Cleared when the
+    /// run starts, when it finishes (a local request can begin and end between two ticks), and
+    /// after `watchStartTimeout` for the line that never ran at all.
+    private var watchSentAt: Double?
+    /// The newest command in the pane that had already run when the outstanding line was typed.
+    /// The floor `WatchSeries.owns` needs to tell the run it is waiting for from a stale block
+    /// that finished before the watch existed -- see that function.
+    private var watchSentAfterCommandID: UInt32 = 0
+    /// True for exactly as long as the watch is writing its own run to the shell, so the rule that
+    /// stops a series when the user types does not stop it on the series' own bytes.
+    private var isSendingWatchRun = false
+    /// Runs whose blocks the exchange cache learned this frame. Filled under the session lock by
+    /// `requestSummary` and drained by `render` once the lock is gone: acting on one folds blocks,
+    /// sets a lens and dispatches, none of which may happen with the lock held.
+    private var pendingWatchFinishes: [WatchFinish] = []
+
+    /// One finished run, as the frame that read its block saw it.
+    private struct WatchFinish {
+        let id: UInt32
+        let status: Int?
+        let exitStatus: Int32
+        let timeTotal: Double?
+        /// For `WatchPlan.Condition.bodyContains`/`bodyLacks`.
+        let body: String
+        let at: Double
+    }
+
+    /// How long a typed run may go unstarted before the series tries again. Generous on purpose:
+    /// a shell that is busy, slow to draw, or paused under a `less` has not lost the line, and
+    /// typing a second copy of a request into it would be worse than waiting.
+    private static let watchStartTimeout: Double = 30
     /// Whether a command was running at the last check, to notice the moment a new one starts.
     private var commandWasRunning = false
     /// Notices that a command ended, from nothing but the prompt marks; see `CommandWatcher`.
@@ -200,7 +347,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         addSubview(stickyStrip)
         blockHeader.onAction = { [weak self] action, id in self?.perform(action, on: id) }
         blockHeader.onToggleFold = { [weak self] id, full in self?.toggleFold(ofCommand: id, full: full) }
+        blockHeader.onNeedsPreviousRun = { [weak self] id in self?.previousRun(of: id) != nil }
         addSubview(blockHeader)
+        workbenchHint.onPress = { [weak self] in self?.openWorkbenchFromHint() }
+        addSubview(workbenchHint)
         if let remote {
             remoteStrip.onButton = { [weak self] in self?.remoteStripButtonPressed() }
             addSubview(remoteStrip)
@@ -505,6 +655,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         displayLink = nil
         runningTimer?.invalidate()
         runningTimer = nil
+        // A series whose pane has gone has nowhere to type; the timer would also keep this whole
+        // terminal alive for as long as it ticked.
+        stopWatch(.paneClosed)
+        watchTimer?.invalidate()
+        watchTimer = nil
+        watchPopover?.performClose(nil)
+        watchPopover = nil
+        // The pill's expiry timer retains this pane until it fires; a tab closed inside its eight
+        // seconds would otherwise keep a whole terminal alive waiting to hide a label.
+        hintTimer?.invalidate()
+        hintTimer = nil
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
         // Before the session goes: everyone attached is told the session ended, and the palette row
@@ -522,6 +683,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         displayLink = nil
         runningTimer?.invalidate()
         runningTimer = nil
+        // The pill's expiry timer retains this pane until it fires; a tab closed inside its eight
+        // seconds would otherwise keep a whole terminal alive waiting to hide a label.
+        hintTimer?.invalidate()
+        hintTimer = nil
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
         guard let window else { return }
@@ -687,7 +852,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// mode is a stale row on screen, which no test of the drawing catches and no user reports as
     /// anything but "sometimes the terminal is wrong".
     private func dirtyRows(of t: Terminal, top: Int) -> [Bool] {
-        let mapping = ViewportMapping(of: t, top: top, folded: !folding.isEmpty)
+        let mapping = ViewportMapping(of: t, top: top, folded: !folding.isEmpty || !lenses.isEmpty)
         let trusted = mapping.trustsDirtyFlags(after: lastMapping)
         lastMapping = mapping
         guard trusted else { return [] }
@@ -706,6 +871,817 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             + "\(s.fullInvalidations) full invalidations\n"
         FileHandle.standardError.write(Data(line.utf8))
         renderer.resetStats()
+    }
+
+    // MARK: - Lenses
+    //
+    // A lens replaces a finished request's output rows with lines Nyx made up: pretty JSON, the
+    // headers, a filter, a search, a diff against the last run. Everything that decides what those
+    // lines *are* is `LensRendering` in NyxCore; what is here is when to build them, where to put
+    // them, and how a click reaches one.
+
+    /// Opens the configured lens on requests read this frame. Called from `render` after the lock.
+    private func applyPendingLenses() {
+        guard !pendingDefaultLens.isEmpty else { return }
+        let ids = pendingDefaultLens
+        pendingDefaultLens.removeAll()
+        var armed = false
+        for id in ids where lenses.lens(of: id) == nil {
+            lenses.set(.pretty, for: id)
+            rebuildLens(for: id)
+            armed = true
+        }
+        // The display just became a different height under a viewport nobody moved. In a window the
+        // session has never scrolled, `viewportTopRow` is 0 from the first keystroke to the last, so
+        // the anchor `send` stored while the command was being typed -- row 0, back when there were
+        // no lenses at all -- is still "valid" and would be used: the frame draws from the prompt
+        // down, the response fills the window, and the shell's own prompt is a hundred display lines
+        // below the last row. No caret, no echo, until the reader scrolls by hand. Forgetting it
+        // here is what sends the next frame to `displayBottomCursor`.
+        if armed { forgetViewportAnchorIfItIsOnlyTheLiveBottom() }
+    }
+
+    /// Whether anything in this pane could be shown through a lens: a finished request that has
+    /// been read. What `⌘⇧J`'s menu item and palette row are enabled by.
+    var hasResponseToLens: Bool { lensTargetBlock() != nil }
+
+    /// The lens a block is being read through, for its header and its menu.
+    func lens(of id: UInt32) -> ResponseLens? { lenses.lens(of: id) }
+
+    /// Whether this block's response body is JSON -- the one thing the `{ }` control can do
+    /// something with. From the cache, never a re-parse: this is asked once per block per frame.
+    func bodyIsJSON(_ id: UInt32) -> Bool {
+        guard case .request(let exchange)? = requestCache.entry(for: id), let exchange else {
+            return false
+        }
+        return exchange.bodyKind == .json
+    }
+
+    /// Whether this block's body is past what a lens will re-lay-out, which is what the ⋯ menu says
+    /// instead of offering seven rows that would each do nothing.
+    func lensIsTooLarge(_ id: UInt32) -> Bool {
+        guard case .request(let exchange)? = requestCache.entry(for: id), let exchange else {
+            return false
+        }
+        return LensRendering.isTooLarge(exchange)
+    }
+
+    /// The nearest earlier block that ran the same request, or nil. Both the menu's `Diff with
+    /// Previous Run` and the diff itself go through this, so the row cannot be enabled for a run
+    /// the lens would then fail to find.
+    func previousRun(of id: UInt32) -> UInt32? {
+        guard let line = requestCache.commandLine(of: id),
+              let command = CurlCommand.parse(line) else { return nil }
+        return requestCache.previousRun(before: id, matching: command)
+    }
+
+    /// Chooses a lens for a block. `nil` and `.raw` are the same instruction -- put the rows back.
+    func setLens(_ lens: ResponseLens?, on id: UInt32) {
+        let chosen: ResponseLens? = (lens == nil || lens == .raw) ? nil : lens
+        lenses.set(chosen, for: id)
+        if chosen == nil { lensBuffers[id] = nil }
+        if lensSelection?.commandID == id { lensSelection = nil }
+        // The display under the viewport is about to be a different height. A line offset chosen
+        // against the old one would put the reader somewhere they did not ask to be -- but only if
+        // it was chosen against *this* block, and `canonicalised` clamps it either way. What has to
+        // go is the live-bottom anchor, which was never a place anyone chose.
+        forgetViewportAnchorIfItIsOnlyTheLiveBottom()
+        rebuildLens(for: id)
+        markDirty()
+    }
+
+    /// `⌘⇧J` and the `{ }` control: pretty ↔ raw, on the block under the pointer or the last
+    /// request in the pane. Returns false when there is no request to toggle, so the caller can
+    /// beep rather than pretending.
+    @discardableResult
+    func toggleLensOfCurrentBlock() -> Bool {
+        guard let id = lensTargetBlock() else { return false }
+        guard !lensIsTooLarge(id) else { return false }
+        setLens(lenses.lens(of: id) == nil ? .pretty : nil, on: id)
+        return true
+    }
+
+    /// The block a lens command applies to: the one under the pointer when it is a request, else
+    /// the last request in the pane. A keyboard shortcut with no pointer involved still has to have
+    /// an answer, and "the response you were just looking at" is the one people mean.
+    private func lensTargetBlock() -> UInt32? {
+        if let point = lastPointerPoint, let id = commandID(under: point),
+           requestCache.isRequest(id: id) {
+            return id
+        }
+        if let hovered = hoveredBlock?.id, requestCache.isRequest(id: hovered) { return hovered }
+        return session.withTerminal { t -> UInt32? in
+            t.promptRows.reversed().compactMap { row -> UInt32? in
+                guard let region = t.command(containingAbsoluteRow: row), region.id != 0,
+                      self.requestCache.isRequest(id: region.id) else { return nil }
+                return region.id
+            }.first
+        }
+    }
+
+    /// Builds a block's lens lines off the main thread and stores them when they are ready.
+    ///
+    /// The frame builder never waits on this: it draws whatever buffer is there, which is the
+    /// previous rendering while a new one is in flight and the raw rows when there is none at all.
+    /// A response of two megabytes is a JSON parse and a pretty-print, and doing that between two
+    /// frames is how a terminal gets a reputation for stuttering.
+    private func rebuildLens(for id: UInt32) {
+        guard let lens = lenses.lens(of: id) else {
+            lensBuffers[id] = nil
+            markDirty()
+            return
+        }
+        guard case .request(let exchange)? = requestCache.entry(for: id), let exchange else {
+            lenses.set(nil, for: id)
+            lensBuffers[id] = nil
+            markDirty()
+            return
+        }
+        var previous: HTTPExchange?
+        if case .diff(let previousID) = lens,
+           case .request(let earlier)? = requestCache.entry(for: previousID) {
+            previous = earlier
+        }
+        // One at a time per block. The follow-up is not queued with this input, it is re-derived
+        // when this one lands, so five folds in a second cost two renderings and the second one is
+        // of the folds as they finally stand.
+        guard !lensRebuilds.contains(id) else {
+            lensRebuildsAgain.insert(id)
+            return
+        }
+        let input = LensInput(exchange: exchange, previous: previous, folded: lenses.folded(in: id))
+        let version = session.withTerminal { $0.contentVersion }
+        lensRebuilds.insert(id)
+        lensQueue.async { [weak self] in
+            let lines = LensRendering.lines(for: lens, input: input)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.lensRebuilds.remove(id)
+                // Before the guard below, and in a `defer`, because the commonest reason a rebuild
+                // was asked for mid-flight is that the *lens itself* changed -- and that is exactly
+                // the case the guard returns on. Draining afterwards would leave the new lens with
+                // nothing ever built for it.
+                let again = self.lensRebuildsAgain.remove(id) != nil
+                defer { if again { self.rebuildLens(for: id) } }
+                // The lens may have changed while this was in flight -- a fold, another lens, back
+                // to raw. The newest choice wins; this rendering is of a question nobody is asking.
+                guard self.lenses.lens(of: id) == lens else { return }
+                if let lines, !lines.isEmpty {
+                    self.lensBuffers[id] = LensBuffer(commandID: id, lens: lens, lines: lines,
+                                                      contentVersion: version)
+                } else {
+                    // nil is `LensRendering` saying "show the raw transcript": a body too large, a
+                    // filter with no JSON under it, a diff with nothing to compare against. The
+                    // block goes back to its rows rather than showing an empty pane.
+                    self.lensBuffers[id] = nil
+                    self.lenses.set(nil, for: id)
+                }
+                self.markDirty()
+            }
+        }
+    }
+
+    /// Opens the one-line field a filter or a search is typed into, over the block's command row.
+    ///
+    /// The field applies on every keystroke, because the lens is a pure function of the exchange
+    /// and the text: there is nothing to submit, and a response that only re-filters when you press
+    /// return is one you cannot explore.
+    private func presentLensField(for lens: ResponseLens, on id: UInt32) {
+        dismissLensField()
+        let isFilter: Bool
+        if case .filter = lens { isFilter = true } else { isFilter = false }
+        let view = LensFieldView(frame: .zero)
+        let palette = session.withTerminal { $0.palette }
+        addSubview(view)
+        view.frame = lensFieldFrame(for: id, height: view.intrinsicContentSize.height)
+        view.show(caption: isFilter ? "Filter" : "Find", text: "", palette: palette)
+        view.onChange = { [weak self] text in
+            guard let self else { return }
+            guard !text.isEmpty else {
+                self.setLens(nil, on: id)
+                self.lensField?.setMessage(nil, offersJq: false)
+                return
+            }
+            if isFilter {
+                let body = self.lensBody(of: id)
+                if let problem = LensRendering.filterError(text, body: body) {
+                    // A path this box does not understand, or a body that is not JSON. The lens is
+                    // left alone -- the response stays on screen -- and the sentence says which.
+                    self.lensField?.setMessage(problem, offersJq: problem == JSONPath.unsupportedMessage)
+                    return
+                }
+                self.lensField?.setMessage(nil, offersJq: false)
+                self.setLens(.filter(text), on: id)
+            } else {
+                self.setLens(.grep(text), on: id)
+            }
+        }
+        view.onRunWithJq = { [weak self] text in
+            guard let self, let line = self.requestCache.commandLine(of: id) else { return }
+            self.dismissLensField()
+            // The block's own command line, piped: what a person would have typed if they had
+            // known at the start that they would want jq. Bracketed, because a `\`-continued curl
+            // read off the grid has real newlines in it.
+            let escaped = text.replacingOccurrences(of: "'", with: "'\\''")
+            let bracketed = self.session.withTerminal { $0.modes.bracketedPaste }
+            self.performPaste("\(line) | jq '\(escaped)'", bracketed: bracketed)
+            self.send([0x0D])
+        }
+        view.onClose = { [weak self] in self?.dismissLensField() }
+        lensField = view
+        lensFieldBlock = id
+        view.focus()
+        onFocusRequested?()
+    }
+
+    /// Over the block's command row when that row is on screen, and at the top of the pane when it
+    /// is not: the field belongs to a response, and a response scrolled off the top is still the
+    /// one being filtered.
+    ///
+    /// The slot comes from the display the last frame built, not from `promptRow - viewportTop`: a
+    /// lens or a fold on screen means those are different numbers, and the field would sit over
+    /// somebody else's command.
+    private func lensFieldFrame(for id: UInt32, height: CGFloat) -> NSRect {
+        let width: CGFloat = 360
+        let cell = cellSizePoints
+        var row = 0
+        if let promptRow = session.withTerminal({ $0.promptRow(ofCommand: id) }) {
+            let top = session.withTerminal { max(0, $0.viewportTopRow) }
+            row = max(0, min(rows - 1, displaySlot(ofAbsoluteRow: promptRow, viewportTop: top) ?? 0))
+        }
+        let y = bounds.height - padding - CGFloat(row + 1) * cell.height - height
+        return NSRect(x: max(padding, bounds.width - padding - width),
+                      y: max(padding, y), width: width, height: height)
+    }
+
+    /// Which visible slot an absolute row is drawn in, through whatever folds and lenses the last
+    /// frame applied. nil when that row is not on screen at all.
+    private func displaySlot(ofAbsoluteRow absolute: Int, viewportTop top: Int) -> Int? {
+        guard !foldRowsOnScreen.isEmpty else {
+            let index = absolute - top
+            return (0..<rows).contains(index) ? index : nil
+        }
+        return foldRowsOnScreen.firstIndex {
+            if case .row(absolute) = $0 { return true } else { return false }
+        }
+    }
+
+    /// Keeps the field over the command row it belongs to as the view scrolls under it.
+    ///
+    /// It used to be placed once, when it opened, and never again: three wheel clicks left a filter
+    /// box floating over an unrelated command, still filtering the block it could no longer point
+    /// at. **On scroll it follows, and when its block leaves the top of the screen it pins to the
+    /// first row** rather than being dismissed -- a response scrolled past is still the one being
+    /// filtered, and taking the box away mid-word would lose what was typed.
+    private func repositionLensField() {
+        guard let view = lensField, let id = lensFieldBlock else { return }
+        let frame = lensFieldFrame(for: id, height: view.intrinsicContentSize.height)
+        if view.frame != frame { view.frame = frame }
+    }
+
+    /// The response body as a JSON document, for the field's own error message.
+    private func lensBody(of id: UInt32) -> JSONValue? {
+        guard case .request(let exchange)? = requestCache.entry(for: id),
+              let exchange else { return nil }
+        return LensRendering.bodyValue(exchange)
+    }
+
+    func dismissLensField() {
+        lensField?.removeFromSuperview()
+        lensField = nil
+        lensFieldBlock = nil
+        window?.makeFirstResponder(self)
+    }
+
+    // MARK: - Watching
+    //
+    // The pane owns a timer, a shell and a screen; `WatchSeries` owns every decision -- when the
+    // next run is due, whether it may be sent, which runs fold, what the header says. Nothing here
+    // re-derives any of that: the rules are tested without a terminal, and this is the wiring.
+
+    /// Begins watching `command` in this pane. One series per pane: a second is what the user just
+    /// asked for, so the first is stopped rather than left ticking invisibly behind it.
+    ///
+    /// `firstRunSent` is for the sheet's Repeat menu, which types the request itself so the user
+    /// sees it go. A series starts *due*, so without this the first tick would type a second copy
+    /// of the same request a quarter of a second later.
+    @discardableResult
+    func startWatch(plan: WatchPlan, command: String, firstRunSent: Bool = false) -> Bool {
+        guard !command.isEmpty else { NSSound.beep(); return false }
+        // A series only ever sends at a prompt, and a shell that emits no marks can never say it
+        // is at one -- so a watch here would sit on a 250 ms timer until the pane closed and never
+        // send a thing. Refused rather than started; callers that have something to undo first ask
+        // `canWatch` instead, so the refusal happens before anything has been run.
+        guard canWatch else {
+            reportWatchRefused()
+            return false
+        }
+        stopWatch(.stopped)
+        let now = watchClock
+        watch = WatchSeries(plan: plan, command: Pane.watchLine(command), startedAt: now)
+        watchSentAt = firstRunSent ? now : nil
+        // The sheet types its first run and then calls this, so the terminal has not seen the new
+        // command yet: what it calls the last finished command is still the block *before* it.
+        watchSentAfterCommandID = firstRunSent ? newestRunCommandID : 0
+        updateWatchTimer()
+        markDirty()
+        return true
+    }
+
+    /// Whether a watch could run in this pane at all: the shell has to mark its prompts, because
+    /// "is the shell free?" is the one question a series asks before every send.
+    var canWatch: Bool { session.withTerminal { $0.shellEmitsPromptMarks } }
+
+    /// Says why a watch cannot start here.
+    ///
+    /// On the *window*, never on a sheet attached to it. `reportProjectWrite` puts its alert on
+    /// `window.attachedSheet` because the sheet that asked stays up; this refusal's one caller is
+    /// the request sheet's Repeat menu, which closes itself in the very next statement -- and an
+    /// alert hosted by a sheet that is then ended is created, never shown, and its completion
+    /// never runs. The user saw nothing at all. So: the window, and after the sheet has gone --
+    /// see `presentRequestEditor`, which holds the refusal until `beginSheet`'s completion.
+    private func reportWatchRefused() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Cannot watch a request in this pane"
+        alert.informativeText = "A watch sends its next run only when the shell is back at a "
+            + "prompt, and this shell does not tell Nyx where its prompts are. Set "
+            + "shell-integration = auto and open a new tab, or run the request from a pane that "
+            + "has it."
+        if let window {
+            alert.beginSheetModal(for: window) { _ in }
+        } else {
+            NSSound.beep()
+        }
+    }
+
+    /// The line a series actually types: the request with Nyx's own measurement flags on it.
+    ///
+    /// A watch exists to say what each run answered and how long it took, and a bare `curl URL`
+    /// can say neither -- it prints a body and nothing else, so every run comes back with no
+    /// status and no `time_total`. Measured against the real fixture, a `Run until 200` on a
+    /// hand-typed line never stopped (twenty-one runs and counting) because no run ever had a
+    /// status to compare, and the header read "stopped after 3 runs" where it should have read
+    /// "3 runs · p50 8 ms".
+    ///
+    /// These are the same additions the workbench's own Run makes (`RequestRun.commandLine`), and
+    /// the same ones stripped back out of everything a user copies, exports or saves as a button
+    /// -- so a watch of a block that was already run through the workbench re-types exactly the
+    /// line that is on screen. A command that is not a `curl`, or one with a pipeline, is left
+    /// exactly as it stands.
+    static func watchLine(_ command: String) -> String {
+        guard let parsed = CurlCommand.parse(command) else { return command }
+        return RequestRun.commandLine(for: parsed)
+    }
+
+    /// Ends the series, if there is one still going. False when there was none, so a caller with a
+    /// menu item or a chord can say so instead of pretending it did something.
+    @discardableResult
+    func stopWatch(_ reason: WatchSeries.Finish) -> Bool {
+        guard var series = watch, !series.isFinished else { return false }
+        series.stop(reason)
+        watch = series
+        watchSentAt = nil
+        updateWatchTimer()
+        markDirty()
+        return true
+    }
+
+    /// Whether `⌘.` has a series to stop here.
+    ///
+    /// Only while the series' own newest run is the last request in the pane. `⌘.` is a chord
+    /// people press for lots of reasons, and one that silently killed a watch three screens up --
+    /// after they had gone on to run something else -- would be a stop they could not see.
+    /// A series that has not run anything yet passes: nothing can be later than nothing.
+    var canStopWatch: Bool {
+        guard let series = watch, !series.isFinished else { return false }
+        guard let newest = series.runs.last?.id else { return true }
+        return latestRequestBlock() == newest
+    }
+
+    /// The last block in the pane whose command was a request. Also the fallback `lensTargetBlock`
+    /// uses when there is no pointer, and the same answer for the same reason: "the response you
+    /// were just looking at".
+    private func latestRequestBlock() -> UInt32? {
+        session.withTerminal { t -> UInt32? in
+            t.promptRows.reversed().compactMap { row -> UInt32? in
+                guard let region = t.command(containingAbsoluteRow: row), region.id != 0,
+                      self.requestCache.isRequest(id: region.id) else { return nil }
+                return region.id
+            }.first
+        }
+    }
+
+    /// The header for a block that is a series' newest run, or nil for every other block.
+    ///
+    /// Only the newest: the older runs are ordinary finished requests with their own summaries,
+    /// and a timeline drawn beside each of them would be the same dots twenty times down a screen.
+    private func watchHeader(forBlock id: UInt32) -> WatchHeader? {
+        guard let series = watch, series.runs.last?.id == id else { return nil }
+        return series.header()
+    }
+
+    /// The clock every reading the series is given comes from, so `at` values, deadlines and the
+    /// terminal's own command timings are on one timeline.
+    private var watchClock: Double { session.withTerminal { $0.now() } }
+
+    /// The timer exists only while the series is waiting. No series, or one running or finished,
+    /// and there is nothing to poll for -- the idle cost of a pane must stay at zero.
+    private func updateWatchTimer() {
+        let waiting: Bool = {
+            guard let series = watch, !series.isFinished else { return false }
+            if case .waiting = series.phase { return true }
+            return false
+        }()
+        if waiting, watchTimer == nil {
+            watchTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                self?.watchTick()
+            }
+        } else if !waiting, let timer = watchTimer {
+            timer.invalidate()
+            watchTimer = nil
+        }
+    }
+
+    /// Four times a second while a run is due: is the shell free, and has the interval elapsed?
+    ///
+    /// Both questions are the series'. The one thing decided here is what "at a prompt" means for
+    /// a real shell: no command running, and marks to know it by -- a session with no shell
+    /// integration can never answer it, so a watch there simply never sends.
+    private func watchTick() {
+        guard let series = watch, !series.isFinished else {
+            updateWatchTimer()
+            return
+        }
+        let now = watchClock
+        if let sentAt = watchSentAt {
+            // Typed and not yet seen to start. Ask the buffer directly before giving up: a local
+            // request can begin and end between two ticks, and on a pane with no frames the tick
+            // is the only thing looking.
+            pollWatch()
+            if watch?.isFinished == true || watchSentAt == nil { return }
+            if now - sentAt > Pane.watchStartTimeout { watchSentAt = nil }
+            return
+        }
+        let atPrompt: Bool = session.withTerminal { t in
+            t.shellEmitsPromptMarks && t.runningCommand == nil
+        }
+        guard series.shouldSend(now: now, shellAtPrompt: atPrompt) else { return }
+        sendWatchRun(series.command, at: now)
+    }
+
+    /// The newest command in the pane that has actually run -- not the prompt the user (or the
+    /// watch) is about to type at, which has an id already but has produced nothing. Read at the
+    /// moment a run is typed, so that the run itself, whose id is the prompt's, is above it.
+    private var newestRunCommandID: UInt32 {
+        session.withTerminal { $0.lastFinishedCommand?.id ?? 0 }
+    }
+
+    /// Types one run at the shell.
+    ///
+    /// Bracketed like every other command Nyx types for the user, because a `\`-continued `curl`
+    /// read back off the grid has real newlines in it and sent raw the shell would start running
+    /// it a fragment at a time. Not through `performPaste`: that arms the `⌘E Workbench` pill for
+    /// any pasted curl, and a pill flashing over the prompt every five seconds for a request the
+    /// user is already watching is chrome arguing with itself.
+    private func sendWatchRun(_ command: String, at now: Double) {
+        let bracketed = session.withTerminal { $0.modes.bracketedPaste }
+        let line = command.replacingOccurrences(of: "\r\n", with: "\r")
+            .replacingOccurrences(of: "\n", with: "\r")
+        var bytes: [UInt8] = []
+        if bracketed { bytes += Array("\u{1B}[200~".utf8) }
+        bytes += Array(line.utf8)
+        if bracketed { bytes += Array("\u{1B}[201~".utf8) }
+        bytes += [0x0D]
+        watchSentAt = now
+        watchSentAfterCommandID = newestRunCommandID
+        isSendingWatchRun = true
+        send(bytes)
+        isSendingWatchRun = false
+    }
+
+    /// The user has taken the shell back. Called from the two keyboard entry points rather than
+    /// from `send`, because `send` is also how a quick action, a paste and the watch itself write
+    /// to the shell, and none of those is somebody typing.
+    private func stopWatchIfUserTyped() {
+        guard !isSendingWatchRun, let series = watch, !series.isFinished else { return }
+        stopWatch(.userTyped)
+    }
+
+    /// Moves the series on **without a frame**, from the coalesced check that already notices a
+    /// command starting and finishing from the prompt marks alone.
+    ///
+    /// This is what makes a watch survive not being looked at. `render()` does not run for a pane
+    /// whose tab is not selected (its view is out of the hierarchy), whose window is occluded, or
+    /// whose window is minimised -- the display link is paused or invalidated -- and the frame
+    /// builder is also the only thing that reads a block into the exchange cache. Driven from
+    /// there alone, switching tabs mid-watch left the series `.waiting` on a deadline that had
+    /// passed with a run it never saw start: every thirty seconds `watchStartTimeout` cleared the
+    /// outstanding flag and the next tick typed the request again, for ever, ignoring the
+    /// interval, never counting towards `.count(n)` and never testing an `until` condition.
+    ///
+    /// So the block is found by *id* rather than by being on screen, read through the same
+    /// `requestSummary` the frame uses (one parse per block, cached, so a frame that later draws
+    /// it does no work), and the series moved on. `render` goes on draining whatever it sees; the
+    /// two cannot double-count, because `RequestSummaryCache.shouldParse` answers once per block.
+    private func pollWatch() {
+        guard let series = watch, !series.isFinished else { return }
+        var runningID: UInt32?
+        session.withTerminal { t in
+            if self.watchSentAt != nil { runningID = t.runningCommand?.id }
+            guard let region = self.watchCandidateBlock(of: series, in: t) else { return }
+            // `requestSummary` is the finish signal: it reads the transcript, caches the exchange
+            // and enqueues the run. It refuses a block that has not finished, which is the guard
+            // that keeps a run in flight out of the series' statistics.
+            _ = self.requestSummary(for: CommandBlock(region: region, visibleRows: 0..<0,
+                                                      showsHeader: true), in: t)
+        }
+        drainPendingRecord()
+        advanceWatch(runningCommandID: runningID)
+        applyPendingLenses()
+    }
+
+    /// The block a waiting or running series is expecting an answer from, wherever it is on screen.
+    ///
+    /// While a run is `.running` that is its own block, by id. While one has been typed and not
+    /// seen to start it is the last command in the buffer that has actually run -- the bottom
+    /// region when it has output of its own, else the one before the prompt being typed at.
+    private func watchCandidateBlock(of series: WatchSeries, in t: Terminal) -> CommandRegion? {
+        if case .running(let id) = series.phase {
+            return t.promptRow(ofCommand: id).flatMap { t.command(containingAbsoluteRow: $0) }
+        }
+        guard watchSentAt != nil, t.totalRows > 0,
+              let bottom = t.command(containingAbsoluteRow: t.totalRows - 1) else { return nil }
+        return bottom.outputStart == nil ? t.previousCommand(of: bottom) : bottom
+    }
+
+    /// Moves the series on by whatever this frame saw: a run that started, and runs whose blocks
+    /// the cache finished reading. Called from `render` after the session lock.
+    private func advanceWatch(runningCommandID: UInt32?) {
+        guard watch != nil else {
+            pendingWatchFinishes.removeAll()
+            return
+        }
+        if watchSentAt != nil, let id = runningCommandID, var series = watch {
+            series.runStarted(id: id, at: watchClock)
+            watch = series
+            if case .running = series.phase {
+                watchSentAt = nil
+                updateWatchTimer()
+                markDirty()
+            }
+        }
+        guard !pendingWatchFinishes.isEmpty else { return }
+        let finishes = pendingWatchFinishes
+        pendingWatchFinishes.removeAll()
+        for finish in finishes { recordWatchRun(finish) }
+    }
+
+    /// One finished run: told to the series, then shown -- the older runs folded, the newest one
+    /// lensed against the run before it.
+    private func recordWatchRun(_ finish: WatchFinish) {
+        guard var series = watch, !series.isFinished else { return }
+        series.runFinished(id: finish.id, status: finish.status, exitStatus: finish.exitStatus,
+                           timeTotal: finish.timeTotal, body: finish.body, at: finish.at)
+        // The series drops a finish that is not its own; if it did, nothing here should happen
+        // either -- least of all folding somebody else's block.
+        guard series.runs.contains(where: { $0.id == finish.id }) else { return }
+        watch = series
+        watchSentAt = nil
+        var moved = false
+        for (index, run) in series.runs.enumerated() where series.shouldFold(runAt: index) {
+            if folding.foldUnlessOpened(run.id, .all) { moved = true }
+        }
+        // The newest run's lens: what changed since the last one, when both are JSON and there is
+        // a last one. Otherwise the configured default, which `requestSummary` has already armed.
+        if series.runs.last?.id == finish.id, isJSONResponse(finish.id),
+           let previous = previousRun(of: finish.id) {
+            pendingDefaultLens.removeAll { $0 == finish.id }
+            setLens(.diff(previousCommandID: previous), on: finish.id)
+        }
+        updateWatchTimer()
+        if moved { forgetViewportAnchorIfItIsOnlyTheLiveBottom() }
+        markDirty()
+    }
+
+    /// The `Watch…` popover, over the block's own command row.
+    ///
+    /// A popover anchored to the row rather than a sheet: what is being watched is *this* block,
+    /// and a window-wide sheet loses that. It is `NSPopover`'s job to keep it there while the view
+    /// scrolls, and to take it down on a click outside.
+    private func presentWatchPlanEditor(seed: WatchPlan, command: String, on id: UInt32) {
+        let editor = WatchPlanEditor(seed: seed)
+        editor.onStart = { [weak self] plan in
+            // Closed from here, not by the controller: `dismiss(nil)` only ends a *presented*
+            // controller, and this one was handed to an `NSPopover` rather than presented -- so
+            // pressing Start left the popover on screen over the watch it had just begun.
+            self?.watchPopover?.performClose(nil)
+            self?.watchPopover = nil
+            self?.startWatch(plan: plan, command: command)
+        }
+        watchPopover?.performClose(nil)
+        let popover = NSPopover()
+        popover.contentViewController = editor
+        popover.behavior = .transient
+        watchPopover = popover
+        // The command row if it is on screen, and the top of the pane if it is not -- the same
+        // rule the filter field follows, and for the same reason: a response scrolled past is
+        // still the one being asked about.
+        var slot = 0
+        if let promptRow = session.withTerminal({ $0.promptRow(ofCommand: id) }) {
+            let top = session.withTerminal { max(0, $0.viewportTopRow) }
+            slot = max(0, min(rows - 1, displaySlot(ofAbsoluteRow: promptRow, viewportTop: top) ?? 0))
+        }
+        let cell = cellSizePoints
+        let y = bounds.height - padding - CGFloat(slot + 1) * cell.height
+        popover.show(relativeTo: NSRect(x: padding, y: y, width: max(1, bounds.width - padding * 2),
+                                        height: cell.height),
+                     of: self, preferredEdge: .maxY)
+    }
+
+    /// Whether a block's response is JSON a lens can re-lay-out -- the precondition for diffing it
+    /// against the run before.
+    private func isJSONResponse(_ id: UInt32) -> Bool {
+        guard case .request(let exchange)? = requestCache.entry(for: id), let exchange else {
+            return false
+        }
+        return exchange.bodyKind == .json && !LensRendering.isTooLarge(exchange)
+    }
+
+    /// Writes the request read this frame to the history, outside the session lock. Called from
+    /// `render` and from the context menu, which is the other place a block can be read.
+    private func drainPendingRecord() {
+        guard let line = recordAfterFrame else { return }
+        recordAfterFrame = nil
+        (NSApp.delegate as? AppDelegate)?.requests?.record(line)
+    }
+
+    /// What a finished block's request said, for its header -- nil for every block that is not a
+    /// curl, which is almost all of them.
+    ///
+    /// A block is read the first frame it is on screen and finished, and never again: after that
+    /// this is one dictionary lookup per visible block. `blocks` is empty for a shell with no
+    /// prompt marks, so a session without integration never reaches here at all.
+    ///
+    /// Only *finished* blocks: a half-written transcript would parse to a head with no body and put
+    /// a status on the row that the response has not actually finished delivering.
+    private func requestSummary(for block: CommandBlock, in t: Terminal) -> HTTPSummary? {
+        let id = block.region.id
+        guard id != 0, !block.isRunning, block.region.outputStart != nil else { return nil }
+
+        if requestCache.shouldParse(id: id) {
+            let line = t.commandLine(of: block.region)
+            guard CurlDetection.isCurl(line) else {
+                requestCache.remember(.notARequest, for: id)
+                return nil
+            }
+            // The one moment a request is known to have been *run*: this block is finished, it is a
+            // curl, and no block this new has been recorded. Recorded here rather than when the
+            // command is typed, because what the user re-runs from the palette must be a line that
+            // ran, and recorded for a failed connection too -- "the deploy call that could not
+            // reach the host" is exactly the one somebody wants back.
+            //
+            // `shouldRecord` and not `shouldParse`: reading happens again whenever the cache has
+            // been trimmed and the block comes back on screen, and recording it again would stamp
+            // last Tuesday's request with the time you scrolled past it.
+            //
+            // Recorded *after* the lock, in `render`: the store writes a file on its own queue and
+            // takes its own lock, and doing that with the session's held puts a file write between
+            // the PTY reader and every other pane in the window.
+            if requestCache.shouldRecord(id: id) { recordAfterFrame = line }
+            // A response big enough to fill the scrollback is not one whose body kind is worth
+            // joining into a single string under the session lock. The head and the sentinel are
+            // in the first and last rows of it, but reading only those would still walk the whole
+            // region, so a run this large simply gets the ordinary summary.
+            let exchange = block.region.outputRows.count > Pane.requestOutputRowLimit
+                ? nil
+                // The *logical* lines, not the rows: a JSON body is one line however wide the pane
+                // is, and reading it as rows puts a newline inside a string literal, which no JSON
+                // parser accepts. See `Terminal.outputLines(of:)`.
+                : HTTPExchange.parse(lines: t.outputLines(of: block.region))
+            requestCache.remember(.request(exchange), line: line, for: id)
+            requestCache.trim(to: Pane.requestCacheLimit)
+            // The one moment a response exists and nobody has looked at it yet, which is where the
+            // default lens belongs. Not applied here: this runs under the session lock, and
+            // building a lens means dispatching. `render` drains it the way it drains the history.
+            if let exchange, config.httpLens == .pretty, exchange.bodyKind == .json,
+               !LensRendering.isTooLarge(exchange) {
+                pendingDefaultLens.append(id)
+            }
+            // And the one moment a watched run is known to have *finished*: reading the block is
+            // what turns a transcript into a status and a timing, so this is where the series
+            // hears about it. Whether it is the series' own run at all is `WatchSeries.owns`,
+            // which is tested without a terminal -- an id comparison cannot tell a stranger's
+            // curl from a later run of the watch.
+            if let series = watch, series.owns(finishedBlock: id, outstanding: watchSentAt != nil,
+                                               typedAfter: watchSentAfterCommandID) {
+                pendingWatchFinishes.append(WatchFinish(id: id, status: exchange?.status,
+                                                        exitStatus: block.region.exitStatus ?? 0,
+                                                        timeTotal: exchange?.timing?.total,
+                                                        body: exchange?.bodyLines.joined(separator: "\n") ?? "",
+                                                        at: t.now()))
+            }
+        }
+        // `.request(nil)` still produces a summary: a curl that could not connect prints no head
+        // and no sentinel, and "exit 7 · connection refused" is the entire point of it.
+        guard case .request(let exchange) = requestCache.entry(for: id) else { return nil }
+        return HTTPSummary.make(exchange: exchange, exitStatus: block.region.exitStatus,
+                                duration: block.region.duration)
+    }
+
+    /// Above this many output rows a block keeps its ordinary summary. 20,000 rows is twice the
+    /// default scrollback: a response that long is a download, not something anyone reads a status
+    /// line for.
+    private static let requestOutputRowLimit = 20_000
+
+    /// Where the `⌘E Workbench` pill goes this frame and what it says, or nil for no pill.
+    ///
+    /// Three questions, in the order that makes the common case free: is one armed at all (nothing
+    /// is, in every pane nobody has pasted a `curl` into), is the line still worth offering it for,
+    /// and is there anywhere to put it. The middle one asks `WorkbenchHint` about what is on the
+    /// command line *now* rather than about the text that armed it, so backspacing the `curl` away
+    /// takes the pill with it.
+    ///
+    /// Placed by `CommandBlockChrome.overlayPlacement`, the same ladder the hover strip uses,
+    /// against the rows of the command line rather than of a block: the first row from the bottom
+    /// with room, and -- because a `curl` worth a workbench usually fills every row it touches --
+    /// the tail of the last row when none has any.
+    private func workbenchHintPlacement(in t: Terminal, lines: [Row], cellWidth: Double,
+                                        screenRow: (Int) -> Int?) -> (slot: Int, text: String)? {
+        guard let armed = hintCommand, Date.timeIntervalSinceReferenceDate < hintExpiry,
+              cellWidth > 0 else { return nil }
+        // With shell integration the line itself is the authority, and `currentInput` going nil --
+        // the command was run, or the line was cleared -- takes the pill with it. Without it there
+        // is nothing to read back, and the text that was pasted a moment ago is the best thing
+        // known about the line.
+        let line = t.shellEmitsPromptMarks ? t.currentInput : armed
+        guard let line, WorkbenchHint.shouldShow(commandLine: line, hintEnabled: config.httpHint,
+                                                 altScreen: t.modes.altScreen) else { return nil }
+        let cursorRow = t.scrollback.count + t.screen.cursor.y
+        let firstRow = min(t.currentInputStart?.row ?? cursorRow, cursorRow)
+        var candidates: [(absoluteRow: Int, lastUsedColumn: Int)] = []
+        var slotOf: [Int: Int] = [:]
+        for absolute in firstRow...cursorRow {
+            guard let slot = screenRow(absolute), slot < lines.count else { continue }
+            slotOf[absolute] = slot
+            var last = -1
+            for (column, cell) in lines[slot].cells.enumerated() where cell.content != 0 { last = column }
+            candidates.append((absoluteRow: absolute, lastUsedColumn: last))
+        }
+        // The chord as the palette writes it, from the table this pane matches keys against: `⌘E`
+        // is a default, and a config that has moved it must not be told to press it.
+        let text = WorkbenchHint.text(chord: bindings.binding(for: .editAndRunCommand)?.displayName ?? "")
+        let columns = Int((workbenchHint.width(for: text) / cellWidth).rounded(.up))
+        // `fallbackToTail: false`: the pill shows itself, with the pointer nowhere near it, so a
+        // command line with no room simply gets no pill. The hover strip is the only chrome that
+        // may cover text, and only because a pointer is deliberately on it.
+        guard let placement = CommandBlockChrome.overlayPlacement(commandRows: candidates,
+                                                                  stripColumns: [.minimal: columns],
+                                                                  cols: t.cols,
+                                                                  fallbackToTail: false),
+              let slot = slotOf[placement.row] else { return nil }
+        return (slot: slot, text: text)
+    }
+
+    /// Offers the workbench for a `curl` that has just been pasted, for `WorkbenchHint.seconds`.
+    ///
+    /// Armed from the paste rather than from the shell's echo: the paste is the moment we know a
+    /// request arrived, and waiting to recognise it in the grid would mean recognising every line
+    /// the user types by hand as well -- a pill that appears while you are still typing a command
+    /// is chrome nobody asked for.
+    private func armWorkbenchHint(for text: String) {
+        guard config.httpHint, !text.isEmpty, CurlDetection.isCurl(text) else { return }
+        guard !session.withTerminal({ $0.modes.altScreen }) else { return }
+        hintCommand = text
+        hintExpiry = Date.timeIntervalSinceReferenceDate + WorkbenchHint.seconds
+        hintTimer?.invalidate()
+        // Half a second past the deadline, so the frame this asks for is one where the pill has
+        // certainly expired rather than one racing it.
+        hintTimer = Timer.scheduledTimer(withTimeInterval: WorkbenchHint.seconds + 0.5, repeats: false) {
+            [weak self] _ in self?.dismissWorkbenchHint()
+        }
+        markDirty()
+    }
+
+    /// Takes the pill away: a key press, the deadline, or the workbench having been opened.
+    private func dismissWorkbenchHint() {
+        guard hintCommand != nil else { return }
+        hintCommand = nil
+        hintTimer?.invalidate()
+        hintTimer = nil
+        markDirty()
+    }
+
+    /// The pill was clicked: the line it is sitting on, in the workbench.
+    ///
+    /// The line as the shell has it, falling back to the text that armed the pill -- without shell
+    /// integration there is no `currentInput` to read, and the pasted text is what is on the line.
+    private func openWorkbenchFromHint() {
+        let typed: String? = session.withTerminal { $0.currentInput }
+        let line = typed ?? hintCommand
+        dismissWorkbenchHint()
+        guard let line, !line.isEmpty else { return }
+        editCurrentInput(line)
     }
 
     private func render() {
@@ -734,13 +1710,23 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         var notes: [String?] = []
         var spines: [(rows: Range<Int>, color: RGB)] = []
         var summaries: [(row: Int, text: String, color: RGB)] = []
-        var sticky: (text: String, failed: Bool, row: Int, summary: String)?
+        var sticky: (text: String, failed: Bool, row: Int, summary: String, tone: SummaryTone)?
         var anyRunningOnScreen = false
+        // Where the workbench pill goes this frame and what it says, or nil for no pill. Decided
+        // under the lock with the rest of the chrome, applied after it.
+        var hint: (slot: Int, text: String)?
         // Set under the lock, acted on after it: the overlay and the cursor rects are AppKit calls.
         var hoverChanged = false
+        /// The block the filter field belongs to has been cleared away or evicted; see below.
+        var dismissField = false
+        /// The buffer this series' runs lived in has gone; see below.
+        var abandonWatch = false
         // What the buffer looked like when the frame was built. The dirty flags are cleared against
         // it once the frame is on screen, so a write that lands in between keeps its flags.
         var builtAtContentVersion: UInt64 = 0
+        /// Which command the shell says is running, read only while a watch is waiting to see its
+        /// own run start. Acted on after the lock, with everything else the frame noticed.
+        var runningCommandID: UInt32?
         let frame: RenderFrame = session.withTerminal { t in
             // Before anything reads the selection: a cleared scrollback, a reset or an
             // alternate-screen swap leaves it pointing at rows that now hold other content.
@@ -763,6 +1749,47 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             if self.foldingGeneration != t.scrollbackGeneration {
                 self.foldingGeneration = t.scrollbackGeneration
                 self.folding.unfoldAll()
+                // A lens replaces a block's rows; with every absolute row meaning something else
+                // there is no block left to replace, and the buffers are readings of text that has
+                // gone.
+                self.lenses = LensChoices()
+                self.lensBuffers.removeAll()
+                self.lensSelection = nil
+                // And the field, which is a filter on a response that no longer exists. Flagged
+                // rather than done: this runs under the session lock and dismissing touches AppKit.
+                if self.lensFieldBlock != nil { dismissField = true }
+                self.forgetViewportAnchor()
+                // Every block the series made is gone, and its ids now name other rows: kept, its
+                // header would sit on a stranger's command and its folds would collapse one. A
+                // watch cleared out from under itself is stopped and forgotten rather than left
+                // pointing at rows that no longer exist.
+                if self.watch != nil { abandonWatch = true }
+            }
+            // Rows have gone from under the numbering, so the row the anchor names is not the row
+            // it was chosen on -- it is that many rows further up. Moved rather than forgotten:
+            // forgetting it sent `viewportCursor` back to the terminal's own row, which inside a
+            // lens means the block's row *offset* and not the line the reader was on, so a reader
+            // seventy lines into a response was put back to line thirteen of it once per evicted
+            // row for as long as anything else was printing. See `DisplayCursor.shifted`.
+            //
+            // Before the pruning below and outside its guard: the anchor has to follow the rows on
+            // every frame that loses one, not only on the frames that have a fold or a lens to
+            // prune.
+            if t.evictedRows != self.lastAnchorEvictedRows {
+                let previous = self.lastAnchorEvictedRows
+                self.lastAnchorEvictedRows = t.evictedRows
+                if previous >= 0 {
+                    if let moved = DisplayCursor.shifted(anchor: self.viewportAnchor,
+                                                         anchorTop: self.viewportAnchorTop,
+                                                         evictedBefore: previous,
+                                                         evictedAfter: t.evictedRows,
+                                                         viewportTopRow: t.viewportTopRow) {
+                        self.viewportAnchor = moved.anchor
+                        self.viewportAnchorTop = moved.anchorTop
+                    } else {
+                        self.forgetViewportAnchor()
+                    }
+                }
             }
             // Folds whose prompt has gone -- evicted from the ring, or overwritten -- are dropped
             // here rather than accumulating over a session, and with them any notification armed
@@ -775,7 +1802,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // it changes when rows are evicted, or when the whole buffer is replaced.
             let bufferMoved = t.evictedRows != self.lastPruneEvictedRows
                 || t.scrollbackGeneration != self.lastPruneGeneration
-            if bufferMoved, !(self.folding.isEmpty && self.armedNotifications.isEmpty) {
+            if bufferMoved, !(self.folding.isEmpty && self.armedNotifications.isEmpty
+                                && self.requestCache.isEmpty && self.lenses.isEmpty) {
                 self.lastPruneEvictedRows = t.evictedRows
                 self.lastPruneGeneration = t.scrollbackGeneration
                 let oldest = t.oldestCommandID
@@ -783,6 +1811,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 if !self.armedNotifications.isEmpty {
                     self.armedNotifications = self.armedNotifications.filter { $0 >= oldest }
                 }
+                // A reading outlives the rows it was made from by exactly nothing: once the block
+                // is evicted its id can never come back, and the entry is a leak.
+                self.requestCache.prune(olderThan: oldest)
+                if !self.lenses.isEmpty {
+                    self.lenses.prune(olderThan: oldest)
+                    self.lensBuffers = self.lensBuffers.filter { $0.key >= oldest }
+                }
+                if let field = self.lensFieldBlock, field < oldest { dismissField = true }
             }
             // Screen coordinates: `cursor.y` counts from the top of the live screen. The renderer
             // takes it as an index into the lines it is handed, which are display slots, so with a
@@ -797,7 +1833,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let matches: [[Range<Int>]]
             let current: [Range<Int>?]
             let hovered: [Range<Int>?]
-            if self.folding.isEmpty {
+            if self.folding.isEmpty && self.lenses.isEmpty {
                 // Untouched: no fold means no buffer walk, no mapping and no allocation beyond the
                 // rows themselves. This is the path every frame of an ordinary session takes.
                 self.foldRowsOnScreen = []
@@ -815,7 +1851,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // by visible row has to be placed through the display rows rather than by
                 // subtracting the viewport top -- otherwise a highlight lands on whichever row the
                 // fold pulled up into that slot.
-                let display = t.displayRows(from: top, count: t.rows, folding: self.folding)
+                // From the display cursor, not from `top`: a lens is taller or shorter than the rows
+                // it replaces, so which of its lines is at the top of the screen is the pane's own
+                // state and cannot be recovered from an absolute row. See `DisplayCursor`.
+                // One memo for the whole frame: finding the cursor and drawing from it both walk
+                // the same blocks, and the terminal is locked between them, so nothing can have
+                // moved the rows it remembers. See `CommandRegionMemo`.
+                let memo = CommandRegionMemo()
+                // Once per frame, never per row: resolving the theme's dim colour walks a blend
+                // ladder, and there are as many rows as the window is tall.
+                let lensPalette = LensPalette.forTheme(t.palette)
+                let placeholderDim = LensPalette.dimColour(in: t.palette)
+                let display = t.displayRows(from: self.viewportCursor(in: t, memo: memo),
+                                            count: t.rows,
+                                            folding: self.folding, lenses: self.lenses,
+                                            buffers: { self.lensBuffers[$0] }, memo: memo)
                 self.foldRowsOnScreen = display
                 // The caret goes through the same map as the text under it. Without this it was
                 // drawn at `cursor.y` -- as many rows below the prompt as the folds above had
@@ -830,12 +1880,30 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     switch row {
                     case .row(let absolute): return t.absoluteRow(absolute) ?? Row(cols: t.cols)
                     case .fold(_, let hidden, let status):
-                        return t.foldPlaceholderRow(hiddenRows: hidden, status: status)
+                        return t.foldPlaceholderRow(hiddenRows: hidden, status: status,
+                                                    dim: placeholderDim)
+                    case .lens(let id, let index):
+                        // A blank row rather than nothing at all when the buffer has just been
+                        // replaced under the display: the next frame has the right lines, and one
+                        // empty row is better than a slot count that does not match the display.
+                        return self.lensBuffers[id]?.row(index, cols: t.cols,
+                                                         palette: lensPalette)
+                            ?? Row(cols: t.cols)
                     }
                 } + Array(repeating: Row(cols: t.cols), count: max(0, t.rows - display.count))
                 selected = display.map { row in
-                    guard case .row(let absolute) = row else { return nil }
-                    return self.selection?.columnRange(onRow: absolute, cols: t.cols)
+                    switch row {
+                    case .row(let absolute):
+                        return self.selection?.columnRange(onRow: absolute, cols: t.cols)
+                    case .lens(let id, let index):
+                        // The lens has its own selection, in its own coordinates, drawn through the
+                        // same channel: the renderer is handed cell ranges either way.
+                        guard let selection = self.lensSelection, selection.commandID == id,
+                              let buffer = self.lensBuffers[id] else { return nil }
+                        return selection.columns(onLine: index, in: buffer)
+                    case .fold:
+                        return nil
+                    }
                 } + Array(repeating: nil, count: max(0, t.rows - display.count))
                 matches = SearchHighlights.visibleRanges(self.searchSession.matches,
                                                         displayRows: display, cols: t.cols)
@@ -911,6 +1979,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                              mouseReporting: t.modes.mouse != .none,
                                                              hasMarks: t.shellEmitsPromptMarks)
             let blocks = chromeAllowed ? t.visibleBlocks(from: windowTop, through: lastRowOnScreen) : []
+            self.displayBlockRows = Dictionary(blocks.map { ($0.region.id, $0.region.promptRow) },
+                                               uniquingKeysWith: { first, _ in first })
             // Which block the pointer is on, decided here rather than in `mouseMoved`, against the
             // very blocks and display rows this frame is about to draw.
             //
@@ -971,10 +2041,23 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let cellWidth = self.cellSizePoints.width
             summaries = blocks.compactMap { block -> (row: Int, text: String, color: RGB)? in
                 guard block.showsHeader, let promptSlot = screenRow(block.region.promptRow) else { return nil }
+                // In this order: reading the block is what puts "was this a request" in the cache,
+                // and `isRequest` is that cached answer rather than a second parse of the grid.
+                let httpSummary = self.requestSummary(for: block, in: t)
                 let header = block.header(now: now, folding: self.folding,
                                           notifyArmed: self.armedNotifications.contains(block.region.id),
                                           anyFolds: !self.folding.isEmpty,
-                                          hasOutput: t.commandHasOutput(atAbsoluteRow: block.region.promptRow))
+                                          hasOutput: t.commandHasOutput(atAbsoluteRow: block.region.promptRow),
+                                          httpSummary: httpSummary,
+                                          isHTTP: self.requestCache.isRequest(id: block.region.id),
+                                          lens: self.lenses.lens(of: block.region.id),
+                                          lensTooLarge: self.lensIsTooLarge(block.region.id),
+                                          bodyIsJSON: self.bodyIsJSON(block.region.id),
+                                          // Only the ⋯ menu needs it, and finding it parses command
+                                          // lines: not a question for sixty frames a second.
+                                          hasPreviousRun: false,
+                                          watch: self.watchHeader(forBlock: block.region.id),
+                                          watchInterval: self.config.httpWatchInterval)
                 let text = header.summaryWithChevron
                 // Every row of the command line is a candidate, not just the prompt row: a pasted
                 // `curl` wraps, and the row that has room is usually the last one.
@@ -1006,7 +2089,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     }
                     if let overlay = CommandBlockChrome.overlayPlacement(commandRows: candidates,
                                                                         stripColumns: stripColumns,
-                                                                        cols: t.cols),
+                                                                        cols: t.cols,
+                                                                        fallbackToTail: true),
                        let slot = slotOf[overlay.row] {
                         headers[slot] = header
                         stripSlots[block.region.id] = slot
@@ -1040,10 +2124,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // A running block used to differ from a finished one only by the digit in the
                 // elapsed time -- the same grey `12s ▾` a finished command's `12s ▾` shows. The
                 // theme's running colour is the one the spine already uses for the same state,
-                // so a glance down the screen says which command is still going.
+                // so a glance down the screen says which command is still going. `tone` is the same
+                // ladder the hover strip and the sticky strip use, so a 404 is red in all three.
                 return (row: slot, text: placement.text == .full ? text : header.chevron,
-                        color: block.failed ? failedColor
-                            : (block.isRunning ? runningColor : t.palette.noteForeground))
+                        color: header.tone.color(in: t.palette))
             }
             // The overlay goes where it fits, which is not always the prompt row: a strip placed
             // from the prompt row alone and sized only from its own content painted over the end of
@@ -1069,21 +2153,32 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             for row in notesSpokenFor where notes.indices.contains(row) {
                 notes[row] = nil
             }
+            // The pill over the command line the user is typing at. Not gated on `chromeAllowed`:
+            // it belongs to the line rather than to a block, so it appears in a shell with no
+            // integration at all -- where there are no blocks and never will be -- and its own rule
+            // (`WorkbenchHint.shouldShow`) keeps it off the alternate screen.
+            hint = self.workbenchHintPlacement(in: t, lines: lines, cellWidth: cellWidth,
+                                               screenRow: screenRow)
             // Same pass, same lock, same viewport: the strip names the command whose output is on
             // screen *in this frame*, and reading it anywhere else would let the two disagree.
             // Costs one flag test for a shell with no integration, which is the whole reason
             // `shellEmitsPromptMarks` exists.
             if let pinned = t.stickyPrompt(), let region = t.command(containingAbsoluteRow: pinned.row) {
                 // Same fields the hover overlay would show for this command, so the strip and the
-                // overlay never disagree about what a command's duration or exit status was.
-                let summary = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
-                    .header(now: t.now(), folding: self.folding, notifyArmed: false,
-                            anyFolds: !self.folding.isEmpty,
-                            hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow)).summary
+                // overlay never disagree about what a command's duration, exit status or HTTP
+                // response was. The block is the pinned one, which is on screen by definition of
+                // there being a strip, so its exchange is the one already parsed for the header.
+                let block = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
+                let header = block.header(now: t.now(), folding: self.folding, notifyArmed: false,
+                                          anyFolds: !self.folding.isEmpty,
+                                          hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow),
+                                          httpSummary: self.requestSummary(for: block, in: t),
+                                          watch: self.watchHeader(forBlock: region.id))
                 sticky = (StickyPromptLabel.text(command: t.commandText(of: region),
                                                  exitStatus: pinned.exitStatus, columns: t.cols),
-                          pinned.failed, pinned.row, summary)
+                          pinned.failed, pinned.row, header.summary, header.tone)
             }
+            if self.watchSentAt != nil { runningCommandID = t.runningCommand?.id }
             builtAtContentVersion = t.contentVersion
             return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
                                cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit,
@@ -1092,6 +2187,19 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                blockSummaries: summaries, highlightedRows: self.hoveredBlock?.rows,
                                dirtyRows: self.dirtyRows(of: t, top: top))
         }
+        drainPendingRecord()
+        if abandonWatch {
+            stopWatch(.stopped)
+            watch = nil
+            pendingWatchFinishes.removeAll()
+            watchSentAt = nil
+            updateWatchTimer()
+        }
+        // Before `applyPendingLenses`: a watched run that is going to open in `diff` takes itself
+        // off the default-lens list, and the default would otherwise win the race and open it in
+        // `pretty` for one frame.
+        advanceWatch(runningCommandID: runningCommandID)
+        applyPendingLenses()
         // A running command's elapsed time only moves if something asks for a redraw; nothing else
         // on this row changes while it runs. One timer per pane, alive only while it would do
         // anything -- the idle-CPU cost of a terminal sitting at a prompt must stay at zero.
@@ -1112,8 +2220,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         stickyPromptRow = sticky?.row
         let wasHidden = stickyStrip.isHidden
-        stickyStrip.update(text: sticky?.text, summary: sticky?.summary ?? "", failed: sticky?.failed ?? false,
-                           palette: frame.palette,
+        stickyStrip.update(text: sticky?.text, summary: sticky?.summary ?? "", tone: sticky?.tone ?? .plain,
+                           failed: sticky?.failed ?? false, palette: frame.palette,
                            font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
         // The strip claims the pointer only while it is up, so appearing or disappearing changes
         // which view the cursor over the top row belongs to.
@@ -1123,6 +2231,18 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // `update` compares before it applies, so redrawing here every frame is cheap. `frame.palette`
         // was already read under the lock this frame; passing it on saves a second lock take.
         blockHeaderChanged(palette: frame.palette)
+        if dismissField { dismissLensField() } else { repositionLensField() }
+        workbenchHint.update(text: hint?.text, palette: frame.palette)
+        if let hint {
+            let size = workbenchHint.intrinsicContentSize
+            let origin = overlayOrigin(forHeaderRow: hint.slot)
+            // Right-aligned on the row the placement chose. Nothing to invalidate when it appears
+            // or goes: the pill is a subview, so AppKit resolves both the click and the cursor
+            // through it while it is up (`hitTest` returns nil when it is hidden) -- the pane's own
+            // cursor rects, which are the pointing hands over links, are unaffected either way.
+            workbenchHint.frame = NSRect(x: origin.x - size.width, y: origin.y,
+                                         width: size.width, height: cellSizePoints.height)
+        }
         // Only when the block under the pointer actually changed: rebuilding cursor rects asks
         // AppKit to re-run `resetCursorRects` for the view, which is not free per frame.
         if hoverChanged { updateHoverCursor() }
@@ -1185,6 +2305,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
+        // Any key at all takes the workbench pill away, including the ⌘E it is advertising: the
+        // offer has been read, and chrome that outstays an answer is worse than chrome that was
+        // never shown. Before the action dispatch below, so the pill is gone whichever way the key
+        // is dealt with.
+        dismissWorkbenchHint()
         // A tab whose session ended on the host, or whose attach never happened, will never show
         // another byte. The first key closes it -- what "press any key to continue" has always
         // meant -- and the key is swallowed rather than handed on to whatever tab comes next.
@@ -1278,6 +2403,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     private func sendKey(_ e: NSEvent) {
         guard let ke = keyEvent(from: e) else { return }
+        stopWatchIfUserTyped()
         // Every mode the encoder needs, read under the one lock: `cursorKeysApp` and `keypadApp`
         // are what DECCKM/DECKPAM asked for, and `modifyOtherKeys` is what an application turned on
         // to be able to tell ctrl+Enter from Enter at all.
@@ -1309,8 +2435,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         // Typing both jumps the viewport back to the live screen and drops the selection: the text
         // it pointed at is about to move, and every terminal drops it here.
-        clearSelection()
-        session.withTerminal { $0.scrollViewportToBottom() }
+        //
+        // Not for the watch's own runs. `send` is also how a series types its request, and doing
+        // this there yanked the reader to the live screen every interval -- the loudest half of
+        // "a watch throws you out of the run you are reading", and the half the forget rule does
+        // not touch. `isSendingWatchRun` is the distinction the file already draws for the rule
+        // that stops a series when the user types; the user's own keystrokes still come through
+        // here with it false.
+        if !isSendingWatchRun {
+            clearSelection()
+            scrollDisplayToBottom()
+        }
         session.send(bytes)
         markDirty()
     }
@@ -1320,6 +2455,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func insertText(_ string: Any, replacementRange: NSRange) {
         let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
         markedText = ""
+        // Someone is typing at the prompt; a series that went on sending would splice a `curl`
+        // into the middle of their sentence.
+        stopWatchIfUserTyped()
         if let e = currentEvent, e.modifierFlags.contains(.control) || (optionActsAsMeta && e.modifierFlags.contains(.option)) {
             sendKey(e)
             markDirty()
@@ -1374,16 +2512,39 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         (Double(p.x), Double(bounds.height - p.y))
     }
 
+    /// The cell under a point, or nil when there is no cell there.
+    ///
+    /// The character-level twin of `position(_:in:)`: a fold placeholder and a lens line are not
+    /// rows of the buffer, so a question about the *character* under the pointer has no answer on
+    /// one. Answering it with the block's own row instead -- which `position` does, correctly, for
+    /// questions about the block -- read the command line's characters from a hundred lines away:
+    /// a pointer at column 15 of any lens line landed inside the URL of `$ curl -s https://…`, drew
+    /// a stray underline on the command row, and made ⌘-click on the body of a response open the
+    /// request.
+    private func characterPosition(_ p: (x: Double, y: Double), in t: Terminal) -> AbsolutePosition? {
+        let cell = cellSizePoints
+        let hit = PointerMap.position(x: p.x, y: p.y, cellWidth: Double(cell.width), cellHeight: Double(cell.height),
+                                      padding: Double(padding), viewportTop: t.viewportTopRow,
+                                      cols: t.cols, totalRows: t.totalRows)
+        guard !foldRowsOnScreen.isEmpty else { return hit }
+        guard let absolute = absoluteRow(forVisibleRow: hit.row - t.viewportTopRow, in: t) else {
+            return nil
+        }
+        return AbsolutePosition(row: absolute, col: hit.col)
+    }
+
     private func position(_ p: (x: Double, y: Double), in t: Terminal) -> AbsolutePosition {
         let cell = cellSizePoints
         let hit = PointerMap.position(x: p.x, y: p.y, cellWidth: Double(cell.width), cellHeight: Double(cell.height),
                                       padding: Double(padding), viewportTop: t.viewportTopRow,
                                       cols: t.cols, totalRows: t.totalRows)
         // `PointerMap` counts rows down from the viewport top, which stops being the same thing as
-        // counting absolute rows the moment something is folded: the rows under the pointer are
-        // whatever the folds left on screen.
-        guard !folding.isEmpty,
-              let absolute = absoluteRow(forVisibleRow: hit.row - t.viewportTopRow, in: t)
+        // counting absolute rows the moment anything is folded *or lensed*: the rows under the
+        // pointer are whatever the display left on screen. Gated on `folding` alone, a pane with
+        // only a lens open answered with the rows the lens replaced, so a drag selected text nobody
+        // could see, a link hit-test read the wrong row, and a right-click two thirds of the way
+        // down a long lens offered the *next* command's actions -- Re-run included.
+        guard let absolute = pointerRow(forVisibleRow: hit.row - t.viewportTopRow, in: t)
         else { return hit }
         return AbsolutePosition(row: absolute, col: hit.col)
     }
@@ -1438,6 +2599,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     // MARK: - Mouse
 
     override func mouseDown(with event: NSEvent) {
+        // Any click that reaches the pane is a click *outside* the filter field -- AppKit routes the
+        // ones inside it to the field itself -- and this handler takes first responder away from it
+        // on the next line, which would otherwise leave a live-looking box that nothing types into.
+        if lensField != nil { dismissLensField() }
         window?.makeFirstResponder(self)
         onFocusRequested?()
         // ⌘-click opens whatever is under the pointer, before the click can become a selection or
@@ -1446,8 +2611,31 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // A fold placeholder is a button, not text: clicking it puts the output back. Checked
         // before mouse reporting, because a fold only exists while the user is reading scrollback.
         if unfoldPlaceholder(at: convert(event.locationInWindow, from: nil)) { return }
+        // A lens line's fold point is a button too, and it is checked before mouse reporting for
+        // the same reason: a lens only exists on a finished block being read.
+        if event.clickCount == 1, toggleLensFold(at: convert(event.locationInWindow, from: nil)) {
+            return
+        }
         if report(event, .left, .press) { return }
         lastMousePoint = convert(event.locationInWindow, from: nil)
+        // A drag that starts on a lens line selects the lens's own text. A drag that starts on the
+        // transcript clears any lens selection: two visible selections is one too many, and only
+        // one of them can be what ⌘C means.
+        if let hit = lensLine(at: lastMousePoint!) {
+            // The terminal's own highlight goes now, not when the lens drag ends: two selections
+            // drawn at once, with ⌘C silently preferring the lens one, is the pane telling the user
+            // two different things about what they are about to copy.
+            _ = selectionController.clear()
+            lensSelection = LensSelection(commandID: hit.id,
+                                          anchor: .init(line: hit.line, character: hit.character),
+                                          head: .init(line: hit.line, character: hit.character))
+            markDirty()
+            return
+        }
+        if lensSelection != nil {
+            lensSelection = nil
+            markDirty()
+        }
         let point = topLeft(lastMousePoint!)
         let block = event.modifierFlags.contains(.option)
         let changed = session.withTerminal { t in
@@ -1458,6 +2646,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if lensSelection != nil {
+            lastMousePoint = convert(event.locationInWindow, from: nil)
+            if let hit = lensLine(at: lastMousePoint!), hit.id == lensSelection?.commandID {
+                lensSelection?.head = .init(line: hit.line, character: hit.character)
+                markDirty()
+            }
+            return
+        }
         guard selectionController.isDragging else { report(event, .left, .drag); return }
         lastMousePoint = convert(event.locationInWindow, from: nil)
         let point = topLeft(lastMousePoint!)
@@ -1468,6 +2664,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if let selection = lensSelection {
+            lastMousePoint = nil
+            if selection.isEmpty { lensSelection = nil; markDirty() }
+            else if config.copyOnSelect { copy(nil) }
+            return
+        }
         guard selectionController.isDragging else { report(event, .left, .release); return }
         lastMousePoint = nil
         let wasEmpty = selection == nil || selection?.isEmpty == true
@@ -1606,11 +2808,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let lines = point.y > bounds.maxY ? 1 : (point.y < bounds.minY ? -1 : 0)
         guard lines != 0 else { return }
         let head = topLeft(point)
+        // Through the display, like the wheel: a drag off the top of a lensed block would otherwise
+        // scroll by rows the lens has replaced and extend the selection over rows nobody can see.
+        guard scrollDisplay(by: -lines) else { return }
         let changed = session.withTerminal { t -> Bool in
-            let before = t.viewportOffset
-            t.scrollViewport(by: lines)
-            guard t.viewportOffset != before else { return false }
-            return selectionController.drag(to: position(head, in: t), in: t, separators: config.wordSeparators)
+            selectionController.drag(to: position(head, in: t), in: t, separators: config.wordSeparators)
         }
         if changed { markDirty() }
     }
@@ -1651,15 +2853,68 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             for _ in 0..<abs(lines) { all += bytes }
             session.send(all)
         } else {
-            session.withTerminal { t in
-                t.scrollViewport(by: lines)
-                // A fold hides every row it covers, so a viewport top inside one does not move on
-                // screen however far it is scrolled -- two thousand hidden rows would be two
-                // thousand wheel clicks. Step over the fold in the direction of travel instead.
-                t.snapViewportOutOfFold(movingUp: lines > 0, folding: folding)
-            }
+            scrollDisplay(by: -lines)
             markDirty()
         }
+    }
+
+    /// Moves the viewport `lines` **display lines** towards newer content (negative: older), which
+    /// is what a wheel click means. Returns whether anything moved.
+    ///
+    /// Not `scrollViewport(by:)`: a fold is one display line covering a thousand rows and a lens is
+    /// as many lines as it has, so a scroll measured in rows either sticks or skips. `advance` walks
+    /// the display sequence itself; the row it lands on goes to the terminal, and the line within
+    /// that row's lens stays here, because a lens is the pane's own state and the terminal knows
+    /// nothing about it.
+    @discardableResult
+    private func scrollDisplay(by lines: Int) -> Bool {
+        session.withTerminal { t in
+            let from = self.viewportCursor(in: t)
+            let to = t.advance(from, by: lines, folding: self.folding, lenses: self.lenses,
+                               buffers: { self.lensBuffers[$0] })
+            guard to != from else { return false }
+            _ = t.scrollToAbsoluteRow(to.row, margin: 0)
+            self.viewportAnchor = to
+            self.viewportAnchorTop = t.viewportTopRow
+            // By what the position *is*, not by who moved to it. Wheeling down to the live edge
+            // lands on the display bottom through `advance`'s own clamp, and an anchor tagged
+            // "a place the reader chose" there froze the pane the moment the ring filled -- with
+            // no lens and no fold anywhere. One walk per wheel click, which a wheel click can
+            // afford; the frame path only reads the flag.
+            self.viewportAnchorIsDisplayBottom = t.isDisplayBottom(to, folding: self.folding,
+                                                                   lenses: self.lenses,
+                                                                   viewportRows: t.rows,
+                                                                   buffers: { self.lensBuffers[$0] })
+            return true
+        }
+    }
+
+    /// Puts the last display line on the last row of the window. What "the viewport goes back to the
+    /// live screen" means now that the display is not the rows -- see `Terminal.displayBottomCursor`
+    /// for why the prompt wins over the top of a long response.
+    private func scrollDisplayToBottom() {
+        session.withTerminal { t in
+            t.scrollViewportToBottom()
+            self.viewportAnchor = t.displayBottomCursor(folding: self.folding, lenses: self.lenses,
+                                                        viewportRows: t.rows,
+                                                        buffers: { self.lensBuffers[$0] })
+            self.viewportAnchorTop = t.viewportTopRow
+            // Not a place anybody chose. Flagged so the next frame recomputes the bottom instead of
+            // trusting this value: the bottom moves whenever anything prints, and with the ring at
+            // capacity nothing the staleness check compares moves with it. See
+            // `Terminal.viewportCursor`.
+            self.viewportAnchorIsDisplayBottom = true
+        }
+    }
+
+    /// Where the top of the viewport is in the display sequence. The rule is
+    /// `Terminal.viewportCursor(anchor:anchorTop:…)` in NyxCore, where it can be tested; this hands
+    /// it the two numbers only the pane knows.
+    private func viewportCursor(in t: Terminal, memo: CommandRegionMemo? = nil) -> DisplayCursor {
+        t.viewportCursor(anchor: viewportAnchor, anchorTop: viewportAnchorTop,
+                         anchorIsDisplayBottom: viewportAnchorIsDisplayBottom, folding: folding,
+                         lenses: lenses, viewportRows: t.rows,
+                         buffers: { self.lensBuffers[$0] }, memo: memo)
     }
 
     // MARK: - Menu actions
@@ -1684,15 +2939,35 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // where each command began, so the whole block's actions -- not just rerun and edit -- are
         // answerable from a right-click.
         if let point, let id = commandID(under: point) {
+            // Asked before the lock: finding the previous run of this request parses command lines
+            // out of the cache, and this is a menu press rather than a frame.
+            let previousRun = self.previousRun(of: id)
             let header: BlockHeader? = session.withTerminal { t in
                 guard let row = t.promptRow(ofCommand: id),
                       let region = t.command(containingAbsoluteRow: row) else { return nil }
                 let block = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
+                // Read here as well as in `render`, because a right-click reaches blocks the frame
+                // never built a header for: one whose prompt row is scrolled off the top still has
+                // every output row under the pointer, and its Request group has to be there.
+                let httpSummary = self.requestSummary(for: block, in: t)
                 return block.header(now: t.now(), folding: self.folding,
                                     notifyArmed: self.armedNotifications.contains(id),
                                     anyFolds: !self.folding.isEmpty,
-                                    hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow))
+                                    hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow),
+                                    httpSummary: httpSummary,
+                                    isHTTP: self.requestCache.isRequest(id: id),
+                                    lens: self.lenses.lens(of: id),
+                                    lensTooLarge: self.lensIsTooLarge(id),
+                                    bodyIsJSON: self.bodyIsJSON(id),
+                                    hasPreviousRun: previousRun != nil,
+                                    // Right-clicking a watched run has to offer Stop, not a second
+                                    // "Run Every 5 s": this menu is built apart from the frame's,
+                                    // and a header without the series is a menu that disagrees
+                                    // with the strip over the same block.
+                                    watch: self.watchHeader(forBlock: id),
+                                    watchInterval: self.config.httpWatchInterval)
             }
+            drainPendingRecord()
             if let header {
                 for (index, entry) in header.actions.enumerated() {
                     if index > 0 && entry.action.startsGroup { menu.addItem(.separator()) }
@@ -1701,7 +2976,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     item.target = self
                     item.representedObject = BlockMenuEntry(action: entry.action, id: id)
                     item.isEnabled = entry.enabled
-                    if case .notifyWhenDone(let armed) = entry.action { item.state = armed ? .on : .off }
+                    // The lens rows are a radio group and the notification row is a switch; both
+                    // are one question to the header, so a third state cannot be invented here.
+                    item.state = header.isChecked(entry.action) ? .on : .off
                     menu.addItem(item)
                 }
                 menu.addItem(.separator())
@@ -1786,11 +3063,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         guard allowed, let point = lastPointerPoint, bounds.contains(point) else { return nil }
         let visible = visibleRow(at: point)
         let pointerRow: Int?
-        if let visible, foldRowsOnScreen.indices.contains(visible),
-           case .fold(let commandID, _, _) = foldRowsOnScreen[visible] {
-            // The pointer is on a fold placeholder, which has no absolute row of its own: it
-            // stands for the block whose output it hides, so hover that block directly.
-            pointerRow = blocks.first { $0.region.id == commandID }?.visibleRows.lowerBound
+        let standIn: UInt32? = visible.flatMap { slot in
+            guard foldRowsOnScreen.indices.contains(slot) else { return nil }
+            switch foldRowsOnScreen[slot] {
+            // Neither a fold placeholder nor a lens line has an absolute row of its own: each stands
+            // for the block whose output it replaced, so hover that block directly. Without the lens
+            // half of this, reading a pretty-printed response with its command row scrolled off the
+            // top produced no tint and no hover strip -- no `{ }`, no Copy, no Lens menu -- which is
+            // every control the response has.
+            case .fold(let commandID, _, _): return commandID
+            case .lens(let commandID, _): return commandID
+            case .row: return nil
+            }
+        }
+        if let standIn {
+            pointerRow = blocks.first { $0.region.id == standIn }?.visibleRows.lowerBound
         } else {
             let absolute = visible.flatMap { self.absoluteRow(forVisibleRow: $0, in: t) }
             pointerRow = absolute.map { $0 - viewportTop }
@@ -1813,8 +3100,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // A mouse-move that stays inside one cell cannot change what is under the pointer, and
         // hit-testing is not cheap: it tokenizes the row through five regular expressions and may
         // `stat` a path. Mouse-move events arrive far faster than cells change.
+        // The *character* under the pointer, so a slot with no character in it -- a lens line, a
+        // fold placeholder -- is its own key rather than the block's prompt row shared by all of
+        // them, which deduped every lens line in a column down to one hit test.
         let cell: (row: Int, col: Int) = session.withTerminal { t in
-            let p = self.position(topLeft(point), in: t)
+            guard let p = self.characterPosition(topLeft(point), in: t) else {
+                return (Int.min, self.visibleRow(at: point) ?? -1)
+            }
             return (p.row, p.col)
         }
         guard lastHoverCell == nil || lastHoverCell! != cell else { return }
@@ -1854,9 +3146,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let cell = cellSizePoints
         var rects: [NSRect] = []
         if let link = hoveredLink {
-            let top = session.withTerminal { $0.viewportTopRow }
-            let row = link.row - top
-            if row >= 0 {
+            // Through the display, not `row - viewportTop`: with a fold or a lens on screen those
+            // are different numbers, and the hand would have been placed on whichever slot the
+            // replacement pulled into that index.
+            let top = session.withTerminal { max(0, $0.viewportTopRow) }
+            if let row = displaySlot(ofAbsoluteRow: link.row, viewportTop: top) {
                 let width = CGFloat(link.columns.count) * cell.width
                 rects.append(NSRect(x: padding + CGFloat(link.columns.lowerBound) * cell.width,
                                     y: bounds.height - padding - CGFloat(row + 1) * cell.height,
@@ -1867,6 +3161,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             rects.append(NSRect(x: padding + CGFloat(columns.lowerBound) * cell.width,
                                 y: bounds.height - padding - CGFloat(row + 1) * cell.height,
                                 width: CGFloat(columns.count) * cell.width, height: cell.height))
+        }
+        // A lens line with a fold point on it is a control, and the pointer has to say so: it is
+        // the only thing on that row a click does something to.
+        if !lenses.isEmpty {
+            for (visible, entry) in foldRowsOnScreen.enumerated() {
+                guard case .lens(let id, let line) = entry,
+                      lensBuffers[id]?.line(line)?.node != nil else { continue }
+                rects.append(NSRect(x: padding,
+                                    y: bounds.height - padding - CGFloat(visible + 1) * cell.height,
+                                    width: max(0, bounds.width - 2 * padding), height: cell.height))
+            }
         }
         hoveredRect = rects
         window?.invalidateCursorRects(for: self)
@@ -1891,8 +3196,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                            font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
         let size = blockHeader.intrinsicContentSize
         let origin = overlayOrigin(forHeaderRow: row)
-        blockHeader.frame = NSRect(x: origin.x - size.width, y: origin.y,
-                                   width: size.width, height: cellSizePoints.height)
+        // As tall as the pills, centred on the row. `hitTest` rejects a point outside the view's
+        // frame, so a frame one row tall (16 pt) around 20-point pills left a two-point dead sliver
+        // along the top and the bottom of every one of them -- worst on the round `⋯` and `▾`,
+        // which are the two controls that never go away. The strip's *ground* is still one row
+        // tall; see `BlockHeaderView.paintedHeight`.
+        let rowHeight = cellSizePoints.height
+        let height = max(rowHeight, size.height)
+        blockHeader.paintedHeight = rowHeight
+        blockHeader.frame = NSRect(x: origin.x - size.width, y: origin.y - (height - rowHeight) / 2,
+                                   width: size.width, height: height)
         window?.invalidateCursorRects(for: self)
     }
 
@@ -1900,7 +3213,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// answer is looked at.
     private func token(under point: NSPoint) -> (row: Int, token: TextToken)? {
         session.withTerminal { t in
-            let position = self.position(topLeft(point), in: t)
+            guard let position = self.characterPosition(topLeft(point), in: t) else { return nil }
             guard let token = t.token(atAbsoluteRow: position.row, column: position.col,
                                       separators: config.wordSeparators) else { return nil }
             return (position.row, token)
@@ -2347,6 +3660,31 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return row >= 0 && row < rows ? row : nil
     }
 
+    /// Which lens line a view point is on, and where along it, or nil when the point is on
+    /// ordinary terminal text. The column is a Character offset, which is what a selection and a
+    /// fold both work in.
+    private func lensLine(at point: NSPoint) -> (id: UInt32, line: Int, character: Int)? {
+        guard !lenses.isEmpty, let visible = visibleRow(at: point),
+              visible < foldRowsOnScreen.count,
+              case .lens(let id, let line) = foldRowsOnScreen[visible],
+              let buffer = lensBuffers[id] else { return nil }
+        let cell = cellSizePoints
+        guard cell.width > 0 else { return nil }
+        let column = Int(((Double(point.x) - Double(padding)) / Double(cell.width)).rounded(.down))
+        return (id, line, buffer.characterOffset(atColumn: max(0, column), line: line))
+    }
+
+    /// A click on a folded or foldable node in a lens folds or unfolds it. The placeholder line is
+    /// the control, the same way a fold placeholder is: there is nowhere else to put a chevron for
+    /// a line the terminal does not know exists.
+    private func toggleLensFold(at point: NSPoint) -> Bool {
+        guard let hit = lensLine(at: point),
+              let node = lensBuffers[hit.id]?.line(hit.line)?.node else { return false }
+        lenses.toggleFold(node, in: hit.id)
+        rebuildLens(for: hit.id)
+        return true
+    }
+
     /// A click on a fold placeholder puts the output back. Returns false when the click was on
     /// ordinary text, so it can go on to mean what it usually means.
     private func unfoldPlaceholder(at point: NSPoint) -> Bool {
@@ -2379,10 +3717,33 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         toggleFold(ofCommand: id, full: false)
     }
 
-    /// Which absolute row a visible row is showing, through whatever folds are in force. nil for a
-    /// row that is showing a fold placeholder rather than a row of the buffer.
+    /// The absolute row a *pointer* on this slot should be taken to mean.
+    ///
+    /// The same as `absoluteRow(forVisibleRow:)` for a slot that is a row, and the block's own
+    /// prompt row for one that is not: a fold placeholder and a lens line stand for a block, and the
+    /// questions asked through this one -- which command was right-clicked, which block a drag
+    /// started in -- want the block they stand for rather than the row that would have been there
+    /// without them.
+    ///
+    /// **Not for anything that reads characters.** A hit test wants the text under the pointer, and
+    /// on a replaced slot there is none; `characterPosition(_:in:)` is that question and answers nil.
+    private func pointerRow(forVisibleRow row: Int, in t: Terminal) -> Int? {
+        guard !foldRowsOnScreen.isEmpty else { return t.viewportTopRow + row }
+        guard foldRowsOnScreen.indices.contains(row) else { return nil }
+        switch foldRowsOnScreen[row] {
+        case .row(let absolute): return absolute
+        case .fold(let id, _, _): return displayBlockRows[id]
+        case .lens(let id, _): return displayBlockRows[id]
+        }
+    }
+
+    /// Which absolute row a visible row is showing, through whatever the display put on screen. nil
+    /// for a slot showing a fold placeholder or a lens line -- neither is a row of the buffer.
     private func absoluteRow(forVisibleRow row: Int, in t: Terminal) -> Int? {
-        guard !folding.isEmpty else { return t.viewportTopRow + row }
+        // Keyed off the display the last frame actually built, not off `folding`: a pane with a lens
+        // open and nothing folded also draws through the display map, and subtracting the viewport
+        // top there answers with a row the lens replaced.
+        guard !foldRowsOnScreen.isEmpty else { return t.viewportTopRow + row }
         guard foldRowsOnScreen.indices.contains(row) else { return nil }
         guard case .row(let absolute) = foldRowsOnScreen[row] else { return nil }
         return absolute
@@ -2484,6 +3845,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             }
         }
         commandWasRunning = bottom.started
+        // Before the notification rule, and unconditionally: this is the one path that runs for a
+        // pane with no frames -- a background tab, an occluded or minimised window -- and it is
+        // what keeps a watch advancing there. See `pollWatch`.
+        pollWatch()
         guard let finished = commandWatcher.observe(bottomPromptRow: bottom.row, outputStarted: bottom.started,
                                                     runningID: bottom.runningID, now: now) else { return }
         let armed = armedNotifications
@@ -2611,8 +3976,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let text = session.withTerminal { $0.commandLine(of: region) }
             copyToPasteboard(text)
         case .copyOutput:
-            let text = session.withTerminal { $0.outputText(of: region) }
-            copyToPasteboard(text)
+            // What is on the screen, when that is a lens: someone copying a response they are
+            // reading pretty-printed means the pretty-printed one, not the single line it arrived
+            // as. Without a lens this is the transcript, exactly as it always was.
+            if let buffer = lensBuffers[id] {
+                copyToPasteboard(buffer.text(lines: 0 ..< buffer.lineCount))
+            } else {
+                copyToPasteboard(session.withTerminal { $0.outputText(of: region) })
+            }
         case .copyMarkdown:
             let md = session.withTerminal { BlockExport.markdown(command: $0.commandLine(of: region),
                                                                  output: $0.outputText(of: region)) }
@@ -2623,13 +3994,128 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // `nik@host ~ % make test`, which is not a command.
             let command = session.withTerminal { $0.commandLine(of: region) }
             guard !command.isEmpty else { NSSound.beep(); return }
-            send(Array((command + "\r").utf8))
+            // As a bracketed paste and then a return, not as raw bytes: a `\`-continued command
+            // read back off the grid has real newlines in it, and sent raw the shell would start
+            // running it a fragment at a time. Inside the brackets it is one command.
+            let bracketed = session.withTerminal { $0.modes.bracketedPaste }
+            performPaste(command, bracketed: bracketed)
+            send([0x0D])
         case .editAndRun:
             if !editAndRunCommand(atAbsoluteRow: region.promptRow) { NSSound.beep() }
+        case .openInWorkbench:
+            guard let command = requestCommand(of: region) else { NSSound.beep(); return }
+            if !presentRequestEditor(command: command, then: { [weak self] line in
+                self?.runFromWorkbench(line)
+            }) { NSSound.beep() }
+        case .copyAs(let format):
+            guard let command = requestCommand(of: region) else { NSSound.beep(); return }
+            copyToPasteboard(RequestExport.render(command, as: format))
+        case .saveAsButton:
+            guard let command = requestCommand(of: region) else { NSSound.beep(); return }
+            // The same path the workbench's own `Save as Button…` takes: the sheet names it, and
+            // the list goes back through the config file so the button appears in every window.
+            if !presentQuickActionEditor(for: command, then: { action in
+                let delegate = NSApp.delegate as? AppDelegate
+                delegate?.setQuickActions((delegate?.quickActions ?? []) + [action])
+            }) { NSSound.beep() }
+        case .saveToProject:
+            guard let command = requestCommand(of: region) else { NSSound.beep(); return }
+            if !presentQuickActionEditor(for: command, then: { [weak self] action in
+                self?.appendToProjectFile("quick = " + action.configValue)
+            }) { NSSound.beep() }
         case .toggleFold: toggleFold(ofCommand: id, full: NSEvent.modifierFlags.contains(.option))
         case .toggleFoldAll: _ = foldAllLongOutput()
         case .notifyWhenDone(let armed): setNotification(armed: !armed, forCommand: id)
+        case .setLens(let lens):
+            switch lens {
+            // The two that need a word from the user open the field over the block's command row
+            // rather than switching to a lens with nothing in it.
+            case .filter, .grep: presentLensField(for: lens, on: id)
+            case .diff:
+                // The row carries "diff"; which run to diff against is the cache's answer, and the
+                // menu only enables the row when there is one.
+                guard let previous = previousRun(of: id) else { NSSound.beep(); return }
+                setLens(.diff(previousCommandID: previous), on: id)
+            default: setLens(lens, on: id)
+            }
+        case .toggleLens:
+            if !toggleLensOfCurrentBlock() { NSSound.beep() }
+        case .copyBody:
+            guard let text = responseText(of: id, headersOnly: false) else { NSSound.beep(); return }
+            copyToPasteboard(text)
+        case .copyHeaders:
+            guard let text = responseText(of: id, headersOnly: true) else { NSSound.beep(); return }
+            copyToPasteboard(text)
+        case .runEvery(let seconds):
+            // The block's own command line, not a rebuilt one: the twentieth run has to be the
+            // same request as the first, or the numbers in the header compare two things.
+            startWatch(plan: WatchPlan(interval: seconds, stop: .never),
+                       command: session.withTerminal { $0.commandLine(of: region) })
+        case .watch(let seed):
+            let command = session.withTerminal { $0.commandLine(of: region) }
+            guard !command.isEmpty else { NSSound.beep(); return }
+            presentWatchPlanEditor(seed: seed, command: command, on: id)
+        // The Stop button and the menu row always stop, wherever the block is: unlike `⌘.`, the
+        // press names the series it belongs to.
+        case .stopWatch:
+            if !stopWatch(.stopped) { NSSound.beep() }
+        // The body is past what a lens will re-lay-out. The row says so and still does the thing
+        // that works on a response that size.
+        case .lensUnavailable: saveOutput(ofCommand: id)
         }
+    }
+
+    /// The response's body or its headers as text, for the two Copy rows. Built from the parsed
+    /// exchange rather than from the grid, so `Copy Headers` gives the headers and not the blank
+    /// line and the body under them.
+    private func responseText(of id: UInt32, headersOnly: Bool) -> String? {
+        guard case .request(let exchange)? = requestCache.entry(for: id),
+              let exchange else { return nil }
+        if headersOnly {
+            guard let head = exchange.final else { return nil }
+            var status = "HTTP/\(head.version) \(head.status)"
+            if !head.reason.isEmpty { status += " \(head.reason)" }
+            return ([status] + head.headers.map { "\($0.name): \($0.value)" })
+                .joined(separator: "\n")
+        }
+        return exchange.bodyLines.isEmpty ? nil : exchange.bodyLines.joined(separator: "\n")
+    }
+
+    /// The request a block ran, parsed, or nil when its command line is not one.
+    ///
+    /// Re-parsed here rather than kept in the cache beside the exchange: this runs on a menu press,
+    /// not per frame, and holding a whole `CurlCommand` per block on screen to save one parse on a
+    /// click nobody may ever make is the wrong trade. Nil only when the grid no longer holds the
+    /// command the menu was built from -- a `clear` between opening the menu and choosing from it.
+    private func requestCommand(of region: CommandRegion) -> CurlCommand? {
+        CurlCommand.parse(session.withTerminal { $0.commandLine(of: region) })
+            .map(RequestRun.stripAdditions(from:))
+    }
+
+    /// The button sheet, prefilled from a request, on this pane's window.
+    ///
+    /// A sheet window rather than `presentAsSheet` for the reason `presentCommandEditor` sets out:
+    /// a pane is a view, so there is no presenting controller, and a window retains a content view
+    /// controller but not the controller behind a bare content view.
+    @discardableResult
+    private func presentQuickActionEditor(for command: CurlCommand,
+                                          then keep: @escaping (QuickAction) -> Void) -> Bool {
+        guard let window else { return false }
+        let editor = QuickActionEditor(editing: RequestEditorModel(command: command).quickActionDraft,
+                                       heading: "New Button", verb: "Save")
+        let size = editor.view.frame.size == .zero ? NSSize(width: 420, height: 260) : editor.view.frame.size
+        let sheet = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                             styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        sheet.contentViewController = editor
+        sheet.titlebarAppearsTransparent = true
+        sheet.isReleasedWhenClosed = false
+        editor.onFinish = { [weak window, weak sheet] action in
+            if let sheet { window?.endSheet(sheet) }
+            guard let action else { return }
+            keep(action)
+        }
+        window.beginSheet(sheet) { _ in }
+        return true
     }
 
     private func copyToPasteboard(_ text: String) {
@@ -2707,7 +4193,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     /// Whether ⌘C has anything to copy, so the menu item can grey out.
+    ///
+    /// A lens selection counts. Both Copy validators -- the Edit menu's and `TabController`'s
+    /// `canPerform` -- gate on this, and a disabled menu item means AppKit never dispatches the ⌘C
+    /// key equivalent either: a drag over a pretty-printed response could be made, was drawn, and
+    /// then could not be copied by any route at all.
     var hasSelection: Bool {
+        if let lensSelection, let buffer = lensBuffers[lensSelection.commandID],
+           !lensSelection.text(from: buffer).isEmpty {
+            return true
+        }
         guard let selection else { return false }
         return !session.withTerminal { $0.text(in: selection) }.isEmpty
     }
@@ -2726,6 +4221,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     @objc func copy(_ sender: Any?) {
+        // A lens selection wins when there is one: it is the visible one, and the terminal's own
+        // selection was cleared the moment a drag started on a lens line.
+        if let lensSelection, let buffer = lensBuffers[lensSelection.commandID] {
+            let text = lensSelection.text(from: buffer)
+            guard !text.isEmpty else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            return
+        }
         guard let s = selection else { return }
         // `text(in:)` already yields "" for an empty selection, so this covers that too — and a
         // selection of nothing but blanks, which should leave the pasteboard alone rather than
@@ -2760,10 +4264,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if PasteGuard.lineCount(text) > 1 {
             switch config.multilinePaste {
             case .edit:
-                let shown = presentCommandEditor(text: text, heading: "Edit before pasting",
-                                                 runTitle: "Paste") { [weak self] edited in
-                    self?.performPaste(edited, bracketed: bracketed)
-                }
+                let shown = presentEditorForPaste(text, bracketed: bracketed)
                 // If the editor could not be shown, paste anyway. A feature that intercepts a core
                 // action has to degrade to that action, never to nothing at all.
                 if !shown { performPaste(text, bracketed: bracketed) }
@@ -2791,6 +4292,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         bytes += Array(normalised.utf8)
         if bracketed { bytes += Array("\u{1B}[201~".utf8) }
         send(bytes)
+        // Every paste passes through here -- ⌘V, the middle button, the confirmation sheet, the
+        // command editor and the workbench itself -- so this is the one place that can notice a
+        // request arriving on the command line.
+        armWorkbenchHint(for: text)
     }
 
     /// A sheet, never a modal alert: `runModal()` stops the run loop and with it every session in
@@ -2870,17 +4375,62 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     /// Edits the text already on the command line, then replaces it with the result.
+    ///
+    /// A `curl` gets the workbench and everything else gets the plain editor. That is the whole
+    /// routing rule, and it is the same one `pasteWithEditor` and `editAndRun` follow: one chord,
+    /// two sheets, chosen by what the line actually is rather than by which menu item was used.
     private func editCurrentInput(_ text: String) {
+        dismissWorkbenchHint()
+        if let command = CurlCommand.parse(text),
+           presentRequestEditor(command: command, then: { [weak self] line in
+               self?.abandonCurrentLine()
+               self?.runFromWorkbench(line)
+           }) {
+            return
+        }
         presentCommandEditor(text: text, heading: "Edit the command line", runTitle: "Run") {
             [weak self] edited in
             guard let self else { return }
-            // Clear what is there before writing the replacement. `^E` then `^U` covers both of the
-            // common line editors: zsh's `^U` kills the whole line, bash's kills back from the
-            // cursor, so moving to the end first makes them agree.
-            self.send([0x05, 0x15])
+            self.abandonCurrentLine()
             let bracketed = self.session.withTerminal { $0.modes.bracketedPaste }
             self.performPaste(edited, bracketed: bracketed)
         }
+    }
+
+    /// Throws away whatever is on the shell's line editor, so an edited command replaces it rather
+    /// than being appended to it.
+    ///
+    /// `^C`, not `^E^U`. `^U` kills a *line*, and the buffer this feature exists for is a
+    /// multi-line one: a five-line `curl` pasted from a browser left four of its lines behind, and
+    /// the edited command was appended to them -- the shell then ran
+    /// `--compressed curl --compressed …`, which reported `Could not resolve host: curl`. Every
+    /// common shell abandons the whole buffer on `^C` and draws a fresh prompt, which is exactly
+    /// what "replace what is on the line" means. It costs a visible `^C` in the scrollback, which
+    /// is honest: something *was* discarded.
+    private func abandonCurrentLine() {
+        send([0x03])
+    }
+
+    /// Runs what the workbench finished with, and remembers it.
+    ///
+    /// A bracketed paste and then a separate `\r`, rather than a line ending in one: a request line
+    /// is long and often has quoted newlines in its body, and inside the brackets the shell takes
+    /// the whole thing as text instead of running it a fragment at a time. The `\r` outside them is
+    /// what submits it.
+    ///
+    /// Recorded here as well as when the block finishes, because these are different guarantees: a
+    /// pane with no shell integration has no blocks and would otherwise never write a request to
+    /// the history at all. `RequestHistory.record` dedups on the parsed request, so a run that is
+    /// recorded twice is one row either way.
+    private func runFromWorkbench(_ line: String) {
+        guard !line.isEmpty else { return }
+        let bracketed = session.withTerminal { $0.modes.bracketedPaste }
+        performPaste(line, bracketed: bracketed)
+        send([0x0D])
+        // `performPaste` arms the pill for any pasted curl; this one is already running, and a pill
+        // offering to edit a line that has left the prompt would point at nothing.
+        dismissWorkbenchHint()
+        (NSApp.delegate as? AppDelegate)?.requests?.record(line)
     }
 
     /// `⌘⇧V`: paste, but look at it first. The plain paste path deliberately does not interrupt a
@@ -2893,6 +4443,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
               acceptsInput else {
             return false
         }
+        dismissWorkbenchHint()
+        // A `curl` on the pasteboard is a request, and a request has a better editor than a text
+        // box. Everything else pastes through the plain one exactly as it always did.
+        if let command = CurlCommand.parse(text),
+           presentRequestEditor(command: command, then: { [weak self] line in
+               self?.runFromWorkbench(line)
+           }) {
+            return true
+        }
         let bracketed = session.withTerminal { $0.modes.bracketedPaste }
         presentCommandEditor(text: text, heading: "Edit before pasting", runTitle: "Paste") {
             [weak self] edited in
@@ -2903,7 +4462,25 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// Opens the paste in the command editor, and pastes whatever comes back.
     private func editThenPaste(_ text: String, bracketed: Bool) {
-        presentCommandEditor(text: text, heading: "Edit before pasting", runTitle: "Paste") {
+        _ = presentEditorForPaste(text, bracketed: bracketed)
+    }
+
+    /// The sheet a paste is shown in before it lands: the workbench when the text is a request,
+    /// the plain editor otherwise.
+    ///
+    /// `multiline-paste = edit` exists because a multi-line command is very hard to change once the
+    /// shell's line editor has it -- and a `curl` copied out of a browser is the multi-line paste
+    /// people actually make. Sending it to a text box when there is a form for it is the feature
+    /// not being where it is needed most.
+    @discardableResult
+    private func presentEditorForPaste(_ text: String, bracketed: Bool) -> Bool {
+        if let command = CurlCommand.parse(text).map(RequestRun.stripAdditions(from:)),
+           presentRequestEditor(command: command, then: { [weak self] line in
+               self?.runFromWorkbench(line)
+           }) {
+            return true
+        }
+        return presentCommandEditor(text: text, heading: "Edit before pasting", runTitle: "Paste") {
             [weak self] edited in
             self?.performPaste(edited, bracketed: bracketed)
         }
@@ -2922,7 +4499,36 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             return terminal.commandLine(of: region)
         }
         guard !command.isEmpty else { return false }
-        presentCommandEditor(text: command, heading: "Edit and run", runTitle: "Run") {
+        // A block the workbench ran holds `curl -sSi -w '<sentinel>' …` in the grid. Editing it
+        // again must show what was asked for, not what Nyx measured it with -- otherwise `-i` and
+        // a nine-variable write-out format appear in the form the second time round, and stay in
+        // the line if the user runs it from there.
+        if let request = CurlCommand.parse(command) {
+            let stripped = RequestRun.stripAdditions(from: request)
+            return editAndRun(command: stripped.shellLine(masking: .none, layout: .oneLine))
+        }
+        return editAndRun(command: command)
+    }
+
+    /// The same editor, on a line that did not come from this pane's scrollback -- a row of the
+    /// palette's Requests section, which may well have been run in another tab.
+    ///
+    /// A request goes to the workbench, which is what makes a palette row of a `curl` open as a
+    /// form: every row of that section is one by construction, since nothing else is ever recorded.
+    @discardableResult
+    func editAndRun(command: String) -> Bool {
+        guard !command.isEmpty else { return false }
+        dismissWorkbenchHint()
+        // Stripped here as well as in the history: this is also the palette's only path, and a row
+        // read from a file an older build wrote -- or one recorded by a build without the strip --
+        // would otherwise open a form full of `-i` and a write-out format nobody typed.
+        if let parsed = CurlCommand.parse(command).map(RequestRun.stripAdditions(from:)),
+           presentRequestEditor(command: parsed, then: { [weak self] line in
+               self?.runFromWorkbench(line)
+           }) {
+            return true
+        }
+        return presentCommandEditor(text: command, heading: "Edit and run", runTitle: "Run") {
             [weak self] edited in
             guard let self else { return }
             // Sent as a paste so a multi-line edit arrives as one command rather than as several
@@ -2930,7 +4536,133 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let bracketed = self.session.withTerminal { $0.modes.bracketedPaste }
             self.performPaste(edited, bracketed: bracketed)
         }
+    }
+
+    /// `new_request`: the workbench on a blank request -- `curl https://`, with the form waiting
+    /// for a URL, headers and a body.
+    @discardableResult
+    func newRequest() -> Bool {
+        dismissWorkbenchHint()
+        return presentRequestEditor(command: RequestEditorModel.newRequest().command) {
+            [weak self] line in self?.runFromWorkbench(line)
+        }
+    }
+
+    /// Opens the request workbench on a parsed `curl`, and hands whatever the sheet finishes with
+    /// to `run` -- the same contract `presentCommandEditor` has.
+    ///
+    /// The fallback is the point of the return value: a request that cannot be shown as a form is
+    /// still shown as a command line, because a user who asked to edit a request must never be
+    /// answered with nothing at all.
+    ///
+    /// Reached from the paste pill, `⌘E`, `⌘⇧V`, the block menu's "Open in Workbench", the
+    /// palette's request rows and the New Request action.
+    @discardableResult
+    func presentRequestEditor(command: CurlCommand, then run: @escaping (String) -> Void) -> Bool {
+        let text = command.shellLine(masking: .none, layout: .multiline)
+        guard let window else {
+            return presentCommandEditor(text: text, heading: "Edit and run", runTitle: "Run",
+                                        then: run)
+        }
+        let editor = RequestEditor(command: command, palette: Pane.resolvedPalette(for: config),
+                                   watchInterval: config.httpWatchInterval)
+        editor.onSaveToProject = { [weak self] _, line in self?.appendToProjectFile(line) }
+        // Set by `onWatch` when the pane cannot watch, and acted on once the sheet has ended: see
+        // `reportWatchRefused` for why the alert cannot go up while the sheet is still there.
+        var refusedWatch = false
+        editor.onWatch = { [weak self, weak editor] request in
+            guard let self, let line = editor?.runLine else { return }
+            // Asked *before* the request is run. "Run 10 times" that cannot watch and runs the
+            // request once anyway is a menu item doing a tenth of what it says and then going
+            // quiet -- a refusal means zero runs, and the sentence that follows says why.
+            guard self.canWatch else {
+                refusedWatch = true
+                return
+            }
+            // Typed first, so the user sees the request go the moment the sheet closes, and the
+            // history records it the way every other run is recorded. The series is then told the
+            // first run is already out: it starts *due*, and without this it would type a second
+            // copy of the same request a quarter of a second later.
+            run(line)
+            self.startWatch(plan: Pane.plan(for: request, interval: self.config.httpWatchInterval),
+                            command: line, firstRunSent: true)
+        }
+
+        // The same sheet-window mechanics as `presentCommandEditor`, for the same reasons: this
+        // window's content is a view, so there is no presenting controller, and the window retains
+        // `contentViewController` but not a bare `contentView`'s controller.
+        let size = editor.view.frame.size == .zero ? NSSize(width: 720, height: 480) : editor.view.frame.size
+        let sheet = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                             styleMask: [.titled, .fullSizeContentView, .resizable],
+                             backing: .buffered, defer: false)
+        sheet.contentViewController = editor
+        sheet.titlebarAppearsTransparent = true
+        sheet.isReleasedWhenClosed = false
+
+        // Both captures weak: the window retains the sheet while it is attached and the sheet
+        // retains the editor, so a strong `sheet` here would be the editor holding its own window
+        // through the closure it stores -- a cycle that outlives the sheet it was made for.
+        editor.onFinish = { [weak window, weak sheet] line in
+            if let sheet { window?.endSheet(sheet) }
+            guard let line else { return }
+            run(line)
+        }
+        // The completion runs when the sheet has ended, which is the earliest moment an alert can
+        // be put on this window and actually be seen.
+        window.beginSheet(sheet) { [weak self] _ in
+            guard refusedWatch else { return }
+            self?.reportWatchRefused()
+        }
         return true
+    }
+
+    /// What the sheet's Repeat menu asked for, as a plan the pane can run.
+    ///
+    /// The sheet knows nothing about series, and the interval belongs to the configuration, so the
+    /// conversion lives here rather than in either -- and `Run 10 times` carries the interval too,
+    /// because ten runs still have to be spaced.
+    static func plan(for request: WatchPlanRequest, interval: Double) -> WatchPlan {
+        switch request {
+        case .every(let seconds): return WatchPlan(interval: seconds, stop: .never)
+        case .times(let count): return WatchPlan(interval: interval, stop: .count(count))
+        case .untilStatus(let code): return WatchPlan(interval: interval, stop: .until(.status(code)))
+        }
+    }
+
+    /// Appends one `quick = …` line to the project's `.nyx` file, creating it when there is none.
+    ///
+    /// Written through the same file the approval gate reads, so the digest changes and the gate
+    /// asks again before the button is offered -- including when Nyx is the one that wrote it.
+    /// Nothing here is silent: no directory, or a file that will not take the line, says so.
+    private func appendToProjectFile(_ line: String) {
+        guard let directory = workingDirectory else {
+            reportProjectWrite("This pane does not know which directory it is in, so there is no "
+                + "project to save to. Shell integration reports the directory.")
+            return
+        }
+        var text = ProjectApprovalsStore.shared.projectFile(in: directory) ?? ""
+        if !text.isEmpty, !text.hasSuffix("\n") { text += "\n" }
+        text += line + "\n"
+        let url = URL(fileURLWithPath: directory).appendingPathComponent(ProjectActionsFile.name)
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            reportProjectWrite("\(url.path) could not be written: \(error.localizedDescription)")
+        }
+    }
+
+    private func reportProjectWrite(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Could not save to the project"
+        alert.informativeText = message
+        // On the sheet that asked, when there is one: an alert on the window behind it would be
+        // queued until that sheet closed, which reads as nothing having happened.
+        if let host = window?.attachedSheet ?? window {
+            alert.beginSheetModal(for: host) { _ in }
+        } else {
+            NSSound.beep()
+        }
     }
 
     @discardableResult

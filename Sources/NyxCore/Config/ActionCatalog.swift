@@ -63,6 +63,9 @@ public extension TerminalAction {
         case .remoteSessions: return "Remote Sessions\u{2026}"
         case .remotePair: return "Pair with Another Device\u{2026}"
         case .remoteTakeControl: return "Take Control of This Session"
+        case .newRequest: return "New Request\u{2026}"
+        case .toggleHTTPLens: return "Toggle Pretty Response"
+        case .stopWatch: return "Stop Watching"
         }
     }
 
@@ -97,6 +100,7 @@ public enum ActionCatalog {
             Group([.newWindow, .newTab]),
             Group([.splitRight, .splitDown]),
             Group([.saveScrollback]),
+            Group([.newRequest]),
             Group([.remoteSessions, .remotePair]),
             Group([.closePane]),
         ]),
@@ -112,6 +116,7 @@ public enum ActionCatalog {
             Group([.editAndRunCommand]),
             Group([.foldCommand, .foldAllLongOutput]),
             Group([.notifyWhenDone]),
+            Group([.toggleHTTPLens, .stopWatch]),
             Group([.remoteTakeControl]),
         ]),
         Section(title: "View", groups: [

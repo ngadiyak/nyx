@@ -4,6 +4,11 @@ public enum OptionAsMeta: String, Equatable { case none, left, right, both }
 public enum BellStyle: String, Equatable { case visual, sound, none }
 public enum TabBarVisibility: String, Equatable { case auto, always, never }
 
+/// How a request's response is shown. `pretty` reformats a JSON body for reading; `raw` is the
+/// bytes exactly as the server sent them, for when pretty-printing would hide the thing that's
+/// actually wrong (a truncated body, whitespace that matters, a response that only looks like JSON).
+public enum HTTPLens: String, Equatable { case pretty, raw }
+
 /// What happens when several lines are pasted at once.
 public enum MultilinePaste: String, Equatable {
     /// Open them in the editor. The default: a pasted block is usually something to look at before
@@ -92,6 +97,21 @@ public struct Config: Equatable {
     /// without shipping an entire multi-day scrollback down the wire on every attach.
     public var remoteSnapshotLines: Int = 2000
 
+    /// How a response body is shown by default: reformatted (`pretty`) or exactly as received
+    /// (`raw`). `toggle_http_lens` flips it for one response without touching this.
+    public var httpLens: HTTPLens = .pretty
+    /// Whether curl commands typed at the prompt are recognised and offered a request-workbench
+    /// hint before they run. On by default -- the hint is the discovery path for the whole feature,
+    /// and someone who never sees it never learns curl output can be watched, replayed and exported.
+    public var httpHint: Bool = true
+    /// Seconds between polls while a `--watch` request is running. Five: fast enough that a
+    /// deploy's health check reads as live, slow enough that a request against someone else's API
+    /// does not look like an attack.
+    public var httpWatchInterval: Double = 5
+    /// How many requests `RequestHistoryStore` keeps. `0` turns the feature off: nothing is
+    /// recorded and nothing is written. See `RequestHistory`.
+    public var httpHistory: Int = 50
+
     public static let defaults = Config()
 }
 
@@ -167,6 +187,14 @@ public extension Config {
         # fold-keep-lines = 3
         # Fold output longer than this many rows once the next command starts. 0 is off.
         # fold-long-output = 0
+        # How a response body is shown: pretty (reformatted) or raw (exactly as received).
+        # http-lens = pretty
+        # Offer the request-workbench hint when a curl command is typed.
+        # http-hint = true
+        # Seconds between polls while a --watch request is running. 1-3600.
+        # http-watch-interval = 5
+        # How many requests the palette's Requests section remembers. 0 turns it off.
+        # http-history = 50
         # shell-integration = auto
         # open-file-command =
 

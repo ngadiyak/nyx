@@ -212,16 +212,17 @@ public enum ShellWords {
         return "'" + t + "'"
     }
 
-    /// Characters a curl argument can carry unquoted without a shell reinterpreting them. Beyond
-    /// the letter/digit/`_./:@%=+,-` set, `?` is included too: query strings like
-    /// `.../v1?x=1` are the common case and don't need protecting for a single word with no
-    /// spaces or glob-sensitive shell state around it.
+    /// Characters a curl argument can carry unquoted without a shell reinterpreting them:
+    /// letter/digit plus `_./:@%=+,-`. `?` is deliberately excluded even though it's common in
+    /// query strings: it's a glob character in zsh and bash, and under zsh's default `nomatch`
+    /// a bare `curl https://x/y?x=1` fails with "no matches found" before curl even runs. A word
+    /// containing `?` falls through to single-quoting below.
     private static func isBareSafe(_ s: Unicode.Scalar) -> Bool {
         if ("A" as Unicode.Scalar) ... ("Z" as Unicode.Scalar) ~= s { return true }
         if ("a" as Unicode.Scalar) ... ("z" as Unicode.Scalar) ~= s { return true }
         if ("0" as Unicode.Scalar) ... ("9" as Unicode.Scalar) ~= s { return true }
         switch s {
-        case "_", ".", "/", ":", "@", "%", "=", "+", ",", "-", "?":
+        case "_", ".", "/", ":", "@", "%", "=", "+", ",", "-":
             return true
         default:
             return false

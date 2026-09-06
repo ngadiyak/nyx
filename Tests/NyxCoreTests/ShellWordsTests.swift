@@ -61,6 +61,13 @@ import Testing
 }
 
 @Test func quoteIsBareWhenSafe() {
-    let quoted = ShellWords.quote(ShellWord("https://api.example.com/v1?x=1"))
-    #expect(quoted == "https://api.example.com/v1?x=1")
+    let quoted = ShellWords.quote(ShellWord("https://api.example.com/v1/users"))
+    #expect(quoted == "https://api.example.com/v1/users")
+}
+
+@Test func queryStringIsQuoted() {
+    let word = ShellWord("https://api.example.com/v1?x=1")
+    let quoted = ShellWords.quote(word)
+    #expect(quoted == "'https://api.example.com/v1?x=1'")
+    #expect(ShellWords.split(quoted) == [word])
 }

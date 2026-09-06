@@ -145,7 +145,7 @@ A user binding beats a default for the same chord; the last line in the file win
 | `remote_pair` | — | Opens the pairing sheet, either side |
 | `remote_take_control` | — | On an observed remote tab, takes over as writer |
 | `toggle_http_lens` | ⌘⇧J | Flips the response under the pointer -- or the last one in the pane -- between `pretty` and `raw`. Greyed when the pane has no request to show |
-| `stop_watch` | ⌘. | Stops the watch running in this pane, while its newest run is still the last request in it. Greyed in the menu and absent from the palette when there is no such series; the block header's own **Stop** button has no such rule and always stops the series it belongs to |
+| `stop_watch` | ⌘. | Stops the watch running in this pane, while its newest run is still the last request in it. Greyed in the menu and absent from the palette when there is no such series; the block header's own **Stop** button has no such rule and always stops the series it belongs to. `⌘K` (clear the pane) also stops a running series and *forgets* it -- every run's block id names rows that are gone, so a kept header would sit on a stranger's command |
 
 The menu is generated from `ActionCatalog.sections`, so every action is discoverable there with
 its current chord, and the settings window's Keys page lists them all.

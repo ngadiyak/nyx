@@ -105,16 +105,21 @@ public struct LensPalette: Equatable {
 /// One command's response, rendered through one lens, ready to be drawn.
 ///
 /// Built by whoever owns the pane and handed back to `Terminal.displayRows`; nothing in here reads
-/// the terminal, so the same buffer can be built off the main thread, kept while a newer one is
-/// built, and compared for staleness by `contentVersion` alone.
+/// the terminal, so the same buffer can be built off the main thread and kept while a newer one is
+/// built.
 public struct LensBuffer: Equatable {
     public let commandID: UInt32
     public let lens: ResponseLens
     public let lines: [LensLine]
-    /// The terminal's `contentVersion` when these lines were built. A buffer whose version differs
-    /// from the terminal's is stale -- built before the last thing the command printed -- and is
-    /// still drawn: a response one line out of date is a better frame than an empty one, and the
-    /// pane replaces it as soon as the new one is ready.
+    /// The terminal's `contentVersion` when these lines were built, so a caller can tell how old
+    /// this rendering is.
+    ///
+    /// **Nothing compares it today.** The pane stamps it in `rebuildLens` and never reads it back:
+    /// a rebuild is asked for when the block finishes, when the lens changes and when a node is
+    /// folded, and none of those needs a version to decide anything. It is here because a buffer
+    /// that outlives the rows it was read from is a real possibility -- a command that keeps
+    /// printing after its `D` mark -- and whatever notices that will need this number rather than a
+    /// second parse of the grid. Read it as "when", not as "stale": no code path acts on it.
     public let contentVersion: UInt64
 
     public init(commandID: UInt32, lens: ResponseLens, lines: [LensLine], contentVersion: UInt64) {

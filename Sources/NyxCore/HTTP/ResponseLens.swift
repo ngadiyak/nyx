@@ -267,10 +267,15 @@ public enum LensRendering {
 
     /// `142 ms · DNS 3 · connect 12 · TLS 40 · TTFB 120`.
     ///
-    /// curl's clocks are cumulative from the start of the request, so each part here is a
-    /// subtraction: what the reader wants is how long each *phase* took. A part that measures
-    /// nothing is left out rather than printed as `0` -- `TLS 0` on a plain-HTTP request reads as
-    /// an instantaneous handshake rather than as no handshake at all.
+    /// curl's clocks are all cumulative from the start of the request, so the two middle parts are
+    /// subtractions -- `connect` is the socket alone and `TLS` the handshake alone, which is what a
+    /// reader comparing two runs wants. The other two are not: `DNS` is the first phase, so it is
+    /// already its own duration, and `TTFB` is deliberately left cumulative, because "time to first
+    /// byte" means from the start of the request and a from-the-handshake number under that name
+    /// would be a different measurement wearing the same word.
+    ///
+    /// A part that measures nothing is left out rather than printed as `0` -- `TLS 0` on a
+    /// plain-HTTP request reads as an instantaneous handshake rather than as no handshake at all.
     static func latency(_ timing: HTTPExchange.Timing) -> String {
         var parts = ["\(milliseconds(timing.total)) ms"]
         let dns = milliseconds(timing.nameLookup)

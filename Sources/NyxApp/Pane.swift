@@ -1704,16 +1704,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         let focused = (window?.isKeyWindow ?? false) && window?.firstResponder === self
         let preedit = markedText.isEmpty ? nil : markedText
-        var gutterMarks: [GutterMark?] = []
-        // Whether each marked row's command is folded, so the mark can say which way pressing it
-        // goes. Read in the same pass as the marks themselves.
-        var gutterFolded: [Bool] = []
-        // And whether each has anything to fold: a command that printed nothing gets its dot and
-        // nothing else -- no pointing hand, no tooltip, no accessibility button.
-        var gutterHasOutput: [Bool] = []
-        // And whether the shell said each command started, which is what draws a running ring: a
-        // `sleep 10` one second in has started and has nothing to fold, and both are true at once.
-        var gutterHasStarted: [Bool] = []
+        // The mark at the head of each block's spine, per display slot: shape, colour and whether
+        // it can be pressed, all decided by `CommandBlockChrome.gutterCap`. Built from the very
+        // blocks and headers this frame draws, so the cap, the spine and the summary cannot
+        // disagree about what a command did -- and so the gutter steps aside with the rest of the
+        // chrome when a full-screen program owns the display.
+        var gutterCaps: [Int: CommandBlockChrome.GutterCap] = [:]
+        // What each mark says in its tooltip and to VoiceOver. Built here, where the header is.
+        var gutterLabels: [Int: String] = [:]
         var notes: [String?] = []
         var spines: [(rows: Range<Int>, color: RGB)] = []
         var summaries: [(row: Int, text: String, color: RGB)] = []
@@ -1956,26 +1954,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
             // Per display slot when a fold is on screen, per visible row otherwise. Not through a
             // window of absolute rows reaching `lastRowOnScreen`: that window spans everything the
-            // fold hides, and a mark per row of it costs 3.3 ms a frame at a 10,000-row fold
+            // fold hides, and a note per row of it costs 3.3 ms a frame at a 10,000-row fold
             // against 0.019 ms for the rows actually drawn. `visibleBlocks` below does take the
             // window, because a block's own region spans the hidden rows and it walks commands
             // rather than rows.
             if self.foldRowsOnScreen.isEmpty {
-                gutterMarks = t.gutterMarks(rows: t.rows)
-                gutterFolded = t.foldStates(rows: t.rows, folding: self.folding)
-                let states = t.commandStates(rows: t.rows)
-                gutterHasStarted = states.started
-                gutterHasOutput = states.hasOutput
                 notes = t.durationNotes(rows: t.rows)
             } else {
                 let pad = max(0, t.rows - self.foldRowsOnScreen.count)
-                gutterMarks = t.gutterMarks(onDisplayRows: self.foldRowsOnScreen)
-                    + Array(repeating: nil, count: pad)
-                gutterFolded = t.foldStates(onDisplayRows: self.foldRowsOnScreen, folding: self.folding)
-                    + Array(repeating: false, count: pad)
-                let states = t.commandStates(onDisplayRows: self.foldRowsOnScreen)
-                gutterHasStarted = states.started + Array(repeating: false, count: pad)
-                gutterHasOutput = states.hasOutput + Array(repeating: false, count: pad)
                 notes = t.durationNotes(onDisplayRows: self.foldRowsOnScreen)
                     + Array(repeating: nil, count: pad)
             }
@@ -2065,6 +2051,18 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                           hasPreviousRun: false,
                                           watch: self.watchHeader(forBlock: block.region.id),
                                           watchInterval: self.config.httpWatchInterval)
+                // The head of this block's spine, before any of the ladders below can `return nil`:
+                // a command whose summary does not fit anywhere still has a mark, and that mark is
+                // the one route to folding it with the mouse.
+                if let cap = CommandBlockChrome.gutterCap(
+                        header,
+                        hasStarted: t.commandDidStart(atAbsoluteRow: block.region.promptRow),
+                        hovered: self.hoveredBlock?.id == block.region.id) {
+                    gutterCaps[promptSlot] = cap
+                    gutterLabels[promptSlot] = GutterMarkLabel.text(
+                        mark: block.failed ? .failed : (block.isRunning ? .running : .succeeded),
+                        folded: header.folded, hasOutput: header.hasOutput, line: promptSlot + 1)
+                }
                 let text = header.summaryWithChevron
                 // Every row of the command line is a candidate, not just the prompt row: a pasted
                 // `curl` wraps, and the row that has room is usually the last one.
@@ -2220,9 +2218,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // own between frames: after a command finished, its new mark had no hand until the window
         // was resized. Only when the set of pressable marks actually moved -- `resetCursorRects` is
         // not free to ask for per frame.
-        if gutter.update(marks: gutterMarks, folded: gutterFolded, hasStarted: gutterHasStarted,
-                         hasOutput: gutterHasOutput, palette: frame.palette,
-                         cellHeight: cellSizePoints.height, topPadding: padding) {
+        if gutter.update(caps: gutterCaps, labels: gutterLabels, palette: frame.palette,
+                         cellHeight: cellSizePoints.height, padding: padding, topPadding: padding) {
             window?.invalidateCursorRects(for: gutter)
         }
         stickyPromptRow = sticky?.row
@@ -2687,36 +2684,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if wasEmpty, event.clickCount == 1,
            toggleFoldOnSummary(at: convert(event.locationInWindow, from: nil),
                                full: event.modifierFlags.contains(.option)) { return }
-        // The spine is a target: clicking it folds the block, which is what a bar drawn beside a
-        // command's rows is inviting. Checked before the caret move, since the spine is in the
-        // padding and no caret can live there.
-        if wasEmpty, event.clickCount == 1, foldBlock(atPointInPadding: convert(event.locationInWindow, from: nil)) {
-            return
-        }
         // A click that selected nothing is a click, not a drag. On the command line that means
         // "put the caret here" -- which is how anyone expects to fix one value in the middle of a
         // pasted `curl`, rather than holding an arrow key.
         if wasEmpty, event.clickCount == 1 {
             moveShellCaret(to: convert(event.locationInWindow, from: nil))
         }
-    }
-
-    /// Folds or unfolds the block whose spine was clicked. Returns whether the click was on one.
-    ///
-    /// Only in the left padding: inside the text a click means the caret or a selection, and a
-    /// gesture that means two things depending on a few pixels is a gesture people stop trusting.
-    private func foldBlock(atPointInPadding point: NSPoint) -> Bool {
-        guard point.x < CGFloat(padding) else { return false }
-        let id: UInt32? = session.withTerminal { t in
-            guard CommandBlockChrome.isAllowed(altScreen: t.modes.altScreen,
-                                               mouseReporting: t.modes.mouse != .none,
-                                               hasMarks: t.shellEmitsPromptMarks) else { return nil }
-            let position = self.position(topLeft(point), in: t)
-            return t.block(atAbsoluteRow: position.row, rows: t.rows)?.region.id
-        }
-        guard let id, id != 0 else { return false }
-        toggleFold(ofCommand: id, full: false)
-        return true
     }
 
     /// A click on a block's summary -- `exit 1 · 8.8s ▾` -- folds and unfolds it. ⌥ folds fully.
@@ -3496,13 +3469,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return moved
     }
 
-    /// The gutter takes as much of the pane's left padding as a mark needs, and nothing when there
-    /// is not enough padding for one -- a gutter over the first column of text would be worse than
-    /// no gutter at all.
+    /// A fixed 20 pt column, whatever the padding is, and never hidden. It is the *target*, not the
+    /// picture: the mark inside it is 3 pt wide at `spineLeadingInset`, and `hitTest` gives every
+    /// point that is not on a mark back to the pane -- so the first text column under it keeps its
+    /// clicks even at `padding = 0`, where the gutter used to disappear entirely.
     private func layoutGutter() {
-        let width = CGFloat(PromptGutter.width(padding: Double(padding)))
-        gutter.isHidden = width <= 0
-        gutter.frame = NSRect(x: 0, y: 0, width: width, height: bounds.height)
+        gutter.frame = NSRect(x: 0, y: 0, width: CGFloat(PromptGutter.hitWidth), height: bounds.height)
         gutter.needsDisplay = true
     }
 
@@ -3566,7 +3538,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     private func layoutStickyStrip() {
         let cell = cellSizePoints
-        let left = max(padding, CGFloat(PromptGutter.width(padding: Double(padding))))
+        let left = max(padding, CGFloat(PromptGutter.hitWidth))
         let width = max(0, bounds.width - left - padding)
         let top = bounds.height - padding - cell.height
         remoteStrip.frame = NSRect(x: left, y: top, width: width, height: cell.height)

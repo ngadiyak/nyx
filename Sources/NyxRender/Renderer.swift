@@ -507,13 +507,15 @@ public final class Renderer {
             guard !spine.rows.isEmpty else { continue }
             let top = Float(padding + spine.rows.lowerBound * m.height)
             let height = Float(spine.rows.count * m.height)
-            // Next to the text, not at the very left: the gutter's status pill lives there,
-            // and two indicators sharing four points of padding is one indicator drawn twice.
-            // With no padding to draw in there is no spine -- it would sit on the first column
-            // of output, and the settings window ships a Padding stepper that goes to zero.
-            guard padding >= 4 else { continue }
-            let x = Float(padding - 3)
-            instances.append(rect(x, top, 2, height, spine.color))
+            // The head of this shape is the gutter's cap, drawn by AppKit at the same x and the
+            // same width: `CommandBlockChrome` owns both numbers, so a green line with beads on it
+            // 1.5 pt apart cannot come back. At `padding = 0` the inset is 0 and the spine takes
+            // the first text column's leading 3 pt rather than not being drawn at all -- a block
+            // with no spine is a block with no left edge (Addendum 2). The old
+            // `guard padding >= 4 else { continue }` goes with this: a block with no left edge is
+            // not a quieter block, it is a block with no left edge.
+            let x = Float(CommandBlockChrome.spineLeadingInset(padding: Double(padding)))
+            instances.append(rect(x, top, Float(CommandBlockChrome.spineWidth), height, spine.color))
         }
 
         // A block's summary, right-aligned on its command row and in the block's own colour --

@@ -82,15 +82,33 @@ private func session() -> Terminal {
 
 // MARK: - Geometry
 
-/// The gutter lives inside the pane's own padding, so it costs no columns and never touches a
-/// glyph -- which means a pane with no padding gets no gutter rather than one over its text.
-@Test func theGutterFitsInsideThePadding() {
-    // The padding is the ceiling, not `maximumWidth`: at the default eight the gutter is eight.
-    #expect(PromptGutter.width(padding: 8) == 8)
-    #expect(PromptGutter.width(padding: 100) == PromptGutter.maximumWidth)
-    #expect(PromptGutter.width(padding: 5) == 5)
-    #expect(PromptGutter.width(padding: 0) == 0)
-    #expect(PromptGutter.width(padding: 2) == 0)
+/// The target is 20 pt whatever the padding is. At the shipping `padding = 8` the real target was
+/// 8 pt wide and 13 pt tall at `line-height 0.8` -- half what the code claimed (a11y 6.1).
+@Test func theGutterTargetIsTwentyPointsWhateverThePadding() {
+    #expect(PromptGutter.hitWidth == 20)
+}
+
+/// A clamped 16 pt rect on a 13 pt row overhangs its neighbours. Two prompts with nothing between
+/// them therefore have overlapping targets, and the point goes to the nearer centre.
+@Test func overlappingMarkTargetsGoToTheNearerCentre() {
+    let rows = [3, 4]
+    // Row 3's centre is 45.5, row 4's is 58.5, and the 16 pt rects overlap between 50.5 and 53.5.
+    #expect(PromptGutter.markedRow(atY: 46, cellHeight: 13, padding: 0, hitHeight: 16,
+                                   markedRows: rows) == 3)
+    #expect(PromptGutter.markedRow(atY: 53, cellHeight: 13, padding: 0, hitHeight: 16,
+                                   markedRows: rows) == 4)
+    // Exactly between the two centres: the upper row, deterministically.
+    #expect(PromptGutter.markedRow(atY: 52, cellHeight: 13, padding: 0, hitHeight: 16,
+                                   markedRows: rows) == 3)
+    // Above both rects: the pane's, not the gutter's.
+    #expect(PromptGutter.markedRow(atY: 10, cellHeight: 13, padding: 0, hitHeight: 16,
+                                   markedRows: rows) == nil)
+    // An unmarked row claims nothing however close the point is to its middle.
+    #expect(PromptGutter.markedRow(atY: 6, cellHeight: 13, padding: 0, hitHeight: 16,
+                                   markedRows: [3]) == nil)
+    // The top padding shifts every rect with it.
+    #expect(PromptGutter.markedRow(atY: 46 + 8, cellHeight: 13, padding: 8, hitHeight: 16,
+                                   markedRows: rows) == 3)
 }
 
 @Test func aPointMapsToTheRowItIsOver() {
@@ -348,33 +366,4 @@ private func session() -> Terminal {
     let states = t.foldStates(onDisplayRows: display, folding: folding)
     #expect(states[0])                       // slot 0 is the prompt of the folded command
     #expect(!states[1])                      // slot 1 is the placeholder itself
-}
-
-/// The gutter's hit area is wider than the mark it draws.
-///
-/// The owner's report: the dots are hard to click. A 5-point-wide strip is a 5-point-wide target,
-/// and the mark inside it is smaller still. The strip may take up to fourteen points of the pane's
-/// own padding now -- it can never take more than the padding, so nothing moves at the default
-/// eight -- while the capsule keeps exactly the size and the position it had, and the extra width
-/// is empty space on the *text* side, which is where a pointer reaching for a dot overshoots to.
-@Test func theGutterIsWiderThanItsMark() {
-    // Never more than the padding: the gutter lives inside it and must not reach a glyph.
-    #expect(PromptGutter.width(padding: 8) == 8)
-    #expect(PromptGutter.width(padding: 20) == 14)
-    #expect(PromptGutter.width(padding: 4) == 4)
-    // Below the floor there is no gutter at all rather than one over the first column.
-    #expect(PromptGutter.width(padding: 3) == 0)
-    #expect(PromptGutter.width(padding: 0) == 0)
-
-    // The drawn capsule, at every gutter width it can have: same place, same size.
-    let atSix = PromptGutter.markRect(gutterWidth: 6)
-    #expect(atSix.x == 1)
-    #expect(atSix.width == 4)
-    for width in [8.0, 10, 14] {
-        let rect = PromptGutter.markRect(gutterWidth: width)
-        #expect(rect == atSix, "gutter \(width) moved or resized the mark")
-    }
-    // A gutter too narrow for the whole capsule draws what fits rather than overflowing.
-    #expect(PromptGutter.markRect(gutterWidth: 4).width == 2)
-    #expect(PromptGutter.markRect(gutterWidth: 0).width == 0)
 }

@@ -17,7 +17,7 @@ import NyxRender
 /// -- goes through `Terminal.displayRows` into a `RenderFrame`, the offscreen `Renderer` draws it
 /// into a texture, and the AppKit chrome is composited over that image at the placement the pane's
 /// own rules choose: `CommandBlockChrome.overlayPlacement` and `summaryPlacement` for the strip and
-/// the summary, `PromptGutter.width` and the cell height for the gutter, and the same
+/// the summary, `PromptGutter.hitWidth` and the cell height for the gutter, and the same
 /// `bounds.height - padding - (row + 1) * cell` arithmetic `Pane.overlayOrigin` uses for everything
 /// pinned to a row.
 ///
@@ -94,9 +94,10 @@ enum GridSnapshot {
         }
 
         // The two settings that change the shape of every row, at the ends of their ranges. The
-        // chrome is placed from `cellSizePoints` and `PromptGutter.width(padding:)`, and both have
-        // only ever been pictured at their defaults -- so nothing said what a 12 pt row does to a
-        // 20 pt pill, or what the gutter does when the padding it lives in is gone.
+        // chrome is placed from `cellSizePoints`, `PromptGutter.hitWidth` and
+        // `CommandBlockChrome.spineLeadingInset`, and those have only ever been pictured at their
+        // defaults -- so nothing said what a 12 pt row does to a 20 pt pill, or where the mark and
+        // the spine land when the padding they used to live in is gone.
         let dark = Themes.builtin["nyx-dark"] ?? Palette.xtermDefault()
         for (label, change) in [("line-height-08", { (c: inout Config) in c.lineHeight = 0.8 }),
                                 ("padding-0", { (c: inout Config) in c.padding = 0 })] {
@@ -231,8 +232,9 @@ enum GridSnapshot {
 /// the point geometry that pane's chrome would be laid out in.
 ///
 /// Every measurement here is the pane's own: `cell` is `Pane.cellSizePoints`, `bounds` is what
-/// `Pane.size(forCols:rows:)` gives, and the padding is the config's, so the gutter is as wide as
-/// `PromptGutter.width` makes it at that padding rather than at a number picked for the picture.
+/// `Pane.size(forCols:rows:)` gives, and the padding is the config's, so the mark inside the gutter
+/// lands where `CommandBlockChrome.spineLeadingInset` puts it at that padding rather than at a
+/// number picked for the picture.
 struct GridCanvas {
     let config: Config
     let fonts: FontSet
@@ -459,17 +461,17 @@ enum ChromeGround {
 // MARK: - The chrome, placed
 
 extension GridCanvas {
-    /// The gutter, at `PromptGutter.width` of the pane's padding and the full height, fed the marks
-    /// the frame pass read off the display rows.
+    /// The gutter: a fixed `PromptGutter.hitWidth` column the full height of the pane, fed the caps
+    /// the frame pass built from the same headers the summaries came from. Never nil now -- the
+    /// gutter no longer disappears with the padding, because its mark is drawn at
+    /// `spineLeadingInset` rather than inside a padding that may be zero.
     func gutter(_ built: GridScene.Built, palette: Palette,
                 appearance: NSAppearance.Name) -> NSView? {
-        let width = CGFloat(PromptGutter.width(padding: Double(padding)))
-        guard width > 0 else { return nil }
-        let view = PromptGutterView(frame: NSRect(x: 0, y: 0, width: width, height: bounds.height))
+        let view = PromptGutterView(frame: NSRect(x: 0, y: 0, width: CGFloat(PromptGutter.hitWidth),
+                                                  height: bounds.height))
         view.appearance = NSAppearance(named: appearance)
-        _ = view.update(marks: built.gutterMarks, folded: built.gutterFolded,
-                        hasStarted: built.gutterStarted, hasOutput: built.gutterHasOutput,
-                        palette: palette, cellHeight: cell.height, topPadding: padding)
+        _ = view.update(caps: built.gutterCaps, labels: built.gutterLabels, palette: palette,
+                        cellHeight: cell.height, padding: padding, topPadding: padding)
         view.layoutSubtreeIfNeeded()
         return view
     }
@@ -479,7 +481,7 @@ extension GridCanvas {
     func stickyStrip(_ built: GridScene.Built, palette: Palette,
                      appearance: NSAppearance.Name) -> NSView? {
         guard let sticky = built.sticky else { return nil }
-        let left = max(padding, CGFloat(PromptGutter.width(padding: Double(padding))))
+        let left = max(padding, CGFloat(PromptGutter.hitWidth))
         let width = max(0, bounds.width - left - padding)
         let view = StickyPromptView(frame: NSRect(x: left, y: bounds.height - padding - cell.height,
                                                   width: width, height: cell.height))
@@ -615,10 +617,8 @@ struct GridScene {
     /// Everything one composite needs, in the order a `Pane` produces it.
     struct Built {
         var frame: RenderFrame
-        var gutterMarks: [GutterMark?]
-        var gutterFolded: [Bool]
-        var gutterStarted: [Bool]
-        var gutterHasOutput: [Bool]
+        var gutterCaps: [Int: CommandBlockChrome.GutterCap]
+        var gutterLabels: [Int: String]
         var strip: (slot: Int, controls: OverlayControls, header: BlockHeader)?
         var sticky: (text: String, summary: String, tone: SummaryTone, failed: Bool)?
         var lensField: (slot: Int, caption: String, text: String, message: String?, offersJq: Bool)?
@@ -843,15 +843,6 @@ struct GridScene {
         let pad = max(0, rows - lines.count)
         lines += Array(repeating: Row(cols: cols), count: pad)
 
-        let allowed = CommandBlockChrome.isAllowed(altScreen: terminal.modes.altScreen,
-                                                   mouseReporting: terminal.modes.mouse != .none,
-                                                   hasMarks: terminal.shellEmitsPromptMarks)
-        let marks = allowed ? terminal.gutterMarks(onDisplayRows: display)
-                                + Array(repeating: nil, count: pad)
-                            : Array(repeating: nil, count: rows)
-        let folded = terminal.foldStates(onDisplayRows: display, folding: folding)
-            + Array(repeating: false, count: pad)
-        let states = terminal.commandStates(onDisplayRows: display)
         var notes = terminal.durationNotes(onDisplayRows: display)
             + Array(repeating: nil, count: pad)
 
@@ -886,6 +877,9 @@ struct GridScene {
         var strip: (slot: Int, controls: OverlayControls, header: BlockHeader)?
         var summaries: [(row: Int, text: String, color: RGB)] = []
         var lensFieldSlot: Int?
+        // The caps, from the same headers the summaries come from -- `Pane.render`'s order exactly.
+        var gutterCaps: [Int: CommandBlockChrome.GutterCap] = [:]
+        var gutterLabels: [Int: String] = [:]
 
         for block in blocks {
             guard block.showsHeader, let promptSlot = slotOfRow[block.region.promptRow] else { continue }
@@ -908,6 +902,15 @@ struct GridScene {
                                       bodyIsJSON: isRequest && !htmlBody,
                                       watch: isRequest ? watch : nil)
             if isRequest { lensFieldSlot = promptSlot }
+            if let cap = CommandBlockChrome.gutterCap(
+                    header,
+                    hasStarted: terminal.commandDidStart(atAbsoluteRow: block.region.promptRow),
+                    hovered: hovered == block.region.id) {
+                gutterCaps[promptSlot] = cap
+                gutterLabels[promptSlot] = GutterMarkLabel.text(
+                    mark: block.failed ? .failed : (block.isRunning ? .running : .succeeded),
+                    folded: header.folded, hasOutput: header.hasOutput, line: promptSlot + 1)
+            }
             // Every row of the command line is a candidate, not just the prompt row: a pasted
             // `curl` wraps, and the row with room is usually the last.
             let lastCommandRow = block.region.outputStart.map { $0 - 1 } ?? block.region.promptRow
@@ -1009,9 +1012,7 @@ struct GridScene {
                                                           viewportTop: windowTop)
                                     }
                                 })
-        return Built(frame: frame, gutterMarks: marks, gutterFolded: folded,
-                     gutterStarted: states.started + Array(repeating: false, count: pad),
-                     gutterHasOutput: states.hasOutput + Array(repeating: false, count: pad),
+        return Built(frame: frame, gutterCaps: gutterCaps, gutterLabels: gutterLabels,
                      strip: strip, sticky: sticky, lensField: field, search: search)
     }
 

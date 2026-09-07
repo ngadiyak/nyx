@@ -54,35 +54,39 @@ public enum GutterMarkLabel {
 
 /// The geometry of the status gutter, and the marks to put in it.
 ///
-/// The gutter lives inside the pane's own left padding, so it costs no terminal columns and never
-/// overlaps a glyph. That makes its width a function of the padding setting, which is the sort of
-/// rule that is quietly wrong in a view until someone sets `padding = 0` -- so it is here.
+/// Only the *hit* geometry: what the gutter draws is `CommandBlockChrome.GutterCap` at
+/// `CommandBlockChrome.spineLeadingInset` × `.spineWidth`, which is where the Metal spine is drawn
+/// too. The target and the picture were one number for a long time, and the result was that making
+/// the dots easier to click also made them fatter.
 public enum PromptGutter {
-    /// How much of the padding the gutter may take. This is the **hit area**, not the mark: the
-    /// mark is `markWidth` points wide wherever the gutter is wider than that.
+    /// The **hit area**: 20 points, the same target the fold triangles of §2.4 get, independent of
+    /// `padding` and allowed to overlap the first text column. `PromptGutterView.hitTest` hands
+    /// back every point that is not on a mark, so the columns of text under it keep their clicks;
+    /// what changes is that a pointer reaching for a mark no longer has to find 8 points of padding
+    /// at the window's own resize margin.
     ///
-    /// It was six, which is the width of the capsule plus its inset -- a five-point target for a
-    /// pointer, and the owner's report was exactly that: the dots are hard to click. Fourteen is
-    /// still inside the padding (`width` never returns more than the padding it is given, so a pane
-    /// at the default eight is unchanged in every way but this) and the extra width is empty space
-    /// on the *text* side, which is where a pointer reaching for a dot overshoots to.
-    public static let maximumWidth: Double = 14
-    /// The capsule that is actually drawn, and its inset from the gutter's leading edge. Separate
-    /// from `maximumWidth` so that widening the target cannot move or fatten the picture.
-    public static let markWidth: Double = 4
-    public static let markInset: Double = 1
-    /// Below this there is not enough room to draw a mark without it touching the text.
-    public static let minimumPadding: Double = 4
+    /// The *drawn* mark is `CommandBlockChrome.spineWidth` wide at `spineLeadingInset`, which is
+    /// where the Metal spine is: one shape, one fact.
+    public static let hitWidth: Double = 20
 
-    public static func width(padding: Double) -> Double {
-        padding >= minimumPadding ? min(padding, maximumWidth) : 0
-    }
-
-    /// Where the capsule goes inside a gutter of `gutterWidth` points: always the same place and
-    /// the same size, however much room the hit area has. A gutter too narrow for the whole
-    /// capsule draws what fits rather than overflowing into the first column of text.
-    public static func markRect(gutterWidth: Double) -> (x: Double, width: Double) {
-        (markInset, min(markWidth, max(0, gutterWidth - markInset * 2)))
+    /// The marked row a point falls on, or nil for a point that belongs to the pane.
+    ///
+    /// Each marked row's target is `hitHeight` tall, centred on the row -- `hitRowHeight` clamps it
+    /// to 16 pt, so at `line-height 0.8` it overhangs the rows above and below. Those are usually
+    /// output rows with no mark of their own; where two marks' rects genuinely overlap (two prompts
+    /// with nothing between them) the nearer centre wins, and an exact tie goes to the upper row so
+    /// the answer never depends on the order `markedRows` arrives in.
+    public static func markedRow(atY y: Double, cellHeight: Double, padding: Double,
+                                 hitHeight: Double, markedRows: [Int]) -> Int? {
+        guard cellHeight > 0, hitHeight > 0 else { return nil }
+        var best: (row: Int, distance: Double)?
+        for row in markedRows.sorted() {
+            let centre = padding + (Double(row) + 0.5) * cellHeight
+            let distance = abs(y - centre)
+            guard distance <= hitHeight / 2 else { continue }
+            if best == nil || distance < best!.distance { best = (row, distance) }
+        }
+        return best?.row
     }
 
     /// The visible row a point falls on, measured from the top of the pane including its padding.

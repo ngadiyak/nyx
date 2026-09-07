@@ -79,27 +79,27 @@ enum StateSnapshot {
         for (paletteName, themePalette) in palettes {
             for (appearanceName, appearance) in appearances {
                 let suffix = "\(paletteName)-\(appearanceName)"
-                // The gutter under a pointer. `PromptGutterView` overrides no mouse-moved handler
-                // and keeps no hovered row, so this is the idle picture again: the marks that the
-                // design wants to grow a fold triangle on hover currently grow nothing.
+                // The gutter under a pointer. Hover is not the view's own state: `Pane.render`
+                // resolves which block the pointer is on and asks `CommandBlockChrome.gutterCap`
+                // for a chevron in place of that block's cap, so a picture of a hovered gutter is
+                // a picture of the caps that call produces. Rows 0 and 1 are the hovered block's
+                // two chevrons -- pointing down where pressing folds, right where it unfolds --
+                // against the untouched marks of the blocks either side of it.
                 let cell = ceil(NSFont.monospacedSystemFont(ofSize: 13, weight: .regular).ascender
                                 - NSFont.monospacedSystemFont(ofSize: 13, weight: .regular).descender)
-                let width = CGFloat(PromptGutter.width(padding: 8))
-                let gutter = PromptGutterView(frame: NSRect(x: 0, y: 0, width: width,
+                let gutter = PromptGutterView(frame: NSRect(x: 0, y: 0,
+                                                            width: CGFloat(PromptGutter.hitWidth),
                                                             height: cell * 4))
                 gutter.appearance = NSAppearance(named: appearance)
-                _ = gutter.update(marks: [.succeeded, .failed, .running, .succeeded],
-                                  folded: [false, true, false, false],
-                                  hasStarted: [true, true, true, false],
-                                  hasOutput: [true, true, true, false],
-                                  palette: themePalette, cellHeight: cell, topPadding: 0)
-                if let event = NSEvent.mouseEvent(with: .mouseMoved,
-                                                  location: NSPoint(x: width / 2, y: cell / 2),
-                                                  modifierFlags: [], timestamp: 0, windowNumber: 0,
-                                                  context: nil, eventNumber: 0, clickCount: 0,
-                                                  pressure: 0) {
-                    gutter.mouseMoved(with: event)
-                }
+                _ = gutter.update(caps: [0: .init(shape: .chevronDown, tone: .success, isPressable: true),
+                                         1: .init(shape: .chevronRight, tone: .failure, isPressable: true),
+                                         2: .init(shape: .hollow, tone: .running, isPressable: true),
+                                         3: .init(shape: .solid, tone: .success, isPressable: true)],
+                                  labels: [0: "Command on line 1 succeeded. Fold its output. Option-click selects its output.",
+                                           1: "Command on line 2 failed. Unfold its output. Option-click selects its output.",
+                                           2: "Command on line 3 is still running.",
+                                           3: "Command on line 4 succeeded. Fold its output. Option-click selects its output."],
+                                  palette: themePalette, cellHeight: cell, padding: 8, topPadding: 0)
                 gutter.layoutSubtreeIfNeeded()
                 UISnapshot.write(gutter, named: "gutter-marks-hovered-\(suffix)", into: directory,
                                  background: themePalette.background)

@@ -259,21 +259,26 @@ enum UISnapshot {
                     write(view, named: "lens-field-\(name)-\(suffix)", into: directory,
                           background: themePalette.background)
                 }
-                // The gutter's four marks. A no-output command's dot is identical to any other
-                // succeeded one on purpose -- it is a record of what happened, and the difference is
-                // that it offers no tooltip, no pointing hand and no accessibility button, none of
-                // which a still picture can show. The running mark is the one thing here that is a
-                // shape rather than a colour: hollow, so "in progress" survives greyscale.
+                // The gutter's four caps, one per shape the idle gutter can draw: a succeeded
+                // command's inset capsule, a failure's full-row bar (more ink, because a failure is
+                // what has to be findable while scrolling), a running command's hollow capsule, and
+                // a command that finished cleanly with nothing to fold at 40 %. Every one is a
+                // *shape* as well as a colour, which is the whole point -- colour is the one thing
+                // a mark cannot say on its own.
                 let cell = rowHeight
-                let gutterWidth = CGFloat(PromptGutter.width(padding: Double(8)))
-                let gutter = PromptGutterView(frame: NSRect(x: 0, y: 0, width: gutterWidth,
+                let gutter = PromptGutterView(frame: NSRect(x: 0, y: 0,
+                                                            width: CGFloat(PromptGutter.hitWidth),
                                                             height: cell * 4))
                 gutter.appearance = NSAppearance(named: appearance)
-                _ = gutter.update(marks: [.succeeded, .failed, .running, .succeeded],
-                                  folded: [false, true, false, false],
-                                  hasStarted: [true, true, true, false],
-                                  hasOutput: [true, true, true, false],
-                                  palette: themePalette, cellHeight: cell, topPadding: 0)
+                _ = gutter.update(caps: [0: .init(shape: .solid, tone: .success, isPressable: true),
+                                         1: .init(shape: .bar, tone: .failure, isPressable: true),
+                                         2: .init(shape: .hollow, tone: .running, isPressable: true),
+                                         3: .init(shape: .faded, tone: .success, isPressable: false)],
+                                  labels: [0: "Command on line 1 succeeded.",
+                                           1: "Command on line 2 failed.",
+                                           2: "Command on line 3 is still running.",
+                                           3: "Command on line 4 succeeded."],
+                                  palette: themePalette, cellHeight: cell, padding: 8, topPadding: 0)
                 gutter.layoutSubtreeIfNeeded()
                 write(gutter, named: "gutter-marks-\(suffix)", into: directory,
                       background: themePalette.background)

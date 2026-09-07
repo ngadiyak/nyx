@@ -57,31 +57,27 @@ private func render(cols: Int = 8, rows: Int = 3, padding: Int,
 
 private let spineColor = RGB(0, 255, 0)
 
-@Test func aSpineIsDrawnInThePaddingBesideItsRows() throws {
+/// The spine is 3 pt wide at `spineLeadingInset`, which is 4 pt in at the shipping padding -- off
+/// the window's resize margin and exactly where the gutter's cap is drawn.
+@Test func aSpineIsThreePointsWideBesideItsRows() throws {
     let (fonts, _, px) = try render(padding: 8, spines: [(rows: 0..<2, color: spineColor)])
-    // Beside the first two rows.
-    #expect(px(6, 8 + fonts.metrics.height / 2) == Pixel(r: 0, g: 255, b: 0))
-    // And not beside the third, which the block does not own.
-    #expect(px(6, 8 + fonts.metrics.height * 2 + fonts.metrics.height / 2) != Pixel(r: 0, g: 255, b: 0))
-}
-
-/// The spine lives in the padding. With none there is nowhere to put it that is not the first
-/// column of the user's output, and the settings window ships a Padding stepper that reaches zero.
-@Test func noPaddingMeansNoSpine() throws {
-    let (fonts, w, px) = try render(padding: 0, spines: [(rows: 0..<3, color: spineColor)])
-    for x in 0..<min(4, w) {
-        #expect(px(x, fonts.metrics.height / 2) != Pixel(r: 0, g: 255, b: 0), "column \(x)")
-    }
-}
-
-/// The gutter's status pill sits at the far left of the padding. The spine must not be drawn on top
-/// of it: two indicators sharing four points is one indicator drawn twice, in two systems, with the
-/// AppKit one winning.
-@Test func theSpineLeavesTheLeftmostPaddingToTheGutter() throws {
-    let (fonts, _, px) = try render(padding: 8, spines: [(rows: 0..<1, color: spineColor)])
-    let y = fonts.metrics.height / 2
-    #expect(px(1, y) != Pixel(r: 0, g: 255, b: 0))
+    let y = 8 + fonts.metrics.height / 2
+    #expect(px(4, y) == Pixel(r: 0, g: 255, b: 0))
+    #expect(px(6, y) == Pixel(r: 0, g: 255, b: 0))
     #expect(px(2, y) != Pixel(r: 0, g: 255, b: 0))
+    #expect(px(8, y) != Pixel(r: 0, g: 255, b: 0))
+    #expect(px(4, 8 + fonts.metrics.height * 2 + fonts.metrics.height / 2) != Pixel(r: 0, g: 255, b: 0))
+}
+
+/// `padding = 0` is a setting the settings window ships. The spine takes the first column's leading
+/// 3 pt there rather than disappearing: without it a block loses its left edge entirely, which is
+/// what the second snapshot pass found (Addendum 2).
+@Test func atZeroPaddingTheSpineTakesTheFirstColumnsLeadingEdge() throws {
+    let (fonts, _, px) = try render(padding: 0, spines: [(rows: 0..<3, color: spineColor)])
+    let y = fonts.metrics.height / 2
+    #expect(px(0, y) == Pixel(r: 0, g: 255, b: 0))
+    #expect(px(2, y) == Pixel(r: 0, g: 255, b: 0))
+    #expect(px(4, y) != Pixel(r: 0, g: 255, b: 0))
 }
 
 /// The tint sits under the glyphs across the block's rows and nowhere else.

@@ -531,3 +531,23 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     #expect(!CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
                                                   summary: (row: 4, text: "")))
 }
+
+// MARK: - The lens chip
+
+/// The chip names the lens rather than drawing `{ }`, and it names the one that is *on* -- a chip
+/// reading `Pretty` beside a response being read through `Headers` is the control lying about the
+/// thing it controls.
+@Test func theChipNamesTheLensThatIsOn() {
+    func chip(_ lens: ResponseLens?) -> CommandBlockChrome.Pill? {
+        let h = header(summary: "", http: HTTPSummary(text: "200 · 142 ms", tone: .success),
+                       isHTTP: true, lens: lens, json: true)
+        return CommandBlockChrome.pills(h, at: .w3).first
+    }
+    #expect(chip(nil) == .lens(name: "Pretty", on: false))
+    #expect(chip(.pretty) == .lens(name: "Pretty", on: true))
+    #expect(chip(.headers) == .lens(name: "Headers", on: true))
+    #expect(chip(.body) == .lens(name: "Body", on: true))
+    #expect(chip(.grep("alpha")) == .lens(name: "Find", on: true))
+    // The chevron says a menu opens; every chip carries one, because every lens has neighbours.
+    #expect(CommandBlockChrome.Pill.lens(name: "Pretty", on: false).trailingChevron)
+}

@@ -238,7 +238,7 @@ final class BlockHeaderView: NSView {
             if newBlock || view.isHidden { view.resetInteraction() }
             let pill = plan.pills[index]
             view.isHidden = false
-            view.configure(pill, palette: palette, opaque: plan.overlapsCommand)
+            view.configure(pill, palette: palette)
             view.onPress = { [weak self] in self?.press(pill) }
         }
     }
@@ -252,9 +252,7 @@ final class BlockHeaderView: NSView {
         case .stop: onAction?(.stopWatch, header.id)
         case .fold: onToggleFold?(header.id, NSEvent.modifierFlags.contains(.option))
         case .actions: openActionsMenu()
-        // The chip's `▾` promises the lens menu, which is Task 4's. Until then it does what the
-        // `{ }` it replaces did -- put the lens on, take it off -- rather than nothing at all.
-        case .lens: onAction?(.toggleLens, header.id)
+        case .lens: openLensMenu()
         }
     }
 
@@ -362,6 +360,39 @@ final class BlockHeaderView: NSView {
     @objc private func menuPressed(_ sender: NSMenuItem) {
         guard let entry = sender.representedObject as? MenuEntry else { return }
         onAction?(entry.action, entry.id)
+    }
+
+    /// The lens rows of the ⋯ menu, on their own, under the chip that names them. Built from
+    /// `header.actions` rather than from a second list, so the chip cannot offer a lens the menu
+    /// does not -- the failure `BlockHeader.showsLens` and the menu had before them.
+    private func lensMenu(for header: BlockHeader) -> NSMenu {
+        let menu = NSMenu()
+        for entry in header.actions {
+            guard case .setLens = entry.action else { continue }
+            let item = NSMenuItem(title: header.title(for: entry.action),
+                                  action: #selector(menuPressed(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = MenuEntry(action: entry.action, id: header.id)
+            item.isEnabled = entry.enabled
+            item.state = header.isChecked(entry.action) ? .on : .off
+            menu.addItem(item)
+        }
+        menu.autoenablesItems = false
+        return menu
+    }
+
+    /// The chip's `▾`: opens the lens rows alone, rather than the whole ⋯ menu -- a chip that
+    /// carries one control's own name opens that control's own choices. `menuHeader()` because
+    /// `Diff with Previous Run`'s `enabled` is answered late, same as `openActionsMenu`.
+    private func openLensMenu() {
+        guard let header = menuHeader() ?? header else { return }
+        // Dropped from under the pill it came from, same reasoning as `openActionsMenu`:
+        // `StripPillView` is flipped, so its bottom-left is `(0, height)`, not `(0, 0)`.
+        guard let anchor = pillViews.first(where: {
+            if case .lens = $0.pill { return true } else { return false }
+        }) else { return }
+        lensMenu(for: header).popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height),
+                                    in: anchor)
     }
 
     // MARK: - Snapshots

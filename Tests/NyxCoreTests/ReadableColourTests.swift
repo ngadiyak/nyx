@@ -46,3 +46,33 @@ private let sheetGreyDark = RGB(50, 50, 50)        // windowBackgroundColor, dar
     let white = RGB(255, 255, 255)
     #expect(RGB.readable(white, on: white, towards: white, minimum: 4.5) == white)
 }
+
+/// The lens chip's on-state is `accent` filled with `textOn(accent)` ink. That ink is the only
+/// thing on a filled chip, so it is text and holds to 4.5:1 -- in all seven built-in themes, which
+/// is where the old lit `{ }` failed at 2.82:1.
+@Test func theLensChipsInkIsReadableOnItsOwnFillInEveryTheme() {
+    for (name, palette) in Themes.builtin {
+        let ratio = RGB.contrast(palette.textOn(palette.accent), palette.accent)
+        #expect(ratio >= 4.5, "\(name): \(ratio)")
+    }
+}
+
+/// `Stop` is drawn in the theme's failure colour on the pill's own ground. `Stop`'s colour is
+/// calibrated to clear 4.5:1 on `palette.background` and nothing further (one-dark measures
+/// 4.503:1, no headroom to spare) -- so a wash of the row's hover tint under it, as the pill used
+/// to draw, ate that headroom and gruvbox-dark's `Stop` read at 2.82:1. The idle pill's ground is
+/// therefore opaque `background`, not a tint of the hovered row, and the hairline that outlines it
+/// is a 0.30 wash rather than 0.22 -- the smallest alpha that clears 1.6:1 against that ground in
+/// every theme (0.22 tops out at 1.29:1, in every theme, however the row's tint is chosen: it is
+/// not a tuning problem, `RGB.blend`'s straight line from any ground to `foreground` cannot clear
+/// 1.6 at a 0.08 step). Measured in all seven built-ins, because "readable in nyx-dark" is how
+/// gruvbox's lit `{ }` shipped at 2.82:1 in the first place.
+@Test func theStripsUnlitPillsAreReadableInEveryTheme() {
+    for (name, palette) in Themes.builtin {
+        let ground = palette.background
+        #expect(RGB.contrast(SummaryTone.failure.color(in: palette), ground) >= 4.5, "\(name) Stop")
+        #expect(RGB.contrast(palette.foreground, ground) >= 4.5, "\(name) label")
+        let hairline = RGB.blend(palette.background, into: palette.foreground, amount: 0.30)
+        #expect(RGB.contrast(hairline, ground) >= 1.6, "\(name) hairline")
+    }
+}

@@ -259,9 +259,15 @@ public struct Palette: Equatable {
 
     /// Text to put on a filled shape of `fill` -- a group's name on its pill, a toggle's name on
     /// its chip. Whichever of the theme's two neutrals reads on it; assuming the background always
-    /// does gives dark-on-dark wherever the fill is a dark red.
+    /// does gives dark-on-dark wherever the fill is a dark red. Neither neutral is guaranteed to
+    /// clear 4.5:1 on its own -- gruvbox-dark's cream foreground on its own blue accent measured
+    /// 3.48:1, one-dark's grey foreground on its own blue 4.33:1 -- so the winner is pushed toward
+    /// pure black or white, the same way `accentText` is pushed toward the page, until it does.
     public func textOn(_ fill: RGB) -> RGB {
-        RGB.contrast(background, fill) >= RGB.contrast(foreground, fill) ? background : foreground
+        let useBackground = RGB.contrast(background, fill) >= RGB.contrast(foreground, fill)
+        let base = useBackground ? background : foreground
+        let extreme = useBackground ? RGB(0, 0, 0) : RGB(255, 255, 255)
+        return Palette.pushed(base, toward: extreme, until: fill, reaches: 4.5, from: 0, to: 1)
     }
 
     /// One of the sixteen, picked for use as *text* or as a small filled shape: the normal variant

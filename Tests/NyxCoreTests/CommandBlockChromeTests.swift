@@ -265,7 +265,7 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     let h = header(summary: "8.8s")
     let placement = CommandBlockChrome.stripPlacement(
         h, commandRows: [(absoluteRow: 4, lastUsedColumn: 9), (absoluteRow: 5, lastUsedColumn: 78)],
-        cols: 80, measure: { _ in 20 })
+        cols: 80, summary: nil, measure: { _ in 20 })
     #expect(placement?.row == 4)
     #expect(placement?.plan.firstColumn == 60)
 }
@@ -279,20 +279,22 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
                                              dots: [.running], showsStop: true, tone: .success))
     let rows = [(absoluteRow: 4, lastUsedColumn: 10), (absoluteRow: 5, lastUsedColumn: 79)]
     let placement = try #require(CommandBlockChrome.stripPlacement(
-        watching, commandRows: rows, cols: 80, measure: { $0.pills == [.stop] ? 8 : 60 }))
+        watching, commandRows: rows, cols: 80, summary: nil,
+        measure: { $0.pills == [.stop] ? 8 : 60 }))
     #expect(placement.row == 5)
     #expect(placement.plan.pills == [.stop])
     let summaryRow = CommandBlockChrome.summaryPlacement(commandRows: rows, textCount: 32,
                                                          chevronCount: 1, cols: 80)?.row
     #expect(summaryRow == 4)
-    #expect(!CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
-                                                  summaryRow: summaryRow))
+    #expect(!CommandBlockChrome.suppressesSummary(
+        placement.plan, stripRow: placement.row,
+        summary: summaryRow.map { (row: $0, text: watching.summary) }))
     // …and a strip that did land on the summary's own row, with something to say, speaks for it:
     // two sentences on one row is the row saying the same thing twice.
     let onTheRow = try #require(CommandBlockChrome.stripPlacement(
-        watching, commandRows: [rows[0]], cols: 80, measure: { _ in 60 }))
+        watching, commandRows: [rows[0]], cols: 80, summary: nil, measure: { _ in 60 }))
     #expect(CommandBlockChrome.suppressesSummary(onTheRow.plan, stripRow: onTheRow.row,
-                                                 summaryRow: 4))
+                                                 summary: (row: 4, text: watching.summary)))
 }
 
 /// No row with room and nothing to stop: no strip anywhere, which is what keeps the in-grid summary
@@ -300,8 +302,9 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
 @Test func noRoomAnywhereMeansNoStrip() {
     let h = header(summary: "8.8s")
     #expect(CommandBlockChrome.stripPlacement(h,
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 79)], cols: 80, measure: { _ in 20 }) == nil)
-    #expect(CommandBlockChrome.stripPlacement(h, commandRows: [], cols: 80,
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 79)], cols: 80, summary: nil,
+        measure: { _ in 20 }) == nil)
+    #expect(CommandBlockChrome.stripPlacement(h, commandRows: [], cols: 80, summary: nil,
                                               measure: { _ in 20 }) == nil)
 }
 
@@ -409,7 +412,7 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     let h = header(summary: "8.8s")
     var measured: [Int] = []
     let placement = CommandBlockChrome.stripPlacement(
-        h, commandRows: [(absoluteRow: 4, lastUsedColumn: 20)], cols: 80,
+        h, commandRows: [(absoluteRow: 4, lastUsedColumn: 20)], cols: 80, summary: nil,
         measure: { content in measured.append(content.pills.count); return 24 })
     #expect(placement?.plan.firstColumn == 56)
     #expect(measured == [3])          // W3: Fold, Copy, Actions -- measured once
@@ -421,7 +424,7 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
                           watch: WatchHeader(text: "run 12 · 200 · 100 ms · every 5 s",
                                              dots: [.running], showsStop: true, tone: .success))
     let placement = CommandBlockChrome.stripPlacement(
-        watching, commandRows: [(absoluteRow: 4, lastUsedColumn: 79)], cols: 80,
+        watching, commandRows: [(absoluteRow: 4, lastUsedColumn: 79)], cols: 80, summary: nil,
         measure: { _ in 8 })
     #expect(placement?.plan.pills == [.stop])
     #expect(placement?.plan.overlapsCommand == true)
@@ -442,7 +445,7 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
                                              tone: .success))
     var tried: [Int] = []
     let placement = CommandBlockChrome.stripPlacement(
-        watching, commandRows: [(absoluteRow: 4, lastUsedColumn: 30)], cols: 80,
+        watching, commandRows: [(absoluteRow: 4, lastUsedColumn: 30)], cols: 80, summary: nil,
         measure: { content in
             tried.append(content.pills.count)
             return content.pills.count == 3 ? 70 : 12
@@ -455,7 +458,76 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     // the W0 row's own exception, not a fallback every crowded block gets.
     #expect(placement?.plan.overlapsCommand == false)
     let noRoomAtAll = CommandBlockChrome.stripPlacement(
-        watching, commandRows: [(absoluteRow: 4, lastUsedColumn: 30)], cols: 80,
+        watching, commandRows: [(absoluteRow: 4, lastUsedColumn: 30)], cols: 80, summary: nil,
         measure: { _ in 60 })
     #expect(noRoomAtAll == nil)
+}
+
+
+// MARK: - §2.5: a strip may only replace a summary it repeats word for word
+
+/// A column count in the shape the view really measures: the sentence at one column a character,
+/// the dots at one each, a labelled pill at eight and a glyph pill at four, plus the insets.
+private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
+    3 + content.readout.count + content.dots.count
+        + content.pills.reduce(0) { $0 + ($1.glyph == nil ? 8 : 4) }
+}
+
+/// The lens row of the composites. `200 · 142 ms · 1.2 KB · json` fits in the grid, so the strip may
+/// not put `200 · 142 ms` there instead: on a row that is already showing the sentence the readout
+/// stops at the sentence and the *pills* give way, down to the one that reaches every action.
+@Test func aStripOnTheSummarysRowKeepsTheWholeSentence() throws {
+    let sentence = "200 · 142 ms · 1.2 KB · json"
+    let h = header(summary: "", http: HTTPSummary(text: sentence, tone: .success),
+                   isHTTP: true, json: true)
+    let placement = try #require(CommandBlockChrome.stripPlacement(
+        h, commandRows: [(absoluteRow: 4, lastUsedColumn: 44)], cols: 84,
+        summary: (row: 4, text: sentence), measure: columns))
+    #expect(placement.plan.readout == sentence)
+    #expect(placement.plan.pills == [.actions(.glyph)])
+    #expect(placement.plan.firstColumn == 49)
+    // …and only then may it take the summary's place.
+    let placed = CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
+                                                      summary: (row: 4, text: sentence))
+    #expect(placed)
+    // The same row with no summary on it is free to shorten: nothing is being replaced.
+    let free = try #require(CommandBlockChrome.stripPlacement(
+        h, commandRows: [(absoluteRow: 4, lastUsedColumn: 44)], cols: 84, summary: nil,
+        measure: columns))
+    #expect(free.plan.readout == "200 · 142 ms")
+    #expect(free.plan.pills == [.lens(name: "Pretty", on: false), .actions(.labelled)])
+}
+
+/// The 30-run watch row: the sentence plus even the narrowest pills is wider than the row, so there
+/// is **no strip** and `run 31 · 200 · 170 ms · every 5 s` stays exactly where it was. Hovering a
+/// block may cost the pills; it may never cost a fact.
+@Test func aStripThatCannotCarryTheSentenceIsNotDrawn() {
+    let sentence = "run 31 · 200 · 170 ms · every 5 s"
+    let h = header(summary: "", http: HTTPSummary(text: "200 · 170 ms", tone: .success),
+                   isHTTP: true, json: true,
+                   watch: WatchHeader(text: sentence, dots: Array(repeating: .success, count: 30),
+                                      showsStop: true, tone: .success))
+    let placement = CommandBlockChrome.stripPlacement(
+        h, commandRows: [(absoluteRow: 4, lastUsedColumn: 44)], cols: 84,
+        summary: (row: 4, text: sentence), measure: columns)
+    #expect(placement == nil)
+    // Without the sentence to protect -- the summary went on another row -- the ladder shortens as
+    // before, and `Stop` survives.
+    let elsewhere = CommandBlockChrome.stripPlacement(
+        h, commandRows: [(absoluteRow: 4, lastUsedColumn: 44)], cols: 84,
+        summary: (row: 9, text: sentence), measure: columns)
+    #expect(elsewhere?.plan.pills == [.stop, .actions(.labelled)])
+    #expect(elsewhere?.plan.readout == "run 31 · 200")
+}
+
+/// A summary that only had room for its chevron is not a sentence anybody can read, so there is
+/// nothing for the strip to repeat -- and nothing it can speak for either.
+@Test func aChevronOnlySummaryProtectsNothingAndIsNotSpokenFor() throws {
+    let h = header(summary: "8.8s")
+    let placement = try #require(CommandBlockChrome.stripPlacement(
+        h, commandRows: [(absoluteRow: 4, lastUsedColumn: 40)], cols: 84,
+        summary: (row: 4, text: ""), measure: columns))
+    #expect(placement.plan.readout == "8.8s")
+    #expect(!CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
+                                                  summary: (row: 4, text: "")))
 }

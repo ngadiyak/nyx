@@ -460,10 +460,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     override func accessibilityChildren() -> [Any]? {
         var children = subviews.filter { !$0.isHidden } as [Any]
         let cell = cellSizePoints
-        // The row the visible overlay covers already contributes its own chevron button through
-        // `blockHeader`, included above as a subview; adding a second element for the same row
-        // here would report the same control twice.
-        let coveredRow = blockHeader.isHidden ? nil : hoveredBlock?.headerRow
+        // The strip carries a `Fold`/`Unfold` pill only at its wider classes, and that pill is an
+        // element of its own through `blockHeader` above. Where it does not -- W1, W0, a watched
+        // block -- the drawn summary on that row is still the only fold control the row has, so its
+        // element stays. Skipping it whenever a strip was up left the row with no way to fold from
+        // VoiceOver at exactly the widths that have the fewest controls.
+        let coveredRow = blockHeader.isHidden || hoverStripPlan?.pills.contains(where: {
+            if case .fold = $0 { return true } else { return false }
+        }) != true ? nil : hoveredBlock?.headerRow
         for (row, columns) in summaryColumnsOnScreen {
             if let coveredRow, coveredRow == row { continue }
             guard let header = headersOnScreen[row], header.hasOutput else { continue }
@@ -2089,10 +2093,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     }
                 }
                 // Where the summary would go if there were no strip at all, asked first so the
-                // suppression rule can compare the two rows.
+                // suppression rule can compare what the two of them say. The *sentence* it would
+                // show there, empty when only the chevron fitted: a row showing nothing but `▾` has
+                // no fact for the strip to protect.
                 let summaryHere = text.isEmpty ? nil : CommandBlockChrome.summaryPlacement(
                     commandRows: candidates, textCount: text.count,
                     chevronCount: header.chevron.count, cols: t.cols)
+                let placedSummary: CommandBlockChrome.PlacedSummary? = summaryHere.map {
+                    (row: $0.row, text: $0.text == .full ? header.summary : "")
+                }
                 // The hovered block's strip is placed by the same ladder against the same rows,
                 // from the view's own measured width. Measured here, under the lock, because the
                 // answer decides what the Metal pass draws on those rows and the frame is built
@@ -2101,7 +2110,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 if self.hoveredBlock?.id == block.region.id, self.hoveredBlock?.headerRow != nil,
                    cellWidth > 0,
                    let placement = CommandBlockChrome.stripPlacement(
-                        header, commandRows: candidates, cols: t.cols,
+                        header, commandRows: candidates, cols: t.cols, summary: placedSummary,
                         measure: { Int((self.blockHeader.width(of: $0, font: overlayFont) / cellWidth).rounded(.up)) }),
                    let slot = slotOf[placement.row] {
                     headers[slot] = header
@@ -2109,12 +2118,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     self.hoverStripPlan = placement.plan
                     notesSpokenFor.insert(slot)
                     notesSpokenFor.insert(promptSlot)
-                    // §2.5: the summary gives way only to a strip **on its own row that says at
-                    // least as much**. A wrapped watched command whose last row is full places its
-                    // lone `Stop` there and keeps its sentence on the row above; at W0, and on a row
-                    // that had no room at all, there is no strip and the summary stays.
+                    // §2.5: the summary gives way only to a strip **on its own row that repeats
+                    // it word for word**. A wrapped watched command whose last row is full places
+                    // its lone `Stop` there and keeps its sentence on the row above; at W0, and on
+                    // a row that had no room at all, there is no strip and the summary stays.
                     if CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
-                                                            summaryRow: summaryHere?.row) {
+                                                            summary: placedSummary) {
                         return nil
                     }
                 }

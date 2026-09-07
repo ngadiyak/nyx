@@ -37,11 +37,22 @@ final class StripPillView: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// Back to rest -- `resetInteraction` rather than `prepareForReuse`, which `NSView` already has
+    /// from `NSCollectionViewElement`. The views are pooled, so a pill that was hovered or held down as `Copy` must
+    /// not come back lit on the next block the pointer lands on -- and the pointer is *not* over a
+    /// view that was hidden while it moved, whatever the last `mouseEntered` said. Called by
+    /// `BlockHeaderView` whenever a view is hidden, shown again, or moved to another block; doing
+    /// it from `configure` alone missed the case that matters, the same pill on a different block.
+    func resetInteraction() {
+        guard hovered || pressed else { return }
+        hovered = false
+        pressed = false
+        needsDisplay = true
+    }
+
     func configure(_ pill: CommandBlockChrome.Pill, palette: Palette, opaque: Bool) {
+        if pill != self.pill { resetInteraction() }
         guard pill != self.pill || palette != self.palette || opaque != opaqueGround else { return }
-        // The views are pooled: a pill that was hovered or held down as `Copy` must not come back
-        // as a lit `Stop` on the next block the pointer lands on. Reused view, fresh state.
-        if pill != self.pill { hovered = false; pressed = false }
         self.pill = pill
         self.palette = palette
         opaqueGround = opaque
@@ -182,15 +193,19 @@ final class StripPillView: NSView {
     override func mouseUp(with event: NSEvent) {
         pressed = false
         needsDisplay = true
-        guard isEnabled, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        guard !isHidden, isEnabled,
+              bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
         onPress?()
     }
 
-    override func isAccessibilityElement() -> Bool { true }
+    /// A pooled view waiting off the end of the plan is not a control. It keeps its last pill so
+    /// the pool can recognise it, so "is there a pill" is not the question -- "is it on the strip"
+    /// is.
+    override func isAccessibilityElement() -> Bool { !isHidden && pill != nil }
     override func accessibilityRole() -> NSAccessibility.Role? { .button }
     override func accessibilityPerformPress() -> Bool {
-        guard isEnabled else { return false }
-        onPress?()
+        guard !isHidden, isEnabled, let onPress else { return false }
+        onPress()
         return true
     }
     override func resetCursorRects() {

@@ -386,42 +386,51 @@ public extension CommandBlockChrome {
         return StripPlan(content: content, firstColumn: first, overlapsCommand: overlaps)
     }
 
-    /// Whether the strip on `stripRow` speaks for the summary that would have gone on
-    /// `summaryRow`, and may therefore replace it.
+    /// Where the in-grid summary is going and what it says there -- the sentence only, so a
+    /// placement that had room for the chevron alone carries an empty string.
+    typealias PlacedSummary = (row: Int, text: String)
+
+    /// Whether the strip on `stripRow` speaks for the summary on `summary.row`, and may therefore
+    /// replace it. Two conditions, and the second is the law of §2.5: **the same row, and the
+    /// same words**.
     ///
     /// Two rows of a wrapped command are two different width classes: a watched `curl` whose last
     /// row is full places its lone `Stop` there (W0, no readout at all) while the summary belongs
-    /// on the roomier row above. Suppressing on "a strip exists somewhere on this block" then took
-    /// `run 12 · 200 · 100 ms · every 5 s` off the screen the moment the pointer arrived -- the
-    /// exact defect §2.5 exists to end. So: the same row, and something to say.
-    static func suppressesSummary(_ plan: StripPlan, stripRow: Int, summaryRow: Int?) -> Bool {
-        !plan.readout.isEmpty && stripRow == summaryRow
+    /// on the roomier row above. Suppressing on "a strip exists somewhere on this block" took
+    /// `run 12 · 200 · 100 ms · every 5 s` off the screen the moment the pointer arrived.
+    ///
+    /// "Something to say" is not enough either. A W2 or W1 readout is a *shortened* sentence, so a
+    /// strip that replaced the summary with one silently dropped `· 1.2 KB · json` -- the same
+    /// defect one class further down. Hovering must never remove a fact, so the readout has to be
+    /// the summary word for word; `stripPlacement` is what makes that reachable, by refusing to
+    /// shorten the sentence on a row that is already showing it.
+    static func suppressesSummary(_ plan: StripPlan, stripRow: Int,
+                                  summary: PlacedSummary?) -> Bool {
+        guard let summary, summary.row == stripRow, !summary.text.isEmpty else { return false }
+        return plan.readout == summary.text
     }
 
-    /// Which row of the command carries the strip, walked from the last upwards -- the same ladder
-    /// and the same rows the summary uses, because a wrapped `curl` fills its first rows and leaves
-    /// room on its last. `measure` is the view's own width for that content, in columns.
-    ///
-    /// A width class is a *budget*, not a promise. W3 begins at thirty-four free columns, while the
-    /// W3 strip §2.6 puts on a watched request -- thirty dots, the sentence, `Stop`, `Copy` and
-    /// `Actions` -- measures sixty to eighty. Taking the row's own class as final therefore refused
-    /// the strip outright on every ordinary pane, which took `Stop` and `Actions` -- the two the
-    /// table says are present at *every* width -- off the screen for the blocks that need them
-    /// most. So each row walks down its own ladder until the content fits: that is what the two
-    /// ladders in `pills(_:at:)` and `readout(_:at:)` are for.
-    ///
-    /// Never down to W0 from a roomier row. W0's plan is drawn over the command's tail on an opaque
-    /// pill, and that exception belongs to a row that really has no free columns -- not to every
-    /// crowded block as a last resort.
     static func stripPlacement(_ header: BlockHeader,
                                commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
                                cols: Int,
+                               summary: PlacedSummary?,
                                measure: (StripContent) -> Int) -> StripPlacement? {
         for row in commandRows.reversed() {
             let free = freeColumns(cols: cols, lastUsedColumn: row.lastUsedColumn)
             for width in narrowing(from: widthClass(freeColumns: free)) {
-                guard let content = stripContent(header, at: width),
-                      let plan = stripPlan(content, widthClass: width,
+                guard var content = stripContent(header, at: width) else { continue }
+                // On the row that is already showing the sentence, the readout ladder stops at the
+                // sentence: it is the *pills* that keep giving way. A shortened readout on such a
+                // row is the strip removing a fact the moment the pointer arrives (§2.5), and a
+                // strip that cannot carry the whole sentence beside its pills is not drawn at all
+                // -- the summary stays where it was and the gutter still folds.
+                if let summary, summary.row == row.absoluteRow, !summary.text.isEmpty,
+                   content.readout != summary.text {
+                    content = StripContent(readout: summary.text, readoutTone: content.readoutTone,
+                                           dots: content.dots, overflowDot: content.overflowDot,
+                                           pills: content.pills)
+                }
+                guard let plan = stripPlan(content, widthClass: width,
                                            lastUsedColumn: row.lastUsedColumn,
                                            cols: cols, stripColumns: measure(content)) else { continue }
                 return StripPlacement(row: row.absoluteRow, plan: plan)

@@ -50,6 +50,10 @@ final class BlockHeaderView: NSView {
     private var groundHeight: CGFloat = 0
     /// How wide the fade is, in points: two cells of the pane's font. Set from `configure`.
     private var fadeInset: CGFloat = 16
+    /// Where the leftmost thing on the strip begins, in points. §2.3 runs 8 pt of *solid* ground
+    /// leftwards from there and only then the two-cell gradient, so nothing is ever set on a ground
+    /// that is still fading up; the fade stops need that x, and only `layout()` knows it.
+    private var contentLeft: CGFloat = 0
     private var header: BlockHeader?
     private var plan: CommandBlockChrome.StripPlan?
     private var palette = Palette.xtermDefault()
@@ -152,6 +156,7 @@ final class BlockHeaderView: NSView {
         }
         let changed = header != self.header || plan != self.plan || palette != self.palette
             || self.font != font || self.groundHeight != groundHeight
+        let newBlock = header.id != self.header?.id
         self.header = header
         self.plan = plan
         self.palette = palette
@@ -164,14 +169,14 @@ final class BlockHeaderView: NSView {
         // 1.13:1 against this strip's actual dark fill -- invisible. Telling the view which
         // appearance it is really sitting in makes both agree with the theme.
         appearance = NSAppearance(named: palette.isLight ? .aqua : .darkAqua)
-        configure(plan, font: font)
+        configure(plan, font: font, newBlock: newBlock)
         isHidden = false
         invalidateIntrinsicContentSize()
         needsLayout = true
         needsDisplay = true
     }
 
-    private func configure(_ plan: CommandBlockChrome.StripPlan, font: NSFont) {
+    private func configure(_ plan: CommandBlockChrome.StripPlan, font: NSFont, newBlock: Bool) {
         // Two cells of the *pane's* font, so the fade is two characters wide whatever the zoom --
         // measured here because this is the one place the strip is told what the grid looks like.
         fadeInset = max(BlockHeaderView.edgeInset,
@@ -197,7 +202,7 @@ final class BlockHeaderView: NSView {
         overflow.isHidden = plan.overflowDot == nil
         overflow.setAccessibilityLabel("\(plan.overflowDot.map { String($0.dropFirst()) } ?? "0") earlier runs")
 
-        configurePills(plan)
+        configurePills(plan, newBlock: newBlock)
 
         // The row's own hover tint over the terminal's background, not `palette.background`: a
         // background band on a tinted row reads as a floating rectangle (design §2.7).
@@ -213,7 +218,7 @@ final class BlockHeaderView: NSView {
         placeFadeStops()
     }
 
-    private func configurePills(_ plan: CommandBlockChrome.StripPlan) {
+    private func configurePills(_ plan: CommandBlockChrome.StripPlan, newBlock: Bool) {
         while pillViews.count < plan.pills.count {
             let view = StripPillView(frame: .zero)
             addSubview(view)
@@ -221,10 +226,16 @@ final class BlockHeaderView: NSView {
         }
         for (index, view) in pillViews.enumerated() {
             guard index < plan.pills.count else {
+                // Hidden, and at rest: the pointer is not over a view that is not on the screen,
+                // and a pill held down as the plan changed under it must not come back pressed.
+                view.resetInteraction()
                 view.isHidden = true
                 view.onPress = nil
                 continue
             }
+            // A pill that was off the strip, or belonged to another block, starts from rest even
+            // when it happens to be the same pill: `configure` alone cannot see either change.
+            if newBlock || view.isHidden { view.resetInteraction() }
             let pill = plan.pills[index]
             view.isHidden = false
             view.configure(pill, palette: palette, opaque: plan.overlapsCommand)
@@ -259,6 +270,10 @@ final class BlockHeaderView: NSView {
         // Right-aligned by hand, from the trailing edge inwards: the sum this walks is exactly the
         // sum `width(of:font:)` returned, so the strip that was measured is the strip that is drawn.
         var x = bounds.width - BlockHeaderView.edgeInset
+        defer {
+            contentLeft = max(0, x + StripPillView.gap)
+            placeFadeStops()
+        }
         func place(_ view: NSView, width: CGFloat, height: CGFloat) {
             x -= width
             view.frame = NSRect(x: x, y: (bounds.height - height) / 2, width: width, height: height)
@@ -282,11 +297,18 @@ final class BlockHeaderView: NSView {
         }
     }
 
-    /// Where the fade ends: two cells in from the leading edge, as a fraction of the width.
+    /// §2.3's leading edge, right to left: 8 pt of solid ground before the first glyph, then two
+    /// cells of gradient down to nothing.
+    ///
+    /// Reversing those two -- starting the gradient at the view's own leading edge -- put the first
+    /// characters of the readout on a ground that was still coming up, which is the effect the fade
+    /// exists to keep *off* the text.
     private func placeFadeStops() {
         guard bounds.width > 0 else { return }
-        let end = min(1, fadeInset / bounds.width)
-        fadeLayer.locations = [0, NSNumber(value: Double(end)), 1]
+        let solid = max(0, min(bounds.width, contentLeft - BlockHeaderView.edgeInset))
+        let start = max(0, solid - fadeInset)
+        fadeLayer.locations = [NSNumber(value: Double(start / bounds.width)),
+                               NSNumber(value: Double(solid / bounds.width)), 1]
     }
 
     // MARK: - The ⋯ menu

@@ -663,22 +663,6 @@ struct GridScene {
             return terminal.command(containingAbsoluteRow: terminal.totalRows - 1)?.id ?? 0
         }
 
-        // The strip's three levels need three command lines with exactly the right amount of room
-        // left on them, and "the right amount" is the view's own measured width in cells -- not a
-        // number chosen to look plausible. Measured here, once, from a `BlockHeaderView` configured
-        // with the header these blocks will carry.
-        let probeHeader = BlockHeader(id: 0, state: .finished, folded: false, hasOutput: true,
-                                      anyFolds: true, notifyArmed: false, summary: "8.8s")
-        let probe = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: 20))
-        let probeFont = NSFont.monospacedSystemFont(ofSize: CGFloat(canvas.config.fontSize),
-                                                    weight: .regular)
-        var stripCells: [CommandBlockChrome.WidthClass: Int] = [:]
-        for width in GridScene.widthClasses {
-            guard let content = CommandBlockChrome.stripContent(probeHeader, at: width) else { continue }
-            stripCells[width] = Int((probe.width(of: content, font: probeFont) / canvas.cell.width)
-                .rounded(.up))
-        }
-
         _ = run("echo hello", output: ["hello"], status: 0, seconds: 0.1)
         // Twelve hundred rows, wrapped lines and wide cells among them: the block the fold and the
         // sticky strip are about.
@@ -708,7 +692,11 @@ struct GridScene {
         let promptColumns = 2
         var byWidth: [CommandBlockChrome.WidthClass: UInt32] = [:]
         for width in GridScene.widthClasses {
-            let free = max(GridScene.freeColumns(for: width), stripCells[width] ?? 0)
+            // Exactly the band's own free columns, never `max(…, what the strip measures)`: taking
+            // the wider of the two lifted a row into the class *above* the one the picture is named
+            // after, so `composite-strip-w1-…` would have shown a W2 strip. A class the strip does
+            // not fit is not a broken fixture -- the placement steps down, which is the picture.
+            let free = GridScene.freeColumns(for: width)
             let length = max(8, cols - free - promptColumns)
             byWidth[width] = run(GridScene.commandLine(ofLength: length),
                                  output: ["ok  \(width) \u{b7} 3 files changed"],
@@ -980,30 +968,30 @@ struct GridScene {
             if lastCommandRow >= block.region.promptRow {
                 for absolute in block.region.promptRow...lastCommandRow {
                     guard let slot = slotOfRow[absolute], slot < lines.count else { continue }
-                    var last = -1
-                    for (column, cell) in lines[slot].cells.enumerated() where cell.content != 0 {
-                        last = column
-                    }
-                    candidates.append((absoluteRow: absolute, lastUsedColumn: last))
+                    candidates.append((absoluteRow: absolute,
+                                       lastUsedColumn: CommandBlockChrome.lastUsedColumn(of: lines[slot])))
                 }
             }
             let text = header.summaryWithChevron
             let summaryHere = text.isEmpty ? nil : CommandBlockChrome.summaryPlacement(
                 commandRows: candidates, textCount: text.count,
                 chevronCount: header.chevron.count, cols: cols)
+            let placedSummary: CommandBlockChrome.PlacedSummary? = summaryHere.map {
+                (row: $0.row, text: $0.text == .full ? header.summary : "")
+            }
             if hovered == block.region.id,
                let placement = CommandBlockChrome.stripPlacement(
-                    header, commandRows: candidates, cols: cols,
+                    header, commandRows: candidates, cols: cols, summary: placedSummary,
                     measure: { Int((probe.width(of: $0, font: overlayFont) / canvas.cell.width)
                         .rounded(.up)) }),
                let slot = slotOfRow[placement.row] {
                 strip = (slot: slot, plan: placement.plan, header: header)
                 notes[slot] = nil
                 if notes.indices.contains(promptSlot) { notes[promptSlot] = nil }
-                // The summary gives way only to a strip on its own row that says at least as much,
-                // exactly as `Pane.render` decides it.
+                // The summary gives way only to a strip on its own row that repeats it word for
+                // word, exactly as `Pane.render` decides it.
                 if CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
-                                                        summaryRow: summaryHere?.row) {
+                                                        summary: placedSummary) {
                     continue
                 }
             }

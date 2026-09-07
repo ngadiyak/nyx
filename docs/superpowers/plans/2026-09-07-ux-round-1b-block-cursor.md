@@ -17,7 +17,7 @@
 - `NyxCore` imports only Foundation and CNyxPTY; `NyxRender` learns nothing about the cursor — the cursor's block is drawn by the *same* chrome path a hovered block is, with no new render input.
 - Tests are swift-testing (`import Testing`, `@Test`, `#expect`); hoist mutating calls out of `#expect`/`#require`. Hang fix: `pkill -9 -f swiftpm-testing-helper; pkill -9 -f swift-test; swift test --no-parallel`.
 - Warning-free build (library and tests); `make bench` ≥ 180 MB/s. **Nothing in this plan may add per-frame work to `Pane.render` beyond one `Array.contains` over the frame's own block ids**; `Terminal.commandToFold()` is called from the frame pass only on the frame where the cursor's block has just left the screen.
-- `BlockCursor` rules, verbatim (§2.8): clamps at both ends rather than wrapping; from a cleared cursor `.previous` takes the last element and `.next` the first; a block trimmed out of `among` by scrollback is gone, and the move starts from the nearest surviving id in the direction of travel; on a viewport move for another reason the cursor keeps its block while that block is still in `visible`, otherwise takes `fallback`, and clears when `fallback` is nil.
+- `BlockCursor` rules, verbatim (§2.8): clamps at both ends rather than wrapping; from a cleared cursor `.previous` takes the last element and `.next` the first; a block trimmed out of `among` by scrollback is gone, and the move starts from the nearest surviving id in the direction of travel; on a viewport move for another reason the cursor keeps its block while that block is still in `visible`, otherwise takes `fallback`, and clears when `fallback` is nil. **Controller ruling (2026-09-07), binding:** a cleared or off-screen cursor is seeded from the viewport before a ⌘↑/⌘↓ press — `commandToFold()`'s block — so a scrolled-back pane goes up from where the reader is rather than jumping to the newest block.
 - Presentation rule, verbatim (§2.8): the cursor's block is drawn exactly as a hovered one — row tint, gutter chevron, and the strip of §2.6 at the block's own width class. The pointer wins while it is inside the pane; the cursor's presentation returns when the pointer leaves or the next ⌘↑/⌘↓ arrives, and it is cleared when the cursor clears. **Nothing new is drawn at idle: a pane nobody has pressed ⌘↑ in has no cursor.**
 - Titles, verbatim: `Command Actions…` (`block_actions`, Go, **⌘⇧A**), `Go to the Pinned Command` (`scroll_to_sticky_prompt`, Go, no chord), `Copy Command Output`, `Copy Command as Markdown`, `Save Command Output…`, `Edit This Command…`. The ellipsis is `\u{2026}`, as everywhere else in `ActionCatalog`. `fold_command`, `select_command_output`, `toggle_http_lens` and `stop_watch` keep their titles and change only their target.
 - Announcement rule, verbatim (§8.1): the focused pane only, and only when the command ran ≥ 2 s or exited non-zero; the sentence is `BlockHeader.summary`. Wording stays in Core.
@@ -50,6 +50,9 @@ public struct BlockCursor: Equatable {
     public var isEmpty: Bool
     public static func moved(_ current: Self, by direction: Direction, among ids: [UInt32]) -> Self
     public static func afterViewportMove(_ current: Self, visible: [UInt32], fallback: UInt32?) -> Self
+    /// Where a ⌘↑/⌘↓ press starts from when the cursor is not on the screen the reader is looking
+    /// at. nil = nothing to seed, so the press is an ordinary `moved`.
+    public static func seed(_ current: Self, visible: [UInt32], viewportBlock: UInt32?) -> Self?
 }
 public enum BlockTarget {
     public static func resolve(cursor: BlockCursor, exists: (UInt32) -> Bool, fallback: UInt32?) -> UInt32?
@@ -109,6 +112,34 @@ private let ids: [UInt32] = [10, 20, 30, 40]
 
 @Test func movingInAPaneWithNoBlocksClearsTheCursor() {
     #expect(BlockCursor.moved(BlockCursor(commandID: 30), by: .previous, among: []).commandID == nil)
+}
+
+// MARK: - Where a press starts from
+
+/// ⌘↑ in a pane scrolled back two thousand rows must go up *from where the reader is*, not from
+/// the bottom of the session. A cursor that is cleared -- or on a block that has scrolled away --
+/// is seeded from the viewport's own block, and the press lands on that seed rather than stepping
+/// over the output filling the screen. The second press steps.
+@Test func cursorSeedsFromTheViewportWhenCleared() {
+    #expect(BlockCursor.seed(BlockCursor(), visible: [20, 30], viewportBlock: 20)?.commandID == 20)
+}
+
+@Test func aCursorAlreadyOnScreenIsNotSeeded() {
+    #expect(BlockCursor.seed(BlockCursor(commandID: 30), visible: [20, 30], viewportBlock: 20) == nil)
+}
+
+@Test func aCursorScrolledOffTheScreenSeedsFromTheViewport() {
+    #expect(BlockCursor.seed(BlockCursor(commandID: 99), visible: [20, 30], viewportBlock: 30)?.commandID == 30)
+}
+
+/// Seeding onto the block the cursor already names would be a press that does nothing, so it is
+/// declined and the press steps instead.
+@Test func seedingIsDeclinedWhenItWouldNotMoveTheCursor() {
+    #expect(BlockCursor.seed(BlockCursor(commandID: 20), visible: [30], viewportBlock: 20) == nil)
+}
+
+@Test func thereIsNothingToSeedFromInAPaneWithNoBlocks() {
+    #expect(BlockCursor.seed(BlockCursor(), visible: [], viewportBlock: nil) == nil)
 }
 
 @Test func afterAViewportMoveTheCursorKeepsAVisibleBlock() {
@@ -300,6 +331,28 @@ public struct BlockCursor: Equatable {
         if visible.contains(id) { return current }
         return BlockCursor(commandID: fallback)
     }
+
+    /// Where a ⌘↑/⌘↓ press starts from.
+    ///
+    /// A cursor that is cleared, or on a block that is not on the screen the reader is looking at,
+    /// is seeded from that screen: `viewportBlock` is `commandToFold()`'s answer -- the block at
+    /// the top of a scrolled-back viewport, the newest one at the bottom of the session. Without
+    /// it, ⌘↑ in a pane wheeled back two thousand rows would take the newest block and throw the
+    /// viewport to the bottom, where `previous_prompt` has always gone to the prompt above what
+    /// the reader can see.
+    ///
+    /// The press then **lands on the seed** rather than stepping past it -- the same thing `moved`
+    /// does with an id scrollback has trimmed, for the same reason: the block filling the screen is
+    /// the one the reader means, and stepping over it skips the output they are in the middle of.
+    /// A second press steps.
+    ///
+    /// nil when there is nothing to seed from, or when the seed is where the cursor already is, in
+    /// which case the caller runs `moved` as usual.
+    public static func seed(_ current: Self, visible: [UInt32], viewportBlock: UInt32?) -> Self? {
+        if let id = current.commandID, visible.contains(id) { return nil }
+        guard let seed = viewportBlock, seed != 0, seed != current.commandID else { return nil }
+        return BlockCursor(commandID: seed)
+    }
 }
 
 /// Which block a block-scoped action acts on: one rule, with the fallback each caller names.
@@ -415,9 +468,10 @@ keyboard and the pointer could target different blocks with nothing on screen to
 
 `BlockCursor` is that answer as one value: clamped at both ends, taking the newest block from a
 cleared cursor on ⌘↑ and the oldest on ⌘↓, re-anchoring on the nearest survivor when its block has
-been trimmed out of the scrollback, and re-anchored on `commandToFold()` when the viewport moves
-for a reason it did not cause. A cleared cursor stays cleared: it is drawn, and a pane that grew
-one on a scroll would light a block nobody asked about. `Terminal.blockCursorIDs` says which blocks
+been trimmed out of the scrollback, seeded from the viewport when a press finds it cleared or off
+the screen the reader is looking at, and re-anchored on `commandToFold()` when the viewport moves
+for a reason it did not cause. A cleared cursor stays cleared through a scroll: it is drawn, and a
+pane that grew one on a scroll would light a block nobody asked about. `Terminal.blockCursorIDs` says which blocks
 it may sit on -- the ones that have run, never the prompt being typed at.
 
 `BlockHover` gains a source and `choose`: the pointer wins while it is inside the pane, the cursor
@@ -440,8 +494,8 @@ EOF
 - Test: no new unit test — every decision this task makes is Task 1's, already tested. The proof is the two pictures here and the rung-6 hook in Task 6.
 
 **Interfaces:**
-- Consumes (Task 1): `BlockCursor`, `BlockCursor.moved(_:by:among:)`, `BlockCursor.afterViewportMove(_:visible:fallback:)`, `Terminal.blockCursorIDs`, `BlockHover.resolve(cursor:blocks:allowed:)`, `BlockHover.choose(pointer:cursor:pointerInside:cursorMovedLast:)`.
-- Consumes (plan 1a, spec §2.1–§2.6): the chrome that draws a hovered block — `CommandBlockChrome`'s strip plan and `StripPlan`, its gutter-cap rule and `GutterCap`, and `CommandBlockChrome.WidthClass` — all of which key off `Pane.hoveredBlock` and `GridScene`'s equivalent exactly as they do today. `OverlayControls` is gone; nothing here mentions it. From `GridSnapshot`: 1a's `GridScene.commandFitting(_ widthClass: CommandBlockChrome.WidthClass) -> UInt32` — the fixture command line that leaves exactly that width class free, which is today's `commandFitting(_ controls: OverlayControls)` re-typed when `OverlayControls` goes — and 1a's `composite-strip-<width>-<state>-*` names, which the `cmp` in Step 6 compares against.
+- Consumes (Task 1): `BlockCursor`, `BlockCursor.moved(_:by:among:)`, `BlockCursor.seed(_:visible:viewportBlock:)`, `BlockCursor.afterViewportMove(_:visible:fallback:)`, `Terminal.blockCursorIDs`, `BlockHover.resolve(cursor:blocks:allowed:)`, `BlockHover.choose(pointer:cursor:pointerInside:cursorMovedLast:)`.
+- Consumes (plan 1a, spec §2.1–§2.6): the chrome that draws a hovered block — `CommandBlockChrome`'s strip plan and `StripPlan`, its gutter-cap rule and `GutterCap`, and `CommandBlockChrome.WidthClass` — all of which key off `Pane.hoveredBlock` and `GridScene`'s equivalent exactly as they do today. `OverlayControls` is gone; nothing here mentions it. From `GridSnapshot`: 1a's `GridScene.commandFitting(_ widthClass: CommandBlockChrome.WidthClass) -> UInt32?` — the fixture command line that leaves exactly that width class free, which is today's `commandFitting(_ controls: OverlayControls) -> UInt32?` (`GridSnapshot.swift:729`) re-typed when `OverlayControls` goes; it stays optional, and `BlockCursor(commandID:)` takes the optional as it is — and 1a's `composite-strip-<width>-<state>-*` names, which the `cmp` in Step 6 compares against.
 - Produces: `Pane.blockCursor` (`private(set) var blockCursor: BlockCursor`), read by Tasks 3, 4 and 6 and by the rung-6 hook.
 
 - [ ] **Step 1: The state and the chord.** In `Pane.swift`, beside `hoveredBlock`:
@@ -468,11 +522,22 @@ EOF
     /// The block the chord lands on *is* the block cursor, so "where ⌘↑ took me" and "which block
     /// ⌘⇧A, Copy Output and ⌘. will act on" are one answer. It reports false only when there is
     /// nowhere to go and nothing moved -- the caller beeps rather than doing nothing silently.
+    ///
+    /// A cursor that is not on the screen in front of the reader is seeded from that screen first,
+    /// so a pane wheeled back two thousand rows still goes *up from where the reader is* rather
+    /// than to the newest block at the bottom -- which is where `previous_prompt` has always gone.
+    /// `displayBlockRows` is the last frame's own blocks, which is exactly "the screen the reader
+    /// is looking at"; `blockCursorIDs` walks the buffer, which is a keystroke's work and not a
+    /// frame's -- the trade `promptRows` documents about itself, and the reason both calls are
+    /// here rather than in `render`.
     @discardableResult
     func jumpToPrompt(forward: Bool) -> Bool {
+        let onScreen = Array(displayBlockRows.keys)
         let outcome: (moved: Bool, cursor: BlockCursor) = session.withTerminal { t in
             let ids = t.blockCursorIDs
-            let next = BlockCursor.moved(self.blockCursor, by: forward ? .next : .previous, among: ids)
+            let next = BlockCursor.seed(self.blockCursor, visible: onScreen,
+                                        viewportBlock: t.commandToFold()?.id)
+                ?? BlockCursor.moved(self.blockCursor, by: forward ? .next : .previous, among: ids)
             guard let id = next.commandID, let row = t.promptRow(ofCommand: id) else {
                 return (false, next)
             }
@@ -495,16 +560,20 @@ EOF
             // and re-checks visibility itself, but `commandToFold()` walks the buffer and must not
             // be called on a frame where the answer cannot change. In steady state this is one
             // `contains` over the frame's own ids.
-            let viewportSignature = "\(t.viewportTopRow):\(t.totalRows)"
-            let visibleIDs = blocks.map(\.region.id)
+            let viewportSignature = (t.viewportTopRow, t.totalRows)
             if viewportSignature != self.lastViewportSignature {
                 self.lastViewportSignature = viewportSignature
                 if self.blockCursorScrolledViewport {
                     self.blockCursorScrolledViewport = false
-                } else if let id = self.blockCursor.commandID, !visibleIDs.contains(id) {
-                    self.blockCursor = BlockCursor.afterViewportMove(self.blockCursor,
-                                                                     visible: visibleIDs,
-                                                                     fallback: t.commandToFold()?.id)
+                } else if let id = self.blockCursor.commandID {
+                    // Built here and not above: on a frame where the viewport did not move -- which
+                    // is almost every frame -- this allocates nothing at all.
+                    let visibleIDs = blocks.map(\.region.id)
+                    if !visibleIDs.contains(id) {
+                        self.blockCursor = BlockCursor.afterViewportMove(self.blockCursor,
+                                                                         visible: visibleIDs,
+                                                                         fallback: t.commandToFold()?.id)
+                    }
                 }
             }
             let previousHover = self.hoveredBlock
@@ -524,9 +593,10 @@ EOF
   with, beside `lastPointerPoint` (`:3062`):
 
 ```swift
-    /// `viewportTopRow:totalRows` as the last frame saw them. The cursor re-anchors when this
-    /// moves and it was not ⌘↑/⌘↓ that moved it.
-    private var lastViewportSignature = ""
+    /// `(viewportTopRow, totalRows)` as the last frame saw them. The cursor re-anchors when this
+    /// moves and it was not ⌘↑/⌘↓ that moved it. A tuple and not a string: it is compared on every
+    /// frame, and a frame must not allocate to find out that nothing happened.
+    private var lastViewportSignature = (-1, -1)
 
     /// Whether the pointer is in this pane at all, which is what decides between the pointer's
     /// hover and the keyboard's.
@@ -559,9 +629,12 @@ EOF
     var keyboardCursor = BlockCursor()
 ```
 
-  and `build()` decides the raised block once, before the block loop, through the same Core rule the pane uses:
+  and `build()` decides the raised block **once**, before the block loop, through the same Core rule the pane uses:
 
 ```swift
+        // `hovered` stops being read directly anywhere below: it is the *pointer's* input to
+        // `choose` and nothing else, and `raised` is the answer. Three places read it, and a
+        // picture with only one of them switched over is a picture of a bug.
         let raised = BlockHover.choose(
             pointer: hovered.flatMap { id in
                 blocks.first { $0.region.id == id }
@@ -573,7 +646,24 @@ EOF
             cursorMovedLast: !keyboardCursor.isEmpty)?.id
 ```
 
-  and the strip's condition inside the loop becomes `if raised == block.region.id {`.
+  and every reader of `hovered` below becomes a reader of `raised`. There are three:
+
+  1. the strip's condition inside the block loop — `if raised == block.region.id {`;
+  2. the **row tint**, `RenderFrame.highlightedRows` (`GridSnapshot.swift:1005`), whose closure over `hovered` becomes
+
+```swift
+                                highlightedRows: raised.flatMap { id in
+                                    blocks.first { $0.region.id == id }.flatMap {
+                                        DisplayRows.slots(coveredBy: $0.visibleRows,
+                                                          commandID: id, in: display,
+                                                          viewportTop: windowTop)
+                                    }
+                                })
+```
+
+  3. the **gutter cap**: after plan 1a the cap's `hovered:` argument is answered from the raised block's id (`Pane.render` asks `self.hoveredBlock?.id == block.region.id`, `1a Task 2`), and whatever field 1a's `Built` carries that id in is filled from `raised` here, not from `hovered`.
+
+  Miss any of the three and `composite-block-cursor-*` renders a strip with no tint under it and no hover glyph in the gutter — which Step 6's `cmp` then reports as a difference against the pointer's picture.
 
 - [ ] **Step 5: The two cases.** In `GridSnapshot.Case`, `case blockCursor(CommandBlockChrome.WidthClass)`; in `write`'s switch,
 
@@ -605,7 +695,7 @@ cmp /tmp/nyx-1b/composite-block-cursor-w3-nyx-dark-dark.png \
 cmp /tmp/nyx-1b/composite-block-cursor-w1-nyx-dark-dark.png \
     /tmp/nyx-1b/composite-strip-w1-finished-nyx-dark-dark.png
 ```
-Expected: **byte-identical, and that is the assertion** — §2.8 says the cursor's block is drawn *exactly* as a hovered one, so a difference is a bug, and identity proves the strip came up with no pointer in the scene. Then Read the four PNGs (both appearances) and check the tint covers the block's rows and the gutter cap is the hover glyph.
+Expected: **byte-identical, and that is the assertion** — §2.8 says the cursor's block is drawn *exactly* as a hovered one, so a difference is a bug, and identity proves the whole presentation came up with no pointer in the scene. A difference here is almost always one of Step 4's three readers of `hovered` left unswitched: `cmp` says which byte, and the tint (row-wide) and the gutter cap (3 pt at the left margin) are told apart at a glance. Then Read the four PNGs (both appearances) and check the tint covers the block's rows, the gutter cap is the hover glyph, and the strip is the one §2.6's table gives that width class.
 
 - [ ] **Step 7: Commit**
 
@@ -1288,25 +1378,22 @@ Expected: compile failure — `value of type 'BlockAction' has no member 'termin
         blockHeader.bindings = bindings
 ```
 
-  In `MenuSnapshot.menu(for:)`, the same, from the snapshot's own table:
+  In `MenuSnapshot.menu(for:)`, the **same four lines**, from the snapshot's own table:
 
 ```swift
     private static func menu(for header: BlockHeader, config: Config) -> NSMenu {
         let bindings = KeyBindingTable(user: config.keybinds)
         …
             if let action = entry.action.terminalAction, let binding = bindings.binding(for: action),
-               case .char(let c) = binding.key {
-                item.keyEquivalent = String(c).lowercased()
-                var mask: NSEvent.ModifierFlags = []
-                if binding.modifiers.contains(.cmd) { mask.insert(.command) }
-                if binding.modifiers.contains(.shift) { mask.insert(.shift) }
-                if binding.modifiers.contains(.alt) { mask.insert(.option) }
-                if binding.modifiers.contains(.ctrl) { mask.insert(.control) }
+               let (key, mask) = MenuShortcut.keyEquivalent(for: binding) {
+                item.keyEquivalent = key
                 item.keyEquivalentModifierMask = mask
             }
 ```
 
-  with `blockMenus()`, `contextMenu(over:config:)` and their two call sites in `run(into:config:)` passing `config` through.
+  `MenuShortcut` (`Sources/NyxApp/Actions.swift:31`) and not a `case .char(let c)` of its own: `fold_command`'s default is `.up` with `[.cmd, .shift]` (`KeyBinding.swift:173`), which a character-only match drops — the snapshot would print no chord on `Fold Output` while the app prints ⌘⇧↑, which is exactly the disagreement between the picture and the product this task exists to end. The same applies to `MenuSnapshot.contextMenu(over:config:)`'s existing `actionItem`, which re-derives the mask the same way and switches to `MenuShortcut.keyEquivalent(for:)` in this step — same module, one converter, and the right-click picture stops lying about ⌘⇧↑ too.
+
+  `blockMenus()`, `contextMenu(over:config:)` and their two call sites in `run(into:config:)` pass `config` through.
 
 - [ ] **Step 5: Run the tests and take the pictures**
 
@@ -1316,7 +1403,7 @@ pkill -9 -f swiftpm-testing-helper; swift test --no-parallel 2>&1 | tail -5
 swift build 2>&1 | grep -c "warning:"; ./scripts/bundle.sh
 NYX_UI_SNAPSHOT=/tmp/nyx-1b-menus ./build/Nyx.app/Contents/MacOS/Nyx
 ```
-Expected: PASS, `0` warnings. Then Read `menu-block-finished-{light,dark}.png`, `menu-block-http-dark.png`, `menu-block-watched-dark.png` and `menu-context-block-dark.png`: `Copy Output ⌘⇧C`-style chords right-aligned on the rows that have them (the exact chords are whatever `KeyBinding.defaults` says — `Fold Output ⌘⇧↑`, `Edit and Run This Command… ⌘E`, `Stop Watching ⌘.`), no chord on any lens row, and the row pitch unchanged (`MenuSheetView` asserts its height against `menu.size` and prints to stderr if a chord changed the metrics). These are the pictures spec §8.5 calls `block-menu-{plain,http,watched}`; they ship under the existing `menu-block-*` names, which is what `MenuSnapshot` already writes, and they are reconstructions at AppKit's own metrics — the addendum's last paragraph says why a live capture is impossible here.
+Expected: PASS, `0` warnings. Then Read `menu-block-finished-{light,dark}.png`, `menu-block-http-dark.png`, `menu-block-watched-dark.png` and `menu-context-block-dark.png`. Exactly three rows carry a chord, because exactly three of the nine mapped actions have a default binding (`KeyBinding.defaults`, `KeyBinding.swift:140-182`): **`Fold Output ⌘⇧↑`**, **`Edit and Run This Command… ⌘E`** and **`Stop Watching ⌘.`** — right-aligned, and ⌘⇧↑ is the one that proves `MenuShortcut` was used. `Copy Output`, `Copy as Markdown`, `Save Output…`, `Fold Everything Long` and `Notify When Done` carry none, because their actions are unbound by default; no lens row carries one either, and the row pitch unchanged (`MenuSheetView` asserts its height against `menu.size` and prints to stderr if a chord changed the metrics). These are the pictures spec §8.5 calls `block-menu-{plain,http,watched}`; they ship under the existing `menu-block-*` names, which is what `MenuSnapshot` already writes, and they are reconstructions at AppKit's own metrics — the addendum's last paragraph says why a live capture is impossible here.
 
 - [ ] **Step 6: Commit**
 
@@ -1498,20 +1585,25 @@ Expected: `0` warnings, PASS.
                 let down = key("\u{f701}", [.command], 125)
                 let chordA = key("a", [.command, .shift], 0)
 
-                // Three blocks and a request that cannot connect, so every state exists without a
-                // server: two ordinary commands, a failure, and a finished HTTP block.
-                for line in ["echo one\r", "make-nothing\r", "echo three\r",
+                // Four blocks, one of them long enough to scroll inside, and a request that cannot
+                // connect -- so every state exists without a server: an ordinary command, a
+                // screenful of output, a failure, and a finished HTTP block.
+                for line in ["echo one\r", "seq 200\r", "make-nothing\r",
                              "curl -sS http://127.0.0.1:1/ ; true\r"] {
                     pane.send(Array(line.utf8))
-                    RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.8))
                 }
                 func command(of id: UInt32?) -> String {
                     guard let id else { return "<none>" }
                     return pane.commandLine(ofCommand: id)
                 }
 
+                // Scrolled back into `seq 200`'s output, which is where `previous_prompt` has
+                // always gone up from. The first ⌘↑ must seed from *this* screen -- the `seq 200`
+                // block -- and not take the newest block and throw the viewport to the bottom.
+                pane.scrollForQA(toAbsoluteRow: 20)
                 pane.keyDown(with: up)
-                print("SMOKE blockcursor up1 id=\(pane.blockCursor.commandID.map(String.init) ?? "nil") "
+                print("SMOKE blockcursor seed id=\(pane.blockCursor.commandID.map(String.init) ?? "nil") "
                       + "cmd=\(command(of: pane.blockCursor.commandID))")
                 pane.keyDown(with: up)
                 print("SMOKE blockcursor up2 id=\(pane.blockCursor.commandID.map(String.init) ?? "nil") "
@@ -1527,7 +1619,8 @@ Expected: `0` warnings, PASS.
                     pane.perform(.runEvery(seconds: 3600), on: requestID)
                     RunLoop.current.run(until: Date().addingTimeInterval(0.3))
                     print("SMOKE blockcursor stop-away canStop=\(pane.canStopWatch)")
-                    pane.keyDown(with: down); pane.keyDown(with: down); pane.keyDown(with: down)
+                    // Back down to the run: echo one → seq 200 → make-nothing → curl.
+                    for _ in 0..<3 { pane.keyDown(with: down) }
                     print("SMOKE blockcursor stop-on-run cursor=\(pane.blockCursor.commandID ?? 0) "
                           + "canStop=\(pane.canStopWatch)")
                     tabs.perform(.stopWatch)
@@ -1553,20 +1646,31 @@ Expected: `0` warnings, PASS.
         }
 ```
 
-  with the two temporary read-only accessors the probe needs on `Pane` (`var blockCursorIDsForQA: [UInt32] { session.withTerminal { $0.blockCursorIDs } }` and `func commandLine(ofCommand id: UInt32) -> String`), also removed afterwards.
+  with the three temporary accessors the probe needs on `Pane`, also removed afterwards:
+
+```swift
+    var blockCursorIDsForQA: [UInt32] { session.withTerminal { $0.blockCursorIDs } }
+    func commandLine(ofCommand id: UInt32) -> String
+    func scrollForQA(toAbsoluteRow row: Int) {
+        session.withTerminal { _ = $0.scrollToAbsoluteRow(row) }
+        markDirty()
+    }
+```
 
 Run: `./scripts/bundle.sh && NYX_SMOKE_QA=blockcursor ./build/Nyx.app/Contents/MacOS/Nyx 2>&1 | grep SMOKE`
 
 Expected, and each line is checked rather than glanced at:
-- `up1` names the **failure or the last echo**, `up2` names the block above it — two presses, two different ids, both with the command line printed.
-- `copy=` is the output of the block `up2` printed, **not** `three` from the last command. That is the five-rules bug, and no unit test can see it because each of the five rules was correct on its own.
+- `seed cmd=seq 200` — the first ⌘↑ in a pane scrolled back went up from the screen the reader is on, **not** to the curl at the bottom. That is the whole of the seeding rule, and the regression it guards against is invisible to a unit test because both answers are "a block".
+- `up2 cmd=echo one` — the second press steps, one block, and the two ids differ.
+- `copy=one` — `copy_command_output` hit the block the cursor is on, **not** the curl's output at the bottom. That is the five-rules bug; no unit test can see it, because each of the five rules was correct on its own.
 - `stop-away canStop=false` and `stop-on-run … canStop=true`: ⌘. is scoped to the block the keyboard is on.
-- `menu rows=` is 20-odd for the request block, with `[⌘…]` on Copy Output, Save Output, Edit and Run, Fold Output and Stop Watching, and none on the lens rows; `view.menu rows=` matches.
+- `menu rows=` is 20-odd for the request block, and exactly three rows print a chord — `Edit and Run This Command… [⌘E]`, `Fold Output [⌘⇧↑]`, `Stop Watching [⌘.]`. No lens row and no `Copy Output`/`Save Output…` carries one: their actions have no default binding (Task 5, Step 5). `view.menu rows=` matches `menu rows=`.
 - `chord-returned` prints, not `menu-stuck`: ⌘⇧A really popped a menu and the Escape dismissed it.
+- **By eye, once:** comment out the `exit(0)`, run it again, and with the sticky strip up (the pane is still scrolled back into `seq 200`) press ⌘⇧A by hand. The menu's top edge must sit on the cursor block's own row. The sticky strip covers the first row of the pane, so an off-by-one in `blockMenuAnchor`/`displaySlot` shows up here and nowhere else.
 
 - [ ] **Step 7: Remove the hook and prove it is gone**
 
-Run: `grep -rn "NYX_SMOKE_QA\|qaTabs\|blockCursorIDsForQA" Sources Tests; git status --short`
+Run: `grep -rn "NYX_SMOKE_QA\|qaTabs\|blockCursorIDsForQA\|scrollForQA\|commandLine(ofCommand" Sources Tests; git status --short`
 Expected: nothing from the grep, and `git status` showing only the files this plan means to change.
 
 - [ ] **Step 8: The rest of the ladder**
@@ -1619,4 +1723,6 @@ EOF
 
 **Naming reconciled with the spec.** The spec writes `CommandID`; this codebase's block id is `UInt32` and there is no such typealias, so the signatures use `UInt32`. The spec calls the menu pictures `block-menu-{plain,http,watched}`; `MenuSnapshot` already writes that set as `menu-block-{finished,http,lensed,watched,too-large}`, so Task 5 retakes those rather than renaming a working case.
 
-**Decisions this plan had to make, and why.** (1) ⌘↑/⌘↓ are the cursor's mover and the viewport follows the block they land on — the alternative, leaving `previous_prompt` to walk prompt rows and letting the cursor trail behind it, keeps the two answers the spec exists to unify apart. (2) A cursor whose block was trimmed *lands* on the nearest survivor rather than stepping past it, because stepping from a hole skips whichever block took its place. (3) A cleared cursor stays cleared through a viewport move, so a pane nobody has pressed ⌘↑ in never grows a lit block. (4) `stop_watch` and `toggle_http_lens` keep a request-shaped fallback for a pane with no cursor, which is today's behaviour word for word; the pointer clause in `lensTargetBlock` is what goes.
+**Chords the menu really shows.** Only three of the nine rows `BlockAction.terminalAction` maps carry one, because only `fold_command` (⌘⇧↑), `edit_and_run_command` (⌘E) and `stop_watch` (⌘.) have a default binding; `copy_command_output`, `copy_block_markdown`, `save_command_output`, `fold_all_long_output` and `notify_when_done` are unbound out of the box and print nothing until a user binds them. ⌘⇧J appears on no row at all: `.toggleLens` is the lens chip's act and is not a member of `BlockHeader.actions` — the menu's lens rows are `.setLens(…)`, which map to no action on purpose. Tasks 5 and 6 state the same three chords, and ⌘⇧↑ is the one that catches a builder that matched only `case .char`.
+
+**Decisions this plan had to make, and why.** (0) A cleared or off-screen cursor is seeded from the viewport before a press, and the press **lands on the seed** rather than stepping past it: the literal seed-then-step would take ⌘↑ to the block *above* the one whose output fills the screen, skipping the block the reader is inside — where `previous_prompt` goes to that block's own prompt today. `BlockCursor.moved` already re-anchors a trimmed id the same way, so this is the type's own rule and not a second one. The controller's ruling (seed from the viewport, then move) is followed in its stated intent — ⌘↑ goes up from where the reader is — and one line in Task 2 Step 1 (`?? BlockCursor.moved(…)` becoming an unconditional `moved` on the seeded cursor) reverses this if the literal reading is preferred. (1) ⌘↑/⌘↓ are the cursor's mover and the viewport follows the block they land on — the alternative, leaving `previous_prompt` to walk prompt rows and letting the cursor trail behind it, keeps the two answers the spec exists to unify apart. (2) A cursor whose block was trimmed *lands* on the nearest survivor rather than stepping past it, because stepping from a hole skips whichever block took its place. (3) A cleared cursor stays cleared through a viewport move, so a pane nobody has pressed ⌘↑ in never grows a lit block. (4) `stop_watch` and `toggle_http_lens` keep a request-shaped fallback for a pane with no cursor, which is today's behaviour word for word; the pointer clause in `lensTargetBlock` is what goes.

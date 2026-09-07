@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A bash or fish user gets OSC 133 prompt marks without editing a single file of their own — and wherever the marks are missing, Nyx says so in words that name their shell and offer the one control that changes it.
+**Goal:** A fish user, and a bash user whose bash is new enough, gets OSC 133 prompt marks without editing a single file of their own — and wherever the marks are missing, including on the bash Apple ships, Nyx says so in words that name their shell and offer the one thing that changes it.
 
-**Architecture:** One Core primitive, `ShellIntegration.launch`, decides both halves of a launch (the environment *and* the argv) from one guard, so `--posix` can never be passed without the `ENV` that makes it mean something. fish is reached by prepending Nyx's resource directory to `XDG_DATA_DIRS` and shipping `fish/vendor_conf.d/nyx.fish` inside it, which fish sources before the user's `config.fish`; bash is reached with `--posix` plus `ENV` pointing at `bash/nyx-shim.bash`, which turns POSIX mode straight back off, reads the user's own startup files in bash's own order, and only then adds the marks. A second Core value, `ShellIntegrationStatus`, owns every sentence about the state of the marks, so the new Settings ▸ Shell page, the no-marks banner and the corrected "Cannot watch" alert are three views of one value and cannot drift apart.
+**Architecture:** One Core primitive, `ShellIntegration.launch`, decides both halves of a launch (the environment *and* the argv) from one guard, so `--posix` can never be passed without an `ENV` that will actually be read. fish is reached by prepending Nyx's resource directory to `XDG_DATA_DIRS` and shipping `fish/vendor_conf.d/nyx.fish` inside it, which fish sources before the user's `config.fish`. bash is reached with `--posix` plus `ENV` pointing at `bash/nyx-shim.bash`, which turns POSIX mode straight back off, reads the user's own startup files in bash's own order and only then adds the marks — but **only from bash 4.4**: macOS's own 3.2.57 ignores `$ENV` under `--posix`, so `ShellCapabilities` probes the binary once per path and an older bash is launched untouched and offered a line to paste instead. A second Core value, `ShellIntegrationStatus`, owns every sentence about the state of the marks, so the new Settings ▸ Shell page, the no-marks banner and the corrected "Cannot watch" alert are three views of one value and cannot drift apart.
 
-**Tech Stack:** Swift 6.0.3 in Swift 5 mode, SwiftPM, swift-testing, AppKit; POSIX `sh` for the bash shim, bash 3.2-compatible bash, fish ≥ 3.0. No new dependencies.
+**Tech Stack:** Swift 6.0.3 in Swift 5 mode, SwiftPM, swift-testing, AppKit; POSIX `sh` for the bash shim, bash 3.2-compatible bash in the integration script (it has to run on a stock Mac when pasted by hand), fish ≥ 3.0. No new dependencies.
 
 **Spec:** `docs/superpowers/specs/2026-09-07-ux-round-design.md` (§4 in full, §8.1's `ShellIntegrationStatus` site, §8.5's plan-3 row, §10's "Wave 3 — shell integration", and the Coverage appendix's `findings-pm.md §2` row). Background: `.superpowers/sdd/2026-09-07-ux-round/findings-pm.md` §2.
 
@@ -17,15 +17,21 @@
 - Warning-free build, library and tests. `make bench` ≥ 180 MB/s (nothing in this wave touches the render path, so a drop is a bug).
 - **The existing guarantee, unchanged and extended to the two new shells:** "if anything is missing, return the environment unchanged. A terminal that will not start a shell because it could not find its own helper file is far worse than one without prompt marks" (spec §4.1).
 - The scripts must emit exactly the sequences `Terminal.handleOSC` case 133 accepts: `ESC ] 133 ; A BEL`, `ESC ] 133 ; B BEL`, `ESC ] 133 ; C BEL`, `ESC ] 133 ; D ; <status> BEL`, plus OSC 7 `ESC ] 7 ; file://<host><percent-encoded path> BEL`. `B` must be emitted at the column where typing begins (`Terminal` records `inputStartColumn` from the cursor at that moment) and must be wrapped in the shell's own zero-width-prompt escape or line editing corrupts the display.
-- `isAutomatic` becomes true for `.zsh`, `.bash`, `.fish`; `.other` stays false and keeps `manualInstallCommand`'s line (spec §4.1).
-- **The four status sentences, verbatim** (spec §4.2); `<shell>` is `ShellKind.name`:
+- **bash before 4.4 does not read `$ENV`, whatever the manual says.** Reproduced on this machine, over a PTY, as `execve("/bin/bash", ["-bash", "--posix"])` with `ENV` exported: bash 3.2.57 reports `posix on` from `set -o` and still reads `/etc/profile` + `~/.bash_profile` (login) or `~/.bashrc` (non-login), and **never `$ENV`** — on 3.2 only an argv[0] of `sh`/`-sh` arms that hook. Homebrew's bash 5.3 reads `$ENV` and nothing else, as documented. macOS ships 3.2.57, so **the default bash on every Mac is a manual-install shell**. kitty and Ghostty gate this same mechanism on bash ≥ 4.4; Nyx does too.
+- **A shell is never launched with `--posix` unless the shim is known to run.** `--posix` without a readable, honoured `ENV` is a bash that reads no startup file at all: the version gate and the shim-exists gate are one guard, in one function, with one test each.
+- `isAutomatic` becomes true for `.zsh`, `.fish` and **bash ≥ 4.4**; `.other` and bash < 4.4 stay false and keep `manualInstallCommand`'s line (spec §4.1, as amended by the version finding above).
+- **The status sentences.** The first four are spec §4.2's, verbatim; `<shell>` is `ShellKind.name`. The fifth is this plan's, written on §4.2's shape for the state §4.2 did not know existed — a shell we have a script for and cannot install it into:
   - `Prompt marks are live. Blocks, folding, Copy Output, the pinned command and watches all work here.`
   - `Nyx installs prompt marks into <shell> automatically. This window has not seen one yet — open a new tab if this is the first launch after an update.`
   - `Your shell is <shell>. Nyx has no hooks for it, so blocks, folding, Copy Output, the ⋯ menu, the pinned command and watches are all off.`
   - `Prompt marks are off by your setting. Blocks, folding, Copy Output, the ⋯ menu, the pinned command and watches are all off.`
+  - `Your shell is bash <version>, which cannot take prompt marks automatically: bash only reads the file Nyx installs them through from version 4.4. Paste the line below into ~/.bashrc, or install a newer bash.`
 - **The manual line's caption, verbatim:** `Paste this into your startup file, then open a new tab:`, the line itself monospaced in a selectable field, with a `Copy` button.
-- **The banner, verbatim** (spec §4.3): `Nyx could not add prompt marks to <shell> — blocks, folding and watches are off in this pane.` with a `Shell Settings…` button and a `✕`; remembered **per shell path for the life of the process**, never written to disk.
-- **The alert, verbatim** (spec §4.3): message `Cannot watch a request in this pane`; informative `A watch sends its next run only when the shell is back at a prompt, and this shell does not tell Nyx where its prompts are. Nyx adds prompt marks to zsh, bash and fish by itself; this pane is running <shell>.`, whose second sentence becomes `Prompt marks are off by your setting.` when `mode == .off`; buttons `Shell Settings…` (default) · `OK`.
+- **The banner** — spec §4.3's sentence, and two more on its shape, each with a `Shell Settings…` button and a `✕`, remembered **per shell path for the life of the process** and never written to disk:
+  - a shell Nyx cannot install into, or one it tried to install into and whose marks never came: `Nyx could not add prompt marks to <shell> — blocks, folding and watches are off in this pane.`
+  - bash < 4.4, where there is a line to paste: `Nyx cannot add prompt marks to bash <version> by itself — paste the line from Settings ▸ Shell into ~/.bashrc.`
+  - `shell-integration = off`: `Prompt marks are off by your setting — blocks, folding and watches are off in this pane.`
+- **The alert, verbatim** (spec §4.3): message `Cannot watch a request in this pane`; informative `A watch sends its next run only when the shell is back at a prompt, and this shell does not tell Nyx where its prompts are. Nyx adds prompt marks to zsh, bash and fish by itself; this pane is running <shell>.`, whose second sentence becomes `Prompt marks are off by your setting.` when `mode == .off` and, for bash < 4.4, `Nyx adds prompt marks to zsh, fish and bash 4.4 or newer by itself; this pane is running bash <version>, whose line has to go into ~/.bashrc by hand — Settings ▸ Shell has it.`; buttons `Shell Settings…` (default) · `OK`.
 - Every new piece of chrome gets its snapshot case **in the same commit** (`docs/testing.md`).
 - Commit trailers on every commit:
   `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`
@@ -37,7 +43,8 @@
 | File | Responsibility | Task |
 |---|---|---|
 | `Sources/NyxCore/Shell/ShellIntegration.swift` | `ShellKind` (+`name`), `ShellLaunch`, `launch`, `environment`, `isAutomatic`, `manualInstallCommand` | 1 |
-| `Resources/shell-integration/bash/nyx-shim.bash` | the file `ENV` points at: POSIX off, the user's startup files, then the marks | 2 |
+| `Sources/NyxCore/Shell/ShellCapabilities.swift` | what a shell binary can be asked to do — today only "does this bash read `$ENV`" — learned once per shell path, off the tab-creation path | 1 |
+| `Resources/shell-integration/bash/nyx-shim.bash` | the file `ENV` points at: POSIX off, the user's startup files in bash's own order, then the marks | 2 |
 | `Resources/shell-integration/bash/nyx-integration.bash` | the marks themselves, surviving the user's `PROMPT_COMMAND` and `DEBUG` trap | 2 |
 | `Sources/NyxCore/Session/TerminalSession.swift` | `SessionConfig.loginShell` takes the configured shell and asks `launch` for argv + env | 2 |
 | `Resources/shell-integration/fish/vendor_conf.d/nyx.fish` | the vendor snippet: restore `XDG_DATA_DIRS`, source the integration | 3 |
@@ -46,16 +53,18 @@
 | `Sources/NyxApp/SettingsWindowController.swift` | the Shell page: the pop-up, the sentence, the paste line | 5 |
 | `Sources/NyxApp/ConfigBanner.swift` | a note with a button of the caller's own | 6 |
 | `Sources/NyxApp/Announce.swift` | `.announcementRequested` on `NSApp` (§8.1) | 6 |
-| `Sources/NyxApp/Pane.swift` | the pane's shell path, its status, the no-marks notice, the corrected refusal | 6 |
+| `Sources/NyxApp/Pane.swift` | the pane's shell path (nil for a remote pane), its status, the no-marks notice, the corrected refusal | 5, 6 |
+| `Sources/NyxApp/AppDelegate.swift` | primes `ShellCapabilities` at launch and on every config reload, so no tab ever waits on a probe | 2, 5 |
 | `Sources/NyxApp/UISnapshot.swift`, `MenuSnapshot.swift` | the pictures | 5, 6 |
 
 ---
 
-### Task 1: `ShellLaunch` — one guard decides the environment *and* the argv
+### Task 1: `ShellLaunch` and `ShellCapabilities` — one guard decides the environment, the argv and whether this bash can be reached at all
 
 **Files:**
 - Modify: `Sources/NyxCore/Shell/ShellIntegration.swift`
-- Test: `Tests/NyxCoreTests/ShellIntegrationTests.swift`
+- Create: `Sources/NyxCore/Shell/ShellCapabilities.swift`
+- Test: `Tests/NyxCoreTests/ShellIntegrationTests.swift`, `Tests/NyxCoreTests/ShellCapabilitiesTests.swift`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -70,12 +79,37 @@ public enum ShellKind: Equatable {
     public var name: String
 }
 
+/// What a shell binary can be asked to do, learned by running it once.
+///
+/// Today it answers one question -- does this bash read `$ENV` in POSIX mode -- and that question
+/// has to be answered by *running the binary*, because the manual's answer is wrong for the bash
+/// every Mac ships: 3.2.57 reports `posix on` and reads `~/.bashrc` anyway.
+///
+/// The probe is a `Process`, so it must never happen while a tab is being made. `prime` is called
+/// from `AppDelegate` at launch and on every config reload, before any window exists; `supports`
+/// answers from the cache and, for a path nobody primed, answers **no** -- the conservative answer
+/// is the one that cannot break a shell.
+public final class ShellCapabilities {
+    public static let shared = ShellCapabilities()
+    /// `probe` returns the shell's `BASH_VERSINFO[0] BASH_VERSINFO[1]`, e.g. `"3 2"`, or nil.
+    public init(probe: @escaping (String) -> String? = ShellCapabilities.runVersionProbe)
+    /// Runs the probe for this path unless it is already known. Blocking; call it off the
+    /// tab-creation path.
+    public func prime(shellPath: String)
+    /// bash ≥ 4.4, which is the first bash that honours `$ENV` under `--posix`. False for a path
+    /// that has not been primed, and for every non-bash path (they do not use this hook).
+    public func bashSupportsENVStartup(shellPath: String) -> Bool
+    /// `"3.2"`, for the sentence that names it. nil when unknown or not a bash.
+    public func bashVersion(shellPath: String) -> String?
+    public static func runVersionProbe(_ shellPath: String) -> String?
+}
+
 /// What a session needs to launch a shell: the two halves of the decision, taken together.
 ///
-/// Together on purpose. bash's `--posix` is only survivable *because* `ENV` points at our shim:
-/// a posix-mode bash with no `ENV` reads no startup file at all, so the user's `~/.bashrc` would
-/// simply stop running. Handing the caller an environment and an argv separately -- two functions,
-/// two guards -- is how those two facts drift apart.
+/// Together on purpose. bash's `--posix` is only survivable *because* `ENV` points at our shim and
+/// *because* this bash is one that reads `ENV`: a posix-mode bash with no honoured `ENV` reads no
+/// startup file at all, so the user's `~/.bashrc` would simply stop running. Handing the caller an
+/// environment and an argv separately -- two functions, two guards -- is how those facts drift.
 public struct ShellLaunch: Equatable {
     public var environment: [String: String]
     public var arguments: [String]
@@ -91,41 +125,128 @@ public enum ShellIntegration {
     /// setting the variable to *only* our directory would take `/usr/share` away from fish's own
     /// vendor snippets and from every other XDG-aware program started from that shell.
     public static let defaultXDGDataDirs = "/usr/local/share:/usr/share"
+    /// The first bash that honours `$ENV` under `--posix`.
+    public static let bashENVStartupVersion = (major: 4, minor: 4)
     public static var bundledResources: URL? { get }
 
     public static func launch(_ base: [String: String], arguments: [String], shellPath: String,
                               mode: ShellIntegrationMode, resources: URL?,
+                              capabilities: ShellCapabilities = .shared,
                               pathExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) })
         -> ShellLaunch
     /// The environment half, for callers with no argv to decide (the tests, and anything that only
     /// wants to know what a session's environment would be).
     public static func environment(_ base: [String: String], shellPath: String,
                                    mode: ShellIntegrationMode, resources: URL?,
+                                   capabilities: ShellCapabilities = .shared,
                                    pathExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) })
         -> [String: String]
-    public static func isAutomatic(shellPath: String, mode: ShellIntegrationMode) -> Bool
+    public static func isAutomatic(shellPath: String, mode: ShellIntegrationMode,
+                                   capabilities: ShellCapabilities = .shared) -> Bool
     public static func manualInstallCommand(shellPath: String, resources: URL) -> String?
 }
 ```
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing capability tests**
 
-Replace the helper at the top of `Tests/NyxCoreTests/ShellIntegrationTests.swift` (the parameter is renamed from `directoryExists` to `pathExists`, because two of the three guards now check a file):
+Create `Tests/NyxCoreTests/ShellCapabilitiesTests.swift`. The probe is injected, so nothing here runs a shell:
 
 ```swift
+import Foundation
+import Testing
+@testable import NyxCore
+
+private func capabilities(_ answers: [String: String], counter: (() -> Void)? = nil) -> ShellCapabilities {
+    ShellCapabilities { path in counter?(); return answers[path] }
+}
+
+@Test func bashFourFourAndAboveReadsENV() {
+    let caps = capabilities(["/opt/homebrew/bin/bash": "5 3", "/usr/local/bin/bash": "4 4"])
+    caps.prime(shellPath: "/opt/homebrew/bin/bash")
+    caps.prime(shellPath: "/usr/local/bin/bash")
+    #expect(caps.bashSupportsENVStartup(shellPath: "/opt/homebrew/bin/bash"))
+    #expect(caps.bashSupportsENVStartup(shellPath: "/usr/local/bin/bash"))
+}
+
+/// The bash every Mac ships. `--posix` + ENV does nothing on it, reproduced over a PTY, so the
+/// whole automatic path has to stay off for this one.
+@Test func theBashMacOSShipsDoesNot() {
+    let caps = capabilities(["/bin/bash": "3 2"])
+    caps.prime(shellPath: "/bin/bash")
+    #expect(!caps.bashSupportsENVStartup(shellPath: "/bin/bash"))
+    #expect(caps.bashVersion(shellPath: "/bin/bash") == "3.2")
+}
+
+@Test func fourZeroIsStillTooOld() {
+    let caps = capabilities(["/bin/bash": "4 0"])
+    caps.prime(shellPath: "/bin/bash")
+    #expect(!caps.bashSupportsENVStartup(shellPath: "/bin/bash"))
+}
+
+/// The answer for a path nobody primed is "no": a pane that guessed "yes" and was wrong launches a
+/// bash in POSIX mode that reads nothing at all.
+@Test func anUnprimedPathIsAssumedIncapable() {
+    let caps = capabilities(["/bin/bash": "5 2"])
+    #expect(!caps.bashSupportsENVStartup(shellPath: "/bin/bash"))
+    #expect(caps.bashVersion(shellPath: "/bin/bash") == nil)
+}
+
+@Test func aShellThatAnswersNothingIsAssumedIncapable() {
+    let caps = capabilities([:])
+    caps.prime(shellPath: "/bin/ksh")
+    #expect(!caps.bashSupportsENVStartup(shellPath: "/bin/ksh"))
+}
+
+/// Once per shell path for the life of the process: a window with twelve bash tabs must not fork
+/// twelve probes.
+@Test func aShellIsProbedOnceAndRemembered() {
+    var runs = 0
+    let caps = capabilities(["/bin/bash": "5 2"], counter: { runs += 1 })
+    caps.prime(shellPath: "/bin/bash")
+    caps.prime(shellPath: "/bin/bash")
+    _ = caps.bashSupportsENVStartup(shellPath: "/bin/bash")
+    #expect(runs == 1)
+}
+
+/// The one case that touches a real binary: the probe has to produce the shape the parser expects
+/// from the bash that is actually on this machine.
+@Test(.enabled(if: FileManager.default.isExecutableFile(atPath: "/bin/bash")))
+func theRealProbeReadsARealBashsVersion() {
+    let answer = ShellCapabilities.runVersionProbe("/bin/bash")
+    let parts = (answer ?? "").split(separator: " ")
+    #expect(parts.count == 2, "unexpected probe output: \(answer ?? "nil")")
+    #expect(Int(parts.first ?? "") != nil)
+}
+```
+
+- [ ] **Step 2: Write the failing launch tests**
+
+Replace the helper at the top of `Tests/NyxCoreTests/ShellIntegrationTests.swift` (the parameter is renamed from `directoryExists` to `pathExists`, because two of the guards now check a file, and a capability set is injected so no test runs a shell):
+
+```swift
+/// A bash that reads `$ENV`, and one that does not, without running either.
+private let modernBash = ShellCapabilities { _ in "5 3" }
+private let ancientBash = ShellCapabilities { _ in "3 2" }
+private func primed(_ caps: ShellCapabilities, _ paths: String...) -> ShellCapabilities {
+    for path in paths { caps.prime(shellPath: path) }
+    return caps
+}
+
 private func launch(_ base: [String: String] = [:], argv: [String] = ["-zsh"],
                     shell: String = "/bin/zsh", mode: ShellIntegrationMode = .auto,
                     resources: URL? = resources,
+                    capabilities: ShellCapabilities = primed(modernBash, "/bin/bash", "/opt/homebrew/bin/bash"),
                     exists: @escaping (URL) -> Bool = allExist) -> ShellLaunch {
     ShellIntegration.launch(base, arguments: argv, shellPath: shell, mode: mode,
-                            resources: resources, pathExists: exists)
+                            resources: resources, capabilities: capabilities, pathExists: exists)
 }
 
 private func env(_ base: [String: String] = [:], shell: String = "/bin/zsh",
                  mode: ShellIntegrationMode = .auto, resources: URL? = resources,
+                 capabilities: ShellCapabilities = primed(modernBash, "/bin/bash", "/opt/homebrew/bin/bash"),
                  exists: @escaping (URL) -> Bool = allExist) -> [String: String] {
     ShellIntegration.environment(base, shellPath: shell, mode: mode, resources: resources,
-                                 pathExists: exists)
+                                 capabilities: capabilities, pathExists: exists)
 }
 ```
 
@@ -134,32 +255,50 @@ New cases, appended to the file:
 ```swift
 // MARK: - Injecting into bash
 
-/// `--posix` is the only bash option that makes `ENV` the *one* startup file an interactive shell
-/// reads, login or not. `--rcfile` was the alternative and is worse: a login bash ignores it and
-/// silently stops reading `~/.bash_profile`, which is how other terminals break people's prompts.
-@Test func bashIsLaunchedInPosixModeWithOurShimAsENV() {
-    let l = launch(argv: ["-bash"], shell: "/bin/bash")
+/// `--posix` makes `ENV` the one startup file an interactive bash reads, login or not -- but only
+/// from 4.4. `--rcfile` was the alternative and is worse at both ends: a login shell ignores it
+/// outright, so a login bash would get no hooks at all, and a non-login shell reads our file
+/// *instead of* `~/.bashrc`, so the user's own rc runs only if our file remembers to source it.
+@Test func aModernBashIsLaunchedInPosixModeWithOurShimAsENV() {
+    let l = launch(argv: ["-bash"], shell: "/opt/homebrew/bin/bash")
     #expect(l.arguments == ["-bash", "--posix"])
     #expect(l.environment["ENV"] == resources.appendingPathComponent("bash/nyx-shim.bash").path)
     #expect(l.environment[ShellIntegration.resourceDirectory] == resources.path)
 }
 
+/// The finding this gate exists for: macOS's own bash reports `posix on` and reads `~/.bashrc`
+/// anyway, so `--posix` would buy nothing and cost the user every startup file they have.
+@Test func aBashOlderThanFourFourIsLaunchedExactlyAsItWouldHaveBeen() {
+    let l = launch(["PATH": "/usr/bin"], argv: ["-bash"], shell: "/bin/bash",
+                   capabilities: primed(ancientBash, "/bin/bash"))
+    #expect(l.arguments == ["-bash"], "an old bash must never be put into POSIX mode")
+    #expect(l.environment["ENV"] == nil)
+    // Still told where the scripts are: that is what makes the settings page's paste line real.
+    #expect(l.environment[ShellIntegration.resourceDirectory] == resources.path)
+}
+
+/// A bash nobody primed is treated as an old one, for the same reason.
+@Test func anUnprimedBashIsNotPutIntoPosixMode() {
+    let l = launch(argv: ["-bash"], shell: "/bin/bash", capabilities: ShellCapabilities { _ in "5 3" })
+    #expect(l.arguments == ["-bash"])
+    #expect(l.environment["ENV"] == nil)
+}
+
 /// A user who exports `ENV` means it for their `sh`. The shim unsets ours on the way out, so
 /// theirs has to travel or every `sh` started from that window loses it.
 @Test func bashCarriesTheUsersOwnENVForItsChildren() {
-    let l = launch(["ENV": "/Users/someone/.shinit"], argv: ["-bash"], shell: "/bin/bash")
+    let l = launch(["ENV": "/Users/someone/.shinit"], argv: ["-bash"], shell: "/opt/homebrew/bin/bash")
     #expect(l.environment[ShellIntegration.originalENV] == "/Users/someone/.shinit")
     #expect(l.environment["ENV"]?.hasSuffix("bash/nyx-shim.bash") == true)
 }
 
 @Test func bashWithNoENVOfItsOwnCarriesNothing() {
-    #expect(launch(argv: ["-bash"], shell: "/bin/bash").environment[ShellIntegration.originalENV] == nil)
+    #expect(launch(argv: ["-bash"], shell: "/opt/homebrew/bin/bash").environment[ShellIntegration.originalENV] == nil)
 }
 
-/// The missing-file rule, for the half that can break a shell outright: `--posix` without a
-/// readable `ENV` is a bash that reads no startup file at all.
+/// The missing-file rule, for the half that can break a shell outright.
 @Test func aMissingBashShimLeavesBothHalvesUntouched() {
-    let l = launch(["PATH": "/usr/bin"], argv: ["-bash"], shell: "/bin/bash", exists: noneExist)
+    let l = launch(["PATH": "/usr/bin"], argv: ["-bash"], shell: "/opt/homebrew/bin/bash", exists: noneExist)
     #expect(l.arguments == ["-bash"])
     #expect(l.environment == ["PATH": "/usr/bin"])
 }
@@ -200,7 +339,7 @@ New cases, appended to the file:
 // MARK: - Off, and shells we know nothing about
 
 @Test func turningItOffLeavesTheArgumentsAloneToo() {
-    let l = launch(["PATH": "/usr/bin"], argv: ["-bash"], shell: "/bin/bash", mode: .off)
+    let l = launch(["PATH": "/usr/bin"], argv: ["-bash"], shell: "/opt/homebrew/bin/bash", mode: .off)
     #expect(l.arguments == ["-bash"])
     #expect(l.environment == ["PATH": "/usr/bin"])
 }
@@ -216,12 +355,15 @@ New cases, appended to the file:
 
 // MARK: - What to tell the user
 
-@Test func everyShellWeShipHooksForIsAutomatic() {
-    #expect(ShellIntegration.isAutomatic(shellPath: "/bin/zsh", mode: .auto))
-    #expect(ShellIntegration.isAutomatic(shellPath: "/bin/bash", mode: .auto))
-    #expect(ShellIntegration.isAutomatic(shellPath: "/opt/homebrew/bin/fish", mode: .auto))
-    #expect(!ShellIntegration.isAutomatic(shellPath: "/bin/ksh", mode: .auto))
-    #expect(!ShellIntegration.isAutomatic(shellPath: "/bin/zsh", mode: .off))
+@Test func everyShellWeCanReachIsAutomatic() {
+    let caps = primed(modernBash, "/opt/homebrew/bin/bash")
+    #expect(ShellIntegration.isAutomatic(shellPath: "/bin/zsh", mode: .auto, capabilities: caps))
+    #expect(ShellIntegration.isAutomatic(shellPath: "/opt/homebrew/bin/fish", mode: .auto, capabilities: caps))
+    #expect(ShellIntegration.isAutomatic(shellPath: "/opt/homebrew/bin/bash", mode: .auto, capabilities: caps))
+    #expect(!ShellIntegration.isAutomatic(shellPath: "/bin/bash", mode: .auto,
+                                          capabilities: primed(ancientBash, "/bin/bash")))
+    #expect(!ShellIntegration.isAutomatic(shellPath: "/bin/ksh", mode: .auto, capabilities: caps))
+    #expect(!ShellIntegration.isAutomatic(shellPath: "/bin/zsh", mode: .off, capabilities: caps))
 }
 
 @Test func theShellsNameIsTheWordEverySentenceUses() {
@@ -233,21 +375,109 @@ New cases, appended to the file:
 
 /// The two entry points must not be able to disagree about whether injection happened.
 @Test func theEnvironmentHelperAnswersExactlyWhatLaunchDoes() {
-    for shell in ["/bin/zsh", "/bin/bash", "/opt/homebrew/bin/fish", "/bin/ksh"] {
+    for shell in ["/bin/zsh", "/opt/homebrew/bin/bash", "/bin/bash", "/opt/homebrew/bin/fish", "/bin/ksh"] {
         #expect(env(["PATH": "/usr/bin"], shell: shell)
                 == launch(["PATH": "/usr/bin"], argv: ["-x"], shell: shell).environment, "\(shell)")
     }
 }
 ```
 
-The existing case `onlyZshIsAutomatic` is **deleted** (replaced by `everyShellWeShipHooksForIsAutomatic`), and `shellsWithNoShimAreToldWhereTheScriptsAreAndNothingMore` is **deleted** (replaced by `aShellWithNoShimIsToldWhereTheScriptsAreAndNothingMore`, which now names only `ksh` — bash and fish are injected). Every other existing case in the file stays and must still pass.
+The existing case `onlyZshIsAutomatic` is **deleted** (replaced by `everyShellWeCanReachIsAutomatic`), and `shellsWithNoShimAreToldWhereTheScriptsAreAndNothingMore` is **deleted** (replaced by `aShellWithNoShimIsToldWhereTheScriptsAreAndNothingMore`). Every other existing case in the file stays and must still pass.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `pkill -9 -f swiftpm-testing-helper; swift test --no-parallel --filter ShellIntegration`
-Expected: FAIL — `cannot find 'ShellLaunch' in scope`, `incorrect argument label 'pathExists'`.
+Run: `pkill -9 -f swiftpm-testing-helper; swift test --no-parallel --filter "ShellIntegration|ShellCapabilities"`
+Expected: FAIL — `cannot find 'ShellLaunch' in scope`, `cannot find 'ShellCapabilities' in scope`.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 4: Implement `ShellCapabilities`**
+
+Create `Sources/NyxCore/Shell/ShellCapabilities.swift`:
+
+```swift
+import Foundation
+
+/// What a shell binary can be asked to do, learned by running it once and then remembered.
+///
+/// One question so far, and it is not one the documentation can answer. bash's manual says a shell
+/// started with `--posix` reads `$ENV` and no other startup file; the bash macOS ships (3.2.57)
+/// reports `posix on` from `set -o` and reads `/etc/profile` and `~/.bash_profile` anyway. Driving
+/// it over a PTY is how that was found, and running the binary is the only way to know: the same
+/// path can be 3.2 on one Mac and 5.3 on the next.
+///
+/// Being wrong in the optimistic direction costs the user every startup file they have, so an
+/// unprimed path answers **no**.
+public final class ShellCapabilities {
+    public static let shared = ShellCapabilities()
+
+    private let probe: (String) -> String?
+    private var answers: [String: (major: Int, minor: Int)?] = [:]
+    private let lock = NSLock()
+
+    public init(probe: @escaping (String) -> String? = ShellCapabilities.runVersionProbe) {
+        self.probe = probe
+    }
+
+    /// Runs the probe unless this path is already known. Forks a process, so it is called from
+    /// `AppDelegate` at launch and on each config reload -- never from `Pane.init`, where it would
+    /// put a fork between ⌘T and a window.
+    public func prime(shellPath: String) {
+        lock.lock()
+        let known = answers.index(forKey: shellPath) != nil
+        lock.unlock()
+        guard !known else { return }
+        let parsed = ShellCapabilities.parse(probe(shellPath))
+        lock.lock()
+        answers[shellPath] = parsed
+        lock.unlock()
+    }
+
+    public func bashSupportsENVStartup(shellPath: String) -> Bool {
+        guard ShellKind.detect(shellPath: shellPath) == .bash, let version = version(of: shellPath)
+        else { return false }
+        let floor = ShellIntegration.bashENVStartupVersion
+        return (version.major, version.minor) >= (floor.major, floor.minor)
+    }
+
+    public func bashVersion(shellPath: String) -> String? {
+        guard ShellKind.detect(shellPath: shellPath) == .bash, let version = version(of: shellPath)
+        else { return nil }
+        return "\(version.major).\(version.minor)"
+    }
+
+    private func version(of shellPath: String) -> (major: Int, minor: Int)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return answers[shellPath] ?? nil
+    }
+
+    /// `BASH_VERSINFO`'s first two fields, which every bash back to 2.0 sets. `-c` with no `-i`:
+    /// a non-interactive shell reads no startup file, so this costs a fork and nothing else, and
+    /// cannot be broken by anything in the user's configuration.
+    public static func runVersionProbe(_ shellPath: String) -> String? {
+        guard FileManager.default.isExecutableFile(atPath: shellPath) else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: shellPath)
+        process.arguments = ["-c", "echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"]
+        process.environment = ["PATH": "/usr/bin:/bin"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func parse(_ answer: String?) -> (major: Int, minor: Int)? {
+        let parts = (answer ?? "").split(separator: " ")
+        guard parts.count >= 2, let major = Int(parts[0]), let minor = Int(parts[1]) else { return nil }
+        return (major, minor)
+    }
+}
+```
+
+- [ ] **Step 5: Implement the launch rules**
 
 In `Sources/NyxCore/Shell/ShellIntegration.swift`, add `name` to `ShellKind`, add `ShellLaunch`, and make `launch` the primitive:
 
@@ -265,6 +495,7 @@ In `Sources/NyxCore/Shell/ShellIntegration.swift`, add `name` to `ShellKind`, ad
 ```swift
     public static func launch(_ base: [String: String], arguments: [String], shellPath: String,
                               mode: ShellIntegrationMode, resources: URL?,
+                              capabilities: ShellCapabilities = .shared,
                               pathExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) })
         -> ShellLaunch {
         let untouched = ShellLaunch(environment: base, arguments: arguments)
@@ -283,11 +514,17 @@ In `Sources/NyxCore/Shell/ShellIntegration.swift`, add `name` to `ShellKind`, ad
             return ShellLaunch(environment: env, arguments: arguments)
 
         case .bash:
-            // `--posix` makes `ENV` the one startup file an interactive bash reads, login or not,
-            // which is the only hook bash offers that works for both. The shim it points at turns
-            // POSIX mode straight back off and reads the user's own files in bash's own order.
+            // Two gates, one guard. `--posix` makes ENV the one startup file an interactive bash
+            // reads -- but only from 4.4, and macOS ships 3.2.57, which reports `posix on` and
+            // reads ~/.bashrc anyway. Putting *that* bash into POSIX mode would take away every
+            // startup file it has and give nothing back, so it is launched untouched and told
+            // where the scripts are: `ShellIntegrationStatus` turns that into the line to paste.
             let shim = resources.appendingPathComponent("bash/nyx-shim.bash")
-            guard pathExists(shim) else { return untouched }
+            guard pathExists(shim), capabilities.bashSupportsENVStartup(shellPath: shellPath) else {
+                var env = base
+                env[resourceDirectory] = resources.path
+                return ShellLaunch(environment: env, arguments: arguments)
+            }
             var env = base
             if let existing = base["ENV"], !existing.isEmpty { env[originalENV] = existing }
             env["ENV"] = shim.path
@@ -319,51 +556,57 @@ In `Sources/NyxCore/Shell/ShellIntegration.swift`, add `name` to `ShellKind`, ad
 
     public static func environment(_ base: [String: String], shellPath: String,
                                    mode: ShellIntegrationMode, resources: URL?,
+                                   capabilities: ShellCapabilities = .shared,
                                    pathExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) })
         -> [String: String] {
         launch(base, arguments: [], shellPath: shellPath, mode: mode, resources: resources,
-               pathExists: pathExists).environment
+               capabilities: capabilities, pathExists: pathExists).environment
     }
 ```
 
 and
 
 ```swift
-    /// True when this shell will pick the integration up on its own -- zsh through `ZDOTDIR`, bash
-    /// through `--posix` and `ENV`, fish through `XDG_DATA_DIRS`.
-    public static func isAutomatic(shellPath: String, mode: ShellIntegrationMode) -> Bool {
+    /// True when this shell will pick the integration up on its own -- zsh through `ZDOTDIR`, fish
+    /// through `XDG_DATA_DIRS`, and bash 4.4 or newer through `--posix` and `ENV`. An older bash is
+    /// *not* automatic: it is a shell we have a script for and no way to install, which is the one
+    /// state `manualInstallCommand` was written for.
+    public static func isAutomatic(shellPath: String, mode: ShellIntegrationMode,
+                                   capabilities: ShellCapabilities = .shared) -> Bool {
         guard mode == .auto else { return false }
         switch ShellKind.detect(shellPath: shellPath) {
-        case .zsh, .bash, .fish: return true
+        case .zsh, .fish: return true
+        case .bash: return capabilities.bashSupportsENVStartup(shellPath: shellPath)
         case .other: return false
         }
     }
 ```
 
-Update the type's own doc comment: the paragraph beginning "The trick for zsh is `ZDOTDIR`" gains the two new mechanisms and the reason `--rcfile` was refused.
+Update the type's own doc comment: the paragraph beginning "The trick for zsh is `ZDOTDIR`" gains the two new mechanisms, the version gate and the reason `--rcfile` was refused.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `swift test --no-parallel --filter ShellIntegration`
+Run: `swift test --no-parallel --filter "ShellIntegration|ShellCapabilities"`
 Expected: PASS. Also `swift build 2>&1 | grep -c warning:` → `0`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add Sources/NyxCore/Shell/ShellIntegration.swift Tests/NyxCoreTests/ShellIntegrationTests.swift
+git add Sources/NyxCore/Shell/ShellIntegration.swift Sources/NyxCore/Shell/ShellCapabilities.swift \
+        Tests/NyxCoreTests/ShellIntegrationTests.swift Tests/NyxCoreTests/ShellCapabilitiesTests.swift
 git commit -m "$(cat <<'MSG'
-One decision for a shell's launch: the argv and the environment together
+One decision for a shell's launch, and it asks the bash before trusting it
 
-bash needs `--posix` and `ENV` or neither: a posix-mode bash without ENV reads
-no startup file at all, so the user's ~/.bashrc simply stops running. Two
-functions with two guards is how those facts drift apart, so `launch` returns
-both halves from one guard and `environment` is a wrapper over it.
+bash needs `--posix` and ENV or neither, and on macOS's own bash 3.2.57 it needs
+neither: driven over a PTY it reports `posix on` and reads ~/.bash_profile
+anyway, never $ENV. Putting that bash into POSIX mode would take away every
+startup file it has and give nothing back, so the hook is gated on bash >= 4.4 --
+the same floor kitty and Ghostty use -- and the version is learned by running the
+binary once per path, primed off the tab-creation path, defaulting to "no".
 
 fish is reached by prepending our resource directory to XDG_DATA_DIRS, with the
 user's own value carried in NYX_XDG_DATA_DIRS and the XDG default written out
-when they had none -- setting the variable to only our directory would take
-/usr/share away from fish's own vendor snippets and from everything else the
-shell starts.
+when they had none.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
@@ -373,17 +616,18 @@ MSG
 
 ---
 
-### Task 2: bash — the shim, the marks, and a real bash driven through a PTY
+### Task 2: bash — the shim, the marks, and real bashes driven through a PTY
 
 **Files:**
 - Create: `Resources/shell-integration/bash/nyx-shim.bash`
 - Modify: `Resources/shell-integration/bash/nyx-integration.bash` (rewritten below)
 - Modify: `Sources/NyxCore/Session/TerminalSession.swift:23-37` (`loginShell` takes the configured shell and asks `launch` for both halves)
 - Modify: `Sources/NyxApp/Pane.swift:382-395` (`sessionConfig` passes `config.shell` instead of patching `argv` afterwards)
+- Modify: `Sources/NyxApp/AppDelegate.swift` (prime `ShellCapabilities` at launch and on each config reload)
 - Test: `Tests/NyxCoreTests/ShellIntegrationLiveTests.swift` (new), `Tests/NyxCoreTests/TerminalSessionTests.swift` (one new case)
 
 **Interfaces:**
-- Consumes: `ShellIntegration.launch(_:arguments:shellPath:mode:resources:pathExists:) -> ShellLaunch` (Task 1).
+- Consumes: `ShellIntegration.launch(_:arguments:shellPath:mode:resources:capabilities:pathExists:) -> ShellLaunch`, `ShellCapabilities` (Task 1).
 - Produces:
 ```swift
 public static func loginShell(cols: Int, rows: Int, palette: Palette, cwd: String? = nil,
@@ -394,15 +638,18 @@ public static func loginShell(cols: Int, rows: Int, palette: Palette, cwd: Strin
 and, for later tasks' tests, the harness in `ShellIntegrationLiveTests.swift`:
 ```swift
 let repoResources: URL                                   // <repo>/Resources/shell-integration
+let modernBashPath: String?                              // the first bash on this machine that is >= 4.4
 struct FixtureHome { let url: URL; init(_ files: [String: String]) throws; func remove() }
 func realShellSession(shell: String, home: FixtureHome, mode: ShellIntegrationMode = .auto,
                       extraEnvironment: [String: String] = [:]) throws -> TerminalSession
 @discardableResult
 func waitFor(_ s: TerminalSession, _ condition: @escaping (Terminal) -> Bool,
              timeout: TimeInterval = 15) -> Bool
+func screen(_ s: TerminalSession) -> String
+func screenLine(_ t: Terminal, contains needle: String) -> Bool
 ```
 
-- [ ] **Step 1: Write the failing live test**
+- [ ] **Step 1: Write the failing live tests**
 
 Create `Tests/NyxCoreTests/ShellIntegrationLiveTests.swift`. This is the rung-2 half of the spec's "a passing unit test proves nothing about a shell that will not start": it launches the real binary on a real PTY with the real scripts.
 
@@ -419,6 +666,21 @@ let repoResources = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()   // Tests
     .deletingLastPathComponent()   // repo root
     .appendingPathComponent("Resources/shell-integration")
+
+/// The automatic bash path needs a bash that honours `$ENV` under `--posix`, which macOS's own
+/// 3.2.57 does not. Homebrew's first, because that is where a 5.x comes from on this machine.
+/// When there is none, the automatic cases are **skipped and reported as skipped** -- never
+/// silently rewritten to test the shell that happens to be installed.
+let modernBashPath: String? = ["/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/bin/bash"]
+    .first { path in
+        FileManager.default.isExecutableFile(atPath: path)
+            && ShellCapabilities().alsoPrimed(path).bashSupportsENVStartup(shellPath: path)
+    }
+
+/// `prime` returns nothing, and a `let` needs an expression: this is the one-liner that gives one.
+extension ShellCapabilities {
+    func alsoPrimed(_ path: String) -> ShellCapabilities { prime(shellPath: path); return self }
+}
 
 /// A throwaway `HOME` holding exactly the startup files a test wants.
 ///
@@ -443,23 +705,26 @@ struct FixtureHome {
     func remove() { try? FileManager.default.removeItem(at: url) }
 }
 
-/// A real interactive shell on a real PTY, launched exactly the way `Pane` launches one.
+/// A real interactive shell on a real PTY, launched exactly the way `Pane` launches one -- with the
+/// capabilities for this path primed first, which is what `AppDelegate` does before any window.
 func realShellSession(shell: String, home: FixtureHome, mode: ShellIntegrationMode = .auto,
                       extraEnvironment: [String: String] = [:]) throws -> TerminalSession {
     var base = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "TERM": "xterm-256color",
                 "HOME": home.url.path, "LANG": "en_US.UTF-8"]
     for (key, value) in extraEnvironment { base[key] = value }
+    let capabilities = ShellCapabilities().alsoPrimed(shell)
     let launch = ShellIntegration.launch(base, arguments: ["-" + (shell as NSString).lastPathComponent],
-                                         shellPath: shell, mode: mode, resources: repoResources)
+                                         shellPath: shell, mode: mode, resources: repoResources,
+                                         capabilities: capabilities)
     let config = SessionConfig(shellPath: shell, argv: launch.arguments,
                                environment: launch.environment, cwd: home.url.path,
                                cols: 80, rows: 24, scrollbackLimit: 500, palette: .xtermDefault())
     return try TerminalSession(config: config)
 }
 
-/// Polls until the terminal says so, rather than sleeping a fixed time: a cold `/bin/bash` on a
-/// busy machine takes longer than any constant anyone would guess, and a sleep long enough to be
-/// safe is a suite nobody runs.
+/// Polls until the terminal says so, rather than sleeping a fixed time: a cold bash on a busy
+/// machine takes longer than any constant anyone would guess, and a sleep long enough to be safe is
+/// a suite nobody runs.
 @discardableResult
 func waitFor(_ s: TerminalSession, _ condition: @escaping (Terminal) -> Bool,
              timeout: TimeInterval = 15) -> Bool {
@@ -473,13 +738,16 @@ func waitFor(_ s: TerminalSession, _ condition: @escaping (Terminal) -> Bool,
 
 func screen(_ s: TerminalSession) -> String { s.withTerminal { $0.text().joined(separator: "\n") } }
 
-private let bashPath = "/bin/bash"
+func screenLine(_ t: Terminal, contains needle: String) -> Bool {
+    t.text().contains { $0.contains(needle) }
+}
 
-@Test(.enabled(if: FileManager.default.isExecutableFile(atPath: bashPath)))
-func aRealBashEmitsTheMarksTheParserExpects() throws {
+@Test(.enabled(if: modernBashPath != nil))
+func aRealModernBashEmitsTheMarksTheParserExpects() throws {
+    let bash = try #require(modernBashPath)
     let home = try FixtureHome([".bashrc": "PS1='bash$ '\nexport NYX_FIXTURE_RC=1\n"])
     defer { home.remove() }
-    let s = try realShellSession(shell: bashPath, home: home)
+    let s = try realShellSession(shell: bash, home: home)
     s.start()
     defer { s.terminate() }
 
@@ -502,12 +770,32 @@ func aRealBashEmitsTheMarksTheParserExpects() throws {
     #expect(region.outputStart != nil, "no C mark, so the block has no output start")
 }
 
-/// The regression the rewrite exists for. bash fires the `DEBUG` trap for the commands in
-/// `PROMPT_COMMAND` as well as for the user's, so a naive trap marks the *prompt* as a running
-/// command: every block in the window comes out one command out of step, and pressing Enter on an
-/// empty line produces a finished command that never ran.
-@Test(.enabled(if: FileManager.default.isExecutableFile(atPath: bashPath)))
+/// The regression the rewrite exists for, and the one a reviewer reproduced against the first
+/// draft of this plan. bash fires the `DEBUG` trap for the commands in `PROMPT_COMMAND` as well as
+/// for the user's, so a trap that cannot tell them apart marks the *prompt* as a running command:
+/// a single bare Enter emitted `C` and then `D;0` for a command that never ran.
+@Test(.enabled(if: modernBashPath != nil))
+func aBareEnterIsNotACommand() throws {
+    let bash = try #require(modernBashPath)
+    let home = try FixtureHome([".bashrc": "PS1='bash$ '\n"])
+    defer { home.remove() }
+    let s = try realShellSession(shell: bash, home: home)
+    s.start()
+    defer { s.terminate() }
+    #expect(waitFor(s) { $0.shellEmitsPromptMarks }, "no marks: \(screen(s))")
+
+    s.send(Array("\r\r\r".utf8))
+    usleep(700_000)
+    #expect(s.withTerminal { $0.lastFinishedCommand } == nil,
+            "a prompt command was marked as a command: \(screen(s))")
+    #expect(s.withTerminal { $0.runningCommand } == nil, "the prompt is marked as running: \(screen(s))")
+}
+
+/// The same guard, with the user's own hooks in place: their `PROMPT_COMMAND` entry and their
+/// `DEBUG` trap both keep running, and neither of them becomes a block.
+@Test(.enabled(if: modernBashPath != nil))
 func aRealBashKeepsTheUsersPromptCommandAndDebugTrap() throws {
+    let bash = try #require(modernBashPath)
     let home = try FixtureHome([".bashrc": """
     PS1='bash$ '
     NYX_PC=0
@@ -516,16 +804,15 @@ func aRealBashKeepsTheUsersPromptCommandAndDebugTrap() throws {
     trap 'NYX_DBG=$((NYX_DBG+1))' DEBUG
     """])
     defer { home.remove() }
-    let s = try realShellSession(shell: bashPath, home: home)
+    let s = try realShellSession(shell: bash, home: home)
     s.start()
     defer { s.terminate() }
     #expect(waitFor(s) { $0.shellEmitsPromptMarks }, "no marks: \(screen(s))")
 
-    // Two bare newlines: nothing ran, so nothing may be reported as having finished.
     s.send(Array("\r\r".utf8))
     usleep(500_000)
     #expect(s.withTerminal { $0.lastFinishedCommand } == nil,
-            "a prompt command was marked as a command: \(screen(s))")
+            "the user's PROMPT_COMMAND entry was marked as a command: \(screen(s))")
 
     s.send(Array("echo pc=$NYX_PC dbg=$NYX_DBG\r".utf8))
     #expect(waitFor(s) { $0.lastFinishedCommand?.exitStatus == 0 }, "no D: \(screen(s))")
@@ -537,18 +824,45 @@ func aRealBashKeepsTheUsersPromptCommandAndDebugTrap() throws {
 /// A login bash reads `/etc/profile` and the first of `~/.bash_profile`, `~/.bash_login`,
 /// `~/.profile`. POSIX mode reads none of them, so the shim has to do it in bash's own order --
 /// this is the file most people's PATH comes from.
-@Test(.enabled(if: FileManager.default.isExecutableFile(atPath: bashPath)))
+@Test(.enabled(if: modernBashPath != nil))
 func aRealLoginBashStillReadsTheUsersLoginFiles() throws {
+    let bash = try #require(modernBashPath)
     let home = try FixtureHome([".bash_profile": "PS1='bash$ '\nexport NYX_FIXTURE_PROFILE=yes\n",
                                 ".profile": "export NYX_FIXTURE_PROFILE=wrong-file\n"])
     defer { home.remove() }
-    let s = try realShellSession(shell: bashPath, home: home)
+    let s = try realShellSession(shell: bash, home: home)
     s.start()
     defer { s.terminate() }
     #expect(waitFor(s) { $0.shellEmitsPromptMarks }, "no marks: \(screen(s))")
     s.send(Array("echo profile=$NYX_FIXTURE_PROFILE\r".utf8))
     #expect(waitFor(s) { screenLine($0, contains: "profile=yes") },
             "the login files were skipped, or the wrong one was read: \(screen(s))")
+}
+
+/// macOS's own bash, which is the one most people meet. Two claims: it is launched **exactly** as
+/// it would have been without Nyx -- no `--posix`, no `ENV` -- and the line Settings ▸ Shell tells
+/// the user to paste actually works when they paste it. The second half is the whole manual path,
+/// and nothing else in the suite tests it.
+@Test(.enabled(if: FileManager.default.isExecutableFile(atPath: "/bin/bash")))
+func theBashMacOSShipsIsLeftAloneAndItsPasteLineWorks() throws {
+    let script = repoResources.appendingPathComponent("bash/nyx-integration.bash").path
+    let home = try FixtureHome([".bashrc": "PS1='bash$ '\nsource \"\(script)\"\n"])
+    defer { home.remove() }
+
+    let capabilities = ShellCapabilities().alsoPrimed("/bin/bash")
+    let launch = ShellIntegration.launch(["HOME": home.url.path], arguments: ["-bash"],
+                                         shellPath: "/bin/bash", mode: .auto,
+                                         resources: repoResources, capabilities: capabilities)
+    #expect(launch.arguments == ["-bash"], "an old bash must never be put into POSIX mode")
+    #expect(launch.environment["ENV"] == nil)
+
+    let s = try realShellSession(shell: "/bin/bash", home: home)
+    s.start()
+    defer { s.terminate() }
+    #expect(waitFor(s) { $0.shellEmitsPromptMarks },
+            "the line the settings page offers does not produce marks: \(screen(s))")
+    s.send(Array("false\r".utf8))
+    #expect(waitFor(s) { $0.lastFinishedCommand?.exitStatus == 1 }, "no D;1: \(screen(s))")
 }
 
 /// zsh, unchanged, as the control: this file is where a script regression would otherwise hide.
@@ -574,16 +888,13 @@ func aRealLoginBashStillReadsTheUsersLoginFiles() throws {
     #expect(waitFor(s) { screenLine($0, contains: "hello") }, "the shell never ran: \(screen(s))")
     #expect(!s.withTerminal { $0.shellEmitsPromptMarks })
 }
-
-func screenLine(_ t: Terminal, contains needle: String) -> Bool {
-    t.text().contains { $0.contains(needle) }
-}
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `swift test --no-parallel --filter ShellIntegrationLive`
-Expected: FAIL — bash never emits a mark (`no OSC 133 A from bash`), because `nyx-shim.bash` does not exist yet and the guard therefore left the environment alone.
+Expected: FAIL — no marks from any bash, because `nyx-shim.bash` does not exist yet and the guard therefore left the environment alone.
+If `modernBashPath` is nil (`brew install bash`), the four automatic cases report as **skipped**. That is not a pass: the wave cannot be closed on it, and Task 7's rung 6 needs the same binary.
 
 - [ ] **Step 3: Write the shim**
 
@@ -592,11 +903,17 @@ Create `Resources/shell-integration/bash/nyx-shim.bash`:
 ```bash
 # Nyx's bash shim: the file $ENV points at.
 #
-# bash in POSIX mode reads exactly one startup file -- $ENV, for interactive shells, login or not
-# -- and no other. That is the whole reason Nyx launches bash with `--posix`: it is the one hook
-# bash honours for both an interactive login shell and an interactive non-login one. The
-# alternative, `--rcfile`, is ignored by a login shell and *replaces* ~/.bashrc for a non-login
-# one, which is how other terminals quietly stop people's prompts from being set up.
+# bash 4.4 and newer, in POSIX mode, reads exactly one startup file -- $ENV, for interactive shells,
+# login or not -- and no other. That is why Nyx launches such a bash with `--posix`: it is the one
+# hook that works for an interactive login shell and an interactive non-login one alike.
+#
+# The alternative, `--rcfile`, is worse at both ends: a login shell ignores it outright, so a login
+# bash would get no hooks at all, and a non-login shell reads the named file *instead of*
+# ~/.bashrc, so the user's own rc runs only if the terminal's file remembers to source it.
+#
+# bash 3.2 -- the one macOS ships -- does not honour $ENV even with `--posix`, so Nyx never puts it
+# into POSIX mode and offers the user a `source` line for ~/.bashrc instead. Nothing here runs on
+# that shell; `ShellCapabilities` is what keeps it away.
 #
 # Everything this file borrows is put back before the user sees a prompt: POSIX mode off, $ENV
 # restored or unset, and their own startup files sourced in bash's own order.
@@ -619,10 +936,12 @@ fi
 
 _nyx_shim_dir=${NYX_SHELL_INTEGRATION_DIR:-}
 
-# bash's own order, which POSIX mode skipped. A login shell reads /etc/profile and then the *first*
-# of the three personal login files that exists -- first, not all three, which is the rule a
-# ~/.profile written for `sh` depends on. An interactive non-login shell reads /etc/bashrc (on
-# macOS that is where the shared prompt lives) and then ~/.bashrc.
+# bash's own order, which POSIX mode skipped, and nothing more than bash's own order. A login shell
+# reads /etc/profile and then the *first* of the three personal login files that exists -- first,
+# not all three, which is the rule a ~/.profile written for `sh` depends on. An interactive
+# non-login shell reads ~/.bashrc and only that: bash never reads /etc/bashrc by itself, and
+# sourcing it here would apply it twice on macOS, where /etc/profile and most people's ~/.bashrc
+# already do.
 if shopt -q login_shell; then
   [ -r /etc/profile ] && . /etc/profile
   for _nyx_rc in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
@@ -633,7 +952,6 @@ if shopt -q login_shell; then
   done
   unset _nyx_rc
 else
-  [ -r /etc/bashrc ] && . /etc/bashrc
   [ -r "$HOME/.bashrc" ] && . "$HOME/.bashrc"
 fi
 
@@ -647,7 +965,7 @@ unset _nyx_shim_dir
 
 - [ ] **Step 4: Rewrite the marks**
 
-Replace `Resources/shell-integration/bash/nyx-integration.bash` in full:
+Replace `Resources/shell-integration/bash/nyx-integration.bash` in full. The `DEBUG` trap's guard is the whole difference between this file and a four-line one, and it has two parts, both required: the trap skips any command that is one of `PROMPT_COMMAND`'s own entries, and the arm is cleared at the top of `_nyx_prompt` so it cannot survive into the next prompt cycle.
 
 ```bash
 # Nyx shell integration for bash.
@@ -657,9 +975,10 @@ Replace `Resources/shell-integration/bash/nyx-integration.bash` in full:
 # commands, the status gutter, folding, "copy the last command's output", the ⋯ menu, watches and
 # the pinned command line have nothing to work from.
 #
-# Sourced automatically by `nyx-shim.bash`, which bash reaches through `--posix` and $ENV; nothing
-# in your home directory is modified. The same file is what Settings ▸ Shell offers to paste into
-# an rc file for a bash Nyx did not launch itself.
+# On bash 4.4 and newer, Nyx sources this automatically through `nyx-shim.bash`, which bash reaches
+# with `--posix` and $ENV; nothing in your home directory is modified. On bash 3.2 -- the version
+# macOS ships, which ignores $ENV -- this is the file Settings ▸ Shell asks you to source from
+# ~/.bashrc, and the two paths meet here.
 
 # Only interactive shells have a prompt to mark. `return`, not `exit`: this file is sourced.
 case $- in *i*) ;; *) return 0 ;; esac
@@ -682,12 +1001,20 @@ _nyx_report_cwd() {
   printf '\e]7;file://%s%s\a' "${HOSTNAME}" "$encoded"
 }
 
-# The first entry of PROMPT_COMMAND. The exit status has to be read on the very first line, before
-# anything else can overwrite it, and it is handed straight back on the way out: the user's own
-# PROMPT_COMMAND entries now run *after* this one, and a `history -a` or a prompt framework that
-# colours itself by $? must still see the status of the command it is reporting on.
+# The first entry of PROMPT_COMMAND.
+#
+# The exit status has to be read on the very first line, before anything else can overwrite it, and
+# it is handed straight back on the way out: the user's own PROMPT_COMMAND entries now run *after*
+# this one, and a `history -a` or a prompt framework that colours itself by $? must still see the
+# status of the command it is reporting on.
+#
+# It also disarms. The arm is set by the last prompt-command entry and must not survive into the
+# next cycle: if it did, the DEBUG trap that fires ahead of *this* function would fire armed, and a
+# bare Enter -- which runs no command at all -- would emit C and then D;0 for a command that never
+# ran. (It did. That is what this line is.)
 _nyx_prompt() {
   local exit_status=$?
+  _nyx_armed=
   if [ -n "${_nyx_command_running:-}" ]; then
     printf '\e]133;D;%s\a' "$exit_status"
     unset _nyx_command_running
@@ -697,18 +1024,41 @@ _nyx_prompt() {
   return $exit_status
 }
 
-# The last entry of PROMPT_COMMAND, and the reason this file is more than four lines long.
-#
-# bash has no preexec; the DEBUG trap is the nearest thing, and it fires for every command in
-# PROMPT_COMMAND as well as for the one the user typed. A trap that cannot tell them apart marks
-# the *prompt* as a running command, so every block in the window is one command out of step and
-# pressing Enter on an empty line produces a finished command that never ran. The trap is therefore
-# armed only here, once every prompt command has run, and disarms itself the moment it fires.
+# The last entry of PROMPT_COMMAND: from here until the next `_nyx_prompt`, the next command bash
+# runs is the user's.
 _nyx_arm() { _nyx_armed=1; }
+
+# Every entry of PROMPT_COMMAND, one per line, recorded as we compose it. bash has no preexec; the
+# DEBUG trap is the nearest thing, and it fires for each of these too. A trap that cannot tell them
+# from the user's command marks the prompt as a command, which is one command's worth of drift in
+# every block in the window.
+_nyx_prompt_command_entries=$'_nyx_prompt\n_nyx_arm'
+
+# Exact-match against those entries. A user who *types* a command that is also in their
+# PROMPT_COMMAND loses the marks for that one command; bash-preexec has the same limitation, and it
+# is a far smaller price than marking every prompt.
+_nyx_is_prompt_command() {
+  local candidate=$1 entry found=1 unglob=
+  candidate=${candidate#"${candidate%%[![:space:]]*}"}
+  candidate=${candidate%"${candidate##*[![:space:]]}"}
+  [ -z "$candidate" ] && return 0
+  # An entry containing `*` would otherwise be expanded by the unquoted word split below.
+  case $- in *f*) ;; *) unglob=1; set -f ;; esac
+  local IFS=$'\n'
+  for entry in $_nyx_prompt_command_entries; do
+    entry=${entry#"${entry%%[![:space:]]*}"}
+    entry=${entry%"${entry##*[![:space:]]}"}
+    [ -n "$entry" ] || continue
+    if [ "$candidate" = "$entry" ]; then found=0; break; fi
+  done
+  [ -n "$unglob" ] && set +f
+  return $found
+}
 
 _nyx_preexec() {
   # Programmable completion runs commands through the trap too, and a Tab is not a command.
   [ -n "${COMP_LINE:-}" ] && return
+  _nyx_is_prompt_command "${BASH_COMMAND:-}" && return
   [ -z "${_nyx_armed:-}" ] && return
   _nyx_armed=
   _nyx_command_running=1
@@ -738,9 +1088,16 @@ trap '_nyx_debug' DEBUG
 # other entries away. `declare -p` answers which it is on every bash back to 3.2.
 case $(declare -p PROMPT_COMMAND 2>/dev/null) in
   "declare -a"*|"typeset -a"*)
+    for _nyx_entry in "${PROMPT_COMMAND[@]}"; do
+      _nyx_prompt_command_entries="${_nyx_prompt_command_entries}"$'\n'"$_nyx_entry"
+    done
+    unset _nyx_entry
     PROMPT_COMMAND=(_nyx_prompt "${PROMPT_COMMAND[@]}" _nyx_arm)
     ;;
   *)
+    if [ -n "${PROMPT_COMMAND:-}" ]; then
+      _nyx_prompt_command_entries="${_nyx_prompt_command_entries}"$'\n'"${PROMPT_COMMAND//;/$'\n'}"
+    fi
     PROMPT_COMMAND="_nyx_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND};_nyx_arm"
     ;;
 esac
@@ -799,6 +1156,24 @@ fi
         return sc
 ```
 
+`Sources/NyxApp/AppDelegate.swift` — the probe runs here and nowhere else, so no tab ever waits on a fork:
+
+```swift
+    /// Learn what the shells we might launch can do, before any window exists.
+    ///
+    /// `ShellCapabilities.prime` runs the binary, which takes single-digit milliseconds and must
+    /// never happen while a tab is being made: ⌘T has to be instant. Called once at launch and
+    /// again on every config reload, because `shell = …` can name a bash we have never met. A path
+    /// that somehow reaches `Pane` unprimed is treated as incapable, which costs marks and cannot
+    /// break a shell.
+    private func primeShellCapabilities(for config: Config) {
+        var paths = [ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"]
+        if let shell = config.shell, !shell.isEmpty { paths.append(shell) }
+        for path in paths { ShellCapabilities.shared.prime(shellPath: path) }
+    }
+```
+called from `applicationDidFinishLaunching` **before the first window is made**, and from the config-reload handler beside the other `configChanged` work.
+
 Add to `Tests/NyxCoreTests/TerminalSessionTests.swift`:
 
 ```swift
@@ -816,9 +1191,9 @@ Add to `Tests/NyxCoreTests/TerminalSessionTests.swift`:
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `pkill -9 -f swiftpm-testing-helper; swift test --no-parallel --filter "ShellIntegration|TerminalSession"`
-Expected: PASS, including the four bash cases and the zsh control.
-If `aRealBashEmitsTheMarksTheParserExpects` still fails, print the screen the failure message carries before changing anything: a shell that started but printed a syntax error is a shim bug; a shell with no marks and a working prompt is an integration-script bug; a shell that never printed a prompt is `--posix`/`ENV` not reaching the child.
+Run: `pkill -9 -f swiftpm-testing-helper; swift test --no-parallel --filter "ShellIntegration|ShellCapabilities|TerminalSession"`
+Expected: PASS, including the modern-bash cases, the 3.2 paste-line case and the zsh control.
+If a bash case fails, read the screen the failure message carries before changing anything: a shell that started but printed a syntax error is a shim bug; a shell with a working prompt and no marks is an integration-script bug; a shell that never printed a prompt is `--posix`/`ENV` not reaching the child.
 
 - [ ] **Step 7: Commit**
 
@@ -826,23 +1201,24 @@ If `aRealBashEmitsTheMarksTheParserExpects` still fails, print the screen the fa
 git add Resources/shell-integration/bash/nyx-shim.bash \
         Resources/shell-integration/bash/nyx-integration.bash \
         Sources/NyxCore/Session/TerminalSession.swift Sources/NyxApp/Pane.swift \
+        Sources/NyxApp/AppDelegate.swift \
         Tests/NyxCoreTests/ShellIntegrationLiveTests.swift Tests/NyxCoreTests/TerminalSessionTests.swift
 git commit -m "$(cat <<'MSG'
-bash gets prompt marks without being asked, and without losing its own prompt
+bash 4.4 and up gets prompt marks unasked; 3.2 gets a line that works
 
-`--posix` plus ENV is the one hook bash honours for an interactive login shell
-and an interactive non-login one alike; the shim it points at turns POSIX mode
-back off and reads /etc/profile, the first login file, or /etc/bashrc and
-~/.bashrc, in bash's own order.
+The shim bash reaches through --posix and ENV turns POSIX mode back off and reads
+/etc/profile and the first login file, or ~/.bashrc, in bash's own order -- and
+nothing else: bash never reads /etc/bashrc by itself, and sourcing it here would
+apply macOS's own twice.
 
-The DEBUG trap fires for PROMPT_COMMAND's own entries too, so it is armed only
-after they have run: without that, a user with starship or `history -a` in
-PROMPT_COMMAND got the C mark on the prompt and every block in the window was
-one command out of step. Their PROMPT_COMMAND (string or bash 5.1 array) and
-their DEBUG trap are both kept.
+The DEBUG trap fires for PROMPT_COMMAND's own entries too, so it skips anything
+that is one of them and the arm is cleared at the top of _nyx_prompt. Without
+both halves a bare Enter emitted C and then D;0 for a command that never ran --
+reproduced against the first draft of this script under bash 5.3.
 
-Tested by driving a real /bin/bash through a PTY with a fixture HOME -- a
-passing unit test proves nothing about a shell that will not start.
+Tested by driving real bashes through a PTY with a fixture HOME: a 4.4+ bash for
+the automatic path, and /bin/bash sourcing the line the settings page offers for
+the manual one, which is the path most Macs will actually take.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
@@ -1094,19 +1470,30 @@ MSG
 - Test: `Tests/NyxCoreTests/ShellIntegrationStatusTests.swift`
 
 **Interfaces:**
-- Consumes: `ShellKind`, `ShellKind.name`, `ShellIntegrationMode`, `ShellIntegration.isAutomatic`, `ShellIntegration.manualInstallCommand`, `ShellIntegration.bundledResources` (Task 1).
+- Consumes: `ShellKind`, `ShellKind.name`, `ShellIntegrationMode`, `ShellIntegration.isAutomatic`, `ShellIntegration.manualInstallCommand`, `ShellIntegration.bundledResources`, `ShellCapabilities` (Task 1).
 - Produces:
 ```swift
+/// Why a shell we ship a script for is not getting it installed for it.
+public enum ShellIntegrationLimit: Equatable {
+    /// bash before 4.4 does not read `$ENV` under `--posix`. `version` is nil when the probe never
+    /// ran, which reads as plain "bash" rather than inventing a number.
+    case bashCannotBeReached(version: String?)
+    /// "bash 3.2", or "bash".
+    public var shellDescription: String
+}
+
 public struct ShellIntegrationStatus: Equatable {
     public let shell: ShellKind
     public let mode: ShellIntegrationMode
     public let isAutomatic: Bool
     public let marksSeen: Bool
+    public let limit: ShellIntegrationLimit?
     public let resources: URL?
     public init(shell: ShellKind, mode: ShellIntegrationMode, isAutomatic: Bool,
-                marksSeen: Bool, resources: URL?)
+                marksSeen: Bool, limit: ShellIntegrationLimit? = nil, resources: URL?)
     public static func current(shellPath: String, mode: ShellIntegrationMode, marksSeen: Bool,
-                               resources: URL? = ShellIntegration.bundledResources) -> ShellIntegrationStatus
+                               resources: URL? = ShellIntegration.bundledResources,
+                               capabilities: ShellCapabilities = .shared) -> ShellIntegrationStatus
     public var sentence: String
     public var manualLine: String?
     public static let manualCaption = "Paste this into your startup file, then open a new tab:"
@@ -1116,7 +1503,7 @@ public struct ShellIntegrationStatus: Equatable {
 }
 
 public struct ShellIntegrationNotice {
-    public static let graceSeconds: Double = 2
+    public static let graceSeconds: Double = 5
     public init()
     public mutating func shouldTell(about status: ShellIntegrationStatus, shellPath: String,
                                     startedAt: Double, now: Double) -> Bool
@@ -1133,16 +1520,25 @@ import Testing
 @testable import NyxCore
 
 private let resources = URL(fileURLWithPath: "/Applications/Nyx.app/Contents/Resources/shell-integration")
+private let modernBash = ShellCapabilities { _ in "5 3" }
+private let ancientBash = ShellCapabilities { _ in "3 2" }
 
 private func status(_ shell: String = "/bin/zsh", mode: ShellIntegrationMode = .auto,
-                    marksSeen: Bool = false) -> ShellIntegrationStatus {
-    .current(shellPath: shell, mode: mode, marksSeen: marksSeen, resources: resources)
+                    marksSeen: Bool = false,
+                    capabilities: ShellCapabilities = modernBash) -> ShellIntegrationStatus {
+    capabilities.prime(shellPath: shell)
+    return .current(shellPath: shell, mode: mode, marksSeen: marksSeen, resources: resources,
+                    capabilities: capabilities)
 }
 
-// MARK: - The four sentences
+private func oldBash(_ mode: ShellIntegrationMode = .auto, marksSeen: Bool = false) -> ShellIntegrationStatus {
+    status("/bin/bash", mode: mode, marksSeen: marksSeen, capabilities: ancientBash)
+}
+
+// MARK: - The five sentences
 
 @Test func marksLiveIsTheSentenceWhenTheWindowHasSeenOne() {
-    #expect(status("/bin/bash", marksSeen: true).sentence
+    #expect(status("/opt/homebrew/bin/bash", marksSeen: true).sentence
             == "Prompt marks are live. Blocks, folding, Copy Output, the pinned command and watches all work here.")
 }
 
@@ -1163,10 +1559,20 @@ private func status(_ shell: String = "/bin/zsh", mode: ShellIntegrationMode = .
             == "Prompt marks are off by your setting. Blocks, folding, Copy Output, the \u{22EF} menu, the pinned command and watches are all off.")
 }
 
-/// Marks that are live win over every other sentence. A user who sources the line by hand and
-/// leaves `shell-integration = off` has a gutter full of marks; telling them the marks are off
-/// while they are looking at one is the kind of sentence this whole value exists to prevent.
-@Test func liveMarksBeatTheSettingThatSaysTheyAreOff() {
+/// The bash every Mac ships. It is not "a shell Nyx has no hooks for" -- the hooks exist and work,
+/// this bash just cannot be made to load them by itself -- so it gets a sentence of its own that
+/// ends in the thing the user can actually do.
+@Test func theBashMacOSShipsIsNamedWithItsVersionAndPointedAtTheLine() {
+    #expect(oldBash().sentence
+            == "Your shell is bash 3.2, which cannot take prompt marks automatically: bash only reads the file Nyx installs them through from version 4.4. Paste the line below into ~/.bashrc, or install a newer bash.")
+    #expect(oldBash().manualLine == "source \"\(resources.path)/bash/nyx-integration.bash\"")
+}
+
+/// Marks that are live win over every other sentence. A user who sources the line by hand -- which
+/// is exactly what a bash 3.2 user is told to do -- has a gutter full of marks, and any sentence
+/// about them being missing is a lie about their own screen.
+@Test func liveMarksBeatEveryOtherSentence() {
+    #expect(oldBash(.auto, marksSeen: true).sentence.hasPrefix("Prompt marks are live."))
     #expect(status("/bin/zsh", mode: .off, marksSeen: true).sentence.hasPrefix("Prompt marks are live."))
 }
 
@@ -1175,8 +1581,6 @@ private func status(_ shell: String = "/bin/zsh", mode: ShellIntegrationMode = .
 @Test func theManualLineIsOfferedWhenNothingIsInjectedAndWeKnowTheShell() {
     #expect(status("/bin/zsh", mode: .off).manualLine
             == "source \"\(resources.path)/zsh/nyx-integration.zsh\"")
-    #expect(status("/bin/bash", mode: .off).manualLine
-            == "source \"\(resources.path)/bash/nyx-integration.bash\"")
 }
 
 @Test func thereIsNoLineToPasteForAShellWeHaveNoScriptFor() {
@@ -1186,7 +1590,7 @@ private func status(_ shell: String = "/bin/zsh", mode: ShellIntegrationMode = .
 /// Nothing to paste when the shell is already being injected into: the line would be a second
 /// installation, and the scripts guard against being sourced twice precisely because people do it.
 @Test func aShellBeingInjectedIntoIsOfferedNothing() {
-    #expect(status("/bin/bash").manualLine == nil)
+    #expect(status("/opt/homebrew/bin/bash").manualLine == nil)
 }
 
 // MARK: - The banner
@@ -1194,6 +1598,20 @@ private func status(_ shell: String = "/bin/zsh", mode: ShellIntegrationMode = .
 @Test func theBannerNamesTheShellAndWhatIsOff() {
     #expect(status("/bin/ksh").bannerText
             == "Nyx could not add prompt marks to ksh \u{2014} blocks, folding and watches are off in this pane.")
+}
+
+/// Deliberate: an automatic shell whose marks never arrived gets the same sentence. It is the one
+/// case where "could not" is exactly right -- the hooks were installed and something ate them --
+/// and without this the banner could never fire for zsh, fish or a modern bash at all.
+@Test func anAutomaticShellWhoseMarksNeverCameIsStillWorthSaying() {
+    #expect(status("/opt/homebrew/bin/fish").bannerText
+            == "Nyx could not add prompt marks to fish \u{2014} blocks, folding and watches are off in this pane.")
+}
+
+/// bash 3.2 has a next move, so its banner says what it is rather than only what is lost.
+@Test func theBannerForAnOldBashPointsAtTheLine() {
+    #expect(oldBash().bannerText
+            == "Nyx cannot add prompt marks to bash 3.2 by itself \u{2014} paste the line from Settings \u{25B8} Shell into ~/.bashrc.")
 }
 
 /// The setting's own case gets the setting's own words: "could not" would be false about a choice
@@ -1204,7 +1622,7 @@ private func status(_ shell: String = "/bin/zsh", mode: ShellIntegrationMode = .
 }
 
 @Test func thereIsNothingToSayOnceTheMarksArrive() {
-    #expect(status("/bin/bash", marksSeen: true).bannerText == nil)
+    #expect(status("/opt/homebrew/bin/bash", marksSeen: true).bannerText == nil)
 }
 
 // MARK: - The refusal
@@ -1218,6 +1636,13 @@ private func status(_ shell: String = "/bin/zsh", mode: ShellIntegrationMode = .
 @Test func theRefusalSaysTheSettingWhenTheSettingIsTheReason() {
     #expect(status("/bin/zsh", mode: .off).watchRefusalDetail
             == "A watch sends its next run only when the shell is back at a prompt, and this shell does not tell Nyx where its prompts are. Prompt marks are off by your setting.")
+}
+
+/// "Nyx adds prompt marks to bash by itself" would be a lie to the majority of Mac users, who are
+/// on 3.2 -- and the sentence has to end somewhere they can go.
+@Test func theRefusalTellsAnOldBashWhereItsLineGoes() {
+    #expect(oldBash().watchRefusalDetail
+            == "A watch sends its next run only when the shell is back at a prompt, and this shell does not tell Nyx where its prompts are. Nyx adds prompt marks to zsh, fish and bash 4.4 or newer by itself; this pane is running bash 3.2, whose line has to go into ~/.bashrc by hand \u{2014} Settings \u{25B8} Shell has it.")
 }
 
 // MARK: - Telling them once
@@ -1239,8 +1664,10 @@ private func status(_ shell: String = "/bin/zsh", mode: ShellIntegrationMode = .
     #expect(notices.shouldTell(about: status("/bin/tcsh"), shellPath: "/bin/tcsh", startedAt: 0, now: 10))
 }
 
-/// The marks arrive a moment after the shell does. Saying "no marks" while the shell is still
-/// sourcing the user's rc files would be a banner that contradicts the gutter half a second later.
+/// The marks arrive after the shell does, and a cold zsh with a prompt framework can take seconds.
+/// Saying "no marks" while the shell is still sourcing rc files would be a banner the gutter
+/// contradicts half a second later, so the grace is generous: this sentence is a statement about a
+/// shell that will *never* mark, and being late costs nothing.
 @Test func nothingIsSaidBeforeTheShellHasHadItsGrace() {
     var notices = ShellIntegrationNotice()
     #expect(!notices.shouldTell(about: status("/bin/ksh"), shellPath: "/bin/ksh", startedAt: 0, now: 1))
@@ -1250,8 +1677,8 @@ private func status(_ shell: String = "/bin/zsh", mode: ShellIntegrationMode = .
 
 @Test func aShellThatMarkedItsPromptIsNeverMentioned() {
     var notices = ShellIntegrationNotice()
-    #expect(!notices.shouldTell(about: status("/bin/bash", marksSeen: true),
-                                shellPath: "/bin/bash", startedAt: 0, now: 10))
+    #expect(!notices.shouldTell(about: status("/opt/homebrew/bin/bash", marksSeen: true),
+                                shellPath: "/opt/homebrew/bin/bash", startedAt: 0, now: 10))
 }
 ```
 
@@ -1267,6 +1694,22 @@ Create `Sources/NyxCore/Shell/ShellIntegrationStatus.swift`:
 ```swift
 import Foundation
 
+/// Why a shell Nyx ships a script for is not having it installed for it.
+public enum ShellIntegrationLimit: Equatable {
+    /// bash before 4.4 does not honour `$ENV` under `--posix` -- reproduced on 3.2.57, which is
+    /// what macOS ships -- so there is no way to load the hooks without the user's help.
+    case bashCannotBeReached(version: String?)
+
+    /// How every sentence names it: "bash 3.2" when the probe answered, plain "bash" when it did
+    /// not. Inventing a version number for a shell we failed to ask would be worse than omitting it.
+    public var shellDescription: String {
+        switch self {
+        case .bashCannotBeReached(let version):
+            return version.map { "bash \($0)" } ?? "bash"
+        }
+    }
+}
+
 /// The state of a pane's prompt marks, and every sentence anything says about it.
 ///
 /// Three surfaces describe this one fact -- the Shell settings page, the banner a pane raises when
@@ -1277,40 +1720,55 @@ import Foundation
 public struct ShellIntegrationStatus: Equatable {
     public let shell: ShellKind
     public let mode: ShellIntegrationMode
-    /// From `ShellIntegration.isAutomatic(shellPath:mode:)`: this shell picks the hooks up on its own.
+    /// From `ShellIntegration.isAutomatic(shellPath:mode:capabilities:)`: this shell picks the
+    /// hooks up on its own.
     public let isAutomatic: Bool
     /// This window has seen an OSC 133 `A` since it opened.
     public let marksSeen: Bool
+    /// Set when we have a script for this shell and no way to install it -- today, bash < 4.4.
+    public let limit: ShellIntegrationLimit?
     /// Where the scripts are, for the line the user may want to paste. nil outside an app bundle.
     public let resources: URL?
 
     public init(shell: ShellKind, mode: ShellIntegrationMode, isAutomatic: Bool,
-                marksSeen: Bool, resources: URL?) {
+                marksSeen: Bool, limit: ShellIntegrationLimit? = nil, resources: URL?) {
         self.shell = shell
         self.mode = mode
         self.isAutomatic = isAutomatic
         self.marksSeen = marksSeen
+        self.limit = limit
         self.resources = resources
     }
 
     public static func current(shellPath: String, mode: ShellIntegrationMode, marksSeen: Bool,
-                               resources: URL? = ShellIntegration.bundledResources) -> ShellIntegrationStatus {
-        ShellIntegrationStatus(shell: ShellKind.detect(shellPath: shellPath), mode: mode,
-                               isAutomatic: ShellIntegration.isAutomatic(shellPath: shellPath, mode: mode),
-                               marksSeen: marksSeen, resources: resources)
+                               resources: URL? = ShellIntegration.bundledResources,
+                               capabilities: ShellCapabilities = .shared) -> ShellIntegrationStatus {
+        let shell = ShellKind.detect(shellPath: shellPath)
+        let automatic = ShellIntegration.isAutomatic(shellPath: shellPath, mode: mode,
+                                                     capabilities: capabilities)
+        var limit: ShellIntegrationLimit?
+        if shell == .bash, !capabilities.bashSupportsENVStartup(shellPath: shellPath) {
+            limit = .bashCannotBeReached(version: capabilities.bashVersion(shellPath: shellPath))
+        }
+        return ShellIntegrationStatus(shell: shell, mode: mode, isAutomatic: automatic,
+                                      marksSeen: marksSeen, limit: limit, resources: resources)
     }
 
     /// What the settings page says, and what an announcement reads out.
     ///
-    /// `marksSeen` is asked first, before the mode: a user who sources the line from their own
-    /// rc file with `shell-integration = off` has working marks, and "prompt marks are off" while
-    /// their gutter fills up is exactly the kind of sentence this type exists to prevent.
+    /// `marksSeen` is asked first, before everything else: a bash 3.2 user who did paste the line,
+    /// or anyone who installed the hooks by hand with `shell-integration = off`, has working marks,
+    /// and "prompt marks are off" while their gutter fills up is exactly the sentence this type
+    /// exists to prevent.
     public var sentence: String {
         if marksSeen {
             return "Prompt marks are live. Blocks, folding, Copy Output, the pinned command and watches all work here."
         }
         if mode == .off {
             return "Prompt marks are off by your setting. Blocks, folding, Copy Output, the \(Self.dots) menu, the pinned command and watches are all off."
+        }
+        if let limit {
+            return "Your shell is \(limit.shellDescription), which cannot take prompt marks automatically: bash only reads the file Nyx installs them through from version 4.4. Paste the line below into ~/.bashrc, or install a newer bash."
         }
         if isAutomatic {
             return "Nyx installs prompt marks into \(shell.name) automatically. This window has not seen one yet \(Self.dash) open a new tab if this is the first launch after an update."
@@ -1321,7 +1779,8 @@ public struct ShellIntegrationStatus: Equatable {
     public static let manualCaption = "Paste this into your startup file, then open a new tab:"
 
     /// The line to paste, shown whenever nothing is being injected and there is a script for this
-    /// shell. `manualInstallCommand`'s first caller since it was written.
+    /// shell. `manualInstallCommand`'s first caller since it was written, and, on a stock Mac, the
+    /// whole of the bash story.
     public var manualLine: String? {
         guard !isAutomatic, let resources else { return nil }
         return ShellIntegration.manualInstallCommand(shellPath: shell.name, resources: resources)
@@ -1329,29 +1788,41 @@ public struct ShellIntegrationStatus: Equatable {
 
     /// What the pane says once, the first time a shell finishes starting without marking anything.
     /// nil when there is nothing to say.
+    ///
+    /// An **automatic** shell reaches the third branch: the hooks were installed and the marks
+    /// never came, which is a real failure and the one the §4.3 sentence describes exactly. Without
+    /// that branch this banner could never fire for zsh, fish or a modern bash at all.
     public var bannerText: String? {
         guard !marksSeen else { return nil }
         if mode == .off {
             return "Prompt marks are off by your setting \(Self.dash) blocks, folding and watches are off in this pane."
         }
-        guard !isAutomatic else { return nil }
+        if let limit {
+            return "Nyx cannot add prompt marks to \(limit.shellDescription) by itself \(Self.dash) paste the line from Settings \(Self.pointer) Shell into ~/.bashrc."
+        }
         return "Nyx could not add prompt marks to \(shell.name) \(Self.dash) blocks, folding and watches are off in this pane."
     }
 
     public static let watchRefusalMessage = "Cannot watch a request in this pane"
 
     /// Why a watch cannot start here, and what would change it. The old text told the user to set
-    /// the value that is already the default, so a fish user followed the instruction, was refused
-    /// identically, and had no next move (`findings-pm.md` §2).
+    /// the value that is already the default, so a fish user followed it, was refused identically,
+    /// and had no next move (`findings-pm.md` §2).
     public var watchRefusalDetail: String {
-        let why = mode == .off
-            ? "Prompt marks are off by your setting."
-            : "Nyx adds prompt marks to zsh, bash and fish by itself; this pane is running \(shell.name)."
+        let why: String
+        if mode == .off {
+            why = "Prompt marks are off by your setting."
+        } else if let limit {
+            why = "Nyx adds prompt marks to zsh, fish and bash 4.4 or newer by itself; this pane is running \(limit.shellDescription), whose line has to go into ~/.bashrc by hand \(Self.dash) Settings \(Self.pointer) Shell has it."
+        } else {
+            why = "Nyx adds prompt marks to zsh, bash and fish by itself; this pane is running \(shell.name)."
+        }
         return "A watch sends its next run only when the shell is back at a prompt, and this shell does not tell Nyx where its prompts are. " + why
     }
 
-    private static let dots = "\u{22EF}"   // ⋯, the same glyph the block strip's button carries
-    private static let dash = "\u{2014}"   // —
+    private static let dots = "\u{22EF}"    // ⋯, the same glyph the block strip's button carries
+    private static let dash = "\u{2014}"    // —
+    private static let pointer = "\u{25B8}" // ▸, as in "Settings ▸ Shell"
 }
 
 /// Which shells have already been mentioned, for the life of this process.
@@ -1360,10 +1831,12 @@ public struct ShellIntegrationStatus: Equatable {
 /// either -- a user who changes shells in a new session is told again, which is the case where the
 /// sentence is news rather than noise (spec §4.3).
 public struct ShellIntegrationNotice {
-    /// How long a shell gets to mark its first prompt before Nyx concludes it never will. Long
-    /// enough for a cold shell sourcing a prompt framework; short enough that the banner is part of
-    /// starting up rather than an interruption later.
-    public static let graceSeconds: Double = 2
+    /// How long a shell gets to mark its first prompt before Nyx concludes it never will.
+    ///
+    /// Generous on purpose. A cold zsh with a prompt framework can take seconds, and the sentence
+    /// this gates is a statement about a shell that will *never* mark: being late costs nothing,
+    /// being early puts a banner on screen that the gutter contradicts a moment later.
+    public static let graceSeconds: Double = 5
 
     private var told: Set<String> = []
 
@@ -1380,12 +1853,12 @@ public struct ShellIntegrationNotice {
 }
 ```
 
-Note the `manualLine` implementation passes `shell.name` to `manualInstallCommand(shellPath:resources:)`, which identifies the shell by its last path component — `"bash"` and `"/bin/bash"` resolve identically, and this keeps the status from having to carry the whole path.
+Note `manualLine` passes `shell.name` to `manualInstallCommand(shellPath:resources:)`, which identifies the shell by its last path component — `"bash"` and `"/bin/bash"` resolve identically, and this keeps the status from having to carry the whole path.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `swift test --no-parallel --filter ShellIntegrationStatus`
-Expected: PASS (18 cases).
+Expected: PASS (21 cases).
 
 - [ ] **Step 5: Commit**
 
@@ -1397,12 +1870,16 @@ One value owns every sentence about a pane's prompt marks
 
 The settings page, the banner and the watch refusal describe one fact, and until
 now said three different things -- one of them advising the user to set the value
-it already had. Four sentences, a line to paste, a banner and a refusal, all
-derived from shell + mode + marks-seen, and all tested by their exact words.
+it already had. Five sentences, a line to paste, three banners and three
+refusals, all derived from shell + mode + marks-seen + why-not, and all tested by
+their exact words.
 
-Live marks beat the setting: a user who sources the line by hand with
-shell-integration = off is looking at a full gutter, and "prompt marks are off"
-would be a lie about their own screen.
+bash 3.2 gets sentences of its own rather than being lumped in with a shell we
+have no hooks for: the hooks exist, this bash cannot load them, and the sentence
+ends where the user can act -- the line to paste into ~/.bashrc.
+
+Live marks beat everything: a user who pasted that line is looking at a full
+gutter, and any sentence about missing marks would be a lie about their screen.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
@@ -1417,8 +1894,8 @@ MSG
 **Files:**
 - Modify: `Sources/NyxApp/SettingsWindowController.swift` (a `Shell` tab between Behaviour and Keys, its page, its refresh, `showShellPage()`, a snapshot setter)
 - Modify: `Sources/NyxApp/AppDelegate.swift` (`openShellSettings(_:)`, and pointing the window at the focused pane)
-- Modify: `Sources/NyxApp/TerminalWindowController.swift` (`focusedPane`)
-- Modify: `Sources/NyxApp/Pane.swift` (`shellPath`, `shellIntegrationStatus`)
+- Modify: `Sources/NyxApp/TerminalWindowController.swift` (`focusedPane`, `focusedLocalPane`), `Sources/NyxApp/TabController.swift` (`everyPane`)
+- Modify: `Sources/NyxApp/Pane.swift` (`shellPath`, optional, and `shellIntegrationStatus`)
 - Modify: `Sources/NyxCore/Config/ConfigDiff.swift` (`shellIntegrationChanged` + its deferred note)
 - Modify: `Sources/NyxApp/UISnapshot.swift` (`writeSettings` renders the four Shell states)
 - Modify: `docs/configuration.md` (the `shell-integration` row and the environment table)
@@ -1434,9 +1911,12 @@ func showShellPage()
 func setShellStatusForSnapshot(_ status: ShellIntegrationStatus)
 // TerminalWindowController
 var focusedPane: Pane? { get }
+var focusedLocalPane: Pane? { get }
+// TabController
+var everyPane: [Pane] { get }
 // Pane
-let shellPath: String
-var shellIntegrationStatus: ShellIntegrationStatus { get }
+let shellPath: String?                                  // nil for a remote pane
+var shellIntegrationStatus: ShellIntegrationStatus? { get }
 // AppDelegate
 @objc func openShellSettings(_ sender: Any?)
 // ConfigDiff
@@ -1484,21 +1964,26 @@ set in `init` with `shellIntegrationChanged = old.shellIntegration != new.shellI
 
 - [ ] **Step 4: Give the pane a shell path and a status**
 
-In `Sources/NyxApp/Pane.swift`, store the path the session was launched with (in `init`, from the `SessionConfig` it already builds) and expose the status:
+In `Sources/NyxApp/Pane.swift`, store the path the session was launched with and expose the status. **The path is optional**, and that is not defensiveness: `Pane`'s designated init (`Pane.swift:322`) takes a `PaneSession`, and only the local convenience init (`:299`) builds a `SessionConfig` at all. The remote init (`:317`) attaches to a session running on another Mac and has no shell path to record — a remote pane stores nil, is excluded from `reportShellIntegration()` (Task 6), and is never what the settings page describes.
 
 ```swift
-    /// The shell *this pane* launched. Settings ▸ Shell, the banner and the watch refusal all
-    /// describe a pane, not the process: a window can hold a zsh tab and a `shell = /bin/ksh` tab
-    /// at the same time, and a sentence about "your shell" that names the wrong one is worse than
-    /// no sentence.
-    let shellPath: String
+    /// The shell *this pane* launched, or nil for a remote pane, which is attached to a session on
+    /// another Mac and knows nothing about the shell behind it.
+    ///
+    /// Settings ▸ Shell, the banner and the watch refusal all describe a pane, not the process: a
+    /// window can hold a zsh tab and a `shell = /bin/ksh` tab at the same time, and a sentence
+    /// about "your shell" that names the wrong one is worse than no sentence.
+    let shellPath: String?
 
-    /// What every surface says about this pane's prompt marks.
-    var shellIntegrationStatus: ShellIntegrationStatus {
-        .current(shellPath: shellPath, mode: config.shellIntegration,
-                 marksSeen: session.withTerminal { $0.shellEmitsPromptMarks })
+    /// What every surface says about this pane's prompt marks. nil for a remote pane: the host
+    /// decides its own shell integration and this Mac's settings page cannot speak for it.
+    var shellIntegrationStatus: ShellIntegrationStatus? {
+        guard let shellPath else { return nil }
+        return .current(shellPath: shellPath, mode: config.shellIntegration,
+                        marksSeen: session.withTerminal { $0.shellEmitsPromptMarks })
     }
 ```
+The local convenience init passes `sc.shellPath` through to the designated one; the remote init passes nil.
 
 In `Sources/NyxApp/TerminalWindowController.swift`:
 
@@ -1506,6 +1991,22 @@ In `Sources/NyxApp/TerminalWindowController.swift`:
     /// The pane the user is looking at in this window -- what Settings ▸ Shell describes and where
     /// a no-marks notice belongs.
     var focusedPane: Pane? { tabs?.focusedPane }
+
+    /// The focused pane if it is a local one, else the first local pane in this window. A remote
+    /// pane has no shell of ours to describe, and a settings page that went blank because the user
+    /// happened to be looking at a remote tab would read as a bug.
+    var focusedLocalPane: Pane? {
+        if let focused = focusedPane, focused.shellIntegrationStatus != nil { return focused }
+        // `TabController` reaches its panes through `tab.panes.allPanes` (`TabController:403`).
+        return tabs?.everyPane.first { $0.shellIntegrationStatus != nil }
+    }
+```
+
+and in `Sources/NyxApp/TabController.swift`, beside `focusedPane` (`:159`), the flat list the window needs — the pieces are already there, `tab.panes.allPanes` is what `closeTabs` walks (`:403`):
+
+```swift
+    /// Every pane in every tab of this window, in tab order.
+    var everyPane: [Pane] { tabs.flatMap(\.panes.allPanes) }
 ```
 
 - [ ] **Step 5: Build the page**
@@ -1677,22 +2178,30 @@ In `Sources/NyxApp/AppDelegate.swift`:
 ```
 and, inside `openConfig(_:)`, immediately after the controller is constructed:
 ```swift
-            controller.shellStatus = { [weak self] in self?.currentShellStatus() ?? .current(
-                shellPath: ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh",
-                mode: self?.configStore.config.shellIntegration ?? .auto, marksSeen: false) }
+            controller.shellStatus = { [weak self] in
+                self?.currentShellStatus() ?? .current(
+                    shellPath: ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh",
+                    mode: .auto, marksSeen: false)
+            }
 ```
 with
 ```swift
-    /// The pane the user is looking at, or any pane, or the process's own shell: the settings page
-    /// describes a pane and there may not be one.
+    /// The local pane the user is looking at, or any local pane, or the process's own shell: the
+    /// settings page describes a pane, there may not be one, and a remote pane is not one -- its
+    /// shell lives on another Mac, whose own copy of Nyx decides its integration.
     private func currentShellStatus() -> ShellIntegrationStatus {
-        let pane = (NSApp.keyWindow?.windowController as? TerminalWindowController)?.focusedPane
-            ?? NSApp.windows.compactMap { ($0.windowController as? TerminalWindowController)?.focusedPane }.first
-        if let pane { return pane.shellIntegrationStatus }
-        return .current(shellPath: ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh",
-                        mode: configStore.config.shellIntegration, marksSeen: false)
+        let pane = (NSApp.keyWindow?.windowController as? TerminalWindowController)?.focusedLocalPane
+            ?? NSApp.windows.compactMap { ($0.windowController as? TerminalWindowController)?.focusedLocalPane }.first
+        if let status = pane?.shellIntegrationStatus { return status }
+        // No local pane: the shell a new window *would* launch, which is the honest answer to
+        // "what is my shell doing" when there is nothing to point at.
+        let shell = configStore.config.shell.flatMap { $0.isEmpty ? nil : $0 }
+            ?? ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        return .current(shellPath: shell, mode: configStore.config.shellIntegration, marksSeen: false)
     }
 ```
+`ShellCapabilities.shared` has been primed for both of those paths since launch (Task 2), so this
+answers from the cache and never forks.
 The window is a singleton kept in `settings`, so it can outlive the pane it described: `showWindow` already runs on every ⌘,, and `showShellPage()`/`refresh` both call `refreshShellPage()`, which re-asks the closure.
 
 - [ ] **Step 7: The pictures**
@@ -1704,40 +2213,43 @@ In `Sources/NyxApp/UISnapshot.swift`, `writeSettings` gains a shell status and a
                                       suffix: String, remoteOn: Bool = true,
                                       remotePageOnly: Bool = false,
                                       shellPageOnly: Bool = false,
-                                      shellStatus: ShellIntegrationStatus = fixtureShellStatus(.zsh, .auto, marksSeen: true)) {
+                                      shellStatus: ShellIntegrationStatus = fixtureShellStatus(.zsh, .auto, automatic: true, marksSeen: true)) {
 ```
-with `controller.setShellStatusForSnapshot(shellStatus)` right after `controller.configChanged(...)`, and, in the per-page loop, `if shellPageOnly, label != "shell" { continue }` and `if !shellPageOnly, label == "shell" { continue }` — the Shell page is only ever written by the four dedicated calls, so its picture never depends on the machine's own `$SHELL`.
+with `controller.setShellStatusForSnapshot(shellStatus)` right after `controller.configChanged(...)`, and, in the per-page loop, `if shellPageOnly, label != "shell" { continue }` and `if !shellPageOnly, label == "shell" { continue }` — the Shell page is only ever written by the five dedicated calls below, so its picture never depends on the machine's own `$SHELL` or on which bash it happens to have.
 
 ```swift
-    /// A `ShellIntegrationStatus` built for a picture rather than from this Mac.
+    /// A `ShellIntegrationStatus` built for a picture rather than from this Mac. `automatic` and
+    /// `limit` are stated outright rather than derived: `ShellIntegration.isAutomatic` would ask
+    /// `ShellCapabilities`, which would probe whatever bash this machine has, and a picture that
+    /// changes with the machine taking it is not a picture anyone can review.
     private static func fixtureShellStatus(_ shell: ShellKind, _ mode: ShellIntegrationMode,
-                                           marksSeen: Bool) -> ShellIntegrationStatus {
+                                           automatic: Bool, marksSeen: Bool,
+                                           limit: ShellIntegrationLimit? = nil) -> ShellIntegrationStatus {
         ShellIntegrationStatus(
-            shell: shell, mode: mode,
-            isAutomatic: ShellIntegration.isAutomatic(shellPath: shell.name, mode: mode),
-            marksSeen: marksSeen,
+            shell: shell, mode: mode, isAutomatic: automatic, marksSeen: marksSeen, limit: limit,
             resources: URL(fileURLWithPath: "/Applications/Nyx.app/Contents/Resources/shell-integration"))
     }
 ```
 
-and, beside the existing `writeSettings` calls, the four states — **four, not the spec §8.5 row's three**: `settings-shell-{automatic,manual,off}` was written before §4.1 made bash and fish automatic, and there are now four sentences to look at, one of which (`waiting`) is what every user sees on the first launch after an update:
+and, beside the existing `writeSettings` calls, the five states — **five, not the spec §8.5 row's three.** `settings-shell-{automatic,manual,off}` was written before this wave found out which states exist: bash and fish became automatic, `waiting` is what every user sees on the first launch after an update, and `bash-3-2` is what the *majority* of Macs will show, since that is the bash Apple ships.
 
 ```swift
             for (state, status) in [
-                ("automatic", fixtureShellStatus(.bash, .auto, marksSeen: true)),
-                ("waiting", fixtureShellStatus(.bash, .auto, marksSeen: false)),
-                ("unsupported", fixtureShellStatus(.other("ksh"), .auto, marksSeen: false)),
-                ("off", fixtureShellStatus(.zsh, .off, marksSeen: false)),
+                ("automatic", fixtureShellStatus(.bash, .auto, automatic: true, marksSeen: true)),
+                ("waiting", fixtureShellStatus(.bash, .auto, automatic: true, marksSeen: false)),
+                ("bash-3-2", fixtureShellStatus(.bash, .auto, automatic: false, marksSeen: false,
+                                                limit: .bashCannotBeReached(version: "3.2"))),
+                ("unsupported", fixtureShellStatus(.other("ksh"), .auto, automatic: false, marksSeen: false)),
+                ("off", fixtureShellStatus(.zsh, .off, automatic: false, marksSeen: false)),
             ] {
                 writeSettings(into: directory, appearance: appearance,
-                              suffix: "-\(state)-\(appearanceName)", shellPageOnly: true,
+                              suffix: "-\(state)-\(name)", shellPageOnly: true,
                               shellStatus: status)
             }
 ```
-The loop inside `writeSettings` writes `settings-\(label)\(suffix)` and `label` is already `shell`,
-so these land as **`settings-shell-{automatic,waiting,unsupported,off}-{light,dark}.png`**.
-`appearanceName` is the `"light"`/`"dark"` string the surrounding loop already carries; name the
-tuple element `state` rather than `name` so it does not shadow it.
+`name` is the `"light"`/`"dark"` string the surrounding appearance loop already carries. The loop
+inside `writeSettings` writes `settings-\(label)\(suffix)` and `label` is already `shell`, so these
+land as **`settings-shell-{automatic,waiting,bash-3-2,unsupported,off}-{light,dark}.png`**.
 
 - [ ] **Step 8: Documentation**
 
@@ -1749,13 +2261,14 @@ tuple element `state` rather than `name` so it does not shadow it.
 - [ ] **Step 9: Run everything**
 
 Run: `swift build 2>&1 | grep -c warning:` → `0`; `swift test --no-parallel`; `scripts/bundle.sh && NYX_UI_SNAPSHOT=/tmp/shots-shell ./build/Nyx.app/Contents/MacOS/Nyx`
-Expected: eight new PNGs, `settings-shell-{automatic,waiting,unsupported,off}-{light,dark}.png`. **Read all eight.** What is being checked: the sentence wraps rather than truncating at 460 pt; the paste line is present in `off` and absent in the other three; `Copy` sits on the field's centre line and does not overlap it; the pop-up reads `auto`/`off`; nothing is white-on-white in either appearance.
+Expected: ten new PNGs, `settings-shell-{automatic,waiting,bash-3-2,unsupported,off}-{light,dark}.png`. **Read all ten.** What is being checked: the sentence wraps rather than truncating at 460 pt — `bash-3-2`'s is the longest and is the one that will break first; the paste line is present in `bash-3-2` and `off` and absent in the other three; `Copy` sits on the field's centre line and does not overlap it; the pop-up reads `auto`/`off`; nothing is white-on-white in either appearance.
 
 - [ ] **Step 10: Commit**
 
 ```bash
 git add Sources/NyxApp/SettingsWindowController.swift Sources/NyxApp/AppDelegate.swift \
-        Sources/NyxApp/TerminalWindowController.swift Sources/NyxApp/Pane.swift \
+        Sources/NyxApp/TerminalWindowController.swift Sources/NyxApp/TabController.swift \
+        Sources/NyxApp/Pane.swift \
         Sources/NyxApp/UISnapshot.swift Sources/NyxCore/Config/ConfigDiff.swift \
         Tests/NyxCoreTests/ConfigDiffTests.swift docs/configuration.md
 git commit -m "$(cat <<'MSG'
@@ -1770,8 +2283,9 @@ shell -- the line to paste, monospaced, selectable, with Copy.
 The pop-up writes a value only a new tab can act on, so ConfigDiff notes it and
 the banner says so rather than the setting silently doing nothing.
 
-Four pictures, not three: bash and fish became automatic in this wave, so the
-states are live, waiting, unsupported and off.
+Five pictures, not three: this wave found out which states exist -- live,
+waiting, bash 3.2, a shell with no hooks, and off -- and bash 3.2 is the one the
+majority of Macs will show.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
@@ -1889,8 +2403,10 @@ in `init`, after `session.start()`:
 ```
 and:
 ```swift
+    /// A remote pane is excluded by both guards falling out of `shellPath` being nil: its shell
+    /// runs on another Mac, whose own copy of Nyx says this to its own user.
     private func reportShellIntegration() {
-        let status = shellIntegrationStatus
+        guard let shellPath, let status = shellIntegrationStatus else { return }
         guard Pane.shellNotices.shouldTell(about: status, shellPath: shellPath,
                                            startedAt: shellStartedAt,
                                            now: CFAbsoluteTimeGetCurrent()),
@@ -1943,7 +2459,12 @@ In `Sources/NyxApp/Pane.swift`, replace `watchRefusedAlert()` and its caller:
     }
 
     private func reportWatchRefused() {
-        let alert = Pane.watchRefusedAlert(status: shellIntegrationStatus)
+        // A remote pane cannot start a watch either, and has no local shell to name; the status of
+        // the shell a new local tab would get is the nearest true sentence.
+        let status = shellIntegrationStatus
+            ?? .current(shellPath: ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh",
+                        mode: config.shellIntegration, marksSeen: false)
+        let alert = Pane.watchRefusedAlert(status: status)
         Announce.say(alert.messageText + " " + alert.informativeText)
         let openSettings: (NSApplication.ModalResponse) -> Void = { response in
             guard response == .alertFirstButtonReturn else { return }
@@ -1970,6 +2491,11 @@ In `Sources/NyxApp/Pane.swift`, replace `watchRefusedAlert()` and its caller:
             ("watch-refused-off",
              Pane.watchRefusedAlert(status: ShellIntegrationStatus(
                 shell: .zsh, mode: .off, isAutomatic: false, marksSeen: false, resources: nil))),
+            // The one most Mac users will meet, and the longest of the three sentences.
+            ("watch-refused-bash-3-2",
+             Pane.watchRefusedAlert(status: ShellIntegrationStatus(
+                shell: .bash, mode: .auto, isAutomatic: false, marksSeen: false,
+                limit: .bashCannotBeReached(version: "3.2"), resources: nil))),
 ```
 
 `Sources/NyxApp/UISnapshot.swift`, `BannerKind` gains the case and the switch its arm:
@@ -1978,14 +2504,19 @@ In `Sources/NyxApp/Pane.swift`, replace `watchRefusedAlert()` and its caller:
     enum BannerKind: String, CaseIterable {
         case problems, note, failure
         case noMarks = "no-marks"
+        case noMarksBash = "no-marks-bash"
     }
 ...
         case .noMarks:
             banner.showNote("Nyx could not add prompt marks to ksh \u{2014} blocks, folding and "
                             + "watches are off in this pane.",
                             actionTitle: "Shell Settings\u{2026}") {}
+        case .noMarksBash:
+            banner.showNote("Nyx cannot add prompt marks to bash 3.2 by itself \u{2014} paste the "
+                            + "line from Settings \u{25B8} Shell into ~/.bashrc.",
+                            actionTitle: "Shell Settings\u{2026}") {}
 ```
-which writes `config-banner-no-marks-{light,dark}.png` through the existing loop.
+which writes `config-banner-no-marks-{light,dark}.png` and `config-banner-no-marks-bash-{light,dark}.png` through the existing loop. Both are pictured because they are different lengths against the same 900 pt strip, and the bash one is the sentence most Macs will show.
 
 - [ ] **Step 7: Documentation**
 
@@ -1996,7 +2527,7 @@ which writes `config-banner-no-marks-{light,dark}.png` through the existing loop
 - [ ] **Step 8: Run everything**
 
 Run: `swift build 2>&1 | grep -c warning:` → `0`; `swift test --no-parallel`; `scripts/bundle.sh && NYX_UI_SNAPSHOT=/tmp/shots-w3 ./build/Nyx.app/Contents/MacOS/Nyx`
-Expected: `config-banner-no-marks-{light,dark}.png`, `alert-watch-refused-{light,dark}.png` (re-taken, new words) and `alert-watch-refused-off-{light,dark}.png`. **Read all six.** What is being checked: the banner's sentence is not truncated at 900 pt and `Shell Settings…` is legible on the blue fill in both appearances (`ConfigBanner.textColor(on:)` decides the ink — a white-on-blue title here is the Light-Mode bug coming back); the alert's informative text is three lines, not clipped, and `Shell Settings…` is the highlighted default.
+Expected: `config-banner-no-marks-{light,dark}.png`, `config-banner-no-marks-bash-{light,dark}.png`, `alert-watch-refused-{light,dark}.png` (re-taken, new words), `alert-watch-refused-off-{light,dark}.png` and `alert-watch-refused-bash-3-2-{light,dark}.png`. **Read all ten.** What is being checked: the banner's sentence is not truncated at 900 pt and `Shell Settings…` is legible on the blue fill in both appearances (`ConfigBanner.textColor(on:)` decides the ink — a white-on-blue title here is the Light-Mode bug coming back); the alert's informative text is three lines, not clipped, and `Shell Settings…` is the highlighted default.
 
 - [ ] **Step 9: Commit**
 
@@ -2043,7 +2574,7 @@ pkill -9 -f swiftpm-testing-helper; pkill -9 -f swift-test
 swift test --no-parallel                        # record the test count
 make bench                                      # three times; ≥ 180 MB/s
 ```
-If fish is not installed, `brew install fish` first: the two fish live cases reporting "skipped" is not a pass, and rung 6 below cannot be run without it.
+Two binaries have to be there or the wave cannot be closed: `brew install fish` and `brew install bash` (a bash ≥ 4.4 — macOS's own 3.2.57 cannot take the automatic path at all, which is the point of the version gate). A live case reporting "skipped" is **not** a pass; say which ones skipped and why in the report.
 
 - [ ] **Step 2: Add the rung-6 hook**
 
@@ -2057,10 +2588,15 @@ In `applicationDidFinishLaunching`, at the end:
                     ($0.windowController as? TerminalWindowController)?.focusedPane }).first else {
                     print("SMOKE shell: no pane"); exit(1)
                 }
-                let status = pane.shellIntegrationStatus
-                print("SMOKE shell=\(shell) automatic=\(status.isAutomatic) marks=\(status.marksSeen)")
+                guard let status = pane.shellIntegrationStatus else {
+                    print("SMOKE shell: remote pane, no local shell"); exit(1)
+                }
+                print("SMOKE shell=\(shell) automatic=\(status.isAutomatic) marks=\(status.marksSeen) "
+                      + "argv=\(ProcessInfo.processInfo.arguments)")
+                print("SMOKE limit=\(String(describing: status.limit))")
                 print("SMOKE sentence=\(status.sentence)")
                 print("SMOKE banner=\(status.bannerText ?? "(none)")")
+                print("SMOKE manualLine=\(status.manualLine ?? "(none)")")
                 pane.session.send(Array("printf 'one\\ntwo\\nthree\\n'; false\n".utf8))
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     let (marks, region) = pane.session.withTerminal {
@@ -2082,22 +2618,24 @@ In `applicationDidFinishLaunching`, at the end:
 ```
 (If `session`, `tabController` or `focusedPane` are not reachable from here, add the narrowest accessor needed and delete it with the hook — `docs/testing.md` sanctions exactly that, and notes that needing one is a hint the decision belongs in NyxCore.)
 
-- [ ] **Step 3: Run the hook against four shells — the real gate for this wave**
+- [ ] **Step 3: Run the hook against five shells — the real gate for this wave**
 
 ```bash
 scripts/bundle.sh
-SHELL=/bin/bash            NYX_SMOKE_QA=shell ./build/Nyx.app/Contents/MacOS/Nyx
+SHELL=/opt/homebrew/bin/bash NYX_SMOKE_QA=shell ./build/Nyx.app/Contents/MacOS/Nyx   # bash >= 4.4: automatic
+SHELL=/bin/bash              NYX_SMOKE_QA=shell ./build/Nyx.app/Contents/MacOS/Nyx   # bash 3.2: manual
 SHELL=/opt/homebrew/bin/fish NYX_SMOKE_QA=shell ./build/Nyx.app/Contents/MacOS/Nyx
-SHELL=/bin/ksh             NYX_SMOKE_QA=shell ./build/Nyx.app/Contents/MacOS/Nyx
+SHELL=/bin/ksh               NYX_SMOKE_QA=shell ./build/Nyx.app/Contents/MacOS/Nyx
 NYX_CONFIG=/tmp/nyx-off-config SHELL=/bin/zsh NYX_SMOKE_QA=shell ./build/Nyx.app/Contents/MacOS/Nyx
 ```
 (the last with a config file containing `shell-integration = off`).
 Expected, and each one recorded in the task report:
-- bash: `automatic=true`, `marks=true`, `status=Optional(1)`, a non-empty `output=`, `clipboard=one\ntwo\nthree`, `banner=(none)`.
+- bash ≥ 4.4: `automatic=true`, `limit=nil`, `marks=true`, `status=Optional(1)`, a non-empty `output=`, `clipboard=one\ntwo\nthree`, `banner=(none)`, `manualLine=(none)`.
 - fish: the same.
-- ksh: `automatic=false`, `marks=false`, the "Your shell is ksh" sentence, and the banner sentence naming ksh.
+- **bash 3.2** (`/bin/bash`, the one every Mac has): `automatic=false`, `limit=Optional(bashCannotBeReached("3.2"))`, `marks=false`, the "Your shell is bash 3.2" sentence, the banner naming ~/.bashrc, and a `manualLine=` pointing inside the bundle. Then paste that exact line into a scratch `~/.bashrc`, open a new tab by hand, and confirm the marks appear and the banner does not come back — the manual path is the one most users will walk, and nothing else in the ladder walks it.
+- ksh: `automatic=false`, `limit=nil`, `marks=false`, the "Your shell is ksh" sentence, and the banner naming ksh.
 - off: `marks=false` and the "off by your setting" sentence and banner.
-A bash or fish run that prints `marks=false` is the failure this wave exists to prevent; a run where the shell prints a syntax error at startup is worse, and is a shim bug — read the window, not just the print.
+A bash ≥ 4.4 or fish run that prints `marks=false` is the failure this wave exists to prevent. A **`/bin/bash` run that prints `automatic=true`** is the other one: it means the version gate is not being consulted, and that shell has just been launched in POSIX mode with none of the user's startup files. A run where the shell prints a syntax error at startup is worse than both, and is a shim bug — read the window, not just the print.
 
 - [ ] **Step 4: Remove the hook**
 
@@ -2111,9 +2649,9 @@ git diff --stat        # must show no change to AppDelegate.swift
 scripts/bundle.sh && NYX_UI_SNAPSHOT=/tmp/shots ./build/Nyx.app/Contents/MacOS/Nyx
 ```
 Read, with `cmp` first to cut identical light/dark pairs:
-- `settings-shell-{automatic,waiting,unsupported,off}-{light,dark}.png` — the four sentences, the paste line present only in `off`, `Copy` beside the field, the page strip naming the page.
-- `config-banner-no-marks-{light,dark}.png` — the sentence whole, `Shell Settings…` legible on blue in both appearances.
-- `alert-watch-refused-{light,dark}.png` and `alert-watch-refused-off-{light,dark}.png` — the corrected wording, `Shell Settings…` as the default button.
+- `settings-shell-{automatic,waiting,bash-3-2,unsupported,off}-{light,dark}.png` — the five sentences, the paste line present in `bash-3-2` and `off` and nowhere else, `Copy` beside the field, the page strip naming the page.
+- `config-banner-no-marks-{light,dark}.png` and `config-banner-no-marks-bash-{light,dark}.png` — each sentence whole rather than truncated at 900 pt, `Shell Settings…` legible on blue in both appearances.
+- `alert-watch-refused-{light,dark}.png`, `alert-watch-refused-off-{light,dark}.png` and `alert-watch-refused-bash-3-2-{light,dark}.png` — the corrected wording, `Shell Settings…` as the default button.
 - `settings-{appearance,text,behaviour,keys,remote}-*` — unchanged except for the new tab in the strip; `cmp` against the previous run to prove the other pages did not move.
 
 - [ ] **Step 6: The gates**
@@ -2147,23 +2685,28 @@ MSG
 | spec | task |
 |---|---|
 | §4.1 fish through `XDG_DATA_DIRS` + `fish/vendor_conf.d/nyx.fish`, original in `NYX_XDG_DATA_DIRS` | 1 (rule), 3 (scripts) |
-| §4.1 bash through `--posix` + `ENV`, not `--rcfile` | 1 (rule), 2 (shim + marks) |
-| §4.1 "if anything is missing, return the environment unchanged" | 1 (`aMissingBashShimLeavesBothHalvesUntouched`, `aMissingFishSnippetLeavesTheEnvironmentUntouched`) |
-| §4.1 `isAutomatic` true for zsh/bash/fish, `.other` keeps `manualInstallCommand` | 1 |
+| §4.1 bash through `--posix` + `ENV`, not `--rcfile` | 1 (rule + the ≥ 4.4 gate), 2 (shim + marks) |
+| §4.1 "if anything is missing, return the environment unchanged" | 1 (`aMissingBashShimLeavesBothHalvesUntouched`, `aMissingFishSnippetLeavesTheEnvironmentUntouched`, `anUnprimedBashIsNotPutIntoPosixMode`) |
+| §4.1 `isAutomatic` true for zsh/bash/fish, `.other` keeps `manualInstallCommand`'s line | 1 — **amended:** bash < 4.4 is not automatic and keeps the line too, because the mechanism §4.1 chose does not exist on it |
 | §4.2 Shell page between Behaviour and Keys, the pop-up | 5 |
 | §4.2 `ShellIntegrationStatus` with `shell`/`mode`/`isAutomatic`/`marksSeen`/`sentence`/`manualLine`, `ShellKind.name` | 4 (+ `name` in 1) |
-| §4.2 the four sentences verbatim | 4 |
+| §4.2 the four sentences verbatim, and a fifth for bash < 4.4 | 4 |
 | §4.2 the manual line, its caption, the monospaced selectable field, `Copy` — `manualInstallCommand`'s first caller | 5 |
 | §4.3 the one-time banner, per shell path, for the life of the process, `Shell Settings…` + `✕` | 4 (rule), 6 (chrome) |
-| §4.3 the corrected "Cannot watch" alert, both variants, `Shell Settings…` default | 4 (words), 6 (alert) |
+| §4.3 the corrected "Cannot watch" alert, all three variants, `Shell Settings…` default | 4 (words), 6 (alert) |
 | §8.1 wording in Core; the banner announced | 4, 6 (`Announce`) |
 | §8.5 plan-3 pictures: the Shell page, the banner, the alert | 5, 6 |
-| §10 Core tests: `environment` for bash and fish, with and without `XDG_DATA_DIRS`, missing resources, `isAutomatic`, `manualInstallCommand`, the four sentences | 1, 4 |
-| §10 rung 6: the built app with `SHELL=/bin/bash`, `SHELL=…/fish`, then `off` and `/bin/ksh` | 7 |
+| §10 Core tests: `environment` for bash and fish, with and without `XDG_DATA_DIRS`, missing resources, `isAutomatic`, `manualInstallCommand`, the sentences | 1, 4 |
+| §10 rung 6: the built app with a real bash, a real fish, then `off` and `/bin/ksh` | 7 (five shells, not four: `/bin/bash` and a ≥ 4.4 bash are different products now) |
 | Coverage appendix, `findings-pm.md` §2 (zero callers, the wrong advice) | 5, 6 |
 
-Two deliberate departures, both recorded where they are made: **the pictures are four, not three** (§8.5's `{automatic,manual,off}` was written before §4.1 made bash and fish automatic, which changed which states exist), and **`marksSeen` is asked before `mode`** in `sentence`, so a hand-installed integration under `shell-integration = off` reads as live rather than off.
+Four deliberate departures from the spec's letter, each recorded where it is made and each forced by something the spec could not have known:
+
+1. **bash < 4.4 is not automatic.** §4.1 chose `--posix` + `ENV`; driven over a PTY, macOS's bash 3.2.57 reports `posix on` and reads `~/.bash_profile` anyway, never `$ENV`. Following §4.1 literally would put the default shell of every Mac into POSIX mode with **no** startup files and no marks. The mechanism stays for bash ≥ 4.4, the version is probed once per path, and 3.2 becomes the manual-install case — which is also what makes `manualInstallCommand` the load-bearing feature it was written to be, rather than a fallback nobody reaches.
+2. **Five settings pictures, not §8.5's three.** The states changed with §4.1 and with departure 1.
+3. **`marksSeen` is asked before everything else** in `sentence`: a bash 3.2 user who pasted the line has live marks, and every other sentence would be a lie about their own screen.
+4. **The banner has three forms, not one.** §4.3's sentence is kept exactly for the shells it describes, and fires for an automatic shell whose marks never came — deliberately, because that is the only way it can ever fire for zsh, fish or a modern bash. `shell-integration = off` and bash 3.2 get their own, because "could not add" is false about a setting the user chose and useless without a next move.
 
 **2. Placeholder scan.** No "TBD", no "add error handling", no "similar to Task N". Every script is written out in full; every test body is code. The one place that says "keep whatever the existing `else` branch does" (Task 6, Step 5) points at code already in the file and names what must be true of it.
 
-**3. Type consistency.** `ShellLaunch.environment`/`.arguments`, `ShellIntegration.launch(_:arguments:shellPath:mode:resources:pathExists:)`, `ShellKind.name`, `ShellIntegrationStatus.current(shellPath:mode:marksSeen:resources:)`, `.sentence`, `.manualLine`, `.manualCaption`, `.bannerText`, `.watchRefusalMessage`, `.watchRefusalDetail`, `ShellIntegrationNotice.shouldTell(about:shellPath:startedAt:now:)` and `.graceSeconds`, `Pane.shellPath`, `Pane.shellIntegrationStatus`, `Pane.shellHasNoMarks`, `Pane.watchRefusedAlert(status:)`, `ConfigBanner.showNote(_:actionTitle:action:)`, `Announce.say(_:)`, `AppDelegate.openShellSettings(_:)`, `SettingsWindowController.shellStatus`/`showShellPage()`/`setShellStatusForSnapshot(_:)`, `TerminalWindowController.focusedPane`, `ConfigDiff.shellIntegrationChanged` — each is defined in exactly one task and spelled the same way in every later one. The parameter rename `directoryExists:` → `pathExists:` happens in Task 1 and its two call sites (the test helper, and the default in `environment`) move with it.
+**3. Type consistency.** `ShellLaunch.environment`/`.arguments`; `ShellIntegration.launch(_:arguments:shellPath:mode:resources:capabilities:pathExists:)`, `.environment(...)` with the same tail, `.isAutomatic(shellPath:mode:capabilities:)`, `.bashENVStartupVersion`, `.originalENV`/`.originalXDGDataDirs`/`.originalZDotDir`/`.resourceDirectory`/`.defaultXDGDataDirs`; `ShellKind.name`; `ShellCapabilities.shared`/`init(probe:)`/`prime(shellPath:)`/`bashSupportsENVStartup(shellPath:)`/`bashVersion(shellPath:)`/`runVersionProbe(_:)`; `ShellIntegrationLimit.bashCannotBeReached(version:)`/`.shellDescription`; `ShellIntegrationStatus.current(shellPath:mode:marksSeen:resources:capabilities:)`, `.sentence`, `.manualLine`, `.manualCaption`, `.bannerText`, `.watchRefusalMessage`, `.watchRefusalDetail`, `.limit`; `ShellIntegrationNotice.shouldTell(about:shellPath:startedAt:now:)`/`.graceSeconds`; `Pane.shellPath: String?`, `Pane.shellIntegrationStatus: ShellIntegrationStatus?`, `Pane.shellHasNoMarks`, `Pane.watchRefusedAlert(status:)`; `TerminalWindowController.focusedPane`/`focusedLocalPane`; `TabController.everyPane`; `ConfigBanner.showNote(_:actionTitle:action:)`; `Announce.say(_:)`; `AppDelegate.openShellSettings(_:)`; `SettingsWindowController.shellStatus`/`showShellPage()`/`setShellStatusForSnapshot(_:)`; `ConfigDiff.shellIntegrationChanged`. Each is defined in exactly one task and spelled the same way in every later one. Two renames happen in Task 1 and move with their call sites: `directoryExists:` → `pathExists:`, and `isAutomatic`/`launch`/`environment` gain a defaulted `capabilities:`, so every existing caller still compiles.

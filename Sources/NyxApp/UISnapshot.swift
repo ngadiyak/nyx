@@ -36,7 +36,12 @@ enum UISnapshot {
         write(tabBar(palette: palette, config: config, tabs: 6, quickActions: quickActions(), grouped: true),
               named: "tabbar-groups", into: directory, background: palette.background)
 
-        // The states nobody renders are the states nobody has looked at.
+        // The states nobody renders are the states nobody has looked at. Twelve as well as twenty:
+        // twelve is a working day's tabs and the width at which `TabBarLabels` starts cutting
+        // titles, and twenty is past the point where anything is readable -- the two answer
+        // different questions and only the second had a picture.
+        write(tabBar(palette: palette, config: config, tabs: 12, quickActions: quickActions()),
+              named: "tabbar-12-tabs", into: directory, background: palette.background)
         write(tabBar(palette: palette, config: config, tabs: 20, quickActions: quickActions()),
               named: "tabbar-20-tabs", into: directory, background: palette.background)
         write(tabBar(palette: palette, config: config, tabs: 4, quickActions: quickActions(), width: 420),
@@ -55,8 +60,13 @@ enum UISnapshot {
               background: palette.background)
         write(searchBar(palette: palette, query: "connection refused", readout: "3 of 47"),
               named: "search-bar-typed", into: directory, background: palette.background)
-        write(searchBar(palette: palette, query: "zzzz", readout: "no matches", allTabs: true),
+        write(searchBar(palette: palette, query: "zzzz", readout: noResultsReadout(), allTabs: true),
               named: "search-bar-all-tabs", into: directory, background: palette.background)
+        // The miss in the ordinary, one-tab scope. `search-bar-all-tabs` had been standing in for
+        // it, and it is a different picture: the scope chip is lit there, which is the one thing
+        // that makes "no matches" read as "not in any tab" rather than "not in this one".
+        write(searchBar(palette: palette, query: "zzzz", readout: noResultsReadout()),
+              named: "search-bar-no-matches", into: directory, background: palette.background)
 
         write(palettePanel(palette: palette, config: config), named: "command-palette", into: directory,
               background: palette.background)
@@ -69,10 +79,14 @@ enum UISnapshot {
         // neither of which is the terminal's theme -- so how they read depends on the *system*
         // appearance, and both have to be looked at.
         for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-            write(banner(appearance), named: "config-banner-\(name)", into: directory,
-                  background: palette.background)
-            write(banner(appearance, note: true), named: "config-banner-note-\(name)",
-                  into: directory, background: palette.background)
+            // All three kinds, not two. `showFailure` is the one a user is most likely to meet --
+            // a quick action whose command was not there -- and it had never been drawn at all, so
+            // nobody had seen that it is the same amber as a config error rather than a red.
+            for kind in BannerKind.allCases {
+                write(banner(appearance, kind: kind),
+                      named: "config-banner-\(kind == .problems ? "" : "\(kind.rawValue)-")\(name)",
+                      into: directory, background: palette.background)
+            }
             write(projectBar(appearance), named: "project-bar-\(name)", into: directory,
                   background: palette.background)
             write(quickActionSheet(appearance), named: "sheet-quick-action-\(name)",
@@ -88,13 +102,17 @@ enum UISnapshot {
                       named: "request-editor-\(tab.rawValue.lowercased())-\(name)",
                       into: directory, background: windowGround(appearance))
             }
-            for (stateName, state) in pairingStates() {
-                write(pairingSheetView(state: state, appearance),
-                      named: "pairing-\(stateName)-\(name)", into: directory,
-                      background: windowGround(appearance))
+            // Every state, on *both* sides. The sheet is one class with a `side`, and the side
+            // decides which controls exist -- the host shows a code, the client types one -- so a
+            // state pictured only from the host's side is a state half of the users never see.
+            for (side, sideName) in [(PairingFlow.Side.host, "host"),
+                                     (PairingFlow.Side.client, "client")] {
+                for (stateName, state) in pairingStates() {
+                    write(pairingSheetView(state: state, side: side, appearance),
+                          named: "pairing-\(sideName)-\(stateName)-\(name)", into: directory,
+                          background: windowGround(appearance))
+                }
             }
-            write(clientIdlePairingSheetView(appearance), named: "pairing-client-idle-\(name)",
-                  into: directory, background: windowGround(appearance))
             write(invalidCodePairingSheetView(appearance), named: "pairing-code-invalid-\(name)",
                   into: directory, background: windowGround(appearance))
             writeSettings(into: directory, appearance: appearance, suffix: "-\(name)")
@@ -134,14 +152,28 @@ enum UISnapshot {
                                      + "-d amount=2000 https://api.stripe.com/v1/charges"),
               named: "request-editor-auth-basic-dark", into: directory,
               background: windowGround(.darkAqua))
+        // Every tab that can refuse to be edited, refusing. The brief called these "validation
+        // errors"; the sheet has none -- a `curl` either parses into the form or is not opened in
+        // it at all. What it *does* have is a note per tab saying that some of what is on screen
+        // can only be changed on the command line, and until now only the Options one had a
+        // picture. A tab whose note nobody has read is a tab that reads as broken.
+        for (tab, name, line) in requestEditorNoteStates() {
+            write(requestEditorSheet(palette: palette, .darkAqua, tab: tab, line: line),
+                  named: "request-editor-\(name)-note-dark", into: directory,
+                  background: windowGround(.darkAqua))
+        }
 
         // The remote strip is an `NSButton` on a theme-coloured band, so unlike the block header it
         // is *not* the same picture in both appearances: the button's bezel follows the system.
-        for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
-            for (stateName, state) in remoteStripStates() {
-                write(remoteStrip(state: state, palette: palette, appearance),
-                      named: "remote-strip-\(stateName)-\(name)", into: directory,
-                      background: palette.background)
+        // And unlike the block header it never had a light *theme* either -- eleven states, all of
+        // them a sentence, none of them ever drawn on a white pane.
+        for (paletteName, themePalette) in chromePalettes(default: palette) {
+            for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
+                for (stateName, state) in remoteStripStates() {
+                    write(remoteStrip(state: state, palette: themePalette, appearance),
+                          named: "remote-strip-\(stateName)-\(paletteName)-\(name)", into: directory,
+                          background: themePalette.background)
+                }
             }
         }
         write(tabBar(palette: palette, config: config, tabs: 3, quickActions: quickActions(),
@@ -166,32 +198,90 @@ enum UISnapshot {
             write(requestPalettePanel(palette: lightPalette), named: "command-palette-requests-light",
                   into: directory, background: lightPalette.background)
         }
-        write(stickyPrompt(palette: palette, failed: false), named: "sticky-prompt", into: directory,
-              background: palette.background)
-        write(stickyPrompt(palette: palette, failed: true), named: "sticky-prompt-failed",
-              into: directory, background: palette.background)
-
         // The overlay's shipping height is one cell row -- what `Pane.cellSizePoints` gives it at
         // the default font -- not an arbitrary round number. Rendering the snapshot shorter than
         // that hid a real bug (Important 4): a stack pinned to both edges of a view shorter than
         // its fitting size breaks a required constraint every frame.
         let defaultFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         let rowHeight = ceil(defaultFont.ascender - defaultFont.descender + defaultFont.leading)
-        for (name, header) in blockHeaderStates() + httpBlockHeaderStates() {
-            // The `-light` and `-dark` pair is now the *same* picture on purpose: `update` sets the
-            // view's appearance from the palette, so the system's has no say. That is the fix for
-            // the disabled Copy reading at 1.13:1 in Light Mode over the dark theme; a pair that
-            // differs again is that bug coming back.
-            for appearance in [NSAppearance.Name.darkAqua, .aqua] {
-                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
-                view.appearance = NSAppearance(named: appearance)
-                view.update(header: header, controls: .full, palette: palette,
-                            font: .monospacedSystemFont(ofSize: 12, weight: .regular))
-                let size = view.intrinsicContentSize
-                view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
-                view.layoutSubtreeIfNeeded()
-                write(view, named: "block-header-\(name)-\(appearance == .aqua ? "light" : "dark")",
-                      into: directory, background: palette.background)
+        let overlayFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
+        // Every state of every piece of pane chrome, in both built-in themes and under both system
+        // appearances, named `<case>-<palette>-<appearance>`.
+        //
+        // Four pictures per state is not four times the review. The *palette* pair is where a state
+        // is genuinely different -- an accent, a dim grey, a disabled control against a white ground
+        // -- and the *appearance* pair is a guard: `BlockHeaderView`, `LensFieldView`,
+        // `PromptGutterView` and `StickyPromptView` all paint from the palette and pin their own
+        // appearance to it, so their two pictures must come out byte-identical. A pair that differs
+        // again is the Light-Mode bug coming back (a disabled Copy measured 1.13:1 over a dark theme
+        // under Light Mode), and one state's pair is not enough to catch it: that was caught in
+        // `BlockHeaderView` and missed in `LensFieldView`, which had to be fixed a second time.
+        //
+        // What this replaced was worse than incomplete: `gutter-marks-light.png` and
+        // `gutter-marks-dark.png` were byte-identical *and both drawn from the dark theme*, so the
+        // one file whose name promised Light Mode showed a dark gutter.
+        for (paletteName, themePalette) in chromePalettes(default: palette) {
+            for (appearanceName, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                let suffix = "\(paletteName)-\(appearanceName)"
+                for (name, header, controls) in blockStripStates() {
+                    write(blockStrip(header: header, controls: controls, palette: themePalette,
+                                     appearance: appearance, rowHeight: rowHeight, font: overlayFont),
+                          named: "block-header-\(name)-\(suffix)", into: directory,
+                          background: themePalette.background)
+                }
+                // The pill over the row it is really drawn on: what a user sees a moment after
+                // pasting a `curl`. Pictured with the command in front of it because the whole
+                // question is whether it reads as part of the line or as something floating over
+                // it -- a pill on an empty background answers neither.
+                write(workbenchHintRow(palette: themePalette, appearance),
+                      named: "workbench-hint-\(suffix)", into: directory,
+                      background: themePalette.background)
+                // The case the placement rule was changed for: a command line so long that no row
+                // of it has four free columns, hovered. The minimal strip goes over the tail rather
+                // than nowhere, and this is the picture of how much of the command that costs.
+                write(longCommandStrip(palette: themePalette, appearance),
+                      named: "block-header-long-command-\(suffix)", into: directory,
+                      background: themePalette.background)
+                // The field a `Filter…` or `Find in Body…` lens is typed into. It is drawn over the
+                // *pane* and painted from the pane's palette, while its bezel, its secondary
+                // sentence and the `Run with jq` button are AppKit's and follow an appearance --
+                // which is the mismatch these four pictures per state exist to hold shut.
+                for (name, caption, text, message, offersJq) in lensFieldStates() {
+                    let view = LensFieldView(frame: NSRect(x: 0, y: 0, width: 360, height: 58))
+                    view.appearance = NSAppearance(named: appearance)
+                    view.show(caption: caption, text: text, palette: themePalette)
+                    view.setMessage(message, offersJq: offersJq)
+                    let size = view.intrinsicContentSize
+                    view.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
+                    view.layoutSubtreeIfNeeded()
+                    write(view, named: "lens-field-\(name)-\(suffix)", into: directory,
+                          background: themePalette.background)
+                }
+                // The gutter's four marks. A no-output command's dot is identical to any other
+                // succeeded one on purpose -- it is a record of what happened, and the difference is
+                // that it offers no tooltip, no pointing hand and no accessibility button, none of
+                // which a still picture can show. The running mark is the one thing here that is a
+                // shape rather than a colour: hollow, so "in progress" survives greyscale.
+                let cell = rowHeight
+                let gutterWidth = CGFloat(PromptGutter.width(padding: Double(8)))
+                let gutter = PromptGutterView(frame: NSRect(x: 0, y: 0, width: gutterWidth,
+                                                            height: cell * 4))
+                gutter.appearance = NSAppearance(named: appearance)
+                _ = gutter.update(marks: [.succeeded, .failed, .running, .succeeded],
+                                  folded: [false, true, false, false],
+                                  hasStarted: [true, true, true, false],
+                                  hasOutput: [true, true, true, false],
+                                  palette: themePalette, cellHeight: cell, topPadding: 0)
+                gutter.layoutSubtreeIfNeeded()
+                write(gutter, named: "gutter-marks-\(suffix)", into: directory,
+                      background: themePalette.background)
+                for (name, failed, summary, tone) in stickyPromptStates() {
+                    write(stickyPrompt(palette: themePalette, failed: failed, summary: summary,
+                                       tone: tone, appearance: appearance),
+                          named: "sticky-prompt-\(name)-\(suffix)", into: directory,
+                          background: themePalette.background)
+                }
             }
         }
         // The four HTTP summaries against Solarized Dark, whose red pair (3.25:1 and 3.26:1) is the
@@ -199,160 +289,19 @@ enum UISnapshot {
         // and lifts neither. Every tone here is now held to 4.5:1 against this background by
         // `SummaryTone.color(in:)`, and this is the picture that says so.
         if let solarized = Themes.builtin["solarized-dark"] {
-            for (name, header) in httpBlockHeaderStates() {
-                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
-                view.appearance = NSAppearance(named: .darkAqua)
-                view.update(header: header, controls: .full, palette: solarized,
-                            font: .monospacedSystemFont(ofSize: 12, weight: .regular))
-                let size = view.intrinsicContentSize
-                view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
-                view.layoutSubtreeIfNeeded()
-                write(view, named: "block-header-\(name)-solarized", into: directory,
-                      background: solarized.background)
-            }
-        }
-        // The pill over the row it is really drawn on, in both themes: what a user sees a moment
-        // after pasting a `curl`. Pictured with the command in front of it because the whole
-        // question about this chrome is whether it reads as part of the line or as something
-        // floating over it -- a pill on an empty background answers neither.
-        write(workbenchHintRow(palette: palette, .darkAqua), named: "workbench-hint-dark",
-              into: directory, background: palette.background)
-        if let lightPalette = Themes.builtin["nyx-light"] {
-            write(workbenchHintRow(palette: lightPalette, .aqua), named: "workbench-hint-light",
-                  into: directory, background: lightPalette.background)
-        }
-        // The case the placement rule was changed for: a command line so long that no row of it has
-        // four free columns, hovered. The minimal strip goes over the tail rather than nowhere, and
-        // this is the picture of exactly how much of the command that costs.
-        write(longCommandStrip(palette: palette), named: "block-header-long-command-dark",
-              into: directory, background: palette.background)
-        // The two narrower strips. A crowded command line leaves no room for a 20-column strip, and
-        // one drawn anyway covers the end of the command it describes -- so the summary goes first
-        // and then Copy, and the ⋯ menu and the chevron, which between them reach every action,
-        // never do. These are what `CommandBlockChrome.overlayPlacement` picks between.
-        if let failed = blockHeaderStates().first(where: { $0.0 == "failed" })?.1 {
-            for (name, controls) in [("nocopy", OverlayControls.noCopy), ("minimal", .minimal)] {
-                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
-                view.appearance = NSAppearance(named: .darkAqua)
-                view.update(header: failed, controls: controls, palette: palette,
-                            font: .monospacedSystemFont(ofSize: 12, weight: .regular))
-                let size = view.intrinsicContentSize
-                view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
-                view.layoutSubtreeIfNeeded()
-                write(view, named: "block-header-\(name)-dark", into: directory,
-                      background: palette.background)
-            }
-        }
-        // The strip on a request, which is the only block that gets a `{ }`. Five pictures: the
-        // control's three states at the full strip -- a response that can be lensed, one already
-        // being read through a lens, and a body too large for one, where the button is gone rather
-        // than greyed because there is nothing behind it at all -- and then the same lensable
-        // response at the two narrower strips. The narrow ones are the question: `{ }` is one more
-        // control competing for the room `overlayPlacement` was already short of, and `minimal`
-        // must not grow by it, or a crowded command line loses another four columns to chrome.
-        let lensStates: [(String, ResponseLens?, Bool, Bool, OverlayControls)] = [
-            ("http-lens", nil, false, true, .full),
-            ("http-lens-on", .pretty, false, true, .full),
-            ("http-lens-too-large", nil, true, true, .full),
-            // A 301 with an HTML body: `.pretty` has nothing to pretty-print, so the control that
-            // promises pretty JSON is not offered rather than offered and inert.
-            ("http-lens-not-json", nil, false, false, .full),
-            ("http-lens-nocopy", nil, false, true, .noCopy),
-            ("http-lens-minimal", nil, false, true, .minimal),
-        ]
-        for (name, lens, tooLarge, json, controls) in lensStates {
-            let header = BlockHeader(id: 4, state: .finished, folded: false, hasOutput: true,
-                                     anyFolds: false, notifyArmed: false, summary: "",
-                                     httpSummary: HTTPSummary(text: json ? "200 \u{b7} 142 ms"
-                                                                         : "301 \u{b7} 42 ms",
-                                                              tone: json ? .success : .redirect),
-                                     isHTTP: true, lens: lens, lensTooLarge: tooLarge,
-                                     bodyIsJSON: json)
-            let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
-            view.appearance = NSAppearance(named: .darkAqua)
-            view.update(header: header, controls: controls, palette: palette,
-                        font: .monospacedSystemFont(ofSize: 12, weight: .regular))
-            let size = view.intrinsicContentSize
-            view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
-            view.layoutSubtreeIfNeeded()
-            write(view, named: "block-header-\(name)-dark", into: directory,
-                  background: palette.background)
-        }
-        // The watched block's header, running and finished, in both appearances. Two questions:
-        // whether the dots read as a timeline (and whether the hollow "running" one is legible
-        // against the filled ones) and whether the whole strip -- timeline, sentence, Stop, ⋯,
-        // chevron -- is still a width `overlayPlacement` can find room for on a command line.
-        for (name, series) in watchHeaderStates() {
-            for (appearanceName, appearance, themePalette) in
-                [("dark", NSAppearance.Name.darkAqua, palette),
-                 ("light", .aqua, Themes.builtin["nyx-light"] ?? palette)] {
-                let header = BlockHeader(id: 4, state: .finished, folded: false, hasOutput: true,
-                                         anyFolds: false, notifyArmed: false, summary: "",
-                                         httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
-                                                                  tone: .success),
-                                         isHTTP: true, bodyIsJSON: true,
-                                         watch: series.header())
-                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
-                view.appearance = NSAppearance(named: appearance)
-                view.update(header: header, controls: .full, palette: themePalette,
-                            font: .monospacedSystemFont(ofSize: 12, weight: .regular))
-                let size = view.intrinsicContentSize
-                view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
-                view.layoutSubtreeIfNeeded()
-                write(view, named: "block-header-watch-\(name)-\(appearanceName)", into: directory,
-                      background: themePalette.background)
-            }
-        }
-        // The same running series at the two narrower strips: the timeline is the first thing to
-        // go, and Stop goes nowhere -- it survives to `.minimal`, because a watch you cannot stop
-        // from the strip is the one control here with a running side effect. These are the
-        // pictures that say a watch on a crowded command line can still be stopped from the strip.
-        if let running = watchHeaderStates().first(where: { $0.0 == "running" })?.1 {
-            for (name, controls) in [("nocopy", OverlayControls.noCopy), ("minimal", .minimal)] {
-                let header = BlockHeader(id: 4, state: .finished, folded: false, hasOutput: true,
-                                         anyFolds: false, notifyArmed: false, summary: "",
-                                         httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
-                                                                  tone: .success),
-                                         isHTTP: true, bodyIsJSON: true,
-                                         watch: running.header())
-                let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
-                view.appearance = NSAppearance(named: .darkAqua)
-                view.update(header: header, controls: controls, palette: palette,
-                            font: .monospacedSystemFont(ofSize: 12, weight: .regular))
-                let size = view.intrinsicContentSize
-                view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
-                view.layoutSubtreeIfNeeded()
-                write(view, named: "block-header-watch-running-\(name)", into: directory,
-                      background: palette.background)
-            }
-        }
-        // The field a `Filter…` or `Find in Body…` lens is typed into, in every state it has and
-        // in both built-in themes. It is the one piece of this chrome drawn over the *pane* and
-        // painted from the pane's own palette, so what each picture answers is whether AppKit's
-        // own parts -- the field's bezel, the secondary sentence, the `Run with jq` button, all of
-        // which follow the *window's* appearance -- came out in the theme's. Rendered under
-        // whatever appearance the snapshot process is in, which is exactly the mismatch: a dark
-        // theme under Light Mode gave a white bezel and near-black text on a near-black pane.
-        for (themeName, themePalette) in [("dark", palette),
-                                          ("light", Themes.builtin["nyx-light"] ?? palette)] {
-            let states: [(String, String, String?, Bool)] = [
-                ("empty", "", nil, false),
-                ("typed", ".users[] | .name", nil, false),
-                ("unsupported", "map(.x)", JSONPath.unsupportedMessage, true),
-            ]
-            for (name, text, message, offersJq) in states {
-                let view = LensFieldView(frame: NSRect(x: 0, y: 0, width: 360, height: 58))
-                view.show(caption: "Filter", text: text, palette: themePalette)
-                view.setMessage(message, offersJq: offersJq)
-                let size = view.intrinsicContentSize
-                view.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
-                view.layoutSubtreeIfNeeded()
-                write(view, named: "lens-field-\(name)-\(themeName)", into: directory,
-                      background: themePalette.background)
+            for (appearanceName, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                for (name, header) in httpBlockHeaderStates() {
+                    write(blockStrip(header: header, controls: .full, palette: solarized,
+                                     appearance: appearance, rowHeight: rowHeight, font: overlayFont),
+                          named: "block-header-\(name)-solarized-dark-\(appearanceName)",
+                          into: directory, background: solarized.background)
+                }
             }
         }
         // The `Watch…` popover, in both appearances, on the stop rule that has the most in it:
-        // every row is up, and the sentence at the foot is what the header will then say.
+        // every row is up, and the sentence at the foot is what the header will then say. Plus the
+        // one state that has to be unmistakable -- a field that cannot be read, with Start greyed
+        // and the sentence saying which box to look at -- which had only ever been drawn dark.
         for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
             let view = WatchPlanEditor.snapshotView(seed: WatchPlan(interval: 5, stop: .never)) { model in
                 model.stop = .until
@@ -363,81 +312,19 @@ enum UISnapshot {
             view.layoutSubtreeIfNeeded()
             write(view, named: "watch-plan-editor-\(name)", into: directory,
                   background: windowGround(appearance))
+            let invalid = WatchPlanEditor.snapshotView(seed: WatchPlan(interval: 5, stop: .never)) { model in
+                model.interval = "0"
+            }
+            invalid.appearance = NSAppearance(named: appearance)
+            invalid.layoutSubtreeIfNeeded()
+            write(invalid, named: "watch-plan-editor-invalid-\(name)", into: directory,
+                  background: windowGround(appearance))
         }
-        // And the one state that has to be unmistakable: a field that cannot be read, with Start
-        // greyed and the sentence saying which box to look at.
-        let invalid = WatchPlanEditor.snapshotView(seed: WatchPlan(interval: 5, stop: .never)) { model in
-            model.interval = "0"
-        }
-        invalid.appearance = NSAppearance(named: .darkAqua)
-        invalid.layoutSubtreeIfNeeded()
-        write(invalid, named: "watch-plan-editor-invalid-dark", into: directory,
-              background: windowGround(.darkAqua))
-        // The lit `{ }` in the other appearance too, because its colour is the theme's accent and
-        // the accent is chosen against the theme's background: this is the picture that says the
-        // "on" state is still legible when the ground is white.
-        if let lightPalette = Themes.builtin["nyx-light"] {
-            let header = BlockHeader(id: 4, state: .finished, folded: false, hasOutput: true,
-                                     anyFolds: false, notifyArmed: false, summary: "",
-                                     httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
-                                                              tone: .success),
-                                     isHTTP: true, lens: .pretty)
-            let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
-            view.appearance = NSAppearance(named: .aqua)
-            view.update(header: header, controls: .full, palette: lightPalette,
-                        font: .monospacedSystemFont(ofSize: 12, weight: .regular))
-            let size = view.intrinsicContentSize
-            view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
-            view.layoutSubtreeIfNeeded()
-            write(view, named: "block-header-http-lens-on-light", into: directory,
-                  background: lightPalette.background)
-        }
-        // The gutter's four marks, in one picture. A no-output command's dot is identical to any
-        // other succeeded one on purpose -- it is a record of what happened, and the difference is
-        // that it offers no tooltip, no pointing hand and no accessibility button, none of which a
-        // still picture can show. The running mark is the one thing here that is a shape rather
-        // than a colour: hollow, so "in progress" survives being looked at in greyscale. The
-        // `-light` and `-dark` pair is byte-identical for the same reason the block-header pair is:
-        // the view paints from the palette, so the system appearance has no say. A pair that
-        // differs is that bug coming back.
-        for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
-            let cell = ceil(defaultFont.ascender - defaultFont.descender + defaultFont.leading)
-            // The shipping width at the default padding, which is the *hit area*. The capsule
-            // inside it is `PromptGutter.markWidth` wherever the gutter is wider, so this picture
-            // shows both: how big the target is, and how big the mark in it looks.
-            let width = CGFloat(PromptGutter.width(padding: Double(8)))
-            let gutter = PromptGutterView(frame: NSRect(x: 0, y: 0, width: width, height: cell * 4))
-            gutter.appearance = NSAppearance(named: appearance)
-            gutter.update(marks: [.succeeded, .failed, .running, .succeeded],
-                          folded: [false, true, false, false],
-                          hasStarted: [true, true, true, false],
-                          hasOutput: [true, true, true, false],
-                          palette: palette, cellHeight: cell, topPadding: 0)
-            gutter.layoutSubtreeIfNeeded()
-            write(gutter, named: "gutter-marks-\(name)", into: directory, background: palette.background)
-        }
-        // One state against the light built-in theme, in the aqua appearance: everything above
-        // uses `nyx-dark` (the default config's theme) under both system appearances, which never
-        // looks at a *light theme's own* colours.
-        if let lightPalette = Themes.builtin["nyx-light"],
-           let finished = blockHeaderStates().first(where: { $0.0 == "finished" })?.1 {
-            let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
-            view.appearance = NSAppearance(named: .aqua)
-            view.update(header: finished, controls: .full, palette: lightPalette,
-                        font: .monospacedSystemFont(ofSize: 12, weight: .regular))
-            let size = view.intrinsicContentSize
-            view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
-            view.layoutSubtreeIfNeeded()
-            write(view, named: "block-header-finished-light-theme", into: directory,
-                  background: lightPalette.background)
-        }
-        write(stickyPrompt(palette: palette, failed: true, summary: "exit 2 \u{b7} 8.8s"),
-              named: "sticky-prompt-summary", into: directory, background: palette.background)
-        // The strip over a curl whose output is filling the screen. The command exited 0, so the
-        // command line is not red; the note is green because the *response* was a 200.
-        write(stickyPrompt(palette: palette, failed: false,
-                           summary: "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json", tone: .success),
-              named: "sticky-prompt-http", into: directory, background: palette.background)
+
+        // The chrome over a real grid. Everything above is a control on a flat fill, which is the
+        // one thing a user never sees; see `GridSnapshot` for why the compositor lives here rather
+        // than in `NyxRenderTests`.
+        GridSnapshot.run(into: directory, config: config)
 
         for name in Themes.builtin.keys.sorted() {
             var themed = config
@@ -465,6 +352,16 @@ enum UISnapshot {
                   background: themedPalette.background)
             write(searchBar(palette: themedPalette, query: "connection refused", readout: "3 of 47"),
                   named: "theme-\(name)-search", into: directory, background: themedPalette.background)
+            // The lens and watch chrome, all of it on one page, per theme. The `{ }` toggle's "on"
+            // state is the theme's *accent*, the watch dots are the theme's three status colours
+            // and the lens field is painted from the theme's background and foreground -- none of
+            // which had ever been drawn in gruvbox, solarized or dracula. One sheet per theme
+            // rather than thirty files per theme: what is being asked is "can any of this be seen
+            // here at all", and that is a question a page answers better than a folder.
+            write(lensWatchSheet(palette: themedPalette, name: name, rowHeight: rowHeight,
+                                 font: overlayFont),
+                  named: "theme-\(name)-lens-watch", into: directory,
+                  background: themedPalette.background)
         }
 
         // Last, because starting a toggle leaves it running in the shared runner and every tab bar
@@ -557,6 +454,19 @@ enum UISnapshot {
         }
         bar.layoutSubtreeIfNeeded()
         return bar
+    }
+
+    /// What the bar really says when a query matched nothing, asked of the session that says it.
+    ///
+    /// The two pictures of this state used to carry the string "no matches", typed here. The bar
+    /// says "no results" -- `SearchSession.readout` -- so the only picture anyone had of a failed
+    /// search showed wording the app has never shown.
+    private static func noResultsReadout() -> String {
+        let terminal = Terminal(cols: 40, rows: 4, scrollbackLimit: 8)
+        terminal.feed("nothing to find on this row\r\n")
+        var session = SearchSession()
+        session.update(query: "zzzz", in: terminal, viewportTop: 0)
+        return session.readout
     }
 
     private static func palettePanel(palette: Palette, config: Config, query: String = "") -> NSView {
@@ -654,6 +564,13 @@ enum UISnapshot {
         // number of rows *during* a layout pass, and a changed constraint needs the next one to
         // take effect. In the app that is the run loop's next cycle; here there is none.
         for _ in 0..<3 { view.layoutSubtreeIfNeeded() }
+        // Three is enough for every tab but Options, whose field group lands anywhere across two
+        // hundred points from one run to the next -- five runs of one build gave three different
+        // `request-editor-options-*.png`. More passes do not settle it (six was tried), because the
+        // ambiguity is in the sheet: `optionsPage`'s horizontal stack is pinned to the page's
+        // leading edge and its trailing edge is only `<=`, so nothing decides where inside that
+        // slack the two columns sit. It is a chrome defect, listed rather than fixed here; every
+        // other one of the 400-odd pictures is byte-identical across five runs.
         // And then everything is marked for display: a scroll view keeps a cached backing for the
         // rows it has already drawn, so a clip view that *grew* in the last pass was captured at
         // its old height -- the picture showed five and a bit rows of a table that had settled on
@@ -707,7 +624,7 @@ enum UISnapshot {
     /// The hover strip on a command line with no room anywhere: the ⋯ and the chevron over the tail
     /// of the last row. The command is a real 219-character `curl` at 80 columns, which is the case
     /// the fallback exists for -- a request run from the workbench is long by construction.
-    private static func longCommandStrip(palette: Palette) -> NSView {
+    private static func longCommandStrip(palette: Palette, _ appearance: NSAppearance.Name) -> NSView {
         let header = BlockHeader(id: 7, state: .finished, folded: false, hasOutput: true,
                                  anyFolds: false, notifyArmed: false, summary: "",
                                  httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json",
@@ -720,9 +637,9 @@ enum UISnapshot {
             palette: palette,
             text: "-H 'content-type: application/json' -d '{\"name\":\"ada\",\"role\":\"admin\"}' -u ada:s3",
             columns: 80)
-        row.appearance = NSAppearance(named: .darkAqua)
+        row.appearance = NSAppearance(named: appearance)
         let strip = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: cell))
-        strip.appearance = NSAppearance(named: .darkAqua)
+        strip.appearance = NSAppearance(named: appearance)
         strip.update(header: header, controls: .minimal, palette: palette,
                      font: .monospacedSystemFont(ofSize: 12, weight: .regular))
         let width = strip.intrinsicContentSize.width
@@ -766,11 +683,12 @@ enum UISnapshot {
     /// not the events that got it there.
     private static func pairingStates() -> [(String, PairingFlow.State)] {
         [
-            // The two states nothing pictured, which is why nobody saw that the host's `.idle`
-            // rendered as an empty box: every control hidden, seventy-five points tall, one
-            // Cancel button. It is the sheet a user got by pressing Pair with remote switched on
-            // and no relay token in the field.
-            ("host-idle", .idle),
+            // Pictured on both sides. On the host it is the sheet a user gets by pressing Pair
+            // with remote switched on and no relay token in the field -- it rendered as an empty
+            // box (every control hidden, one Cancel button) and nobody had seen it. On the client
+            // it is the sheet somebody looks at when they choose "Enter a code…", with the field
+            // and the default "Pair" button that submits it.
+            ("idle", .idle),
             ("opening", .opening("K7M4QZ", expires: Date().addingTimeInterval(300))),
             ("code", .showingCode("K7M4QZ", expires: Date().addingTimeInterval(300))),
             ("requested", .requested(peerID: "peer-device-id", peerName: "Nik's MacBook Pro")),
@@ -790,21 +708,10 @@ enum UISnapshot {
         ]
     }
 
-    private static func pairingSheetView(state: PairingFlow.State, _ appearance: NSAppearance.Name) -> NSView {
-        let sheet = PairingSheet(side: .host)
+    private static func pairingSheetView(state: PairingFlow.State, side: PairingFlow.Side,
+                                         _ appearance: NSAppearance.Name) -> NSView {
+        let sheet = PairingSheet(side: side)
         sheet.update(state: state)
-        let view = sheet.panel.contentView ?? NSView()
-        view.appearance = NSAppearance(named: appearance)
-        view.layoutSubtreeIfNeeded()
-        return view
-    }
-
-    /// Client side, `.idle`: the sheet somebody actually looks at when they choose "Enter a code…",
-    /// with the field and the default "Pair" button that submits it. It opened without one, so the
-    /// only way forward was a Return key nothing on the sheet mentioned.
-    private static func clientIdlePairingSheetView(_ appearance: NSAppearance.Name) -> NSView {
-        let sheet = PairingSheet(side: .client)
-        sheet.update(state: .idle)
         let view = sheet.panel.contentView ?? NSView()
         view.appearance = NSAppearance(named: appearance)
         view.layoutSubtreeIfNeeded()
@@ -938,33 +845,30 @@ enum UISnapshot {
         ]
     }
 
-    /// A watch part-way through and the same watch stopped: the two states the header has.
+    /// A watch of `runs` finished requests, still going or stopped.
     ///
-    /// Twelve runs rather than two, because the timeline is the thing being looked at and a strip
-    /// of two dots says nothing about how thirty will read. One 503 in the middle and one still
-    /// running at the end, so all four dot kinds are in one picture.
-    private static func watchHeaderStates() -> [(String, WatchSeries)] {
-        func series(running: Bool) -> WatchSeries {
-            var s = WatchSeries(plan: WatchPlan(interval: 5, stop: .never), command: "curl x",
-                                startedAt: 0)
-            let statuses = [200, 200, 200, 503, 301, 200, 200, 200, 200, 200, 200]
-            var clock = 0.0
-            for (index, status) in statuses.enumerated() {
-                let id = UInt32(index + 1)
-                s.runStarted(id: id, at: clock)
-                clock += 0.142
-                s.runFinished(id: id, status: status, exitStatus: 0,
-                              timeTotal: 0.1 + Double(index) * 0.01, body: "", at: clock)
-                clock += 5
-            }
-            if running {
-                s.runStarted(id: 99, at: clock)
-            } else {
-                s.stop(.stopped)
-            }
-            return s
+    /// Never two runs: the timeline is the thing being looked at and a strip of two dots says
+    /// nothing about how thirty will read. Every fourth run is a 503 and every seventh a 301, so
+    /// all of the dot kinds are in every picture however long the series is.
+    private static func watchSeries(runs: Int, running: Bool) -> WatchSeries {
+        var series = WatchSeries(plan: WatchPlan(interval: 5, stop: .never), command: "curl x",
+                                 startedAt: 0)
+        var clock = 0.0
+        for index in 0..<max(1, runs) {
+            let id = UInt32(index + 1)
+            let status = index % 4 == 3 ? 503 : (index % 7 == 4 ? 301 : 200)
+            series.runStarted(id: id, at: clock)
+            clock += 0.142
+            series.runFinished(id: id, status: status, exitStatus: 0,
+                               timeTotal: 0.1 + Double(index % 10) * 0.01, body: "", at: clock)
+            clock += 5
         }
-        return [("running", series(running: true)), ("finished", series(running: false))]
+        if running {
+            series.runStarted(id: 9_999, at: clock)
+        } else {
+            series.stop(.stopped)
+        }
+        return series
     }
 
     /// One picture per state the remote strip can be in. The live *writer* is deliberately not
@@ -1115,13 +1019,132 @@ enum UISnapshot {
     }
 
     private static func stickyPrompt(palette: Palette, failed: Bool, summary: String = "",
-                                     tone: SummaryTone? = nil) -> NSView {
+                                     tone: SummaryTone? = nil,
+                                     appearance: NSAppearance.Name = .darkAqua) -> NSView {
         let view = StickyPromptView(frame: NSRect(x: 0, y: 0, width: 900, height: 22))
+        view.appearance = NSAppearance(named: appearance)
         view.update(text: failed ? "$ make test" : "$ ./deploy.sh --env production --wait",
                     summary: summary, tone: tone ?? (failed ? .failure : .plain), failed: failed,
                     palette: palette, font: .monospacedSystemFont(ofSize: 12, weight: .regular))
         view.layoutSubtreeIfNeeded()
         return view
+    }
+
+    /// The four things the pinned strip can be: a command still going, one that failed, one whose
+    /// status and duration are both worth a word, and a `curl` whose *response* is what the note
+    /// describes. The last is why `tone` is not derived from `failed`: a 404 exits 0.
+    private static func stickyPromptStates() -> [(String, Bool, String, SummaryTone?)] {
+        [
+            ("running", false, "", nil),
+            ("failed", true, "", nil),
+            ("summary", true, "exit 2 \u{b7} 8.8s", nil),
+            ("http", false, "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json", .success),
+        ]
+    }
+
+    /// The two built-in themes every piece of pane chrome is judged against.
+    ///
+    /// Both, always, because the palette is what the chrome paints from: a dark theme's accent on
+    /// a lit `{ }` and a light theme's are two different questions, and until now only the first
+    /// had a picture.
+    private static func chromePalettes(default fallback: Palette) -> [(String, Palette)] {
+        [("nyx-dark", Themes.builtin["nyx-dark"] ?? fallback),
+         ("nyx-light", Themes.builtin["nyx-light"] ?? fallback)]
+    }
+
+    /// One strip, configured and sized the way `Pane.blockHeaderChanged` sizes it.
+    private static func blockStrip(header: BlockHeader, controls: OverlayControls, palette: Palette,
+                                   appearance: NSAppearance.Name, rowHeight: CGFloat,
+                                   font: NSFont) -> NSView {
+        let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
+        view.appearance = NSAppearance(named: appearance)
+        view.update(header: header, controls: controls, palette: palette, font: font)
+        let size = view.intrinsicContentSize
+        view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
+        view.layoutSubtreeIfNeeded()
+        return view
+    }
+
+    /// Every state the hover strip has, with the control set it is pictured at.
+    ///
+    /// One list rather than five loops: a state added here is pictured in both themes and both
+    /// appearances without a second edit, which is the only way a matrix this size stays complete.
+    private static func blockStripStates() -> [(String, BlockHeader, OverlayControls)] {
+        var states: [(String, BlockHeader, OverlayControls)] =
+            (blockHeaderStates() + httpBlockHeaderStates()).map { ($0.0, $0.1, .full) }
+        // The two narrower strips. A crowded command line leaves no room for a 20-column strip, and
+        // one drawn anyway covers the end of the command it describes -- so the summary goes first
+        // and then Copy, and the ⋯ menu and the chevron, which between them reach every action,
+        // never do. These are what `CommandBlockChrome.overlayPlacement` picks between.
+        if let failed = blockHeaderStates().first(where: { $0.0 == "failed" })?.1 {
+            states.append(("nocopy", failed, .noCopy))
+            states.append(("minimal", failed, .minimal))
+        }
+        // The strip on a request, which is the only block that gets a `{ }`: the control's states
+        // at the full strip -- a response that can be lensed, one already being read through a
+        // lens, one being read through `.body`, and a body too large for one, where the button is
+        // gone rather than greyed because there is nothing behind it at all -- and then the
+        // lensable response at the two narrower strips. The narrow ones are the question: `{ }` is
+        // one more control competing for room `overlayPlacement` was already short of, and
+        // `minimal` must not grow by it.
+        func request(_ id: UInt32, lens: ResponseLens?, tooLarge: Bool, json: Bool) -> BlockHeader {
+            BlockHeader(id: id, state: .finished, folded: false, hasOutput: true, anyFolds: false,
+                        notifyArmed: false, summary: "",
+                        httpSummary: HTTPSummary(text: json ? "200 \u{b7} 142 ms" : "301 \u{b7} 42 ms",
+                                                 tone: json ? .success : .redirect),
+                        isHTTP: true, lens: lens, lensTooLarge: tooLarge, bodyIsJSON: json)
+        }
+        states += [
+            ("http-lens", request(10, lens: nil, tooLarge: false, json: true), .full),
+            ("http-lens-on", request(11, lens: .pretty, tooLarge: false, json: true), .full),
+            ("http-lens-body", request(12, lens: .body, tooLarge: false, json: true), .full),
+            ("http-lens-too-large", request(13, lens: nil, tooLarge: true, json: true), .full),
+            // The same "there is nothing behind this button" state on a crowded command line: the
+            // narrow strip is where a missing control is easiest to mistake for a dropped one.
+            ("http-lens-too-large-nocopy", request(14, lens: nil, tooLarge: true, json: true), .noCopy),
+            // A 301 with an HTML body: `.pretty` has nothing to pretty-print, so the control that
+            // promises pretty JSON is not offered rather than offered and inert.
+            ("http-lens-not-json", request(15, lens: nil, tooLarge: false, json: false), .full),
+            ("http-lens-nocopy", request(16, lens: nil, tooLarge: false, json: true), .noCopy),
+            ("http-lens-minimal", request(17, lens: nil, tooLarge: false, json: true), .minimal),
+        ]
+        // The watched block's header. Two questions: whether the dots read as a timeline (and
+        // whether the hollow "running" one is legible against the filled ones) and whether the whole
+        // strip -- timeline, sentence, Stop, ⋯, chevron -- is still a width `overlayPlacement` can
+        // find room for on a command line. Twelve runs, then exactly thirty, then more than thirty:
+        // the timeline is capped at thirty, and the picture at the cap and the picture past it are
+        // what say the cap holds and the strip stops growing.
+        func watched(_ id: UInt32, _ series: WatchSeries) -> BlockHeader {
+            BlockHeader(id: id, state: .finished, folded: false, hasOutput: true, anyFolds: false,
+                        notifyArmed: false, summary: "",
+                        httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms", tone: .success),
+                        isHTTP: true, bodyIsJSON: true, watch: series.header())
+        }
+        states += [
+            ("watch-running", watched(18, watchSeries(runs: 11, running: true)), .full),
+            ("watch-finished", watched(19, watchSeries(runs: 11, running: false)), .full),
+            ("watch-30-dots", watched(20, watchSeries(runs: 30, running: false)), .full),
+            ("watch-past-30-dots", watched(21, watchSeries(runs: 48, running: false)), .full),
+            // Stop goes nowhere: it survives to `.minimal`, because a watch you cannot stop from
+            // the strip is the one control here with a running side effect.
+            ("watch-running-nocopy", watched(22, watchSeries(runs: 11, running: true)), .noCopy),
+            ("watch-running-minimal", watched(23, watchSeries(runs: 11, running: true)), .minimal),
+        ]
+        return states
+    }
+
+    /// Every state the lens field has: empty, typed, a path outside the subset (with `Run with jq`
+    /// beside the sentence), a body that is not JSON at all, and the other lens that uses the same
+    /// box. The last two had no picture, and "Not JSON" is the sentence a reader gets most often.
+    private static func lensFieldStates() -> [(String, String, String, String?, Bool)] {
+        [
+            ("empty", "Filter", "", nil, false),
+            ("typed", "Filter", ".users[] | .name", nil, false),
+            ("unsupported", "Filter", "map(.x)", JSONPath.unsupportedMessage, true),
+            ("not-json", "Filter", ".users[0]",
+             LensRendering.filterError(".users[0]", body: nil), false),
+            ("find", "Find in Body", "alpha", nil, false),
+        ]
     }
 
     private static func projectBar(_ appearance: NSAppearance.Name) -> NSView {
@@ -1142,16 +1165,141 @@ enum UISnapshot {
         return out
     }
 
-    private static func banner(_ appearance: NSAppearance.Name, note: Bool = false) -> NSView {
+    /// One page of the lens and watch chrome in a theme: the `{ }` toggle off, on, and on a body
+    /// too large for it; a watch running and stopped; and the filter field in its typed and its
+    /// refused state.
+    ///
+    /// Right-aligned like the strips are, on the theme's own background, with a row of the theme's
+    /// foreground text behind them -- the contrast question is against the *text*, not against an
+    /// empty ground.
+    private static func lensWatchSheet(palette: Palette, name: String, rowHeight: CGFloat,
+                                       font: NSFont) -> NSView {
+        let appearance: NSAppearance.Name = palette.isLight ? .aqua : .darkAqua
+        let width: CGFloat = 680
+        func request(_ id: UInt32, lens: ResponseLens?, tooLarge: Bool) -> BlockHeader {
+            BlockHeader(id: id, state: .finished, folded: false, hasOutput: true, anyFolds: false,
+                        notifyArmed: false, summary: "",
+                        httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms", tone: .success),
+                        isHTTP: true, lens: lens, lensTooLarge: tooLarge, bodyIsJSON: true)
+        }
+        let strips: [(String, BlockHeader)] = [
+            ("lens off", request(1, lens: nil, tooLarge: false)),
+            ("lens on", request(2, lens: .pretty, tooLarge: false)),
+            ("body too large", request(3, lens: nil, tooLarge: true)),
+            ("watch running", BlockHeader(id: 4, state: .finished, folded: false, hasOutput: true,
+                                          anyFolds: false, notifyArmed: false, summary: "",
+                                          httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
+                                                                   tone: .success),
+                                          isHTTP: true, bodyIsJSON: true,
+                                          watch: watchSeries(runs: 11, running: true).header())),
+            ("watch stopped", BlockHeader(id: 5, state: .finished, folded: false, hasOutput: true,
+                                          anyFolds: false, notifyArmed: false, summary: "",
+                                          httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
+                                                                   tone: .success),
+                                          isHTTP: true, bodyIsJSON: true,
+                                          watch: watchSeries(runs: 11, running: false).header())),
+        ]
+        let fields: [(String, String, String?, Bool)] = [
+            ("filter typed", ".users[] | .name", nil, false),
+            ("filter refused", "map(.x)", JSONPath.unsupportedMessage, true),
+        ]
+        let rowGap: CGFloat = 12
+        let fieldHeight: CGFloat = 58
+        let height = 24 + CGFloat(strips.count) * (rowHeight + rowGap)
+            + CGFloat(fields.count) * (fieldHeight + rowGap)
+        let sheet = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        sheet.appearance = NSAppearance(named: appearance)
+        var y = height - 24
+        func caption(_ text: String, at top: CGFloat, tall: CGFloat) -> NSTextField {
+            let label = NSTextField(labelWithString: text)
+            label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+            label.textColor = nsColor(palette.noteForeground, alpha: 1)
+            label.frame = NSRect(x: 12, y: top - tall, width: 150, height: tall)
+            return label
+        }
+        for (label, header) in strips {
+            y -= rowHeight
+            // A row of the theme's own text under each strip, so what is judged is the strip
+            // against the grid rather than the strip against nothing.
+            let behind = NSTextField(labelWithString:
+                "curl -sSi https://api.example.com/v1/users?page=2&per_page=50")
+            behind.font = font
+            behind.textColor = nsColor(palette.foreground, alpha: 1)
+            behind.lineBreakMode = .byClipping
+            behind.frame = NSRect(x: 170, y: y, width: width - 182, height: rowHeight)
+            sheet.addSubview(behind)
+            sheet.addSubview(caption(label, at: y + rowHeight, tall: rowHeight))
+            let strip = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
+            strip.appearance = NSAppearance(named: appearance)
+            strip.update(header: header, controls: .full, palette: palette, font: font)
+            let size = strip.intrinsicContentSize
+            strip.frame = NSRect(x: width - 12 - size.width, y: y, width: size.width, height: rowHeight)
+            strip.layoutSubtreeIfNeeded()
+            sheet.addSubview(strip)
+            y -= rowGap
+        }
+        for (label, text, message, offersJq) in fields {
+            let field = LensFieldView(frame: NSRect(x: 0, y: 0, width: 360, height: fieldHeight))
+            field.appearance = NSAppearance(named: appearance)
+            field.show(caption: "Filter", text: text, palette: palette)
+            field.setMessage(message, offersJq: offersJq)
+            let size = field.intrinsicContentSize
+            y -= size.height
+            field.frame = NSRect(x: width - 12 - 360, y: y, width: 360, height: size.height)
+            field.layoutSubtreeIfNeeded()
+            sheet.addSubview(caption(label, at: y + size.height, tall: size.height))
+            sheet.addSubview(field)
+            y -= rowGap
+        }
+        let title = NSTextField(labelWithString: "\(name) \u{2014} lens and watch chrome")
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.textColor = nsColor(palette.foreground, alpha: 1)
+        title.frame = NSRect(x: 12, y: height - 22, width: width - 24, height: 18)
+        sheet.addSubview(title)
+        sheet.layoutSubtreeIfNeeded()
+        return sheet
+    }
+
+    /// One request per tab that can tell the user something is not editable here, with the tab it
+    /// says it on. `RequestEditorModel.paramsNote`, `headersNote` and `bodyNote` are the three
+    /// sentences; each needs a `curl` that actually produces it, or the picture is of a tab with
+    /// nothing to say.
+    private static func requestEditorNoteStates() -> [(RequestEditorModel.Tab, String, String)] {
+        [
+            // `-G` with a parameter-list body: curl sends the body as query parameters, so the
+            // Params tab shows rows it cannot edit and the Body tab owns them.
+            (.params, "params",
+             "curl -G -d 'q=nyx terminal' -d 'page=2' https://api.example.com/v1/search"),
+            // `--json` sends Content-Type and Accept itself; those two rows are curl's, not the
+            // user's.
+            (.headers, "headers",
+             "curl --json '{\"service\":\"web\",\"ref\":\"main\"}' https://api.example.com/v2/deployments"),
+            // A multipart form: there is no text body to put in a box.
+            (.body, "body",
+             "curl -F 'file=@report.pdf' -F 'name=Q3 report' https://api.example.com/v1/uploads"),
+        ]
+    }
+
+    /// The three things the banner is ever used for. It is the only place a window says anything,
+    /// so a kind with no picture is a sentence nobody has read.
+    enum BannerKind: String, CaseIterable {
+        case problems, note, failure
+    }
+
+    private static func banner(_ appearance: NSAppearance.Name, kind: BannerKind) -> NSView {
         let banner = ConfigBanner()
         banner.appearance = NSAppearance(named: appearance)
-        if note {
-            banner.showNote("The new font size applies to windows opened from now on.")
-        } else {
+        switch kind {
+        case .problems:
             banner.showProblems([
                 ConfigDiagnostic(line: 12, message: "invalid value for 'font-size': 'eighteen'"),
                 ConfigDiagnostic(line: 30, message: "unknown key 'cursor-blink-rate'"),
             ])
+        case .note:
+            banner.showNote("The new font size applies to windows opened from now on.")
+        case .failure:
+            banner.showFailure("Quick action \u{201C}Deploy\u{201D} failed: ./deploy.sh: "
+                               + "No such file or directory")
         }
         return opened(banner, width: 900, height: 32)
     }

@@ -28,7 +28,7 @@ so that template and this page are the two places a new key must be added.
 | `background-opacity` | `1.0` | 0–1 |
 | `background-blur` | `0` | Blur radius behind a translucent window. A value above 0 implies opacity 0.9 unless `background-opacity` says otherwise |
 | `window-decorations` | `true` | |
-| `tab-bar` | `auto` | `auto` (hidden with one tab and no buttons), `always`, `never` |
+| `tab-bar` | `always` | `always`, `auto` (hidden with one tab and no buttons), `never` |
 | `shell` | `$SHELL`, else `/bin/zsh` | Path to the shell, launched as a login shell |
 | `working-directory` | `inherit` | `inherit` (from the current pane, via OSC 7), `home`, or an absolute path |
 | `copy-on-select` | `false` | |

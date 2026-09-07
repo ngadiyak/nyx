@@ -521,6 +521,26 @@ public extension CommandBlockChrome {
     /// `padding = 0`, where the mark draws over the first text column's leading 3 pt rather than
     /// off the window (Addendum 2).
     static func spineLeadingInset(padding: Double) -> Double { min(4, max(0, padding - 3)) }
+
+    /// Which of a block's placed rows the *spine* is drawn on: everything below the row the cap
+    /// owns. `placed` is the block's rows as display slots, `headOnScreen` is
+    /// `CommandBlock.showsHeader`.
+    ///
+    /// The cap and the spine are deliberately the same colour, the same 3 pt width and at the same
+    /// x, which is the whole point of `spineWidth` and `spineLeadingInset` -- and it means a spine
+    /// painted over the prompt row fills in `.hollow`'s ring and paints through `.faded`'s 40 %.
+    /// Both then read as a solid bar, and the *shape* that carries the state (§2.2, a11y 6.2)
+    /// survives only in the isolated view. So the prompt row is the cap's alone: a `.bar` failure
+    /// still shows a full-row mark there, because the cap draws that itself.
+    ///
+    /// With the prompt row scrolled off the top there is no cap on screen, so the first visible row
+    /// is ordinary output and keeps its spine -- a block must not lose its left edge exactly when it
+    /// is long enough to need one.
+    static func spineRows(placed: Range<Int>, headOnScreen: Bool) -> Range<Int>? {
+        let start = headOnScreen ? placed.lowerBound + 1 : placed.lowerBound
+        guard start < placed.upperBound else { return nil }
+        return start..<placed.upperBound
+    }
     /// Every row-height *hit* target, clamped so `line-height = 0.8` cannot make it 13 pt (§8.4).
     /// The *drawn* mark stays `cellHeight` tall.
     static func hitRowHeight(cellHeight: Double) -> Double { max(cellHeight, 16) }

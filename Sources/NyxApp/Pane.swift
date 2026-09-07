@@ -2015,8 +2015,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     placedRange = DisplayRows.slots(coveredBy: block.visibleRows, commandID: block.region.id,
                                                     in: self.foldRowsOnScreen, viewportTop: windowTop)
                 }
-                guard let placedRange else { return nil }
-                return (rows: placedRange,
+                // Below the cap's own row, never over it: `CommandBlockChrome.spineRows` says why,
+                // and the gutter's hollow ring and 40 % cap are what a spine over the prompt row
+                // used to paint out.
+                guard let placedRange,
+                      let spineRange = CommandBlockChrome.spineRows(placed: placedRange,
+                                                                    headOnScreen: block.showsHeader)
+                else { return nil }
+                return (rows: spineRange,
                         color: block.failed ? failedColor : (block.isRunning ? runningColor : doneColor))
             }
             // A summary only where the command it describes is on screen, and only when it has

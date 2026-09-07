@@ -228,25 +228,6 @@ private func session() -> Terminal {
         == "Command on line 3 failed.")
 }
 
-@Test func onlyAMarkWithOutputCanBePressed() {
-    #expect(GutterMark.succeeded.isActionable(hasOutput: true))
-    #expect(!GutterMark.succeeded.isActionable(hasOutput: false))
-    // Drawn and not pressable at once: a command that has started and printed nothing.
-    #expect(GutterMark.running.isDrawn(hasStarted: true))
-    #expect(!GutterMark.running.isActionable(hasOutput: false))
-}
-
-/// The prompt you are typing at carries a prompt mark and no status, so it reads as running. A ring
-/// there would sit beside an idle cursor for the rest of the session. What tells the two apart is
-/// the shell's `C` -- not whether anything has been printed, because a `sleep 10` has printed
-/// nothing and is exactly what the ring is for.
-@Test func aRunningMarkIsDrawnOnlyOnceTheShellSaidTheCommandStarted() {
-    #expect(!GutterMark.running.isDrawn(hasStarted: false))
-    #expect(GutterMark.running.isDrawn(hasStarted: true))
-    #expect(GutterMark.succeeded.isDrawn(hasStarted: false))   // a record, whatever it printed
-    #expect(GutterMark.failed.isDrawn(hasStarted: false))
-}
-
 // MARK: - Which commands printed anything
 
 @Test func aCommandThatPrintedNothingHasNoOutput() {
@@ -291,11 +272,10 @@ private func session() -> Terminal {
     t.feed(mark("A") + "$ " + mark("B") + "sleep 10\r\n" + mark("C"))
     #expect(t.commandDidStart(atAbsoluteRow: 0))       // the shell said it began
     #expect(!t.commandHasOutput(atAbsoluteRow: 0))     // and it has printed nothing
-    // So the ring is drawn -- something *is* running -- and it cannot be pressed.
+    // So the mark is a hollow ring -- something *is* running -- and it cannot be pressed; both
+    // are `CommandBlockChrome.gutterCap`'s, and asserted there.
     let m = try #require(t.gutterMarks(rows: 24)[0])
     #expect(m == .running)
-    #expect(m.isDrawn(hasStarted: true))
-    #expect(!m.isActionable(hasOutput: false))
     #expect(GutterMarkLabel.text(mark: m, folded: false, hasOutput: false, line: 1)
         == "Command on line 1 is still running.")
 }
@@ -315,9 +295,7 @@ private func session() -> Terminal {
     #expect(!t.commandHasOutput(atAbsoluteRow: 0))
     t.feed("compiling...\r\n")
     #expect(t.commandHasOutput(atAbsoluteRow: 0))
-    let m = try #require(t.gutterMarks(rows: 24)[0])
-    #expect(m.isDrawn(hasStarted: true))
-    #expect(m.isActionable(hasOutput: true))
+    #expect(t.gutterMarks(rows: 24)[0] == .running)
 }
 
 /// `echo` prints one empty line. There is nothing in it to fold.

@@ -63,6 +63,9 @@ enum GridSnapshot {
                 write(canvas: canvas, palette: palette, appearance: appearance,
                       case: .gutter, into: directory, named: "composite-gutter-\(suffix)")
                 write(canvas: canvas, palette: palette, appearance: appearance,
+                      case: .gutterStates, into: directory,
+                      named: "composite-gutter-states-\(suffix)")
+                write(canvas: canvas, palette: palette, appearance: appearance,
                       case: .lensField(.filter(".users[] | .name")), into: directory,
                       named: "composite-lens-field-\(suffix)")
                 // The two lens answers that are a sentence rather than a document, over the field
@@ -143,6 +146,9 @@ enum GridSnapshot {
         case sticky
         /// The four gutter marks beside the rows they belong to, nothing else up.
         case gutter
+        /// The same, with a command that finished silently and one still running appended: the
+        /// `.faded` cap and the `.hollow` ring, each at the head of its own spine.
+        case gutterStates
         /// A lens on the request, with the field that types into it over the command row.
         case lensField(ResponseLens)
         /// A lens on the request with no field: what the response reads as through it.
@@ -179,6 +185,8 @@ enum GridSnapshot {
             scene.scrollIntoBuild()
         case .gutter:
             break
+        case .gutterStates:
+            scene.showRunningAndSilentCommands()
         case .lensField(let lens):
             scene.applyLens(lens, toRequest: true)
             scene.showsLensField = true
@@ -799,6 +807,27 @@ struct GridScene {
 
     /// Scrolls into the middle of the folded build's own output, which is where a sticky strip
     /// exists at all: the command that produced what is on screen is far above it.
+    /// Two more commands after everything else: one that finished having printed only a blank
+    /// line, and one still running with output under it.
+    ///
+    /// The rest of the scene has no example of either, and they are exactly the two caps a spine
+    /// drawn over the prompt row used to paint out -- `.faded`'s 40 % and `.hollow`'s ring are
+    /// filled in by a bar of the same colour at the same x. `CommandBlockChrome.spineRows` keeps
+    /// the prompt row for the cap; this is the picture that says so.
+    mutating func showRunningAndSilentCommands() {
+        func mark(_ letter: String, _ status: Int32? = nil) -> String {
+            "\u{1b}]133;\(status.map { "\(letter);\($0)" } ?? letter)\u{7}"
+        }
+        // The scene already left a bare prompt at the bottom, so this continues it rather than
+        // emitting a second `$ ` on the same row.
+        terminal.feed(mark("B") + "echo\r\n" + mark("C") + "\r\n" + mark("D", 0))
+        terminal.feed(mark("A") + "$ " + mark("B") + "tail -f build.log\r\n" + mark("C"))
+        terminal.feed("[1201/1200] Linking Nyx\r\n[1202/1200] Signing build/Nyx.app\r\n")
+        terminal.feed(mark("A") + "$ ")
+        cursor = terminal.displayBottomCursor(folding: folding, lenses: lenses,
+                                              viewportRows: canvas.rows, buffers: { _ in nil })
+    }
+
     mutating func scrollIntoBuild() {
         folding = OutputFolding()
         guard let region = terminal.promptRow(ofCommand: buildID)
@@ -866,8 +895,11 @@ struct GridScene {
             guard block.region.outputStart != nil else { return nil }
             guard let placed = DisplayRows.slots(coveredBy: block.visibleRows,
                                                  commandID: block.region.id, in: display,
-                                                 viewportTop: windowTop) else { return nil }
-            return (rows: placed,
+                                                 viewportTop: windowTop),
+                  let spine = CommandBlockChrome.spineRows(placed: placed,
+                                                           headOnScreen: block.showsHeader)
+            else { return nil }
+            return (rows: spine,
                     color: block.failed ? failedColor : (block.isRunning ? runningColor : doneColor))
         }
 

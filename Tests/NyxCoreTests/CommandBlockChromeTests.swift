@@ -305,6 +305,27 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
                                               measure: { _ in 20 }) == nil)
 }
 
+// MARK: - The spine's rows
+
+/// The prompt row belongs to the cap, and the spine begins under it.
+///
+/// The spine used to be painted over the prompt row as well. It is the same colour, the same width
+/// and at the same x as the cap that goes there, so it filled in `.hollow`'s ring and `.faded`'s
+/// 40 % and both read as a solid bar: the *shape* that §2.2 makes carry the state survived only in
+/// the isolated `gutter-marks-*` picture, and in the pane -- the only place anyone sees it -- a
+/// running command looked exactly like a finished one.
+@Test func theSpineBeginsBelowTheCapsOwnRow() {
+    #expect(CommandBlockChrome.spineRows(placed: 3..<8, headOnScreen: true) == 4..<8)
+    // A one-row block is nothing but its prompt row: the cap is the whole mark, and there is no
+    // spine to draw. A `.bar` failure still shows a full-row mark, because the cap draws that.
+    #expect(CommandBlockChrome.spineRows(placed: 3..<4, headOnScreen: true) == nil)
+    // Scrolled until the prompt row is above the viewport: the first row on screen is ordinary
+    // output with no cap over it, so it keeps its spine -- otherwise a block loses its left edge
+    // exactly when it is long enough to need one.
+    #expect(CommandBlockChrome.spineRows(placed: 0..<8, headOnScreen: false) == 0..<8)
+    #expect(CommandBlockChrome.spineRows(placed: 5..<5, headOnScreen: false) == nil)
+}
+
 // MARK: - The gutter cap
 
 @Test func theCapShapesCarryTheState() {

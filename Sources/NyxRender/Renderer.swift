@@ -514,8 +514,17 @@ public final class Renderer {
             // with no spine is a block with no left edge (Addendum 2). The old
             // `guard padding >= 4 else { continue }` goes with this: a block with no left edge is
             // not a quieter block, it is a block with no left edge.
-            let x = Float(CommandBlockChrome.spineLeadingInset(padding: Double(padding)))
-            instances.append(rect(x, top, Float(CommandBlockChrome.spineWidth), height, spine.color))
+            //
+            // In points, then back to pixels: `padding` arrives in *device pixels* (`Pane` passes
+            // `padding * contentsScale`), and `spineWidth`/`spineLeadingInset` are the same points
+            // the AppKit cap is drawn in. Used raw they made the spine 1.5 pt wide at 2 pt beside a
+            // 3 pt cap at 4 pt on every Retina Mac -- the two marks drifting apart again, which is
+            // the one thing these two numbers exist to prevent.
+            let scale = Float(fonts.scale)
+            let inset = CommandBlockChrome.spineLeadingInset(padding: Double(padding) / Double(scale))
+            let x = Float(inset) * scale
+            instances.append(rect(x, top, Float(CommandBlockChrome.spineWidth) * scale, height,
+                                  spine.color))
         }
 
         // A block's summary, right-aligned on its command row and in the block's own colour --

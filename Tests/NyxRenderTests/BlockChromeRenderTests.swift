@@ -17,7 +17,7 @@ private func blockPalette() -> Palette {
 
 /// The chrome a command block draws, checked in pixels. The model has tests; these are about what
 /// actually reaches the screen — which is where two of this feature's defects lived.
-private func render(cols: Int = 8, rows: Int = 3, padding: Int,
+private func render(cols: Int = 8, rows: Int = 3, padding: Int, scale: CGFloat = 1,
                     spines: [(rows: Range<Int>, color: RGB)] = [],
                     summaries: [(row: Int, text: String, color: RGB)] = [],
                     notes: [String?] = [],
@@ -26,7 +26,7 @@ private func render(cols: Int = 8, rows: Int = 3, padding: Int,
                     lines givenLines: [Row]? = nil,
                     cursor: Cursor? = nil) throws -> (FontSet, Int, (Int, Int) -> Pixel) {
     let device = try #require(MTLCreateSystemDefaultDevice())
-    let fonts = FontSet(family: "Menlo", pointSize: 12, scale: 1)
+    let fonts = FontSet(family: "Menlo", pointSize: 12, scale: scale)
     let r = try Renderer(device: device, fonts: fonts)
     let lines = givenLines ?? Array(repeating: Row(cols: cols), count: rows)
     let frame = RenderFrame(cols: cols, rows: rows, lines: lines, graphemes: [], palette: blockPalette(),
@@ -34,14 +34,17 @@ private func render(cols: Int = 8, rows: Int = 3, padding: Int,
                             selection: selection,
                             rowNotes: notes, blockSpines: spines, blockSummaries: summaries,
                             highlightedRows: highlighted)
-    let w = fonts.metrics.width * cols + padding * 2, h = fonts.metrics.height * rows + padding * 2
+    // `padding` is the *point* padding the user set; the renderer, like `Pane`, is handed it in
+    // device pixels.
+    let pad = Int(CGFloat(padding) * scale)
+    let w = fonts.metrics.width * cols + pad * 2, h = fonts.metrics.height * rows + pad * 2
     let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: w, height: h,
                                                         mipmapped: false)
     desc.usage = [.renderTarget, .shaderRead]
     desc.storageMode = .managed
     let tex = try #require(device.makeTexture(descriptor: desc))
     let cb = try #require(r.queue.makeCommandBuffer())
-    r.render(frame, to: tex, commandBuffer: cb, padding: padding)
+    r.render(frame, to: tex, commandBuffer: cb, padding: pad)
     let blit = try #require(cb.makeBlitCommandEncoder())
     blit.synchronize(resource: tex)
     blit.endEncoding()
@@ -67,6 +70,24 @@ private let spineColor = RGB(0, 255, 0)
     #expect(px(2, y) != Pixel(r: 0, g: 255, b: 0))
     #expect(px(8, y) != Pixel(r: 0, g: 255, b: 0))
     #expect(px(4, 8 + fonts.metrics.height * 2 + fonts.metrics.height / 2) != Pixel(r: 0, g: 255, b: 0))
+}
+
+/// The spine is 3 **points** wide on a Retina display too, not 3 pixels.
+///
+/// `Renderer.render` is handed its padding in device pixels (`Pane` multiplies by the layer's
+/// `contentsScale`), and `spineWidth`/`spineLeadingInset` are points -- the same points the AppKit
+/// cap is drawn in. Using them raw made the spine 1.5 pt wide at 2 pt beside a 3 pt cap at 4 pt on
+/// every Mac this ships on, which is the "line with beads on it" this whole change exists to
+/// remove, wearing a different hat. Only a scale other than 1 can catch it, and every other case
+/// here runs at 1.
+@Test func theSpineIsThreePointsWideOnARetinaDisplay() throws {
+    let (fonts, _, px) = try render(padding: 8, scale: 2, spines: [(rows: 0..<2, color: spineColor)])
+    let y = 16 + fonts.metrics.height / 2
+    // 4 pt in, 3 pt wide, at two pixels to the point: 8..<14.
+    #expect(px(8, y) == Pixel(r: 0, g: 255, b: 0))
+    #expect(px(13, y) == Pixel(r: 0, g: 255, b: 0))
+    #expect(px(6, y) != Pixel(r: 0, g: 255, b: 0))
+    #expect(px(14, y) != Pixel(r: 0, g: 255, b: 0))
 }
 
 /// `padding = 0` is a setting the settings window ships. The spine takes the first column's leading

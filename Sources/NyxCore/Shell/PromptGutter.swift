@@ -10,26 +10,6 @@ public enum GutterMark: Equatable {
     case failed
 }
 
-public extension GutterMark {
-    /// Whether the dot is drawn for a row carrying this mark.
-    ///
-    /// A finished command's dot is a record and is drawn whatever it printed -- `cd ..` succeeded
-    /// and the gutter says so. `.running` is different: the prompt you are typing at carries a
-    /// prompt mark and no status, so it reads as running, and a ring there would sit beside an idle
-    /// cursor for the rest of the session. What tells the two apart is whether the shell said a
-    /// command actually started -- its `C` mark -- which a prompt waiting for you to type has not.
-    ///
-    /// Deliberately *not* keyed on there being output to fold: a `sleep 10` one second in has
-    /// printed nothing, and the whole point of the ring is that it says something is running.
-    func isDrawn(hasStarted: Bool) -> Bool { self == .running ? hasStarted : true }
-
-    /// Whether pressing the dot can do anything. Pressing folds the command's output, and ⌥ selects
-    /// it; a command with nothing on its output rows has neither, and the click used to beep at the
-    /// user after offering a pointing hand, a tooltip and an accessibility button. A ring can be
-    /// drawn and not pressable, which is exactly a command that has started and not yet printed.
-    func isActionable(hasOutput: Bool) -> Bool { hasOutput }
-}
-
 /// What a gutter mark says to VoiceOver and in its tooltip.
 ///
 /// The words used to promise the wrong thing twice over: every mark read "Select its output." while

@@ -12,7 +12,8 @@
 
 ## Global Constraints
 
-- `NyxCore` imports only Foundation and CNyxPTY: no AppKit, Metal, CoreText or QuartzCore. `NyxRender` learns nothing about chrome — it is handed rects, colours and rows. Decision logic goes in `NyxCore` behind a pure interface and is unit-tested; the AppKit layer converts events and draws.
+- `NyxCore` imports only Foundation and CNyxPTY: no AppKit, Metal, CoreText or QuartzCore, and — the house rule this plan keeps — **no CoreGraphics type either**: every geometry number it hands out is a `Double`, the way `PromptGutter` already does, and the AppKit layer converts at the call site. (This is the one deviation from §2.1's literal `CGFloat` signatures.)
+- `NyxRender` learns nothing about *chrome*: no strip, no pill, no hover. It does read `CommandBlockChrome.spineLeadingInset` and `.spineWidth` for the spine it already draws, which §2.1 requires in as many words — "the renderer reads the same two numbers, so the Metal spine and the AppKit cap cannot drift apart" — and which costs no new dependency (`NyxRender` already imports `NyxCore` and already calls `CommandBlockChrome.summaryColumns`). Decision logic goes in `NyxCore` behind a pure interface and is unit-tested; the AppKit layer converts events and draws.
 - Tests are **swift-testing** (`import Testing`, `@Test`, `#expect`, `#require`). XCTest is not available. **Hoist mutating calls out of `#expect`/`#require`** — the macro captures the receiver immutably and the error points at the macro expansion.
 - Test runner hang fix: `pkill -9 -f swiftpm-testing-helper; pkill -9 -f swift-test; swift test --no-parallel`. Never wait on a background test run.
 - The build stays **warning-free** (library and tests), and **`make bench` stays at or above 180 MB/s** — nothing in this plan touches the parser or the row cache, so a drop is a bug.
@@ -49,7 +50,7 @@
 ### Task 1: `CommandBlockChrome` — the decision table and the geometry
 
 **Files:**
-- Modify: `Sources/NyxCore/Shell/CommandBlock.swift` (add to `enum CommandBlockChrome`, lines 109-210; leave `OverlayControls` and `overlayPlacement` in place — Task 3 deletes them with their last caller)
+- Modify: `Sources/NyxCore/Shell/CommandBlock.swift` — add to `enum CommandBlockChrome` (lines 109-210) and **replace `:111-112`**: the existing `spineWidth: Double = 2` becomes `= 3`, and `spineGap: Double = 4` is **deleted** (it has no caller anywhere in the tree — the renderer computes its own `padding - 3`, which `spineLeadingInset` replaces). Leave `OverlayControls` and `overlayPlacement` in place; Task 3 deletes them with their last caller.
 - Modify: `Sources/NyxCore/HTTP/ResponseLens.swift` (`chipTitle`, beside `title` at `:26`)
 - Modify: `Sources/NyxCore/HTTP/WatchSeries.swift` (`WatchHeader.hiddenRuns` at `:453-467`; `headerText`'s running sentence at `:381-401`; `header(dots:)` at `:476`)
 - Test: `Tests/NyxCoreTests/CommandBlockChromeTests.swift` (new)
@@ -109,6 +110,8 @@ public extension CommandBlockChrome {
                                commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
                                cols: Int,
                                measure: (StripContent) -> Int) -> StripPlacement?
+    /// Whether the in-grid summary gives way to this strip (§2.5).
+    static func suppressesSummary(_ plan: StripPlan, stripRow: Int, summaryRow: Int?) -> Bool
 
     struct GutterCap: Equatable {
         enum Shape: Equatable { case solid, bar, hollow, faded, chevronDown, chevronRight }
@@ -118,13 +121,16 @@ public extension CommandBlockChrome {
     }
     static func gutterCap(_ header: BlockHeader, hasStarted: Bool, hovered: Bool) -> GutterCap?
 
-    static let spineWidth: CGFloat
-    static func spineLeadingInset(padding: CGFloat) -> CGFloat
-    static func hitRowHeight(cellHeight: CGFloat) -> CGFloat
-    static let stripHeight: CGFloat            // 20
-    static func stripFrameHeight(cellHeight: CGFloat) -> CGFloat
-    static func stripGroundHeight(cellHeight: CGFloat) -> CGFloat
-    static let foldColumnWidth: CGFloat        // 20
+    /// Replaces the file's own `spineWidth: Double = 2` (`CommandBlock.swift:111`). `Double`, not
+    /// the spec's `CGFloat`: `NyxCore` contains no CoreGraphics type anywhere today, `PromptGutter`
+    /// is already `Double`, and the AppKit layer converts at the call site as it already does.
+    static let spineWidth: Double              // 3
+    static func spineLeadingInset(padding: Double) -> Double
+    static func hitRowHeight(cellHeight: Double) -> Double
+    static let stripHeight: Double             // 20
+    static func stripFrameHeight(cellHeight: Double) -> Double
+    static func stripGroundHeight(cellHeight: Double) -> Double
+    static let foldColumnWidth: Double         // 20
 }
 public extension ResponseLens { var chipTitle: String }
 public extension WatchHeader { var hiddenRuns: Int }   // stored, defaults to 0 in `init`
@@ -384,6 +390,31 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
         cols: 80, measure: { _ in 20 })
     #expect(placement?.row == 4)
     #expect(placement?.plan.firstColumn == 60)
+}
+
+/// §2.5's hard case: a wrapped watched command whose last row is full puts its lone `Stop` there,
+/// and the summary belongs on the row above -- so the strip does **not** speak for it, and hovering
+/// must not take `run 12 · 200 · 100 ms · every 5 s` off the screen.
+@Test func aW0StopDoesNotSpeakForTheSummaryOnAnotherRow() throws {
+    let watching = header(summary: "", isHTTP: true,
+                          watch: WatchHeader(text: "run 12 · 200 · 100 ms · every 5 s",
+                                             dots: [.running], showsStop: true, tone: .success))
+    let rows = [(absoluteRow: 4, lastUsedColumn: 10), (absoluteRow: 5, lastUsedColumn: 79)]
+    let placement = try #require(CommandBlockChrome.stripPlacement(
+        watching, commandRows: rows, cols: 80, measure: { $0.pills == [.stop] ? 8 : 60 }))
+    #expect(placement.row == 5)
+    #expect(placement.plan.pills == [.stop])
+    let summaryRow = CommandBlockChrome.summaryPlacement(commandRows: rows, textCount: 32,
+                                                         cols: 80)?.row
+    #expect(summaryRow == 4)
+    #expect(!CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
+                                                  summaryRow: summaryRow))
+    // …and a strip that did land on the summary's own row, with something to say, speaks for it:
+    // two sentences on one row is the row saying the same thing twice.
+    let onTheRow = try #require(CommandBlockChrome.stripPlacement(
+        watching, commandRows: [rows[0]], cols: 80, measure: { _ in 60 }))
+    #expect(CommandBlockChrome.suppressesSummary(onTheRow.plan, stripRow: onTheRow.row,
+                                                 summaryRow: 4))
 }
 
 /// No row with room and nothing to stop: no strip anywhere, which is what keeps the in-grid summary
@@ -731,6 +762,18 @@ public extension CommandBlockChrome {
         return StripPlan(content: content, firstColumn: max(0, first), overlapsCommand: overlaps)
     }
 
+    /// Whether the strip on `stripRow` speaks for the summary that would have gone on
+    /// `summaryRow`, and may therefore replace it.
+    ///
+    /// Two rows of a wrapped command are two different width classes: a watched `curl` whose last
+    /// row is full places its lone `Stop` there (W0, no readout at all) while the summary belongs
+    /// on the roomier row above. Suppressing on "a strip exists somewhere on this block" then took
+    /// `run 12 · 200 · 100 ms · every 5 s` off the screen the moment the pointer arrived -- the
+    /// exact defect §2.5 exists to end. So: the same row, and something to say.
+    static func suppressesSummary(_ plan: StripPlan, stripRow: Int, summaryRow: Int?) -> Bool {
+        !plan.readout.isEmpty && stripRow == summaryRow
+    }
+
     /// Which row of the command carries the strip, walked from the last upwards -- the same ladder
     /// and the same rows the summary uses, because a wrapped `curl` fills its first rows and leaves
     /// room on its last. `measure` is the view's own width for that content, in columns.
@@ -792,24 +835,29 @@ public extension CommandBlockChrome {
 
     /// The mark and the spine are one shape: the renderer and the gutter view read these two
     /// numbers, so the Metal spine and the AppKit cap cannot drift apart.
-    static let spineWidth: CGFloat = 3
+    /// **Replaces `CommandBlock.swift:111-112`**, which declared `spineWidth: Double = 2` beside a
+    /// `spineGap: Double = 4` that the renderer never read (it computed `padding - 3` by hand).
+    /// `spineGap` is deleted outright: it has no callers, and `spineLeadingInset` is the number the
+    /// gap was standing in for.
+    static let spineWidth: Double = 3
     /// 4 pt at the shipping `padding = 8`, which is outside the window's resize margin; 0 at
     /// `padding = 0`, where the mark draws over the first text column's leading 3 pt rather than
     /// off the window (Addendum 2).
-    static func spineLeadingInset(padding: CGFloat) -> CGFloat { min(4, max(0, padding - 3)) }
+    static func spineLeadingInset(padding: Double) -> Double { min(4, max(0, padding - 3)) }
     /// Every row-height *hit* target, clamped so `line-height = 0.8` cannot make it 13 pt (§8.4).
     /// The *drawn* mark stays `cellHeight` tall.
-    static func hitRowHeight(cellHeight: CGFloat) -> CGFloat { max(cellHeight, 16) }
-    static let stripHeight: CGFloat = 20
-    /// The strip's frame: tall enough for its pills and never below the hit floor.
-    static func stripFrameHeight(cellHeight: CGFloat) -> CGFloat {
+    static func hitRowHeight(cellHeight: Double) -> Double { max(cellHeight, 16) }
+    static let stripHeight: Double = 20
+    /// The strip's frame: tall enough for its pills and never below the hit floor. Decided here
+    /// rather than from `stack.fittingSize`, which is what `Pane.blockHeaderChanged` used.
+    static func stripFrameHeight(cellHeight: Double) -> Double {
         max(stripHeight, hitRowHeight(cellHeight: cellHeight))
     }
     /// What the strip actually *paints*: one row, whatever its frame is. A 20 pt opaque band on a
     /// 13 pt grid covers three rows of somebody's output (Addendum 2).
-    static func stripGroundHeight(cellHeight: CGFloat) -> CGFloat { cellHeight }
+    static func stripGroundHeight(cellHeight: Double) -> Double { cellHeight }
     /// Column 0's fold triangle, widened to the same 20 pt the gutter uses, for the same reason.
-    static let foldColumnWidth: CGFloat = 20
+    static let foldColumnWidth: Double = 20
 }
 ```
 
@@ -830,6 +878,8 @@ public extension CommandBlockChrome {
         }
     }
 ```
+
+  The doc comment at `WatchSeries.swift:84-88` says the menu row ("every 5 s") and the header the user then reads ("watch every 5 s") "have to be the same words". With the re-order they finally are, because the header's leading `watch ` **goes**: the dots and the `Stop` pill say a watch is running, and the verb's home is the menu titles and the popover (§3.14). Update the comment to say so — a comment left describing the old sentence is the next reader's bug report.
 
   In `Sources/NyxCore/HTTP/WatchSeries.swift`: add `public let hiddenRuns: Int` to `WatchHeader` with `hiddenRuns: Int = 0` last in `init` (so every existing caller compiles); set it in `header(dots:)` as `hiddenRuns: max(0, runs.count - n)`; and re-order the running `headerText` so the interval is last:
 
@@ -894,7 +944,7 @@ MSG
 - Modify: `Sources/NyxRender/Renderer.swift:503-517` (the spine at `spineLeadingInset` × `spineWidth`)
 - Modify: `Sources/NyxApp/Pane.swift` — `render()`'s gutter arrays (`:1707-1717`, `:1955-1980`, `:2223-2226`), `layoutGutter()` (`:3501-3507`), `layoutStickyStrip()`'s `left` (`:3567-3570`), and `mouseUp`'s call to `foldBlock(atPointInPadding:)` (`:2693-2695`, and the method at `:2704-2721`, both **deleted**)
 - Modify: `Sources/NyxApp/{UISnapshot,StateSnapshot,GridSnapshot}.swift` — the three places that build a `PromptGutterView`
-- Test: `Tests/NyxCoreTests/PromptGutterTests.swift`, `Tests/NyxRenderTests/BlockChromeRenderTests.swift`
+- Test: `Tests/NyxCoreTests/PromptGutterTests.swift` — add the two cases below and **delete `:85-94`** (`theGutterFitsInsideThePadding`) and **`:354-379`** (`theGutterIsWiderThanItsMark`), which assert `width(padding:)`, `maximumWidth` and `markRect(gutterWidth:)`, every one of which this task removes; `Tests/NyxRenderTests/BlockChromeRenderTests.swift`
 
 **Interfaces:**
 - Consumes: `CommandBlockChrome.GutterCap`, `.spineWidth`, `.spineLeadingInset(padding:)`, `.hitRowHeight(cellHeight:)`, `.gutterCap(_:hasStarted:hovered:)`; `GutterMarkLabel.text(mark:folded:hasOutput:line:)`; `BlockHeader`.
@@ -1008,8 +1058,12 @@ Expected: PASS.
     private var panePadding: CGFloat = 8
     private var topPadding: CGFloat = 0
 
-    private var hitHeight: CGFloat { CommandBlockChrome.hitRowHeight(cellHeight: cellHeight) }
-    private var markX: CGFloat { CommandBlockChrome.spineLeadingInset(padding: panePadding) }
+    private var hitHeight: CGFloat {
+        CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cellHeight)))
+    }
+    private var markX: CGFloat {
+        CGFloat(CommandBlockChrome.spineLeadingInset(padding: Double(panePadding)))
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
@@ -1055,7 +1109,7 @@ Expected: PASS.
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard cellHeight > 0 else { return }
-        let width = CommandBlockChrome.spineWidth
+        let width = CGFloat(CommandBlockChrome.spineWidth)
         for (row, cap) in caps {
             let y = topPadding + CGFloat(row) * cellHeight
             let colour = nsColor(cap.tone.color(in: palette), alpha: cap.shape == .faded ? 0.4 : 1)
@@ -1120,7 +1174,9 @@ Expected: PASS.
             // 1.5 pt apart cannot come back. At `padding = 0` the inset is 0 and the spine takes
             // the first text column's leading 3 pt rather than not being drawn at all -- a block
             // with no spine is a block with no left edge (Addendum 2).
-            let x = Float(CommandBlockChrome.spineLeadingInset(padding: CGFloat(padding)))
+            // The old `guard padding >= 4 else { continue }` goes with this: a block with no left
+            // edge is not a quieter block, it is a block with no left edge.
+            let x = Float(CommandBlockChrome.spineLeadingInset(padding: Double(padding)))
             instances.append(rect(x, top, Float(CommandBlockChrome.spineWidth), height, spine.color))
         }
 ```
@@ -1181,6 +1237,8 @@ In `render()`'s frame builder, replace the four gutter arrays with two dictionar
         }
 ```
 
+  Three more callers of the deleted `PromptGutter.width(padding:)`: `GridSnapshot.swift:466` (the gutter composite's own width, which becomes `CGFloat(PromptGutter.hitWidth)`), `GridSnapshot.swift:482` (the sticky strip's `left`, which becomes `max(padding, CGFloat(PromptGutter.hitWidth))` exactly as `Pane.layoutStickyStrip` does), and the comment at `GridSnapshot.swift:97`, which cites `PromptGutter.width(padding:)` as one of the two numbers the extreme-metric composites exist for — it now cites `PromptGutter.hitWidth` and `CommandBlockChrome.spineLeadingInset`.
+
   `layoutGutter()` becomes a fixed 20 pt column that is never hidden (`gutter.frame = NSRect(x: 0, y: 0, width: CGFloat(PromptGutter.hitWidth), height: bounds.height)`), and `layoutStickyStrip()`'s `left` becomes `max(padding, CGFloat(PromptGutter.hitWidth))`. `Terminal.gutterMarks`, `foldStates`, `commandStates` and `startStates` keep their tests and their other callers; the pane simply stops asking for the per-row arrays. **Delete** `Pane.foldBlock(atPointInPadding:)` and its call in `mouseUp`: the padding is not a control and never said it was.
 
   The three snapshot builders (`UISnapshot:266-280`, `StateSnapshot:85-104`, `GridSnapshot:462-478`) change to the new `update(caps:labels:…)` with a fixture dictionary — Task 8 gives them their own cases; here they only have to compile and keep rendering something.
@@ -1233,6 +1291,7 @@ MSG
 - Modify: `Sources/NyxApp/BlockHeaderView.swift` (rebuilt on `StripPlan`)
 - Modify: `Sources/NyxApp/WatchDotsView.swift` (7 pt filled dots on a 10 pt pitch, running filled accent, the `+N` label)
 - Modify: `Sources/NyxApp/Pane.swift` — the strip placement inside `render()` (`:2085-2115`), `blockHeaderChanged` (`:3192-3216`), `headerForHoveredBlock` (`:4133`)
+- Modify: `Sources/NyxApp/UISnapshot.swift:1104-1114` — `blockStrip` sizes the view `height: rowHeight`, which is where the *pictures* of clipped pills come from: `Pane.blockHeaderChanged` (`:3207-3213`) has taken `max(rowHeight, size.height)` since the last round, so the app's frame already clears its pills and the spec's `Pane.swift:3090` citation is stale. What changes in the app is that the height is `CommandBlockChrome.stripFrameHeight` — a Core number that also clears the 16 pt floor at `line-height 0.8` — instead of an AppKit `fittingSize`, and that the painted ground is `stripGroundHeight`. What changes in the pictures is that the snapshot stops sizing the strip to one row, so a clipped pill in a picture after this task is a real defect rather than the tool's.
 - Modify: `Sources/NyxCore/Shell/CommandBlock.swift` — **delete** `OverlayControls` (`:212-236`), `OverlayPlacement` (`:238-246`), `overlayPlacement` (`:194-209`) and `BlockHeader.showsCopy/showsSummary/showsTimeline/showsStop/showsLens` (`:516-547`)
 - Modify: `Sources/NyxApp/GridSnapshot.swift`, `Sources/NyxApp/UISnapshot.swift`, `Sources/NyxApp/StateSnapshot.swift` — the `OverlayControls` call sites
 - Test: `Tests/NyxCoreTests/CommandBlockTests.swift` (delete the `overlayPlacement` block, `:262-380`), `Tests/NyxCoreTests/BlockHeaderTests.swift` (delete the `shows*(at:)` cases, `:425-462`)
@@ -1336,14 +1395,27 @@ final class StripPillView: NSView {
 
     func configure(_ pill: CommandBlockChrome.Pill, palette: Palette, opaque: Bool) {
         guard pill != self.pill || palette != self.palette || opaque != self.opaque else { return }
+        // The views are pooled: a pill that was hovered or held down as `Copy` must not come back
+        // as a lit `Stop` on the next block the pointer lands on. Reused view, fresh state.
+        if pill != self.pill { hovered = false; pressed = false }
         self.pill = pill
         self.palette = palette
         self.opaque = opaque
         toolTip = pill.help
         setAccessibilityLabel(pill.accessibilityLabel)
         setAccessibilityHelp(pill.help)
+        // A disabled pill reports as disabled rather than as a button that beeps -- the gutter's
+        // no-output mark already answers this way, through `press: nil`.
+        setAccessibilityEnabled(isEnabled)
         invalidateIntrinsicContentSize()
         needsDisplay = true
+    }
+
+    /// `.copy(enabled: false)` is the one pill that can arrive inert: it draws dimmed, does not
+    /// press, and offers no pointing hand.
+    private var isEnabled: Bool {
+        if case .copy(let enabled) = pill { return enabled }
+        return true
     }
 
     /// `StateSnapshot` presses a pill by name; `NSButton.highlight(true)` has no equivalent here.
@@ -1363,7 +1435,7 @@ final class StripPillView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let pill else { return }
         let on = { if case .lens(_, let on) = pill { return on } else { return false } }()
-        let enabled = { if case .copy(let enabled) = pill { return enabled } else { return true } }()
+        let enabled = isEnabled
         let box = NSRect(x: 0, y: 0, width: bounds.width, height: StripPillView.height)
             .offsetBy(dx: 0, dy: (bounds.height - StripPillView.height) / 2)
         let path = NSBezierPath(roundedRect: box, xRadius: StripPillView.radius,
@@ -1449,19 +1521,30 @@ final class StripPillView: NSView {
 
     override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
     override func mouseExited(with event: NSEvent) { hovered = false; pressed = false; needsDisplay = true }
-    override func mouseDown(with event: NSEvent) { pressed = true; needsDisplay = true }
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        pressed = true
+        needsDisplay = true
+    }
     override func mouseUp(with event: NSEvent) {
         pressed = false
         needsDisplay = true
-        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        guard isEnabled, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
         onPress?()
     }
 
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .button }
-    override func accessibilityPerformPress() -> Bool { onPress?(); return true }
+    override func accessibilityPerformPress() -> Bool {
+        guard isEnabled else { return false }
+        onPress?()
+        return true
+    }
     override func resetCursorRects() {
         super.resetCursorRects()
+        // No hand over a pill that cannot be pressed: the pointing hand is a promise, and this
+        // round exists to make it a true one everywhere.
+        guard isEnabled else { return }
         addCursorRect(bounds, cursor: .pointingHand)
     }
 }
@@ -1507,6 +1590,12 @@ final class StripPillView: NSView {
 Inside `render()`'s `summaries` walk, the hovered block's branch becomes:
 
 ```swift
+                // Where the summary would go if there were no strip at all, asked first so the
+                // suppression rule can compare the two rows. (Task 5 removes `chevronCount:`; until
+                // then it is still on the signature.)
+                let summaryHere = text.isEmpty ? nil : CommandBlockChrome.summaryPlacement(
+                    commandRows: candidates, textCount: text.count,
+                    chevronCount: header.chevron.count, cols: t.cols)
                 if self.hoveredBlock?.id == block.region.id, self.hoveredBlock?.headerRow != nil,
                    cellWidth > 0,
                    let placement = CommandBlockChrome.stripPlacement(
@@ -1518,10 +1607,14 @@ Inside `render()`'s `summaries` walk, the hovered block's branch becomes:
                     self.hoverStripPlan = placement.plan
                     notesSpokenFor.insert(slot)
                     notesSpokenFor.insert(promptSlot)
-                    // §2.5: the in-grid summary is suppressed **only** where a plan was actually
-                    // placed. At W0, and on a row that had no room, the strip is absent and the
-                    // summary stays -- hovering can never take a fact off the screen.
-                    return nil
+                    // §2.5: the summary gives way only to a strip **on its own row that says at
+                    // least as much**. A wrapped watched command whose last row is full places its
+                    // lone `Stop` there and keeps its sentence on the row above; at W0, and on a
+                    // row that had no room at all, there is no strip and the summary stays.
+                    if CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
+                                                            summaryRow: summaryHere?.row) {
+                        return nil
+                    }
                 }
 ```
 
@@ -1529,10 +1622,10 @@ Inside `render()`'s `summaries` walk, the hovered block's branch becomes:
 
 ```swift
         let cell = cellSizePoints
-        let height = CommandBlockChrome.stripFrameHeight(cellHeight: cell.height)
+        let height = CGFloat(CommandBlockChrome.stripFrameHeight(cellHeight: Double(cell.height)))
         let top = bounds.height - padding - CGFloat(row + 1) * cell.height
         blockHeader.update(header: header, plan: plan, palette: palette, font: font,
-                           groundHeight: CommandBlockChrome.stripGroundHeight(cellHeight: cell.height))
+                           groundHeight: CGFloat(CommandBlockChrome.stripGroundHeight(cellHeight: Double(cell.height))))
         blockHeader.frame = NSRect(x: padding + CGFloat(plan.firstColumn) * cell.width,
                                    y: top - (height - cell.height) / 2,
                                    width: CGFloat(cols - plan.firstColumn) * cell.width,
@@ -1552,7 +1645,21 @@ Inside `render()`'s `summaries` walk, the hovered block's branch becomes:
         guard columns <= free else { continue }
 ```
 
-  The three snapshot files lose their `OverlayControls` loops. `GridSnapshot.Case.hoverStrip(OverlayControls)` becomes `hoverStrip(CommandBlockChrome.WidthClass, GridScene.StripState)`, where
+  The three snapshot files lose their `OverlayControls` loops. In `GridSnapshot` that is **eight** sites, not two, and every one of them measures through the `BlockHeaderView.width(for:header:font:)` this task replaced with `width(of:font:)`:
+
+| site | becomes |
+|---|---|
+| `:113` `name(of: OverlayControls) -> String` | `name(of: CommandBlockChrome.WidthClass) -> String`, emitting **exactly** `w3`, `w2`, `w1`, `w0` — plan 1b's `cmp` and §8.5's names both depend on `composite-strip-w3-finished-*` and `-w1-` |
+| `:136` `Case.hoverStripOnLens` | **folded into** `StripState.lensed` |
+| `:140` `Case.hoverStripWatching(runs:)` | **survives**: the 4-, 30- and (new) 48-run pictures are about the timeline's own width and its `+N` cap, which one cell of the state matrix cannot say |
+| `:596` `GridScene.commandIDs: [OverlayControls: UInt32]` | `[CommandBlockChrome.WidthClass: UInt32]` |
+| `:603` `GridScene.hoverControls: OverlayControls` | `hoverWidth: CommandBlockChrome.WidthClass` |
+| `:622`, `:886` `strip: (slot: Int, controls: OverlayControls, header: BlockHeader)?` | `strip: (slot: Int, plan: CommandBlockChrome.StripPlan, header: BlockHeader)?` |
+| `:660-661` `stripCells: [OverlayControls: Int]`, measured per control set | one measurement per width class, through `probe.width(of: content, font: probeFont)` |
+| `:691-692` `byControls: [OverlayControls: UInt32]`, one command per control level | one command per width class, from `GridScene.commandFitting(_ width:)` |
+| `:926-927` `stripColumns: [OverlayControls: Int]` fed to `overlayPlacement` | the `measure:` closure fed to `CommandBlockChrome.stripPlacement`, the same closure `Pane` passes |
+
+  `GridSnapshot.Case.hoverStrip(OverlayControls)` becomes `hoverStrip(CommandBlockChrome.WidthClass, GridScene.StripState)`, where
 
 ```swift
     /// Which row of §2.6's table a composite is a picture of.
@@ -1581,9 +1688,12 @@ git add Sources/NyxApp/StripPillView.swift Sources/NyxApp/BlockHeaderView.swift 
 git commit -m "$(cat <<'MSG'
 The strip says what it does: 20 points, labelled pills, and the status last to go
 
-The hover strip was 16 points tall around 20-point pills, so every cap was sliced and Copy's
-descenders sat on the edge; at its narrower levels it offered two identical grey circles and had
-dropped the exit code before dropping the second menu. It is now `StripPlan`, drawn: a 20 pt band
+The strip's pills came out clipped flat in every picture -- because `UISnapshot` sized the view to
+one row, while the pane itself had grown to `max(rowHeight, fittingSize.height)` in the last round.
+Both now take one number from Core, `stripFrameHeight`, which also clears the 16 pt floor at
+`line-height 0.8`; what the strip *paints* is `stripGroundHeight`, one row, so an opaque band cannot
+cover the rows above and below. At its narrower levels the strip offered two identical grey circles
+and had dropped the exit code before dropping the second menu. It is now `StripPlan`, drawn: a 20 pt band
 centred on the row, 20 pt pills with a 6 pt radius, labels at 11 pt medium, and `⋯` and `▾` as 8 pt
 paths rather than 5 pt glyphs in a 24 pt pill.
 
@@ -1592,7 +1702,9 @@ every width, `Actions ▾` collapses to `⋯` before any pill is dropped, and th
 interval, then the percentiles, then the timing, then the run count -- never the status. The strip
 is right-aligned into the free columns after the command's last glyph and never begins inside a
 word; where it does not fit there is no strip and the in-grid summary stays, so hovering a block can
-no longer remove the thing you were reading. The one exception is a running watch's `Stop` on a full
+no longer remove the thing you were reading. The summary gives way only to a strip on its own row
+that says at least as much (`suppressesSummary`) -- a wrapped watched `curl` whose last row is full
+puts its lone `Stop` down there and keeps its sentence on the row above. The one exception is a running watch's `Stop` on a full
 command line, which is drawn over the tail on an opaque pill: stopping a runaway watch is one click
 at every width.
 
@@ -1661,7 +1773,25 @@ MSG
 }
 ```
 
-  (If `RGB.contrast` is spelled differently in `ReadableColourTests`' existing cases, use that spelling — the file already measures ratios and its helper is the one to reuse.)
+  and, in the same file, the two ratios the *unlit* pills rest on — the `Stop` pill is the one with a tinted ink, and the hairline is the only thing separating a pill from the hover-tinted row behind it:
+
+```swift
+/// `Stop` is drawn in the theme's failure colour on a `foreground @ 0.14` wash over the row's hover
+/// tint. It is text, so 4.5:1; the hairline is a shape, so 1.6:1 against the fill it outlines
+/// (§2.3). Measured in all seven built-ins, because "readable in nyx-dark" is how gruvbox's lit
+/// `{ }` shipped at 2.82:1.
+@Test func theStripsUnlitPillsAreReadableInEveryTheme() {
+    for (name, palette) in Themes.builtin {
+        let ground = RGB.blend(palette.blockHoverBackground, into: palette.foreground, amount: 0.14)
+        #expect(RGB.contrast(SummaryTone.failure.color(in: palette), ground) >= 4.5, "\(name) Stop")
+        #expect(RGB.contrast(palette.foreground, ground) >= 4.5, "\(name) label")
+        let hairline = RGB.blend(palette.blockHoverBackground, into: palette.foreground, amount: 0.22)
+        #expect(RGB.contrast(hairline, ground) >= 1.6, "\(name) hairline")
+    }
+}
+```
+
+  (If `RGB.contrast` or `RGB.blend` are spelled differently in `ReadableColourTests`' existing cases, use that spelling — the file already measures ratios and blends, and its helpers are the ones to reuse. A theme that fails is a **finding**, not a licence to lower the floor: the fix is the alpha, and §9 forbids moving a hue.)
 
 - [ ] **Step 2: Run them to verify they fail**
 
@@ -1742,8 +1872,9 @@ MSG
 
 ```swift
 public extension CommandBlockChrome {
-    /// The hit box of a column-0 fold triangle, in points, relative to the text area's leading edge.
-    static func foldTriangleHit(cellHeight: CGFloat) -> CGSize   // (foldColumnWidth, hitRowHeight)
+    /// The hit box of a column-0 fold triangle, in points, relative to the text area's leading
+    /// edge. A tuple of `Double`s rather than a `CGSize`: `NyxCore` has no CoreGraphics type in it.
+    static func foldTriangleHit(cellHeight: Double) -> (width: Double, height: Double)
 }
 public static func summaryPlacement(commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
                                     textCount: Int, cols: Int) -> SummaryPlacement?
@@ -1773,8 +1904,8 @@ public struct SummaryPlacement: Equatable { public let row: Int; public let colu
 /// wide (about 8 pt) and one row tall (13 pt at `line-height 0.8`), which is not a target.
 @Test func theFoldTriangleGetsTheSameTargetTheGutterHas() {
     #expect(CommandBlockChrome.foldColumnWidth == 20)
-    #expect(CommandBlockChrome.foldTriangleHit(cellHeight: 13) == CGSize(width: 20, height: 16))
-    #expect(CommandBlockChrome.foldTriangleHit(cellHeight: 24) == CGSize(width: 20, height: 24))
+    #expect(CommandBlockChrome.foldTriangleHit(cellHeight: 13) == (width: 20, height: 16))
+    #expect(CommandBlockChrome.foldTriangleHit(cellHeight: 24) == (width: 20, height: 24))
 }
 ```
 
@@ -1807,8 +1938,8 @@ Expected: FAIL — `extra argument 'chevronCount'` and `no member 'foldTriangleH
 
     /// A column-0 triangle's target: 20 pt wide, `hitRowHeight` tall. The same 20 pt the gutter
     /// uses, so the two fold controls on screen are the same size (§2.4, §8.4).
-    public static func foldTriangleHit(cellHeight: CGFloat) -> CGSize {
-        CGSize(width: foldColumnWidth, height: hitRowHeight(cellHeight: cellHeight))
+    public static func foldTriangleHit(cellHeight: Double) -> (width: Double, height: Double) {
+        (width: foldColumnWidth, height: hitRowHeight(cellHeight: cellHeight))
     }
 ```
 
@@ -1821,17 +1952,17 @@ Expected: FAIL — `extra argument 'chevronCount'` and `no member 'foldTriangleH
 ```swift
         // A lens container line's triangle is the control; the rest of the line is text, and a
         // reader dragging across it is selecting (Wave 2 refines the drag; the box is the same).
-        let hit = CommandBlockChrome.foldTriangleHit(cellHeight: cell.height)
+        let hit = CommandBlockChrome.foldTriangleHit(cellHeight: Double(cell.height))
         for (visible, entry) in foldRowsOnScreen.enumerated() {
             guard case .lens(let id, let line) = entry,
                   lensBuffers[id]?.line(line)?.node != nil else { continue }
             let centre = bounds.height - padding - (CGFloat(visible) + 0.5) * cell.height
-            rects.append(NSRect(x: padding, y: centre - hit.height / 2,
-                                width: hit.width, height: hit.height))
+            rects.append(NSRect(x: padding, y: centre - CGFloat(hit.height) / 2,
+                                width: CGFloat(hit.width), height: CGFloat(hit.height)))
         }
 ```
 
-  and `toggleLensFold(at:)` gains the same guard (`point.x - padding < hit.width`), while `unfoldPlaceholder(at:)` keeps its whole-row target and finally gets a pointing hand:
+  and `toggleLensFold(at:)` gains the same guard (`Double(point.x - padding) < hit.width`), while `unfoldPlaceholder(at:)` keeps its whole-row target and finally gets a pointing hand:
 
 ```swift
         // The placeholder row is a control end to end: it has no content worth selecting, and it is
@@ -1840,8 +1971,8 @@ Expected: FAIL — `extra argument 'chevronCount'` and `no member 'foldTriangleH
         for (visible, entry) in foldRowsOnScreen.enumerated() {
             guard case .fold(let id, _, _) = entry, id != 0 else { continue }
             let centre = bounds.height - padding - (CGFloat(visible) + 0.5) * cell.height
-            rects.append(NSRect(x: padding, y: centre - hit.height / 2,
-                                width: max(0, bounds.width - padding * 2), height: hit.height))
+            rects.append(NSRect(x: padding, y: centre - CGFloat(hit.height) / 2,
+                                width: max(0, bounds.width - padding * 2), height: CGFloat(hit.height)))
         }
 ```
 
@@ -1982,6 +2113,12 @@ public extension StickyPromptLabel {
 
 ```swift
     func update(text: String?, summary: String, tone: SummaryTone, palette: Palette, font: NSFont) {
+        // The `guard let text, !text.isEmpty else { hide }` at the top of this method is unchanged,
+        // so everything below is inside the unwrap: `text` is a `String` by the time the label is
+        // built and `StickyPromptLabel.accessibilityLabel` never sees an optional. `text` is
+        // already `StickyPromptLabel.text(command:exitStatus:columns:)`'s answer -- the collapsed,
+        // cut command line the band draws -- so the spoken sentence and the drawn one are one
+        // string, cut once.
         …
         setAccessibilityRole(.button)
         setAccessibilityLabel(StickyPromptLabel.accessibilityLabel(text: text, summary: summary))
@@ -2003,7 +2140,7 @@ public extension StickyPromptLabel {
   `layoutStickyStrip()` gives the band `CommandBlockChrome.hitRowHeight(cellHeight: cell.height)`, centred on the row it covers, so it is never 13 pt tall:
 
 ```swift
-        let height = CommandBlockChrome.hitRowHeight(cellHeight: cell.height)
+        let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cell.height)))
         let centre = top + cell.height / 2 - CGFloat(stickyRow) * cell.height
         stickyStrip.frame = NSRect(x: left, y: centre - height / 2, width: width, height: height)
 ```
@@ -2086,7 +2223,7 @@ MSG
 /// §8.4, in one place: at `line-height = 0.8` every one-row target is 13 pt, and every one of them
 /// goes through the same clamp. A config value cannot take the floor away.
 @Test func everyOneRowTargetClearsSixteenPointsAtTheSmallestRow() {
-    let cell: CGFloat = 13          // 13 pt is a 16 pt font at `line-height = 0.8`
+    let cell = 13.0                 // 13 pt is a 16 pt font at `line-height = 0.8`
     #expect(CommandBlockChrome.hitRowHeight(cellHeight: cell) == 16)
     #expect(CommandBlockChrome.foldTriangleHit(cellHeight: cell).height == 16)
     #expect(CommandBlockChrome.foldTriangleHit(cellHeight: cell).width == 20)
@@ -2100,9 +2237,9 @@ MSG
 /// Addendum 2: a 20 pt opaque band on a 13 pt grid covers three rows of somebody's output. The
 /// frame may be 20 pt -- `hitTest` rejects anything outside it -- but what it *paints* is one row.
 @Test func theStripPaintsOneRowHoweverTallItsFrameIs() {
-    for cell in [CGFloat(13), 16, 17, 24] {
+    for cell in [13.0, 16, 17, 24] {
         #expect(CommandBlockChrome.stripGroundHeight(cellHeight: cell) == cell, "\(cell)")
-        #expect(CommandBlockChrome.stripFrameHeight(cellHeight: cell) >= 20 || cell >= 20, "\(cell)")
+        #expect(CommandBlockChrome.stripFrameHeight(cellHeight: cell) >= 20, "\(cell)")
     }
 }
 
@@ -2127,7 +2264,7 @@ Expected: PASS for the clauses Tasks 1–6 already satisfy and FAIL for any that
             let size = workbenchHint.intrinsicContentSize
             let origin = overlayOrigin(forHeaderRow: hint.slot)
             // The pill is a control on a row, and a row is 13 pt at `line-height 0.8` (§8.4).
-            let height = CommandBlockChrome.hitRowHeight(cellHeight: cellSizePoints.height)
+            let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cellSizePoints.height)))
             workbenchHint.frame = NSRect(x: origin.x - size.width,
                                          y: origin.y + (cellSizePoints.height - height) / 2,
                                          width: size.width, height: height)
@@ -2222,7 +2359,7 @@ In `UISnapshot`, replace the single four-mark gutter with the twelve §8.5 cases
                                                                      hovered: hovered) else { continue }
                         let view = PromptGutterView(frame: NSRect(x: 0, y: 0,
                                                                   width: CGFloat(PromptGutter.hitWidth),
-                                                                  height: cell))
+                                                                  height: cell))   // `cell` is the row height
                         view.appearance = NSAppearance(named: appearance)
                         view.update(caps: [0: cap], labels: [0: "Command on line 1 \(stateName)."],
                                     palette: themePalette, cellHeight: cell, padding: 8, topPadding: 0)
@@ -2284,13 +2421,15 @@ In `StateSnapshot`, `press(_:in:)` learns the new control, and the hovered art b
 
   and each of `Fold`, `Unfold`, `Copy`, `Stop`, `Actions`, `⋯` and the lens chip is written as `block-header-hovered-<pill>-…` and `block-header-pressed-<pill>-…` (the hovered art through the pill's own `mouseEntered`, driven with a synthesised `NSEvent` exactly as the tab bar's hover sweep does).
 
+  **And `gutter-marks-hovered-*` is retired** (`StateSnapshot.swift:82-105`). It fakes a hover by calling `gutter.mouseMoved(with:)`, and the rewritten `PromptGutterView` has no `mouseMoved` at all — the hover is a `GutterCap` the pane computes, so that case would go on printing a picture byte-identical to idle for ever, which is the failure the case was written to expose in the first place. The state it was standing in for is Step 1's `gutter-cap-<state>-hovered-<palette>-<appearance>`, driven by the real `gutterCap(_:hasStarted:hovered:)`; delete the block and say so in the commit.
+
 - [ ] **Step 4: Rung 6 — drive it in the built app**
 
 Add to `AppDelegate.applicationDidFinishLaunching`, gated on `ProcessInfo.processInfo.environment["NYX_SMOKE_QA"] == "blockchrome"`, a block that opens a window, gets its `Pane`, feeds a fixture transcript through the session (four blocks: a succeeded one, a failed one, a running one, and a `curl` with a watch), and then:
 
 1. moves the pointer onto each block through the real `mouseMoved` at a command line of each width class, printing `SMOKE strip w3 -> pills=[Fold, Copy, Actions] firstColumn=…`;
 2. calls `Pane.hitTest` at the centre of every pill and presses it, printing which `BlockAction` fired (`SMOKE press Copy -> copyOutput id=3`);
-3. presses the gutter cap at nine points — the four corners, the four edge midpoints and the centre of `rect(of:)` — printing how many of the nine reached the gutter (`SMOKE gutter 9/9`; the G1 probe that found the 16 pt frame is the same shape, and six of nine was the answer that started this wave);
+3. presses the gutter cap at nine points — the four corners, the four edge midpoints and the centre of `rect(of:)` — printing how many of the nine reached the gutter (`SMOKE gutter 9/9`; the G1 probe that measured six of nine sample points per pill reaching the old strip is the same shape, and this is the gutter's turn to be measured that way);
 4. presses the left padding at `x = 2` on a block's output row and prints what happened — **it must print `SMOKE padding -> nothing`**;
 5. presses the in-grid summary and prints the same;
 6. `exit(0)`.
@@ -2324,6 +2463,10 @@ strip at each width class in each of the nine states over a real grid, every pil
 pressed (reachable now that a pill draws its own states), the strip suppressed while a TUI owns the
 screen, and the retaken pinned band.
 
+`gutter-marks-hovered-*` is retired with the `mouseMoved` it faked its hover through: the gutter's
+hover is a `GutterCap` the pane computes, and `gutter-cap-*-hovered-*` is the same state drawn by
+the real rule.
+
 Rung 6: a temporary `NYX_SMOKE_QA=blockchrome` hook hovered each width class through the real
 `mouseMoved`, pressed every pill, pressed the gutter cap at nine points and pressed the left padding
 -- which now does nothing, as designed. The hook is removed; the numbers are in the task report.
@@ -2345,7 +2488,7 @@ MSG
 | §2.1 `CommandBlockChrome` is the single authority; `WidthClass`, `StripPlan`, `Pill`, `gutterCap`, `spineWidth`, `spineLeadingInset`, `hitRowHeight` | 1 |
 | §2.1 views read the plan and draw it; no `if` about which control survives stays in a view | 3, 4 |
 | §2.1 `Pane.foldBlock(atPointInPadding:)` deleted | 2 |
-| §2.2 20 pt hit width independent of padding; `PromptGutter.maximumWidth` and its wrong comment gone | 2 |
+| §2.2 20 pt hit width independent of padding; `PromptGutter.maximumWidth`, `markWidth`, `markInset`, `minimumPadding`, `width(padding:)`, `markRect(gutterWidth:)` and their tests gone; `CommandBlockChrome.spineGap` gone with them | 1, 2 |
 | §2.2 drawn mark 3 pt × `cellHeight`, the head of the spine; the 1 pt Metal spine and the 4.5 pt capsule stop being two marks | 2 |
 | §2.2 `spineLeadingInset`; overlapping targets go to the nearer centre | 1, 2 |
 | §2.2 shape carries state (solid / bar / hollow / 40 % and not pressable) | 1, 2 |
@@ -2357,7 +2500,7 @@ MSG
 | §2.3 dots 7 pt on a 10 pt pitch, running filled accent, `+N` past the cap | 1 (`hiddenRuns`), 3 |
 | §2.3 the lens chip carries the name, accent when on | 1, 4 |
 | §2.4 fold triangles share column 0 with a 20 pt × `hitRowHeight` box; the summary loses its chevron and its click; the placeholder gets a pointing hand | 5 |
-| §2.5 the summary is suppressed only where a plan was placed | 3 |
+| §2.5 the summary is suppressed only by a strip on its own row that says at least as much (`suppressesSummary`) | 3 |
 | §2.6 the table, both ladders, `Stop`/`Actions`/the status never dropped | 1 |
 | §2.6 `OverlayControls` deleted in the task that moves its last caller | 3 |
 | §2.7 blanked row, opaque ground, divider, leading `↑`, truthful label and VoiceOver sentence | 6 |
@@ -2369,6 +2512,6 @@ MSG
 | Addendum 2 `max(20, hitRowHeight)` covering no more rows than §2.3 allows; `padding = 0` keeps the target and the spine | 2, 3, 7 |
 | Addendum 3 the hover glyph and the pill hover are new drawing; pressed fill `foreground @ 0.26` | 2, 3 |
 
-**Deliberate deviations, each argued where it is made:** the two-stage `stripContent`/`stripPlan` split of §2.1's sketch (Task 1); `gutterCap` taking `hasStarted` and reading `folded` off the header (Task 1); `Unfold`'s help sentence saying "Unfold" where §2.3 gives one line for both labels (Task 1); the lens chip opening the lens menu rather than toggling, because it draws a `▾` (Task 4); `WatchSeries.headerText` re-ordered so the interval is last, which is what §2.6's W3 watch cell reads and what makes the readout ladder positional (Task 1).
+**Deliberate deviations, each argued where it is made:** `Double` rather than §2.1's `CGFloat` for every number `NyxCore` hands out, because `NyxCore` contains no CoreGraphics type anywhere and `PromptGutter` is already `Double` — the AppKit layer converts at the call site (Task 1, and the Global Constraints); the two-stage `stripContent`/`stripPlan` split of §2.1's sketch (Task 1); `gutterCap` taking `hasStarted` and reading `folded` off the header (Task 1); `Unfold`'s help sentence saying "Unfold" where §2.3 gives one line for both labels (Task 1); the lens chip opening the lens menu rather than toggling, because it draws a `▾` (Task 4); `WatchSeries.headerText` re-ordered so the interval is last, and its leading `watch ` dropped, which is what §2.6's W3 watch cell reads, what makes the readout ladder positional, and what §3.14 leaves the verb's home as the menu titles and the popover (Task 1).
 
 **Not in this plan, by the spec's own split:** `BlockCursor`, ⌘⇧A, the eight re-targeted actions, the four re-titled ones, `scroll_to_sticky_prompt`, the finish announcement and the `BlockAction → TerminalAction?` chords are **plan 1b** (§2.8). The lens field's anchoring, the `Body too large` chip, the watch vocabulary and the container-drag rule are **wave 2** (§3). Nothing here waits for either.

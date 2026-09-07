@@ -132,6 +132,10 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     #expect(pills(h, .w2) == [.stop, .actions(.labelled)])
     #expect(pills(h, .w1) == [.stop, .actions(.glyph)])
     #expect(pills(h, .w0) == [.stop])
+    // "Stop" alone collides with ⌘.'s differently-scoped Stop (a11y 6.9): VoiceOver has to hear
+    // what this one stops, the same words as the tooltip.
+    #expect(CommandBlockChrome.Pill.stop.accessibilityLabel == "Stop watching this request")
+    #expect(CommandBlockChrome.Pill.stop.accessibilityLabel == CommandBlockChrome.Pill.stop.help)
     #expect(readout(h, .w3) == "run 12 · 200 · 100 ms · every 5 s")
     #expect(readout(h, .w2) == "run 12 · 200")
     #expect(readout(h, .w1) == "run 12")
@@ -139,6 +143,24 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     // The timeline is the widest thing here and goes at the first squeeze.
     #expect(CommandBlockChrome.stripContent(h, at: .w3)?.dots.count == 4)
     #expect(CommandBlockChrome.stripContent(h, at: .w2)?.dots.isEmpty == true)
+}
+
+/// `+N` replaces the leading dot rather than sitting beside a full thirty: the timeline is capped
+/// at thirty marks, not thirty-one.
+@Test func theOverflowMarkReplacesTheLeadingDotRatherThanJoiningIt() {
+    let dots: [WatchSeries.Dot] = Array(repeating: .success, count: 30)
+    let h = header(summary: "", isHTTP: true,
+                   watch: WatchHeader(text: "run 48 · 200 · 100 ms · every 1 s", dots: dots,
+                                      showsStop: true, tone: .success, hiddenRuns: 18))
+    let content = CommandBlockChrome.stripContent(h, at: .w3)
+    #expect(content?.dots.count == 29)
+    #expect(content?.overflowDot == "+18")
+    // No cap, no replacement: all thirty stay.
+    let uncapped = header(summary: "", isHTTP: true,
+                          watch: WatchHeader(text: "run 4 · 200 · 100 ms · every 1 s", dots: dots,
+                                             showsStop: true, tone: .success))
+    #expect(CommandBlockChrome.stripContent(uncapped, at: .w3)?.dots.count == 30)
+    #expect(CommandBlockChrome.stripContent(uncapped, at: .w3)?.overflowDot == nil)
 }
 
 /// A finished series keeps its failure count when it drops its percentiles: "11 runs" alone reads
@@ -185,8 +207,9 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     }
 }
 
-/// `Actions ▾` collapses to `⋯` before any pill is dropped, and never the other way round.
-@Test func actionsCollapsesBeforeAnyPillIsDropped() {
+/// `Actions ▾` stays labelled through the W3→W2 boundary -- where `Fold` is already dropped, per
+/// `theTableHoveredFinished` -- and only collapses to `⋯` at the later W2→W1 boundary.
+@Test func actionsOnlyCollapsesAtTheW1Boundary() {
     let h = header(summary: "8.8s")
     #expect(pills(h, .w3).last == .actions(.labelled))
     #expect(pills(h, .w2).last == .actions(.labelled))
@@ -302,6 +325,19 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
                                              hasStarted: true, hovered: false)
     #expect(quiet?.shape == .faded)
     #expect(quiet?.isPressable == false)
+    // `hasOutput` must not erase what the command is *doing*: a `sleep 10` one second in, or a
+    // failure that printed nothing before it died, are still news -- only a block that finished
+    // cleanly with nothing to fold gets the quiet `.faded` record above.
+    let runningQuiet = CommandBlockChrome.gutterCap(header(summary: "1s", state: .running(elapsed: 1),
+                                                           hasOutput: false),
+                                                    hasStarted: true, hovered: false)
+    #expect(runningQuiet?.shape == .hollow)
+    #expect(runningQuiet?.isPressable == false)
+    let failedQuiet = CommandBlockChrome.gutterCap(header(summary: "exit 1", state: .failed(status: 1),
+                                                          hasOutput: false),
+                                                   hasStarted: true, hovered: false)
+    #expect(failedQuiet?.shape == .bar)
+    #expect(failedQuiet?.isPressable == false)
     // The prompt being typed at has a prompt mark and has run nothing: no cap at all.
     #expect(CommandBlockChrome.gutterCap(header(summary: "", hasOutput: false),
                                          hasStarted: false, hovered: false) == nil)

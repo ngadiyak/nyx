@@ -487,8 +487,11 @@ public extension WatchSeries {
     /// command line. The caller may ask for fewer; nothing may ask for more without the strip
     /// growing past the row it is drawn on.
     func header(dots n: Int = 30) -> WatchHeader {
+        // `n <= 0` is "no timeline", not "a cap the reader should be told about" -- `timeline`
+        // already answers `[]` for it, and a `hiddenRuns` of every run ever made would claim a
+        // cap that was never applied.
         WatchHeader(text: headerText, dots: timeline(last: n), showsStop: !isFinished, tone: tone,
-                   hiddenRuns: max(0, runs.count - n))
+                   hiddenRuns: n > 0 ? max(0, runs.count - n) : 0)
     }
 }
 

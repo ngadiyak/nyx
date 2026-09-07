@@ -239,7 +239,7 @@ public extension CommandBlockChrome {
     enum Pill: Equatable, Hashable {
         public enum FoldLabel: Equatable, Hashable { case fold, unfold }
         public enum Actions: Equatable, Hashable { case labelled, glyph }
-        public enum Glyph: Equatable, Hashable { case ellipsis, chevronDown }
+        public enum Glyph: Equatable, Hashable { case ellipsis }
         case fold(FoldLabel)
         /// `enabled` is `BlockHeader.hasOutput`: the pill and the ⋯ menu's `Copy Output` row answer
         /// to one bit. The table gives a block with nothing to copy the no-output row, so no plan
@@ -288,6 +288,9 @@ public extension CommandBlockChrome {
             switch self {
             case .lens(let name, let on): return on ? "Response lens: \(name)" : "Show this response as \(name)"
             case .actions: return "Command actions"
+            // "Stop" alone collides with ⌘.'s differently-scoped Stop (a11y 6.9): VoiceOver has to
+            // hear what this one stops.
+            case .stop: return help
             default: return title
             }
         }
@@ -329,9 +332,11 @@ public extension CommandBlockChrome {
         public init(row: Int, plan: StripPlan) { self.row = row; self.plan = plan }
     }
 
-    /// The pills, longest kept first: `Stop` → `Actions` (which collapses from `Actions ▾` to
-    /// `⋯` before any pill is dropped) → the lens chip when HTTP, or `Unfold` when folded → `Copy`
-    /// → `Fold` → the dots. `Stop` and `Actions` are present at every width.
+    /// The pills, per §2.6's table -- which wins over any single "richest control survives
+    /// longest" sentence: `Fold` is already gone at the W3→W2 boundary, a labelled duplicate of the
+    /// control the gutter cap already offers, while `Copy` (or the lens chip, or `Unfold`) can
+    /// still be on the row; `Actions ▾` only collapses to `⋯` at the later W2→W1 boundary, where
+    /// every pill but `Stop` goes. `Stop` and `Actions` are present at every width.
     ///
     /// A watched block takes `Stop` and never the lens chip: the two would share the one rung under
     /// Actions, and the lens stays in the ⋯ menu (§3.13). A watched block shows no fold pill
@@ -377,15 +382,16 @@ public extension CommandBlockChrome {
     /// is cut, never re-worded. The one non-positional rule is a finished series' failure count --
     /// `11 runs` on its own says a series went fine, which is the sentence's whole news.
     static func readout(_ header: BlockHeader, at width: WidthClass) -> String {
-        let parts = header.summary.components(separatedBy: " \u{b7} ")
         switch width {
+        // W3 and W0 never split the sentence, so they never pay for `components(separatedBy:)`.
         case .w3: return header.summary
         case .w2:
+            let parts = header.summary.components(separatedBy: " \u{b7} ")
             if parts.count > 2, let first = parts.first, let last = parts.last, isFailureCount(last) {
                 return first + " \u{b7} " + last
             }
             return parts.prefix(2).joined(separator: " \u{b7} ")
-        case .w1: return parts.first ?? ""
+        case .w1: return header.summary.components(separatedBy: " \u{b7} ").first ?? ""
         case .w0: return ""
         }
     }
@@ -402,8 +408,11 @@ public extension CommandBlockChrome {
         // and the last status.
         let dots = width == .w3 ? (header.watch?.dots ?? []) : []
         let hidden = width == .w3 ? (header.watch?.hiddenRuns ?? 0) : 0
+        // `+N` *replaces* the leading dot rather than joining it: thirty circles and a `+18` beside
+        // them would be thirty-one marks in the space the spec draws thirty.
+        let visibleDots = hidden > 0 ? Array(dots.dropFirst()) : dots
         return StripContent(readout: readout(header, at: width), readoutTone: header.tone,
-                            dots: dots, overflowDot: hidden > 0 ? "+\(hidden)" : nil, pills: list)
+                            dots: visibleDots, overflowDot: hidden > 0 ? "+\(hidden)" : nil, pills: list)
     }
 
     /// Where a measured strip begins, or nil when it may not be drawn on this row at all.
@@ -415,7 +424,8 @@ public extension CommandBlockChrome {
         // always be one click: it is drawn over the command's tail on an opaque pill.
         let overlaps = widthClass == .w0
         guard overlaps || first > lastUsedColumn else { return nil }
-        return StripPlan(content: content, firstColumn: max(0, first), overlapsCommand: overlaps)
+        // `first` is already `>= 0`: the guard above requires `stripColumns <= cols`.
+        return StripPlan(content: content, firstColumn: first, overlapsCommand: overlaps)
     }
 
     /// Whether the strip on `stripRow` speaks for the summary that would have gone on
@@ -455,7 +465,8 @@ public extension CommandBlockChrome {
             /// A rounded capsule inset from the row's top and bottom: the command succeeded.
             case solid
             /// The full row height, square ends, so failures join up down a scrolling screen and
-            /// carry more ink than successes -- the state that has to be findable.
+            /// carry more ink than successes -- the state that has to be findable. Task 2 draws
+            /// this as the cap plus a full-row bar down the spine, both from this one shape.
             case bar
             /// A stroked capsule: still running.
             case hollow
@@ -479,7 +490,17 @@ public extension CommandBlockChrome {
         // The command's own outcome, not the response's: a `curl` that reported 404 exited 0, and
         // the gutter says what the command did. The strip's tone is where a 404 goes red.
         let tone: SummaryTone = header.failed ? .failure : (header.isRunning ? .running : .success)
-        guard header.hasOutput else { return GutterCap(shape: .faded, tone: tone, isPressable: false) }
+        // Shape from state first, `hasOutput` second: a failure or a still-running command is news
+        // whether or not it has printed anything yet, and erasing `.bar`/`.hollow` in favour of a
+        // blanket `.faded` the moment output is empty drew a `sleep 10` one second in -- and any
+        // failure with no output -- as a quiet record rather than what it is. The 40 % `faded`
+        // treatment, and the loss of pressability, belong only to a block that has *finished*
+        // cleanly with nothing to fold.
+        guard header.hasOutput else {
+            if header.failed { return GutterCap(shape: .bar, tone: tone, isPressable: false) }
+            if header.isRunning { return GutterCap(shape: .hollow, tone: tone, isPressable: false) }
+            return GutterCap(shape: .faded, tone: tone, isPressable: false)
+        }
         if hovered {
             return GutterCap(shape: header.folded ? .chevronRight : .chevronDown, tone: tone,
                              isPressable: true)

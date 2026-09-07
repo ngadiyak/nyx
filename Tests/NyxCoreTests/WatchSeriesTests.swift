@@ -224,17 +224,17 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
     #expect(WatchPlan(interval: .infinity, stop: .never).title == "every inf s")
 
     var running = watchSeries(interval: 5, startedAt: 0)
-    #expect(running.headerText == "watch every 5 s")
+    #expect(running.headerText == "every 5 s")
     for i in 1...12 {
         watchRun(&running, id: UInt32(i), status: 200, timeTotal: 0.142, start: Double(i * 10),
                  end: Double(i * 10) + 0.142)
     }
-    #expect(running.headerText == "watch every 5 s \u{b7} run 12 \u{b7} 200 \u{b7} 142 ms")
+    #expect(running.headerText == "run 12 \u{b7} 200 \u{b7} 142 ms \u{b7} every 5 s")
 
     // While the next run is in flight the last answer stays: dropping it shrank the strip and
     // re-laid it out every interval. See `theHeaderKeepsTheLastAnswerWhileTheNextRunIsInFlight`.
     running.runStarted(id: 13, at: 200)
-    #expect(running.headerText == "watch every 5 s \u{b7} run 13 \u{b7} 200 \u{b7} 142 ms")
+    #expect(running.headerText == "run 13 \u{b7} 200 \u{b7} 142 ms \u{b7} every 5 s")
 
     var finished = watchSeries(interval: 1, startedAt: 0)
     watchRun(&finished, id: 1, status: 200, timeTotal: 0.1, start: 0, end: 0.1)
@@ -258,7 +258,7 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
     // A run that failed outright says so instead of showing a status it never had.
     var failed = watchSeries(interval: 5, startedAt: 0)
     watchRun(&failed, id: 1, status: nil, exitStatus: 7, timeTotal: nil, start: 0, end: 0.1)
-    #expect(failed.headerText == "watch every 5 s \u{b7} run 1 \u{b7} exit 7")
+    #expect(failed.headerText == "run 1 \u{b7} exit 7 \u{b7} every 5 s")
 }
 
 /// A series adopts the run it is watching and the run it has just typed, and nothing else.
@@ -325,19 +325,19 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
 @Test func theHeaderKeepsTheLastAnswerWhileTheNextRunIsInFlight() {
     var series = watchSeries(interval: 5, startedAt: 0)
     watchRun(&series, id: 1, status: 200, timeTotal: 0.142, start: 0, end: 0.2)
-    #expect(series.headerText == "watch every 5 s \u{b7} run 1 \u{b7} 200 \u{b7} 142 ms")
+    #expect(series.headerText == "run 1 \u{b7} 200 \u{b7} 142 ms \u{b7} every 5 s")
 
     series.runStarted(id: 2, at: 5)
-    #expect(series.headerText == "watch every 5 s \u{b7} run 2 \u{b7} 200 \u{b7} 142 ms")
+    #expect(series.headerText == "run 2 \u{b7} 200 \u{b7} 142 ms \u{b7} every 5 s")
 
     // And the new answer replaces it once it is in.
     series.runFinished(id: 2, status: 503, exitStatus: 0, timeTotal: 0.31, body: "", at: 5.3)
-    #expect(series.headerText == "watch every 5 s \u{b7} run 2 \u{b7} 503 \u{b7} 310 ms")
+    #expect(series.headerText == "run 2 \u{b7} 503 \u{b7} 310 ms \u{b7} every 5 s")
 
     // Nothing has come back yet: there is nothing to keep.
     var fresh = watchSeries(interval: 5, startedAt: 0)
     fresh.runStarted(id: 1, at: 0)
-    #expect(fresh.headerText == "watch every 5 s \u{b7} run 1")
+    #expect(fresh.headerText == "run 1 \u{b7} every 5 s")
 }
 
 /// The sentence describes the *series*, so its colour has to as well.
@@ -364,4 +364,30 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
     watchRun(&redirects, id: 1, status: 301, start: 0, end: 0.1)
     redirects.runStarted(id: 2, at: 2)
     #expect(redirects.tone == .redirect)
+}
+
+/// The running sentence is ordered the way the readout ladder drops it: the run number first, the
+/// interval last, because the interval is the first thing a narrow strip gives up (§2.6).
+@Test func theRunningHeaderPutsTheIntervalLast() {
+    var series = WatchSeries(plan: WatchPlan(interval: 5, stop: .never), command: "curl x",
+                             startedAt: 0)
+    series.runStarted(id: 1, at: 0)
+    series.runFinished(id: 1, status: 200, exitStatus: 0, timeTotal: 0.1, body: "", at: 1)
+    #expect(series.headerText == "run 1 · 200 · 100 ms · every 5 s")
+    let header = series.header(dots: 30)
+    #expect(header.hiddenRuns == 0)
+}
+
+/// The timeline stops being silent about its cap: thirty dots and a `+N` in front of them.
+@Test func theTimelineSaysHowManyRunsItIsNotShowing() {
+    var series = WatchSeries(plan: WatchPlan(interval: 1, stop: .never), command: "curl x",
+                             startedAt: 0)
+    for id in UInt32(1)...48 {
+        series.runStarted(id: id, at: Double(id))
+        series.runFinished(id: id, status: 200, exitStatus: 0, timeTotal: 0.1, body: "",
+                           at: Double(id) + 0.1)
+    }
+    let header = series.header(dots: 30)
+    #expect(header.dots.count == 30)
+    #expect(header.hiddenRuns == 18)
 }

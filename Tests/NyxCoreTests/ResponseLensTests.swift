@@ -504,3 +504,20 @@ private func twentyLines(changingAt changed: Range<Int>, marker: String) -> [Str
                                                        folded: []))
     #expect(headers?.first?.text == lines[0].text)
 }
+
+/// The chip carries the lens' *name*, and it is the short head of the menu's own wording -- never a
+/// third spelling of the same lens.
+@Test func everyLensHasAChipTitle() {
+    #expect(ResponseLens.raw.chipTitle == "Raw")
+    #expect(ResponseLens.pretty.chipTitle == "Pretty")
+    #expect(ResponseLens.headers.chipTitle == "Headers")
+    #expect(ResponseLens.body.chipTitle == "Body")
+    #expect(ResponseLens.filter(".a").chipTitle == "Filter")
+    #expect(ResponseLens.grep("x").chipTitle == "Find")
+    #expect(ResponseLens.diff(previousCommandID: 3).chipTitle == "Diff")
+    for lens in [ResponseLens.raw, .pretty, .headers, .body, .filter(""), .grep(""),
+                 .diff(previousCommandID: 0)] {
+        #expect(lens.title.hasPrefix(lens.chipTitle) || lens.chipTitle == "Find",
+                "\(lens.chipTitle) is not the head of \(lens.title)")
+    }
+}

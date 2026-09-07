@@ -339,8 +339,8 @@ private func httpHeader(lens: ResponseLens? = nil, tooLarge: Bool = false,
 
 /// A watched run's header says what the series is doing instead of what the one request answered.
 ///
-/// The substitution is the point: `200 · 142 ms` is already inside `watch every 5 s · run 12 · 200
-/// · 142 ms`, and printing both would put the same status on the row twice.
+/// The substitution is the point: `200 · 142 ms` is already inside `run 12 · 200 · 142 ms · every
+/// 5 s`, and printing both would put the same status on the row twice.
 @Test func watchHeaderReplacesSummary() {
     var series = WatchSeries(plan: WatchPlan(interval: 5, stop: .never), command: "curl x",
                              startedAt: 0)
@@ -351,7 +351,7 @@ private func httpHeader(lens: ResponseLens? = nil, tooLarge: Bool = false,
                                          httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
                                                                   tone: .success),
                                          isHTTP: true, watch: series.header())
-    #expect(watched.summary == "watch every 5 s \u{b7} run 1 \u{b7} 200 \u{b7} 142 ms")
+    #expect(watched.summary == "run 1 \u{b7} 200 \u{b7} 142 ms \u{b7} every 5 s")
     #expect(watched.watch?.showsStop == true)
     #expect(watched.watch?.dots == [.success])
     // The colour still comes from the request: a watch of a failing endpoint must not read green.

@@ -107,10 +107,6 @@ public extension Terminal {
 
 /// Where the chrome for a block goes, and when it should not be drawn at all.
 public enum CommandBlockChrome {
-    /// The spine's width in cells' worth of points, and the gap between it and the text.
-    public static let spineWidth: Double = 2
-    public static let spineGap: Double = 4
-
     /// Whether block chrome may be drawn over this screen at all.
     ///
     /// Not while a full-screen program owns the display or the mouse. `vim`, `htop` and anything
@@ -207,6 +203,317 @@ public enum CommandBlockChrome {
               minimal > 0, minimal <= cols else { return nil }
         return OverlayPlacement(row: last.absoluteRow, controls: .minimal)
     }
+}
+
+public extension CommandBlockChrome {
+    /// Free columns after the command's last glyph. W3 ≥ 34, W2 18…33, W1 8…17, W0 < 8 (§2.6).
+    enum WidthClass: Equatable { case w3, w2, w1, w0 }
+
+    static func widthClass(freeColumns: Int) -> WidthClass {
+        switch freeColumns {
+        case 34...: return .w3
+        case 18...33: return .w2
+        case 8...17: return .w1
+        default: return .w0
+        }
+    }
+
+    /// The last column of a row that has anything in it -- **counting the second half of a wide
+    /// glyph**, which has no content of its own. `Renderer.lastUsed` ignores it (D19), and a strip
+    /// placed from that count began on top of the 世 it was avoiding.
+    static func lastUsedColumn(of row: Row) -> Int {
+        var last = -1
+        for (column, cell) in row.cells.enumerated()
+        where cell.content != 0 || cell.attrs.contains(.wideSpacer) {
+            last = column
+        }
+        return last
+    }
+
+    static func freeColumns(cols: Int, lastUsedColumn: Int) -> Int {
+        max(0, cols - lastUsedColumn - 1)
+    }
+
+    /// One control on the strip. What each one says is here rather than in the view, because a
+    /// tooltip that disagrees with a VoiceOver label is two controls with one shape.
+    enum Pill: Equatable, Hashable {
+        public enum FoldLabel: Equatable, Hashable { case fold, unfold }
+        public enum Actions: Equatable, Hashable { case labelled, glyph }
+        public enum Glyph: Equatable, Hashable { case ellipsis, chevronDown }
+        case fold(FoldLabel)
+        /// `enabled` is `BlockHeader.hasOutput`: the pill and the ⋯ menu's `Copy Output` row answer
+        /// to one bit. The table gives a block with nothing to copy the no-output row, so no plan
+        /// built today carries a disabled Copy -- and if one ever does, it draws as disabled rather
+        /// than beeping.
+        case copy(enabled: Bool)
+        case lens(name: String, on: Bool)
+        case stop
+        case actions(Actions)
+
+        public var title: String {
+            switch self {
+            case .fold(.fold): return "Fold"
+            case .fold(.unfold): return "Unfold"
+            case .copy: return "Copy"
+            case .lens(let name, _): return name
+            case .stop: return "Stop"
+            case .actions(.labelled): return "Actions"
+            case .actions(.glyph): return ""
+            }
+        }
+
+        public var glyph: Glyph? { if case .actions(.glyph) = self { return .ellipsis } else { return nil } }
+
+        /// A `▾` after the title, drawn as an 8 pt path rather than set as a 5 pt text glyph -- the
+        /// measured reason the old chevron read as "weak because of size" (design §2.7).
+        public var trailingChevron: Bool {
+            switch self {
+            case .actions(.labelled), .lens: return true
+            default: return false
+            }
+        }
+
+        public var help: String {
+            switch self {
+            case .fold(.fold): return "Fold this command\u{2019}s output"
+            case .fold(.unfold): return "Unfold this command\u{2019}s output"
+            case .copy: return "Copy this command\u{2019}s output"
+            case .lens: return "Choose how this response is shown"
+            case .stop: return "Stop watching this request"
+            case .actions: return "Command actions"
+            }
+        }
+
+        public var accessibilityLabel: String {
+            switch self {
+            case .lens(let name, let on): return on ? "Response lens: \(name)" : "Show this response as \(name)"
+            case .actions: return "Command actions"
+            default: return title
+            }
+        }
+    }
+
+    /// What is on the strip, before anyone knows where it goes.
+    struct StripContent: Equatable {
+        public let readout: String
+        public let readoutTone: SummaryTone
+        public let dots: [WatchSeries.Dot]
+        public let overflowDot: String?
+        public let pills: [Pill]
+        public init(readout: String, readoutTone: SummaryTone, dots: [WatchSeries.Dot],
+                    overflowDot: String?, pills: [Pill]) {
+            self.readout = readout; self.readoutTone = readoutTone; self.dots = dots
+            self.overflowDot = overflowDot; self.pills = pills
+        }
+    }
+
+    /// That content, placed: which column it begins at and whether it is allowed to sit on the
+    /// command's own text.
+    struct StripPlan: Equatable {
+        public let content: StripContent
+        public let firstColumn: Int
+        public let overlapsCommand: Bool
+        public init(content: StripContent, firstColumn: Int, overlapsCommand: Bool) {
+            self.content = content; self.firstColumn = firstColumn; self.overlapsCommand = overlapsCommand
+        }
+        public var readout: String { content.readout }
+        public var readoutTone: SummaryTone { content.readoutTone }
+        public var dots: [WatchSeries.Dot] { content.dots }
+        public var overflowDot: String? { content.overflowDot }
+        public var pills: [Pill] { content.pills }
+    }
+
+    struct StripPlacement: Equatable {
+        public let row: Int
+        public let plan: StripPlan
+        public init(row: Int, plan: StripPlan) { self.row = row; self.plan = plan }
+    }
+
+    /// The pills, longest kept first: `Stop` → `Actions` (which collapses from `Actions ▾` to
+    /// `⋯` before any pill is dropped) → the lens chip when HTTP, or `Unfold` when folded → `Copy`
+    /// → `Fold` → the dots. `Stop` and `Actions` are present at every width.
+    ///
+    /// A watched block takes `Stop` and never the lens chip: the two would share the one rung under
+    /// Actions, and the lens stays in the ⋯ menu (§3.13). A watched block shows no fold pill
+    /// either -- §2.6's two watch rows have none, because a series' newest run is the thing being
+    /// read.
+    static func pills(_ header: BlockHeader, at width: WidthClass) -> [Pill] {
+        let watching = header.watch?.showsStop == true
+        let watched = header.watch != nil
+        let lensable = header.isHTTP && !header.lensTooLarge && (header.bodyIsJSON || header.lens != nil)
+        // W0 is the row that costs a column of the user's own text, so only the one control with a
+        // running side effect earns it.
+        guard width != .w0 else { return watching ? [.stop] : [] }
+        guard width != .w1 else { return watching ? [.stop, .actions(.glyph)] : [.actions(.glyph)] }
+
+        // The rung under Actions: whichever of Stop, the lens chip and Unfold applies, and Copy
+        // when none does. At W3 the rest of the ladder is added below it.
+        var list: [Pill] = []
+        if watching {
+            list.append(.stop)
+        } else if !watched, lensable {
+            list.append(.lens(name: (header.lens ?? .pretty).chipTitle, on: header.lens != nil))
+        } else if header.folded, header.hasOutput {
+            list.append(.fold(.unfold))
+        }
+        if width == .w3 {
+            // Fold is the widest labelled duplicate of a control the gutter already offers, so it
+            // is the first pill to go; a folded block already carries `Unfold` above.
+            if header.hasOutput, !watched, !header.folded { list.append(.fold(.fold)) }
+            if header.hasOutput { list.append(.copy(enabled: header.hasOutput)) }
+        } else if list.isEmpty, header.hasOutput, !watched {
+            // W2 with no Stop, no chip and nothing folded: Copy is what the rung carries.
+            list.append(.copy(enabled: header.hasOutput))
+        }
+        list.append(.actions(.labelled))
+        return list
+    }
+
+    /// The readout, longest first: the whole sentence → drop the interval and the percentiles →
+    /// drop the timing and the size → drop the run count → **the status or exit code alone, never
+    /// dropped while a strip is drawn at all**.
+    ///
+    /// Dropping only ever removes whole ` · ` groups: §1 protects the vocabulary, so the sentence
+    /// is cut, never re-worded. The one non-positional rule is a finished series' failure count --
+    /// `11 runs` on its own says a series went fine, which is the sentence's whole news.
+    static func readout(_ header: BlockHeader, at width: WidthClass) -> String {
+        let parts = header.summary.components(separatedBy: " \u{b7} ")
+        switch width {
+        case .w3: return header.summary
+        case .w2:
+            if parts.count > 2, let first = parts.first, let last = parts.last, isFailureCount(last) {
+                return first + " \u{b7} " + last
+            }
+            return parts.prefix(2).joined(separator: " \u{b7} ")
+        case .w1: return parts.first ?? ""
+        case .w0: return ""
+        }
+    }
+
+    private static func isFailureCount(_ part: String) -> Bool {
+        part.hasSuffix(" failure") || part.hasSuffix(" failures")
+    }
+
+    static func stripContent(_ header: BlockHeader, at width: WidthClass) -> StripContent? {
+        let list = pills(header, at: width)
+        guard !list.isEmpty else { return nil }
+        // Thirty circles is the widest thing on the strip and the least of what it says, so the
+        // timeline goes at the first squeeze -- the sentence beside it still carries the run number
+        // and the last status.
+        let dots = width == .w3 ? (header.watch?.dots ?? []) : []
+        let hidden = width == .w3 ? (header.watch?.hiddenRuns ?? 0) : 0
+        return StripContent(readout: readout(header, at: width), readoutTone: header.tone,
+                            dots: dots, overflowDot: hidden > 0 ? "+\(hidden)" : nil, pills: list)
+    }
+
+    /// Where a measured strip begins, or nil when it may not be drawn on this row at all.
+    static func stripPlan(_ content: StripContent, widthClass: WidthClass,
+                          lastUsedColumn: Int, cols: Int, stripColumns: Int) -> StripPlan? {
+        guard stripColumns > 0, stripColumns <= cols else { return nil }
+        let first = cols - stripColumns
+        // The only content W0 ever produces is the lone Stop, and stopping a runaway watch must
+        // always be one click: it is drawn over the command's tail on an opaque pill.
+        let overlaps = widthClass == .w0
+        guard overlaps || first > lastUsedColumn else { return nil }
+        return StripPlan(content: content, firstColumn: max(0, first), overlapsCommand: overlaps)
+    }
+
+    /// Whether the strip on `stripRow` speaks for the summary that would have gone on
+    /// `summaryRow`, and may therefore replace it.
+    ///
+    /// Two rows of a wrapped command are two different width classes: a watched `curl` whose last
+    /// row is full places its lone `Stop` there (W0, no readout at all) while the summary belongs
+    /// on the roomier row above. Suppressing on "a strip exists somewhere on this block" then took
+    /// `run 12 · 200 · 100 ms · every 5 s` off the screen the moment the pointer arrived -- the
+    /// exact defect §2.5 exists to end. So: the same row, and something to say.
+    static func suppressesSummary(_ plan: StripPlan, stripRow: Int, summaryRow: Int?) -> Bool {
+        !plan.readout.isEmpty && stripRow == summaryRow
+    }
+
+    /// Which row of the command carries the strip, walked from the last upwards -- the same ladder
+    /// and the same rows the summary uses, because a wrapped `curl` fills its first rows and leaves
+    /// room on its last. `measure` is the view's own width for that content, in columns.
+    static func stripPlacement(_ header: BlockHeader,
+                               commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
+                               cols: Int,
+                               measure: (StripContent) -> Int) -> StripPlacement? {
+        for row in commandRows.reversed() {
+            let width = widthClass(freeColumns: freeColumns(cols: cols, lastUsedColumn: row.lastUsedColumn))
+            guard let content = stripContent(header, at: width),
+                  let plan = stripPlan(content, widthClass: width, lastUsedColumn: row.lastUsedColumn,
+                                       cols: cols, stripColumns: measure(content)) else { continue }
+            return StripPlacement(row: row.absoluteRow, plan: plan)
+        }
+        return nil
+    }
+
+    /// The mark at the head of the spine: what shape it is, what colour, and whether it can be
+    /// pressed. Shape rather than colour alone, because colour is the one thing a mark cannot say
+    /// on its own (a11y 6.2).
+    struct GutterCap: Equatable {
+        public enum Shape: Equatable {
+            /// A rounded capsule inset from the row's top and bottom: the command succeeded.
+            case solid
+            /// The full row height, square ends, so failures join up down a scrolling screen and
+            /// carry more ink than successes -- the state that has to be findable.
+            case bar
+            /// A stroked capsule: still running.
+            case hollow
+            /// `solid` at 40 % and not pressable: a command that printed nothing to fold.
+            case faded
+            case chevronDown, chevronRight
+        }
+        public let shape: Shape
+        public let tone: SummaryTone
+        public let isPressable: Bool
+        public init(shape: Shape, tone: SummaryTone, isPressable: Bool) {
+            self.shape = shape; self.tone = tone; self.isPressable = isPressable
+        }
+    }
+
+    static func gutterCap(_ header: BlockHeader, hasStarted: Bool, hovered: Bool) -> GutterCap? {
+        // The prompt you are typing at carries a prompt mark and no status. Nothing is drawn there:
+        // a mark that appeared the instant you pressed return would be a spinner, and the gutter is
+        // a record.
+        guard hasStarted else { return nil }
+        // The command's own outcome, not the response's: a `curl` that reported 404 exited 0, and
+        // the gutter says what the command did. The strip's tone is where a 404 goes red.
+        let tone: SummaryTone = header.failed ? .failure : (header.isRunning ? .running : .success)
+        guard header.hasOutput else { return GutterCap(shape: .faded, tone: tone, isPressable: false) }
+        if hovered {
+            return GutterCap(shape: header.folded ? .chevronRight : .chevronDown, tone: tone,
+                             isPressable: true)
+        }
+        if header.failed { return GutterCap(shape: .bar, tone: tone, isPressable: true) }
+        if header.isRunning { return GutterCap(shape: .hollow, tone: tone, isPressable: true) }
+        return GutterCap(shape: .solid, tone: tone, isPressable: true)
+    }
+
+    /// The mark and the spine are one shape: the renderer and the gutter view read these two
+    /// numbers, so the Metal spine and the AppKit cap cannot drift apart.
+    /// **Replaces `CommandBlock.swift:111-112`**, which declared `spineWidth: Double = 2` beside a
+    /// `spineGap: Double = 4` that the renderer never read (it computed `padding - 3` by hand).
+    /// `spineGap` is deleted outright: it has no callers, and `spineLeadingInset` is the number the
+    /// gap was standing in for.
+    static let spineWidth: Double = 3
+    /// 4 pt at the shipping `padding = 8`, which is outside the window's resize margin; 0 at
+    /// `padding = 0`, where the mark draws over the first text column's leading 3 pt rather than
+    /// off the window (Addendum 2).
+    static func spineLeadingInset(padding: Double) -> Double { min(4, max(0, padding - 3)) }
+    /// Every row-height *hit* target, clamped so `line-height = 0.8` cannot make it 13 pt (§8.4).
+    /// The *drawn* mark stays `cellHeight` tall.
+    static func hitRowHeight(cellHeight: Double) -> Double { max(cellHeight, 16) }
+    static let stripHeight: Double = 20
+    /// The strip's frame: tall enough for its pills and never below the hit floor. Decided here
+    /// rather than from `stack.fittingSize`, which is what `Pane.blockHeaderChanged` used.
+    static func stripFrameHeight(cellHeight: Double) -> Double {
+        max(stripHeight, hitRowHeight(cellHeight: cellHeight))
+    }
+    /// What the strip actually *paints*: one row, whatever its frame is. A 20 pt opaque band on a
+    /// 13 pt grid covers three rows of somebody's output (Addendum 2).
+    static func stripGroundHeight(cellHeight: Double) -> Double { cellHeight }
+    /// Column 0's fold triangle, widened to the same 20 pt the gutter uses, for the same reason.
+    static let foldColumnWidth: Double = 20
 }
 
 /// How much of the hover strip there is room for on a row.
@@ -319,8 +626,8 @@ public enum BlockAction: Equatable {
         case .toggleLens: return "Toggle Pretty Response"
         case .copyBody: return "Copy Body"
         case .copyHeaders: return "Copy Headers"
-        // The same words the header will then show ("watch every 5 s"), so the row a user pressed
-        // and the sentence they end up reading are one plan described once.
+        // The same words the header's own tail will then show ("every 5 s"), so the row a user
+        // pressed and the sentence they end up reading are one plan described once.
         case .runEvery(let seconds): return "Run Every \(WatchPlan.secondsText(seconds)) s"
         case .watch: return "Watch\u{2026}"
         // The same title as the `stop_watch` action in the palette and the menu bar.
@@ -455,8 +762,8 @@ public struct BlockHeader: Equatable {
         self.hasPreviousRun = hasPreviousRun
         self.watch = watch; self.watchInterval = watchInterval
         // And a watch's own sentence replaces the request's, for the same reason: `200 · 142 ms`
-        // is already the tail of `watch every 5 s · run 12 · 200 · 142 ms`, and showing both puts
-        // the status on the row twice.
+        // is already inside `run 12 · 200 · 142 ms · every 5 s`, and showing both puts the status
+        // on the row twice.
         self.summary = watch?.text ?? httpSummary?.text ?? summary
         self.httpSummary = httpSummary
         // A block that produced a response is a request whatever the caller says: the summary could

@@ -400,3 +400,62 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     #expect(CommandBlockChrome.stripFrameHeight(cellHeight: 24) == 24)
     #expect(CommandBlockChrome.stripGroundHeight(cellHeight: 13) == 13)
 }
+
+// MARK: - The two-stage placement, as the pane calls it
+
+/// The whole point of the two-stage placement: the strip that is measured is the strip that is
+/// drawn, and the row it lands on is chosen from the *measured* width rather than from a guess.
+@Test func thePlacementMeasuresTheContentItPlaces() {
+    let h = header(summary: "8.8s")
+    var measured: [Int] = []
+    let placement = CommandBlockChrome.stripPlacement(
+        h, commandRows: [(absoluteRow: 4, lastUsedColumn: 20)], cols: 80,
+        measure: { content in measured.append(content.pills.count); return 24 })
+    #expect(placement?.plan.firstColumn == 56)
+    #expect(measured == [3])          // W3: Fold, Copy, Actions -- measured once
+}
+
+/// A watch on a full command line still gets its Stop, and only its Stop.
+@Test func aFullCommandLineStillStopsAWatch() {
+    let watching = header(summary: "", isHTTP: true,
+                          watch: WatchHeader(text: "run 12 · 200 · 100 ms · every 5 s",
+                                             dots: [.running], showsStop: true, tone: .success))
+    let placement = CommandBlockChrome.stripPlacement(
+        watching, commandRows: [(absoluteRow: 4, lastUsedColumn: 79)], cols: 80,
+        measure: { _ in 8 })
+    #expect(placement?.plan.pills == [.stop])
+    #expect(placement?.plan.overlapsCommand == true)
+}
+
+/// A width class is a budget, not a promise.
+///
+/// §2.6 puts the timeline, the sentence, `Stop`, `Copy` and `Actions` on a W3 watched block, and
+/// measured that is sixty to eighty columns of strip -- while W3 begins at thirty-four free ones.
+/// Refusing the row outright took `Stop`, the one control the table says is present at *every*
+/// width, off the screen entirely; the composites named after the watch and the lens had no strip
+/// in them at all. So a row walks down its own ladder until the strip fits, which is what the two
+/// ladders are for.
+@Test func aRowTooNarrowForItsClassStepsDownTheLadder() {
+    let watching = header(summary: "", isHTTP: true,
+                          watch: WatchHeader(text: "run 12 · 200 · 100 ms · every 5 s",
+                                             dots: [.success, .running], showsStop: true,
+                                             tone: .success))
+    var tried: [Int] = []
+    let placement = CommandBlockChrome.stripPlacement(
+        watching, commandRows: [(absoluteRow: 4, lastUsedColumn: 30)], cols: 80,
+        measure: { content in
+            tried.append(content.pills.count)
+            return content.pills.count == 3 ? 70 : 12
+        })
+    // W3 (49 free) is asked first and does not fit after the last glyph; W2 does.
+    #expect(tried == [3, 2])
+    #expect(placement?.plan.pills == [.stop, .actions(.labelled)])
+    #expect(placement?.plan.firstColumn == 68)
+    // Stepping down never reaches W0 from a roomier row: the lone Stop over the command's tail is
+    // the W0 row's own exception, not a fallback every crowded block gets.
+    #expect(placement?.plan.overlapsCommand == false)
+    let noRoomAtAll = CommandBlockChrome.stripPlacement(
+        watching, commandRows: [(absoluteRow: 4, lastUsedColumn: 30)], cols: 80,
+        measure: { _ in 60 })
+    #expect(noRoomAtAll == nil)
+}

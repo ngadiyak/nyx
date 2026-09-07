@@ -104,19 +104,30 @@ enum StateSnapshot {
                 UISnapshot.write(gutter, named: "gutter-marks-hovered-\(suffix)", into: directory,
                                  background: themePalette.background)
 
-                // Each pill of the hover strip in its pressed art. `NSButton.highlight(true)` is
-                // what a mouse-down does to a button; the *hovered* art of an `.inline` bezel is
-                // AppKit's own tracking and cannot be reached without a window, which is why there
-                // is no `-hovered-` strip picture -- see the report.
-                for (label, title, header, controls) in strippedButtons() {
+                // Each pill of the hover strip in its pressed art. The pills are drawn views now,
+                // so the pressed fill is a value this process can set -- where an `.inline` bezel's
+                // hovered art was AppKit's own tracking, unreachable without a window, which is why
+                // the round before this had no pressed or hovered strip picture worth the name.
+                for (label, title, header, width) in strippedButtons() {
+                    guard let content = CommandBlockChrome.stripContent(header, at: width) else { continue }
+                    let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
                     let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: cell))
                     view.appearance = NSAppearance(named: appearance)
-                    view.update(header: header, controls: controls, palette: themePalette,
-                                font: .monospacedSystemFont(ofSize: 12, weight: .regular))
-                    let size = view.intrinsicContentSize
-                    view.frame = NSRect(x: 0, y: 0, width: size.width, height: cell)
+                    let plan = CommandBlockChrome.StripPlan(content: content, firstColumn: 0,
+                                                            overlapsCommand: false)
+                    view.update(header: header, plan: plan, palette: themePalette, font: font,
+                                groundHeight: cell)
+                    view.frame = NSRect(
+                        x: 0, y: 0, width: view.width(of: content, font: font),
+                        height: CGFloat(CommandBlockChrome.stripFrameHeight(cellHeight: Double(cell))))
                     view.layoutSubtreeIfNeeded()
-                    press(title, in: view)
+                    // A picture named `-pressed-copy-` with no pressed pill in it is worse than no
+                    // picture, so a title that is not on the strip says so rather than passing.
+                    if !view.setPressedForSnapshot(title: title) {
+                        FileHandle.standardError.write(
+                            "pressed-state snapshot: no pill titled \"\(title)\" on the strip\n"
+                                .data(using: .utf8)!)
+                    }
                     UISnapshot.write(view, named: "block-header-pressed-\(label)-\(suffix)",
                                      into: directory, background: themePalette.background)
                 }
@@ -161,8 +172,9 @@ enum StateSnapshot {
         }
     }
 
-    /// The five pressable pills, each on a header that shows it.
-    private static func strippedButtons() -> [(String, String, BlockHeader, OverlayControls)] {
+    /// The pressable pills, each on a header and a width class that carries it.
+    private static func strippedButtons()
+        -> [(String, String, BlockHeader, CommandBlockChrome.WidthClass)] {
         let finished = BlockHeader(id: 1, state: .finished, folded: false, hasOutput: true,
                                    anyFolds: true, notifyArmed: false, summary: "8.8s")
         let request = BlockHeader(id: 2, state: .finished, folded: false, hasOutput: true,
@@ -174,18 +186,24 @@ enum StateSnapshot {
                                   httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms", tone: .success),
                                   isHTTP: true, bodyIsJSON: true,
                                   watch: GridScene.watchHeader(runs: 11))
-        return [("copy", "Copy", finished, .full),
-                ("more", "\u{22EF}", finished, .full),
-                ("chevron", "\u{25BE}", finished, .full),
-                ("lens", "{ }", request, .full),
-                ("stop", "Stop", watched, .full)]
+        return [("copy", "Copy", finished, .w3),
+                ("fold", "Fold", finished, .w3),
+                ("actions", "Actions", finished, .w3),
+                // The glyph pill has no title at all: at W1 `Actions` collapses to the `\u{22EF}`,
+                // and the pressed art of the one control that is on every width is worth a picture.
+                ("actions-glyph", "", finished, .w1),
+                ("lens", "Pretty", request, .w3),
+                ("stop", "Stop", watched, .w3)]
     }
 
-    /// Puts a named button into its pressed art, by the title it draws.
+
+    /// Puts a named `NSButton` into its pressed art, by the title it draws. The strip's pills are
+    /// not buttons any more -- they press through `BlockHeaderView.setPressedForSnapshot(title:)`
+    /// -- but the banner, the project bar and the remote strip still are.
     ///
-    /// `BlockHeaderView.style` sets `attributedTitle`, so the plain `title` is not what is on the
-    /// button; both are matched. A press that finds nothing prints, because a picture named
-    /// `-pressed-copy-` that has no pressed button in it is worse than no picture.
+    /// Both the plain `title` and an `attributedTitle` set for a themed colour are matched. A press
+    /// that finds nothing prints, because a picture named `-pressed-` with nothing pressed in it is
+    /// worse than no picture.
     private static func press(_ title: String, in view: NSView) {
         let buttons = UISnapshot.descendants(of: view).compactMap { $0 as? NSButton }
         guard let button = buttons.first(where: {

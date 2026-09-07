@@ -225,10 +225,11 @@ enum UISnapshot {
         for (paletteName, themePalette) in chromePalettes(default: palette) {
             for (appearanceName, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 let suffix = "\(paletteName)-\(appearanceName)"
-                for (name, header, controls) in blockStripStates() {
-                    write(blockStrip(header: header, controls: controls, palette: themePalette,
-                                     appearance: appearance, rowHeight: rowHeight, font: overlayFont),
-                          named: "block-header-\(name)-\(suffix)", into: directory,
+                for (name, header, width) in blockStripStates() {
+                    guard let strip = blockStrip(header: header, width: width, palette: themePalette,
+                                                 appearance: appearance, rowHeight: rowHeight,
+                                                 font: overlayFont) else { continue }
+                    write(strip, named: "block-header-\(name)-\(suffix)", into: directory,
                           background: themePalette.background)
                 }
                 // The pill over the row it is really drawn on: what a user sees a moment after
@@ -238,9 +239,10 @@ enum UISnapshot {
                 write(workbenchHintRow(palette: themePalette, appearance),
                       named: "workbench-hint-\(suffix)", into: directory,
                       background: themePalette.background)
-                // The case the placement rule was changed for: a command line so long that no row
-                // of it has four free columns, hovered. The minimal strip goes over the tail rather
-                // than nowhere, and this is the picture of how much of the command that costs.
+                // The one strip allowed to sit on the command's own text: a running watch's `Stop`
+                // on a line so long that no row of it has a free column. Stopping a runaway watch
+                // is one click at every width, so this pill is drawn over the tail on an opaque
+                // ground -- and this is the picture of how much of the command that costs.
                 write(longCommandStrip(palette: themePalette, appearance),
                       named: "block-header-long-command-\(suffix)", into: directory,
                       background: themePalette.background)
@@ -297,9 +299,10 @@ enum UISnapshot {
         if let solarized = Themes.builtin["solarized-dark"] {
             for (appearanceName, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 for (name, header) in httpBlockHeaderStates() {
-                    write(blockStrip(header: header, controls: .full, palette: solarized,
-                                     appearance: appearance, rowHeight: rowHeight, font: overlayFont),
-                          named: "block-header-\(name)-solarized-dark-\(appearanceName)",
+                    guard let strip = blockStrip(header: header, width: .w3, palette: solarized,
+                                                 appearance: appearance, rowHeight: rowHeight,
+                                                 font: overlayFont) else { continue }
+                    write(strip, named: "block-header-\(name)-solarized-dark-\(appearanceName)",
                           into: directory, background: solarized.background)
                 }
             }
@@ -674,15 +677,19 @@ enum UISnapshot {
         return row
     }
 
-    /// The hover strip on a command line with no room anywhere: the ⋯ and the chevron over the tail
-    /// of the last row. The command is a real 219-character `curl` at 80 columns, which is the case
-    /// the fallback exists for -- a request run from the workbench is long by construction.
+    /// The hover strip on a command line with no room anywhere: the W0 `Stop`, alone, over the tail
+    /// of the last row. The command is a real `curl` filling 80 columns, which is the case the
+    /// exception exists for -- a request run from the workbench is long by construction, and a
+    /// watch on it is the one thing that must be stoppable however long the line is.
     private static func longCommandStrip(palette: Palette, _ appearance: NSAppearance.Name) -> NSView {
         let header = BlockHeader(id: 7, state: .finished, folded: false, hasOutput: true,
                                  anyFolds: false, notifyArmed: false, summary: "",
                                  httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json",
                                                           tone: .success),
-                                 isHTTP: true)
+                                 isHTTP: true,
+                                 watch: WatchHeader(text: "run 12 \u{b7} 200 \u{b7} 100 ms \u{b7} every 5 s",
+                                                    dots: [.success, .running], showsStop: true,
+                                                    tone: .success))
         // Exactly 80 characters: the row is *full*, which is the only condition under which the
         // strip is placed over text at all. A shorter line here would picture the case that was
         // never in question.
@@ -693,9 +700,13 @@ enum UISnapshot {
         row.appearance = NSAppearance(named: appearance)
         let strip = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: cell))
         strip.appearance = NSAppearance(named: appearance)
-        strip.update(header: header, controls: .minimal, palette: palette,
-                     font: .monospacedSystemFont(ofSize: 12, weight: .regular))
-        let width = strip.intrinsicContentSize.width
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        guard let content = CommandBlockChrome.stripContent(header, at: .w0) else { return row }
+        let plan = CommandBlockChrome.StripPlan(content: content, firstColumn: 0,
+                                                overlapsCommand: true)
+        strip.update(header: header, plan: plan, palette: palette, font: font,
+                     groundHeight: cell)
+        let width = strip.width(of: content, font: font)
         strip.frame = NSRect(x: row.bounds.width - width, y: 0, width: width, height: cell)
         strip.layoutSubtreeIfNeeded()
         row.addSubview(strip)
@@ -1106,40 +1117,50 @@ enum UISnapshot {
     }
 
     /// One strip, configured and sized the way `Pane.blockHeaderChanged` sizes it.
-    private static func blockStrip(header: BlockHeader, controls: OverlayControls, palette: Palette,
-                                   appearance: NSAppearance.Name, rowHeight: CGFloat,
-                                   font: NSFont) -> NSView {
+    ///
+    /// The frame is `CommandBlockChrome.stripFrameHeight`, not one row. Sizing it to `rowHeight`
+    /// is where every picture of a clipped pill came from: the pane has framed the strip taller
+    /// than a row since the last round, so the pill in the app was whole and the pill in the
+    /// picture was sliced flat. What the strip *paints* is still one row, which is why the ground
+    /// under the pills is shorter than they are.
+    private static func blockStrip(header: BlockHeader, width: CommandBlockChrome.WidthClass,
+                                   palette: Palette, appearance: NSAppearance.Name,
+                                   rowHeight: CGFloat, font: NSFont) -> NSView? {
+        guard let content = CommandBlockChrome.stripContent(header, at: width) else { return nil }
         let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
         view.appearance = NSAppearance(named: appearance)
-        view.update(header: header, controls: controls, palette: palette, font: font)
-        let size = view.intrinsicContentSize
-        view.frame = NSRect(x: 0, y: 0, width: size.width, height: rowHeight)
+        let measured = view.width(of: content, font: font)
+        let plan = CommandBlockChrome.StripPlan(content: content, firstColumn: 0,
+                                                overlapsCommand: false)
+        let height = CGFloat(CommandBlockChrome.stripFrameHeight(cellHeight: Double(rowHeight)))
+        view.update(header: header, plan: plan, palette: palette, font: font,
+                    groundHeight: CGFloat(CommandBlockChrome.stripGroundHeight(cellHeight: Double(rowHeight))))
+        view.frame = NSRect(x: 0, y: 0, width: measured, height: height)
         view.layoutSubtreeIfNeeded()
         return view
     }
 
-    /// Every state the hover strip has, with the control set it is pictured at.
+    /// Every state the hover strip has, with the width class it is pictured at.
     ///
     /// One list rather than five loops: a state added here is pictured in both themes and both
     /// appearances without a second edit, which is the only way a matrix this size stays complete.
-    private static func blockStripStates() -> [(String, BlockHeader, OverlayControls)] {
-        var states: [(String, BlockHeader, OverlayControls)] =
-            (blockHeaderStates() + httpBlockHeaderStates()).map { ($0.0, $0.1, .full) }
-        // The two narrower strips. A crowded command line leaves no room for a 20-column strip, and
-        // one drawn anyway covers the end of the command it describes -- so the summary goes first
-        // and then Copy, and the ⋯ menu and the chevron, which between them reach every action,
-        // never do. These are what `CommandBlockChrome.overlayPlacement` picks between.
+    private static func blockStripStates() -> [(String, BlockHeader, CommandBlockChrome.WidthClass)] {
+        var states: [(String, BlockHeader, CommandBlockChrome.WidthClass)] =
+            (blockHeaderStates() + httpBlockHeaderStates()).map { ($0.0, $0.1, .w3) }
+        // The two narrower strips of section 2.6's table. A crowded command line leaves no room for
+        // a W3 strip, so `Fold` goes, then `Copy`, and `Actions` collapses to the glyph -- while
+        // the status is the last thing dropped, which is what makes suppressing the in-grid summary
+        // safe. These are what `CommandBlockChrome.pills(_:at:)` picks between.
         if let failed = blockHeaderStates().first(where: { $0.0 == "failed" })?.1 {
-            states.append(("nocopy", failed, .noCopy))
-            states.append(("minimal", failed, .minimal))
+            states.append(("w2", failed, .w2))
+            states.append(("w1", failed, .w1))
         }
-        // The strip on a request, which is the only block that gets a `{ }`: the control's states
-        // at the full strip -- a response that can be lensed, one already being read through a
-        // lens, one being read through `.body`, and a body too large for one, where the button is
-        // gone rather than greyed because there is nothing behind it at all -- and then the
-        // lensable response at the two narrower strips. The narrow ones are the question: `{ }` is
-        // one more control competing for room `overlayPlacement` was already short of, and
-        // `minimal` must not grow by it.
+        // The strip on a request, which is the only block that gets a lens chip: the chip's states
+        // at W3 -- a response that can be lensed, one already being read through a lens, one being
+        // read through `.body`, and a body too large for one, where the chip is gone rather than
+        // greyed because there is nothing behind it at all -- and then the lensable response at the
+        // two narrower classes. The narrow ones are the question: the chip is one more control
+        // competing for room the row was already short of, and W1 must not grow by it.
         func request(_ id: UInt32, lens: ResponseLens?, tooLarge: Bool, json: Bool) -> BlockHeader {
             BlockHeader(id: id, state: .finished, folded: false, hasOutput: true, anyFolds: false,
                         notifyArmed: false, summary: "",
@@ -1148,25 +1169,25 @@ enum UISnapshot {
                         isHTTP: true, lens: lens, lensTooLarge: tooLarge, bodyIsJSON: json)
         }
         states += [
-            ("http-lens", request(10, lens: nil, tooLarge: false, json: true), .full),
-            ("http-lens-on", request(11, lens: .pretty, tooLarge: false, json: true), .full),
-            ("http-lens-body", request(12, lens: .body, tooLarge: false, json: true), .full),
-            ("http-lens-too-large", request(13, lens: nil, tooLarge: true, json: true), .full),
-            // The same "there is nothing behind this button" state on a crowded command line: the
+            ("http-lens", request(10, lens: nil, tooLarge: false, json: true), .w3),
+            ("http-lens-on", request(11, lens: .pretty, tooLarge: false, json: true), .w3),
+            ("http-lens-body", request(12, lens: .body, tooLarge: false, json: true), .w3),
+            ("http-lens-too-large", request(13, lens: nil, tooLarge: true, json: true), .w3),
+            // The same "there is nothing behind this control" state on a crowded command line: the
             // narrow strip is where a missing control is easiest to mistake for a dropped one.
-            ("http-lens-too-large-nocopy", request(14, lens: nil, tooLarge: true, json: true), .noCopy),
-            // A 301 with an HTML body: `.pretty` has nothing to pretty-print, so the control that
+            ("http-lens-too-large-w2", request(14, lens: nil, tooLarge: true, json: true), .w2),
+            // A 301 with an HTML body: `.pretty` has nothing to pretty-print, so the chip that
             // promises pretty JSON is not offered rather than offered and inert.
-            ("http-lens-not-json", request(15, lens: nil, tooLarge: false, json: false), .full),
-            ("http-lens-nocopy", request(16, lens: nil, tooLarge: false, json: true), .noCopy),
-            ("http-lens-minimal", request(17, lens: nil, tooLarge: false, json: true), .minimal),
+            ("http-lens-not-json", request(15, lens: nil, tooLarge: false, json: false), .w3),
+            ("http-lens-w2", request(16, lens: nil, tooLarge: false, json: true), .w2),
+            ("http-lens-w1", request(17, lens: nil, tooLarge: false, json: true), .w1),
         ]
         // The watched block's header. Two questions: whether the dots read as a timeline (and
-        // whether the hollow "running" one is legible against the filled ones) and whether the whole
-        // strip -- timeline, sentence, Stop, ⋯, chevron -- is still a width `overlayPlacement` can
-        // find room for on a command line. Twelve runs, then exactly thirty, then more than thirty:
-        // the timeline is capped at thirty, and the picture at the cap and the picture past it are
-        // what say the cap holds and the strip stops growing.
+        // whether the filled accent "running" one is legible against the rest) and whether the
+        // whole strip -- timeline, sentence, Stop, Actions -- is still a width a command line can
+        // find room for. Eleven runs, then exactly thirty, then more than thirty: the timeline is
+        // capped at thirty, and the picture at the cap and the picture past it are what say the cap
+        // holds, the strip stops growing, and `+18` says how much it is hiding.
         func watched(_ id: UInt32, _ series: WatchSeries) -> BlockHeader {
             BlockHeader(id: id, state: .finished, folded: false, hasOutput: true, anyFolds: false,
                         notifyArmed: false, summary: "",
@@ -1174,14 +1195,15 @@ enum UISnapshot {
                         isHTTP: true, bodyIsJSON: true, watch: series.header())
         }
         states += [
-            ("watch-running", watched(18, watchSeries(runs: 11, running: true)), .full),
-            ("watch-finished", watched(19, watchSeries(runs: 11, running: false)), .full),
-            ("watch-30-dots", watched(20, watchSeries(runs: 30, running: false)), .full),
-            ("watch-past-30-dots", watched(21, watchSeries(runs: 48, running: false)), .full),
-            // Stop goes nowhere: it survives to `.minimal`, because a watch you cannot stop from
-            // the strip is the one control here with a running side effect.
-            ("watch-running-nocopy", watched(22, watchSeries(runs: 11, running: true)), .noCopy),
-            ("watch-running-minimal", watched(23, watchSeries(runs: 11, running: true)), .minimal),
+            ("watch-running", watched(18, watchSeries(runs: 11, running: true)), .w3),
+            ("watch-finished", watched(19, watchSeries(runs: 11, running: false)), .w3),
+            ("watch-30-dots", watched(20, watchSeries(runs: 30, running: false)), .w3),
+            ("watch-past-30-dots", watched(21, watchSeries(runs: 48, running: false)), .w3),
+            // Stop goes nowhere: it is on every width, because a watch you cannot stop from the
+            // strip is the one control here with a running side effect.
+            ("watch-running-w2", watched(22, watchSeries(runs: 11, running: true)), .w2),
+            ("watch-running-w1", watched(23, watchSeries(runs: 11, running: true)), .w1),
+            ("watch-running-w0", watched(24, watchSeries(runs: 11, running: true)), .w0),
         ]
         return states
     }
@@ -1282,13 +1304,19 @@ enum UISnapshot {
             behind.frame = NSRect(x: 170, y: y, width: width - 182, height: rowHeight)
             sheet.addSubview(behind)
             sheet.addSubview(caption(label, at: y + rowHeight, tall: rowHeight))
-            let strip = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
-            strip.appearance = NSAppearance(named: appearance)
-            strip.update(header: header, controls: .full, palette: palette, font: font)
-            let size = strip.intrinsicContentSize
-            strip.frame = NSRect(x: width - 12 - size.width, y: y, width: size.width, height: rowHeight)
-            strip.layoutSubtreeIfNeeded()
-            sheet.addSubview(strip)
+            if let content = CommandBlockChrome.stripContent(header, at: .w3) {
+                let strip = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: rowHeight))
+                strip.appearance = NSAppearance(named: appearance)
+                let plan = CommandBlockChrome.StripPlan(content: content, firstColumn: 0,
+                                                        overlapsCommand: false)
+                strip.update(header: header, plan: plan, palette: palette, font: font,
+                             groundHeight: rowHeight)
+                let measured = strip.width(of: content, font: font)
+                strip.frame = NSRect(x: width - 12 - measured, y: y, width: measured,
+                                     height: rowHeight)
+                strip.layoutSubtreeIfNeeded()
+                sheet.addSubview(strip)
+            }
             y -= rowGap
         }
         for (label, text, message, offersJq) in fields {

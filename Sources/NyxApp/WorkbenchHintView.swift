@@ -64,10 +64,10 @@ final class WorkbenchHintView: NSView {
         return super.hitTest(point)
     }
 
-    /// The pill's width in points for a title, so `CommandBlockChrome.overlayPlacement` can be told
-    /// how many columns it is asking for.
+    /// The pill's width in points for a title, so `Pane.workbenchHintPlacement` can be told how
+    /// many columns it is asking for.
     ///
-    /// Measured rather than estimated, for the same reason `BlockHeaderView.width` is: the bezel's
+    /// Measured rather than estimated, for the same reason `BlockHeaderView.width(of:font:)` is: the bezel's
     /// own padding is AppKit's, and a guess would be wrong by about the amount that decides whether
     /// the pill covers a character. Cached, because the pane asks on every frame the pill is up and
     /// the answer changes only when the chord or the font does; and it puts the title back, because

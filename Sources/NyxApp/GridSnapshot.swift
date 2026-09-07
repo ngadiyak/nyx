@@ -16,7 +16,7 @@ import NyxRender
 /// So: a real `Terminal` -- OSC 133 marks, a folded block, a lensed block, wrapped rows, wide cells
 /// -- goes through `Terminal.displayRows` into a `RenderFrame`, the offscreen `Renderer` draws it
 /// into a texture, and the AppKit chrome is composited over that image at the placement the pane's
-/// own rules choose: `CommandBlockChrome.overlayPlacement` and `summaryPlacement` for the strip and
+/// own rules choose: `CommandBlockChrome.stripPlacement` and `summaryPlacement` for the strip and
 /// the summary, `PromptGutter.hitWidth` and the cell height for the gutter, and the same
 /// `bounds.height - padding - (row + 1) * cell` arithmetic `Pane.overlayOrigin` uses for everything
 /// pinned to a row.
@@ -45,15 +45,19 @@ enum GridSnapshot {
             guard let canvas = GridCanvas(cols: 84, rows: 20, config: config) else { continue }
             for (appearanceName, appearance) in appearances {
                 let suffix = "\(paletteName)-\(appearanceName)"
-                for controls in OverlayControls.allCases {
+                // One picture per width class, at `.finished`. Task 8 loops the nine states of
+                // §2.6's table over them; the names are what plan 1b's `cmp` compares.
+                for width in GridScene.widthClasses {
                     write(canvas: canvas, palette: palette, appearance: appearance,
-                          case: .hoverStrip(controls), into: directory,
-                          named: "composite-strip-\(name(of: controls))-\(suffix)")
+                          case: .hoverStrip(width, .finished), into: directory,
+                          named: "composite-strip-\(name(of: width))-finished-\(suffix)")
                 }
                 write(canvas: canvas, palette: palette, appearance: appearance,
-                      case: .hoverStripOnLens, into: directory,
+                      case: .hoverStrip(.w3, .lensed), into: directory,
                       named: "composite-strip-lens-\(suffix)")
-                for runs in [4, 30] {
+                // The timeline's own width and its `+N` cap: three run counts, because one cell of
+                // the state matrix cannot say what thirty circles do to a strip's width.
+                for runs in [4, 30, 48] {
                     write(canvas: canvas, palette: palette, appearance: appearance,
                           case: .hoverStripWatching(runs: runs), into: directory,
                           named: "composite-strip-watch-\(runs)-runs-\(suffix)")
@@ -107,18 +111,21 @@ enum GridSnapshot {
             var tweaked = config
             change(&tweaked)
             guard let canvas = GridCanvas(cols: 84, rows: 20, config: tweaked) else { continue }
-            for (name, kind) in [("strip", Case.hoverStrip(.full)), ("gutter", Case.gutter)] {
+            for (name, kind) in [("strip", Case.hoverStrip(.w3, .finished)), ("gutter", Case.gutter)] {
                 write(canvas: canvas, palette: dark, appearance: .darkAqua, case: kind,
                       into: directory, named: "composite-\(label)-\(name)-nyx-dark-dark")
             }
         }
     }
 
-    private static func name(of controls: OverlayControls) -> String {
-        switch controls {
-        case .full: return "full"
-        case .noCopy: return "nocopy"
-        case .minimal: return "minimal"
+    /// Exactly `w3`, `w2`, `w1`, `w0`: §8.5's picture names and plan 1b's `cmp` both spell the
+    /// composites `composite-strip-w3-finished-*`, and a prettier word here renames the set.
+    private static func name(of width: CommandBlockChrome.WidthClass) -> String {
+        switch width {
+        case .w3: return "w3"
+        case .w2: return "w2"
+        case .w1: return "w1"
+        case .w0: return "w0"
         }
     }
 
@@ -132,12 +139,11 @@ enum GridSnapshot {
     /// What a composite is a picture of. Each case says which chrome is up and what the pane is
     /// showing under it; the placement is never in here -- that comes from NyxCore.
     enum Case {
-        /// The hover strip at one control set, over the command row that leaves exactly that much
-        /// room. The command line's length is computed from the view's own measured width, so the
-        /// picture is of `overlayPlacement` choosing this level rather than of it being told to.
-        case hoverStrip(OverlayControls)
-        /// The strip over a lensed request's command row: the one block that gets a `{ }`, lit.
-        case hoverStripOnLens
+        /// The hover strip at one width class, in one of §2.6's states, over a command row that
+        /// leaves exactly that much room. The command line's length is computed from the view's own
+        /// measured width, so the picture is of `stripPlacement` choosing this class rather than of
+        /// it being told to.
+        case hoverStrip(CommandBlockChrome.WidthClass, GridScene.StripState)
         /// The strip on a *watched* request, after `runs` runs. The timeline is the widest thing
         /// this chrome can hold, and measuring it alone says nothing about whether a pane has room
         /// for it -- which is what these pictures are for.
@@ -171,12 +177,13 @@ enum GridSnapshot {
         var band: NSView?
 
         switch kind {
-        case .hoverStrip(let controls):
-            scene.hoverControls = controls
-            scene.hovered = scene.commandFitting(controls)
-        case .hoverStripOnLens:
-            scene.applyLens(.pretty, toRequest: true)
-            scene.hovered = scene.requestID
+        case .hoverStrip(let width, let state):
+            if state == .lensed {
+                scene.applyLens(.pretty, toRequest: true)
+                scene.hovered = scene.requestID
+            } else {
+                scene.hovered = scene.commandFitting(width)
+            }
         case .hoverStripWatching(let runs):
             scene.watch = GridScene.watchHeader(runs: runs)
             scene.showRequestBlock()
@@ -501,22 +508,23 @@ extension GridCanvas {
         return view
     }
 
-    /// The hover strip, right-aligned on the slot `overlayPlacement` chose, sized from its own
-    /// content -- `Pane.blockHeaderChanged`'s frame, including the height it grows to so the pills
-    /// are hit-testable.
+    /// The hover strip, beginning at the column `stripPlacement` chose and running to the pane's
+    /// right edge -- `Pane.blockHeaderChanged`'s frame exactly, including the height it takes from
+    /// `CommandBlockChrome.stripFrameHeight` so the pills are hit-testable and unclipped.
     func hoverStrip(_ built: GridScene.Built, palette: Palette, appearance: NSAppearance.Name,
                     config: Config) -> NSView? {
         guard let placed = built.strip else { return nil }
         let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: cell.height))
         view.appearance = NSAppearance(named: appearance)
-        view.update(header: placed.header, controls: placed.controls, palette: palette,
-                    font: .monospacedSystemFont(ofSize: CGFloat(config.fontSize), weight: .regular))
-        let size = view.intrinsicContentSize
-        let height = max(cell.height, size.height)
-        view.paintedHeight = cell.height
-        let origin = overlayOrigin(forHeaderRow: placed.slot)
-        view.frame = NSRect(x: origin.x - size.width, y: origin.y - (height - cell.height) / 2,
-                            width: size.width, height: height)
+        let height = CGFloat(CommandBlockChrome.stripFrameHeight(cellHeight: Double(cell.height)))
+        view.update(header: placed.header, plan: placed.plan, palette: palette,
+                    font: .monospacedSystemFont(ofSize: CGFloat(config.fontSize), weight: .regular),
+                    groundHeight: CGFloat(CommandBlockChrome.stripGroundHeight(cellHeight: Double(cell.height))))
+        let top = bounds.height - padding - CGFloat(placed.slot + 1) * cell.height
+        view.frame = NSRect(x: padding + CGFloat(placed.plan.firstColumn) * cell.width,
+                            y: top - (height - cell.height) / 2,
+                            width: CGFloat(cols - placed.plan.firstColumn) * cell.width,
+                            height: height)
         view.layoutSubtreeIfNeeded()
         return view
     }
@@ -603,17 +611,16 @@ struct GridScene {
     /// The long build, folded in every picture: a fold on screen is what makes display slots and
     /// absolute rows different numbers, which is where chrome placement goes wrong.
     let buildID: UInt32
-    private let commandIDs: [OverlayControls: UInt32]
+    private let commandIDs: [CommandBlockChrome.WidthClass: UInt32]
 
     var folding = OutputFolding()
     var lenses = LensChoices()
     var buffers: [UInt32: LensBuffer] = [:]
     var cursor: DisplayCursor
     var hovered: UInt32?
-    var hoverControls: OverlayControls = .full
     var showsLensField = false
     var htmlBody = false
-    /// A watch on the request block, so the timeline is placed by `overlayPlacement` against a real
+    /// A watch on the request block, so the timeline is placed by `stripPlacement` against a real
     /// command row rather than measured in isolation.
     var watch: WatchHeader?
     /// Whether a full-screen program has taken the display. Not a flag the frame pass reads
@@ -627,7 +634,7 @@ struct GridScene {
         var frame: RenderFrame
         var gutterCaps: [Int: CommandBlockChrome.GutterCap]
         var gutterLabels: [Int: String]
-        var strip: (slot: Int, controls: OverlayControls, header: BlockHeader)?
+        var strip: (slot: Int, plan: CommandBlockChrome.StripPlan, header: BlockHeader)?
         var sticky: (text: String, summary: String, tone: SummaryTone, failed: Bool)?
         var lensField: (slot: Int, caption: String, text: String, message: String?, offersJq: Bool)?
         var search: (query: String, readout: String)?
@@ -665,10 +672,11 @@ struct GridScene {
         let probe = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: 20))
         let probeFont = NSFont.monospacedSystemFont(ofSize: CGFloat(canvas.config.fontSize),
                                                     weight: .regular)
-        var stripCells: [OverlayControls: Int] = [:]
-        for controls in OverlayControls.allCases {
-            let width = probe.width(for: controls, header: probeHeader, font: probeFont)
-            stripCells[controls] = Int((width / canvas.cell.width).rounded(.up))
+        var stripCells: [CommandBlockChrome.WidthClass: Int] = [:]
+        for width in GridScene.widthClasses {
+            guard let content = CommandBlockChrome.stripContent(probeHeader, at: width) else { continue }
+            stripCells[width] = Int((probe.width(of: content, font: probeFont) / canvas.cell.width)
+                .rounded(.up))
         }
 
         _ = run("echo hello", output: ["hello"], status: 0, seconds: 0.1)
@@ -692,19 +700,21 @@ struct GridScene {
         _ = run("make lint", output: ["Sources/NyxApp/Pane.swift:2210:9: warning: unused result",
                                       "make: *** [lint] Error 1"], status: 1, seconds: 2.4)
 
-        // One command per control level. `overlayPlacement` reads the free columns on the row, and
-        // the shell's own `$ ` is two of them: a length that forgets the prompt leaves two columns
-        // too few, which is exactly enough to drop Copy off the strip the picture is named after.
+        // One command per width class. The class is read from the *free* columns after the
+        // command's last glyph, and the shell's own `$ ` is two of them: a length that forgets the
+        // prompt leaves two columns too few, which is exactly enough to move a picture into the
+        // next class down. Never less room than the strip actually measures, or the picture named
+        // after a class would show the class below it.
         let promptColumns = 2
-        var byControls: [OverlayControls: UInt32] = [:]
-        for controls in OverlayControls.allCases {
-            let free = stripCells[controls] ?? 0
+        var byWidth: [CommandBlockChrome.WidthClass: UInt32] = [:]
+        for width in GridScene.widthClasses {
+            let free = max(GridScene.freeColumns(for: width), stripCells[width] ?? 0)
             let length = max(8, cols - free - promptColumns)
-            byControls[controls] = run(GridScene.commandLine(ofLength: length),
-                                       output: ["ok  \(controls) \u{b7} 3 files changed"],
-                                       status: 0, seconds: 8.8)
+            byWidth[width] = run(GridScene.commandLine(ofLength: length),
+                                 output: ["ok  \(width) \u{b7} 3 files changed"],
+                                 status: 0, seconds: 8.8)
         }
-        commandIDs = byControls
+        commandIDs = byWidth
 
         let request = run("curl -sSi https://api.example.com/v1/users",
                           output: ["HTTP/2 200",
@@ -733,8 +743,28 @@ struct GridScene {
         return base + String(repeating: " ", count: length - base.count - 1) + "."
     }
 
-    /// The block whose command row leaves exactly enough room for `controls` and no more.
-    func commandFitting(_ controls: OverlayControls) -> UInt32? { commandIDs[controls] }
+    /// Which row of section 2.6's table a composite is a picture of.
+    enum StripState: String, CaseIterable {
+        case finished, failed, running, folded, http, lensed
+        case watchRunning = "watch-running", watchFinished = "watch-finished", noOutput = "no-output"
+    }
+
+    /// The four bands, richest first -- the order the pictures are written in.
+    static let widthClasses: [CommandBlockChrome.WidthClass] = [.w3, .w2, .w1, .w0]
+
+    /// Free columns to leave after the command's last glyph for a picture of `width`: comfortably
+    /// inside each band (W3 >= 34, W2 18-33, W1 8-17, W0 < 8), never on a boundary.
+    static func freeColumns(for width: CommandBlockChrome.WidthClass) -> Int {
+        switch width {
+        case .w3: return 40
+        case .w2: return 24
+        case .w1: return 12
+        case .w0: return 4
+        }
+    }
+
+    /// The block whose command row leaves exactly enough room for `width` and no more.
+    func commandFitting(_ width: CommandBlockChrome.WidthClass) -> UInt32? { commandIDs[width] }
 
     /// Puts `lens` on the request and builds its buffer the way `Pane.rebuildLens` does.
     mutating func applyLens(_ lens: ResponseLens, toRequest: Bool) {
@@ -748,7 +778,7 @@ struct GridScene {
                                         contentVersion: terminal.contentVersion)
         // Three rows of context above the command, not `displayBottomCursor`. A lens is usually
         // taller than the window, so the bottom of the display is somewhere in the middle of the
-        // response -- with the command row off the top the block has no header, `overlayPlacement`
+        // response -- with the command row off the top the block has no header, `stripPlacement`
         // is never asked, and the picture named after the strip has no strip in it.
         let promptRow = terminal.promptRow(ofCommand: requestID) ?? 0
         cursor = DisplayCursor(row: max(0, promptRow - 3))
@@ -906,7 +936,7 @@ struct GridScene {
         let overlayFont = NSFont.monospacedSystemFont(ofSize: CGFloat(canvas.config.fontSize),
                                                       weight: .regular)
         let probe = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: 20))
-        var strip: (slot: Int, controls: OverlayControls, header: BlockHeader)?
+        var strip: (slot: Int, plan: CommandBlockChrome.StripPlan, header: BlockHeader)?
         var summaries: [(row: Int, text: String, color: RGB)] = []
         var lensFieldSlot: Int?
         // The caps, from the same headers the summaries come from -- `Pane.render`'s order exactly.
@@ -957,31 +987,28 @@ struct GridScene {
                     candidates.append((absoluteRow: absolute, lastUsedColumn: last))
                 }
             }
-            if hovered == block.region.id {
-                var stripColumns: [OverlayControls: Int] = [:]
-                for controls in OverlayControls.allCases {
-                    let width = probe.width(for: controls, header: header, font: overlayFont)
-                    stripColumns[controls] = Int((width / canvas.cell.width).rounded(.up))
-                }
-                if let placement = CommandBlockChrome.overlayPlacement(commandRows: candidates,
-                                                                       stripColumns: stripColumns,
-                                                                       cols: cols,
-                                                                       fallbackToTail: true),
-                   let slot = slotOfRow[placement.row] {
-                    strip = (slot: slot, controls: placement.controls, header: header)
-                    notes[slot] = nil
-                    if notes.indices.contains(promptSlot) { notes[promptSlot] = nil }
-                    // The strip carries the chevron at every level, so the Metal summary on that
-                    // row would be the same control drawn twice.
+            let text = header.summaryWithChevron
+            let summaryHere = text.isEmpty ? nil : CommandBlockChrome.summaryPlacement(
+                commandRows: candidates, textCount: text.count,
+                chevronCount: header.chevron.count, cols: cols)
+            if hovered == block.region.id,
+               let placement = CommandBlockChrome.stripPlacement(
+                    header, commandRows: candidates, cols: cols,
+                    measure: { Int((probe.width(of: $0, font: overlayFont) / canvas.cell.width)
+                        .rounded(.up)) }),
+               let slot = slotOfRow[placement.row] {
+                strip = (slot: slot, plan: placement.plan, header: header)
+                notes[slot] = nil
+                if notes.indices.contains(promptSlot) { notes[promptSlot] = nil }
+                // The summary gives way only to a strip on its own row that says at least as much,
+                // exactly as `Pane.render` decides it.
+                if CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
+                                                        summaryRow: summaryHere?.row) {
                     continue
                 }
             }
-            let text = header.summaryWithChevron
             guard !text.isEmpty else { continue }
-            guard let placement = CommandBlockChrome.summaryPlacement(commandRows: candidates,
-                                                                      textCount: text.count,
-                                                                      chevronCount: header.chevron.count,
-                                                                      cols: cols),
+            guard let placement = summaryHere,
                   let slot = slotOfRow[placement.row] else { continue }
             summaries.append((row: slot, text: placement.text == .full ? text : header.chevron,
                               color: header.tone.color(in: palette)))

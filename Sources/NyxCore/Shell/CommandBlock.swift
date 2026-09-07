@@ -161,48 +161,6 @@ public enum CommandBlockChrome {
         }
         return chevronOnly
     }
-
-    /// Which row the hover strip goes on and how much of it fits there.
-    ///
-    /// The same ladder `summaryPlacement` walks, for the same reason and against the same rows: the
-    /// strip is chrome over a row of the user's own text, and the text wins. `stripColumns` is the
-    /// view's measured width per control set, in columns (the pane rounds up, so a strip right
-    /// aligned to the last column can never begin left of `lastUsedColumn + 1`). nil when not even
-    /// the ⋯ and the chevron fit anywhere on the command.
-    ///
-    /// `fallbackToTail` decides what happens when no row has room for even the ⋯ and the chevron.
-    ///
-    /// The hover strip passes true: the minimal strip then goes over the tail of the **last** row
-    /// anyway, because the command it covers is the one that needs it most -- a request run from
-    /// the workbench is a single line hundreds of characters long, it fills every row it touches,
-    /// and its ⋯ menu is the only place "Open in Workbench", the four exports and "Save as Button"
-    /// are. Four cells are hidden *while the pointer is on the block* and come back the moment it
-    /// leaves; a menu that could not be opened at all would not come back.
-    ///
-    /// Everything else passes false, and the workbench pill is why the parameter exists. The pill
-    /// appears on its own, with no pointer anywhere near it, and covering four cells of a command
-    /// somebody is still typing -- to advertise a feature they did not ask for -- is not a trade
-    /// anyone agreed to. No room, no pill.
-    ///
-    /// A pane narrower than the smallest strip gets nothing either way: the strip would begin off
-    /// the left edge. The chevron on the command row, the status mark in the gutter, ⌘⇧↑ and the
-    /// right-click menu all still fold the block.
-    public static func overlayPlacement(commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
-                                        stripColumns: [OverlayControls: Int],
-                                        cols: Int,
-                                        fallbackToTail: Bool) -> OverlayPlacement? {
-        for row in commandRows.reversed() {
-            let free = cols - row.lastUsedColumn - 1
-            guard free > 0 else { continue }
-            for controls in OverlayControls.allCases {
-                guard let width = stripColumns[controls], width > 0, width <= free else { continue }
-                return OverlayPlacement(row: row.absoluteRow, controls: controls)
-            }
-        }
-        guard fallbackToTail, let last = commandRows.last, let minimal = stripColumns[.minimal],
-              minimal > 0, minimal <= cols else { return nil }
-        return OverlayPlacement(row: last.absoluteRow, controls: .minimal)
-    }
 }
 
 public extension CommandBlockChrome {
@@ -443,18 +401,43 @@ public extension CommandBlockChrome {
     /// Which row of the command carries the strip, walked from the last upwards -- the same ladder
     /// and the same rows the summary uses, because a wrapped `curl` fills its first rows and leaves
     /// room on its last. `measure` is the view's own width for that content, in columns.
+    ///
+    /// A width class is a *budget*, not a promise. W3 begins at thirty-four free columns, while the
+    /// W3 strip §2.6 puts on a watched request -- thirty dots, the sentence, `Stop`, `Copy` and
+    /// `Actions` -- measures sixty to eighty. Taking the row's own class as final therefore refused
+    /// the strip outright on every ordinary pane, which took `Stop` and `Actions` -- the two the
+    /// table says are present at *every* width -- off the screen for the blocks that need them
+    /// most. So each row walks down its own ladder until the content fits: that is what the two
+    /// ladders in `pills(_:at:)` and `readout(_:at:)` are for.
+    ///
+    /// Never down to W0 from a roomier row. W0's plan is drawn over the command's tail on an opaque
+    /// pill, and that exception belongs to a row that really has no free columns -- not to every
+    /// crowded block as a last resort.
     static func stripPlacement(_ header: BlockHeader,
                                commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
                                cols: Int,
                                measure: (StripContent) -> Int) -> StripPlacement? {
         for row in commandRows.reversed() {
-            let width = widthClass(freeColumns: freeColumns(cols: cols, lastUsedColumn: row.lastUsedColumn))
-            guard let content = stripContent(header, at: width),
-                  let plan = stripPlan(content, widthClass: width, lastUsedColumn: row.lastUsedColumn,
-                                       cols: cols, stripColumns: measure(content)) else { continue }
-            return StripPlacement(row: row.absoluteRow, plan: plan)
+            let free = freeColumns(cols: cols, lastUsedColumn: row.lastUsedColumn)
+            for width in narrowing(from: widthClass(freeColumns: free)) {
+                guard let content = stripContent(header, at: width),
+                      let plan = stripPlan(content, widthClass: width,
+                                           lastUsedColumn: row.lastUsedColumn,
+                                           cols: cols, stripColumns: measure(content)) else { continue }
+                return StripPlacement(row: row.absoluteRow, plan: plan)
+            }
         }
         return nil
+    }
+
+    /// A row's class and every narrower one it may fall back to, richest first.
+    private static func narrowing(from width: WidthClass) -> [WidthClass] {
+        switch width {
+        case .w3: return [.w3, .w2, .w1]
+        case .w2: return [.w2, .w1]
+        case .w1: return [.w1]
+        case .w0: return [.w0]
+        }
     }
 
     /// The mark at the head of the spine: what shape it is, what colour, and whether it can be
@@ -555,42 +538,6 @@ public extension CommandBlockChrome {
     static func stripGroundHeight(cellHeight: Double) -> Double { cellHeight }
     /// Column 0's fold triangle, widened to the same 20 pt the gutter uses, for the same reason.
     static let foldColumnWidth: Double = 20
-}
-
-/// How much of the hover strip there is room for on a row.
-///
-/// The strip is opaque and its content decides its width, so a strip sized only from itself paints
-/// over whatever the row already holds: in a 28-column split, hovering `git status --short` covered
-/// `--short` and left `~ % git status` on screen -- a different, real command.
-///
-/// The controls give way in the order of what they are worth. Copy goes first: the ⋯ menu still
-/// copies, so nothing becomes unreachable. The summary outlives it because while the strip is up it
-/// is the *only* place the exit status is -- the strip suppresses both the Metal summary and the
-/// duration note on that row, so dropping it first meant hovering a crowded failed command replaced
-/// `exit 1 · 8.8s ▾` with `Copy ⋯ ▾` and the exit code was nowhere on screen. The ⋯ menu, the
-/// chevron and a running watch's **Stop** never go: the first two reach every action the block has,
-/// and Stop is the one control on the strip with a running side effect. Which parts each level
-/// carries is `BlockHeader.showsCopy(at:)` and its neighbours.
-public enum OverlayControls: Equatable, Hashable, CaseIterable {
-    /// Summary, Copy, ⋯, chevron.
-    case full
-    /// Summary, ⋯, chevron.
-    case noCopy
-    /// ⋯, the chevron, and Stop if a watch is running.
-    case minimal
-
-    /// Richest first, which is the order `overlayPlacement` tries them in.
-    public static let allCases: [OverlayControls] = [.full, .noCopy, .minimal]
-}
-
-/// Which row of a command the hover strip goes on, and which controls it carries there.
-public struct OverlayPlacement: Equatable {
-    public let row: Int
-    public let controls: OverlayControls
-
-    public init(row: Int, controls: OverlayControls) {
-        self.row = row; self.controls = controls
-    }
 }
 
 /// Where a block's summary ended up: which row of the command, which columns, and whether the whole
@@ -768,7 +715,7 @@ public struct BlockHeader: Equatable {
     /// the group says so instead of offering seven rows that would each do nothing.
     public let lensTooLarge: Bool
     /// Whether the response body is JSON. The `{ }` control promises pretty JSON and nothing else,
-    /// so this is what decides whether it is offered -- see `showsLens(at:)`.
+    /// so this is what decides whether it is offered -- see `CommandBlockChrome.pills(_:at:)`.
     public let bodyIsJSON: Bool
     /// Whether an earlier block ran the same request. Only `Diff with Previous Run` needs it, and
     /// only the pane's cache can answer it -- see `RequestSummaryCache.previousRun`.
@@ -853,45 +800,6 @@ public struct BlockHeader: Equatable {
         case (false, true): return summary
         case (false, false): return summary + " " + chevron
         }
-    }
-
-    // MARK: - What the hover strip carries
-    //
-    // One place, because two of them come apart. `BlockHeaderView` both *draws* the strip and
-    // *measures* it for `overlayPlacement`, and when the two lists disagreed the placement rule
-    // reserved room for a control that was not drawn, or drew one it had not reserved room for.
-
-    /// Copy is the first control dropped: the ⋯ menu still copies, so nothing becomes unreachable.
-    public func showsCopy(at controls: OverlayControls) -> Bool { controls == .full }
-
-    /// The summary outlives Copy, because while the strip is up it is the *only* place the exit
-    /// status is -- it suppresses both the drawn summary and the duration note on that row.
-    public func showsSummary(at controls: OverlayControls) -> Bool {
-        controls != .minimal && !summary.isEmpty
-    }
-
-    /// The timeline goes with Copy: thirty circles is the widest thing here and the least of what
-    /// the header says, since the sentence beside it already carries the run number and the last
-    /// status.
-    public func showsTimeline(at controls: OverlayControls) -> Bool {
-        controls == .full && !(watch?.dots.isEmpty ?? true)
-    }
-
-    /// **Stop is never dropped.** It is the only control on the strip with a running side effect,
-    /// and a watch you cannot stop from the strip is the one that matters most -- on a command line
-    /// crowded enough for the narrowest strip, the ⋯ menu is the only other way to reach it.
-    public func showsStop(at controls: OverlayControls) -> Bool { watch?.showsStop ?? false }
-
-    /// The `{ }` needs a request, a body a lens can do something with, JSON to pretty-print, and
-    /// room for more than the two controls every block has.
-    ///
-    /// The JSON clause is the point: on a 301 with an HTML body `.pretty` falls through to the raw
-    /// lines, so a button whose tooltip promises pretty JSON did nothing a user could see. A lens
-    /// already open keeps its control whatever the body is -- the button is also how it is turned
-    /// off, and a control that vanishes when pressed strands the reader inside a lens.
-    public func showsLens(at controls: OverlayControls) -> Bool {
-        guard isHTTP, !lensTooLarge, controls != .minimal else { return false }
-        return bodyIsJSON || lens != nil
     }
 
     /// The ⋯ menu, in order, each with whether it can do anything right now.

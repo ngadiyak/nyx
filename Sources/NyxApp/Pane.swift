@@ -216,9 +216,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// the session lock is gone -- the same arrangement the request history has, and for the same
     /// reason: nothing that dispatches may run with the lock held.
     private var pendingDefaultLens: [UInt32] = []
-    /// How much of the hover strip fits on the row it was placed on. Decided in `render()` by
-    /// `CommandBlockChrome.overlayPlacement`; applied after the lock, where AppKit lives.
-    private var hoverOverlayControls: OverlayControls = .full
+    /// The hover strip this frame: which pills, how much of the sentence, and the column it begins
+    /// at. Decided in `render()` by `CommandBlockChrome.stripPlacement`; applied after the lock,
+    /// where AppKit lives. nil is no strip at all -- no row had room for one.
+    private var hoverStripPlan: CommandBlockChrome.StripPlan?
     /// A finished request read this frame that has not been written to the history yet. Set under
     /// the session lock by `requestSummary` and drained by `render` once the lock is gone: the
     /// store writes a file, and a file write must never happen with the session lock held.
@@ -1609,10 +1610,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// command line *now* rather than about the text that armed it, so backspacing the `curl` away
     /// takes the pill with it.
     ///
-    /// Placed by `CommandBlockChrome.overlayPlacement`, the same ladder the hover strip uses,
-    /// against the rows of the command line rather than of a block: the first row from the bottom
-    /// with room, and -- because a `curl` worth a workbench usually fills every row it touches --
-    /// the tail of the last row when none has any.
+    /// Placed against the rows of the command line rather than of a block, and walked from the
+    /// last row up the way the hover strip is: the first row from the bottom with room for the
+    /// whole pill. A `curl` worth a workbench usually fills every row it touches, and then there
+    /// is no pill -- covering four cells of a command somebody is still typing, to advertise a
+    /// feature they did not ask for, is not a trade anyone agreed to.
     private func workbenchHintPlacement(in t: Terminal, lines: [Row], cellWidth: Double,
                                         screenRow: (Int) -> Int?) -> (slot: Int, text: String)? {
         guard let armed = hintCommand, Date.timeIntervalSinceReferenceDate < hintExpiry,
@@ -1631,23 +1633,23 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         for absolute in firstRow...cursorRow {
             guard let slot = screenRow(absolute), slot < lines.count else { continue }
             slotOf[absolute] = slot
-            var last = -1
-            for (column, cell) in lines[slot].cells.enumerated() where cell.content != 0 { last = column }
-            candidates.append((absoluteRow: absolute, lastUsedColumn: last))
+            candidates.append((absoluteRow: absolute,
+                               lastUsedColumn: CommandBlockChrome.lastUsedColumn(of: lines[slot])))
         }
         // The chord as the palette writes it, from the table this pane matches keys against: `⌘E`
         // is a default, and a config that has moved it must not be told to press it.
         let text = WorkbenchHint.text(chord: bindings.binding(for: .editAndRunCommand)?.displayName ?? "")
         let columns = Int((workbenchHint.width(for: text) / cellWidth).rounded(.up))
-        // `fallbackToTail: false`: the pill shows itself, with the pointer nowhere near it, so a
-        // command line with no room simply gets no pill. The hover strip is the only chrome that
-        // may cover text, and only because a pointer is deliberately on it.
-        guard let placement = CommandBlockChrome.overlayPlacement(commandRows: candidates,
-                                                                  stripColumns: [.minimal: columns],
-                                                                  cols: t.cols,
-                                                                  fallbackToTail: false),
-              let slot = slotOf[placement.row] else { return nil }
-        return (slot: slot, text: text)
+        // The pill shows itself, with no pointer near it, so a command line with no room simply
+        // gets no pill -- the hover strip is the only chrome that may cover text, and only because
+        // a pointer is deliberately on it. Walked from the last row up, the way every other piece
+        // of block chrome is placed against a wrapped command.
+        for row in candidates.reversed() {
+            let free = CommandBlockChrome.freeColumns(cols: t.cols, lastUsedColumn: row.lastUsedColumn)
+            guard columns <= free, let slot = slotOf[row.absoluteRow] else { continue }
+            return (slot: slot, text: text)
+        }
+        return nil
     }
 
     /// Offers the workbench for a `curl` that has just been pasted, for `WorkbenchHint.seconds`.
@@ -2038,6 +2040,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             var notesSpokenFor: Set<Int> = []
             let overlayFont = NSFont.monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular)
             let cellWidth = self.cellSizePoints.width
+            // Only the hovered block ever sets it, and only when a row had room: "no strip anywhere
+            // on this command" has to come out as no strip rather than as last frame's.
+            self.hoverStripPlan = nil
             summaries = blocks.compactMap { block -> (row: Int, text: String, color: RGB)? in
                 guard block.showsHeader, let promptSlot = screenRow(block.region.promptRow) else { return nil }
                 // In this order: reading the block is what puts "was this a request" in the cache,
@@ -2079,42 +2084,39 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     for absolute in block.region.promptRow...lastCommandRow {
                         guard let slot = screenRow(absolute), slot < lines.count else { continue }
                         slotOf[absolute] = slot
-                        var last = -1
-                        for (column, cell) in lines[slot].cells.enumerated() where cell.content != 0 {
-                            last = column
-                        }
-                        candidates.append((absoluteRow: absolute, lastUsedColumn: last))
+                        candidates.append((absoluteRow: absolute,
+                                           lastUsedColumn: CommandBlockChrome.lastUsedColumn(of: lines[slot])))
                     }
                 }
-                // The hovered block's strip is placed by the same ladder against the same rows, from
-                // the view's own measured widths. Measured here, under the lock, because the answer
-                // decides what the Metal pass draws on those rows and the frame is built here; the
-                // widths are cached per header and font, so in steady state this is three dictionary
-                // lookups and no layout pass.
+                // Where the summary would go if there were no strip at all, asked first so the
+                // suppression rule can compare the two rows.
+                let summaryHere = text.isEmpty ? nil : CommandBlockChrome.summaryPlacement(
+                    commandRows: candidates, textCount: text.count,
+                    chevronCount: header.chevron.count, cols: t.cols)
+                // The hovered block's strip is placed by the same ladder against the same rows,
+                // from the view's own measured width. Measured here, under the lock, because the
+                // answer decides what the Metal pass draws on those rows and the frame is built
+                // here; the widths are cached per content and font, so in steady state this is one
+                // dictionary lookup and no layout pass.
                 if self.hoveredBlock?.id == block.region.id, self.hoveredBlock?.headerRow != nil,
-                   cellWidth > 0 {
-                    var stripColumns: [OverlayControls: Int] = [:]
-                    for controls in OverlayControls.allCases {
-                        let width = self.blockHeader.width(for: controls, header: header, font: overlayFont)
-                        stripColumns[controls] = Int((width / cellWidth).rounded(.up))
-                    }
-                    if let overlay = CommandBlockChrome.overlayPlacement(commandRows: candidates,
-                                                                        stripColumns: stripColumns,
-                                                                        cols: t.cols,
-                                                                        fallbackToTail: true),
-                       let slot = slotOf[overlay.row] {
-                        headers[slot] = header
-                        stripSlots[block.region.id] = slot
-                        self.hoverOverlayControls = overlay.controls
-                        notesSpokenFor.insert(slot)
-                        notesSpokenFor.insert(promptSlot)
-                        // The strip is the only chrome on the block while it is up: it carries the
-                        // chevron in every control set, so a second one drawn in Metal would be the
-                        // same control twice.
+                   cellWidth > 0,
+                   let placement = CommandBlockChrome.stripPlacement(
+                        header, commandRows: candidates, cols: t.cols,
+                        measure: { Int((self.blockHeader.width(of: $0, font: overlayFont) / cellWidth).rounded(.up)) }),
+                   let slot = slotOf[placement.row] {
+                    headers[slot] = header
+                    stripSlots[block.region.id] = slot
+                    self.hoverStripPlan = placement.plan
+                    notesSpokenFor.insert(slot)
+                    notesSpokenFor.insert(promptSlot)
+                    // §2.5: the summary gives way only to a strip **on its own row that says at
+                    // least as much**. A wrapped watched command whose last row is full places its
+                    // lone `Stop` there and keeps its sentence on the row above; at W0, and on a row
+                    // that had no room at all, there is no strip and the summary stays.
+                    if CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
+                                                            summaryRow: summaryHere?.row) {
                         return nil
                     }
-                    // Nothing fits: no strip, and the Metal chevron below stays, so hovering never
-                    // takes the fold control away.
                 }
                 // Nothing to say and nothing to fold: a quick success with no output. No summary,
                 // and no click target either.
@@ -2124,10 +2126,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 }
                 // The same rule the renderer uses to decide what it draws and where, so the click
                 // target and the pixels can never disagree.
-                guard let placement = CommandBlockChrome.summaryPlacement(
-                        commandRows: candidates, textCount: text.count,
-                        chevronCount: header.chevron.count, cols: t.cols),
-                      let slot = slotOf[placement.row] else { return nil }
+                guard let placement = summaryHere, let slot = slotOf[placement.row] else { return nil }
                 headers[slot] = header
                 summaryColumns[slot] = placement.columns
                 notesSpokenFor.insert(slot)
@@ -3173,25 +3172,29 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// fold toggle) has no such value in hand and passes nil, which reads it here instead.
     private func blockHeaderChanged(palette suppliedPalette: Palette? = nil) {
         let palette = suppliedPalette ?? session.withTerminal { $0.palette }
-        guard let row = hoveredBlock?.headerRow, let header = headersOnScreen[row] else {
-            blockHeader.update(header: nil, controls: hoverOverlayControls, palette: palette,
-                               font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
+        let font = NSFont.monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular)
+        guard let row = hoveredBlock?.headerRow, let header = headersOnScreen[row],
+              let plan = hoverStripPlan else {
+            blockHeader.update(header: nil, plan: nil, palette: palette, font: font, groundHeight: 0)
             return
         }
-        blockHeader.update(header: header, controls: hoverOverlayControls, palette: palette,
-                           font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
-        let size = blockHeader.intrinsicContentSize
-        let origin = overlayOrigin(forHeaderRow: row)
-        // As tall as the pills, centred on the row. `hitTest` rejects a point outside the view's
-        // frame, so a frame one row tall (16 pt) around 20-point pills left a two-point dead sliver
-        // along the top and the bottom of every one of them -- worst on the round `⋯` and `▾`,
-        // which are the two controls that never go away. The strip's *ground* is still one row
-        // tall; see `BlockHeaderView.paintedHeight`.
-        let rowHeight = cellSizePoints.height
-        let height = max(rowHeight, size.height)
-        blockHeader.paintedHeight = rowHeight
-        blockHeader.frame = NSRect(x: origin.x - size.width, y: origin.y - (height - rowHeight) / 2,
-                                   width: size.width, height: height)
+        let cell = cellSizePoints
+        // The frame is as tall as the pills and never below the hit floor, centred on the row:
+        // `hitTest` rejects a point outside the view's frame, so a frame one row tall around 20 pt
+        // pills left a dead sliver along the top and bottom of every one of them. What the strip
+        // *paints* is one row, so an opaque band cannot cover the rows above and below. Both
+        // numbers come from `CommandBlockChrome` rather than from `fittingSize`, which had no floor
+        // at all at `line-height = 0.8`.
+        let height = CGFloat(CommandBlockChrome.stripFrameHeight(cellHeight: Double(cell.height)))
+        let top = bounds.height - padding - CGFloat(row + 1) * cell.height
+        blockHeader.update(header: header, plan: plan, palette: palette, font: font,
+                           groundHeight: CGFloat(CommandBlockChrome.stripGroundHeight(cellHeight: Double(cell.height))))
+        // The strip begins at the column Core chose -- after the command's last glyph -- and runs to
+        // the pane's right edge, so what is right-aligned inside it lands on the last column.
+        blockHeader.frame = NSRect(x: padding + CGFloat(plan.firstColumn) * cell.width,
+                                   y: top - (height - cell.height) / 2,
+                                   width: CGFloat(cols - plan.firstColumn) * cell.width,
+                                   height: height)
         window?.invalidateCursorRects(for: self)
     }
 

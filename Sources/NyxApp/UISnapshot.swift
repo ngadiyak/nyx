@@ -27,6 +27,7 @@ enum UISnapshot {
 
     static func run(into directory: URL, config: Config) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        useFixtureConfig()
         let palette = Pane.resolvedPalette(for: config)
 
         write(tabBar(palette: palette, config: config, tabs: 1, quickActions: quickActions()),
@@ -325,6 +326,13 @@ enum UISnapshot {
         // one thing a user never sees; see `GridSnapshot` for why the compositor lives here rather
         // than in `NyxRenderTests`.
         GridSnapshot.run(into: directory, config: config)
+        // The menus and the alerts, neither of which `cacheDisplay` can reach on its own; see
+        // `MenuSnapshot` for what is real in those pictures and what is a reconstruction.
+        MenuSnapshot.run(into: directory, config: config)
+        // The states the design review found no picture for: hover and pressed,
+        // a TUI owning the screen, extreme metrics, and the sheet and popover
+        // states that only one of their options had ever been drawn in.
+        StateSnapshot.run(into: directory, config: config)
 
         for name in Themes.builtin.keys.sorted() {
             var themed = config
@@ -374,9 +382,49 @@ enum UISnapshot {
         FileHandle.standardError.write("wrote UI snapshots to \(directory.path)\n".data(using: .utf8)!)
     }
 
+    /// Points the settings window's `ConfigStore` at a fixture file for the rest of the run.
+    ///
+    /// Four pictures were being rendered from the *developer's own* `~/.config/nyx`:
+    /// `writeSettings` builds a real `ConfigStore` and a real `SettingsWindowController`, and the
+    /// Remote page then shows whether that person happens to have a relay token. They changed
+    /// mid-task when the machine's config gained one, which makes them useless as a before/after --
+    /// a review tool whose output depends on the reviewer is not a review tool. Every path built
+    /// from `$HOME` (the palette's `~/projects` rows, the project-review alert) becomes
+    /// reproducible with it.
+    ///
+    /// Through `NYX_CONFIG`, which `ConfigPath.resolve` already honours, rather than through
+    /// `$HOME`: `NSHomeDirectory()` has been read by AppKit long before this runs and does not
+    /// follow a `setenv` afterwards (it was tried, and printed "HOME is still /Users/…"). The
+    /// override is a shipped, tested path rather than a hook added for the snapshot.
+    ///
+    /// Set before anything reads it and never restored: this process renders PNGs and exits.
+    private static func useFixtureConfig() {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nyx-snapshot-home", isDirectory: true)
+        let config = home.appendingPathComponent(".config/nyx", isDirectory: true)
+        try? FileManager.default.createDirectory(at: config.appendingPathComponent("themes"),
+                                                 withIntermediateDirectories: true)
+        // The shipped default file plus the two lines the Remote page is about, so the page is
+        // pictured switched on with a token in the field rather than with whatever this Mac has.
+        let text = Config.defaultFileText
+            + "\nremote = on\nremote-relay-token = snapshot-fixture-token-not-a-secret\n"
+        try? text.write(to: config.appendingPathComponent("config"), atomically: true,
+                        encoding: .utf8)
+        let file = config.appendingPathComponent("config")
+        setenv(ConfigPath.environmentVariable, file.path, 1)
+        let resolved = ConfigPath.resolve(environment: ProcessInfo.processInfo.environment,
+                                          home: NSHomeDirectory())
+        if resolved != file {
+            // Worth saying out loud rather than quietly rendering the reviewer's own files again.
+            let note = "snapshot: config still resolves to \(resolved.path); "
+                + "the settings pictures are not reproducible\n"
+            FileHandle.standardError.write(note.data(using: .utf8)!)
+        }
+    }
+
     // MARK: - The pieces
 
-    private static func quickActions() -> [QuickAction] {
+    static func quickActions() -> [QuickAction] {
         [
             QuickAction(name: "Caffeine", kind: .toggle, command: "caffeinate -d"),
             QuickAction(name: "Deploy", kind: .send, command: "./deploy.sh"),
@@ -526,7 +574,7 @@ enum UISnapshot {
     /// Chrome's "Copy as cURL" of a real request, inline rather than read from the test bundle:
     /// the app cannot see `Tests/NyxCoreTests/Fixtures`, and this is fixture 01 verbatim -- the
     /// long header list, the `$'…'` body with a newline in it, and `--compressed`.
-    private static let chromeCurl = #"""
+    static let chromeCurl = #"""
     curl 'https://api.example.com/v1/messages' \
       -H 'accept: */*' \
       -H 'accept-language: en-US,en;q=0.9' \
@@ -789,13 +837,13 @@ enum UISnapshot {
         }
     }
 
-    private static func descendants(of view: NSView) -> [NSView] {
+    static func descendants(of view: NSView) -> [NSView] {
         view.subviews + view.subviews.flatMap(descendants(of:))
     }
 
     /// The colour a real sheet or settings window puts behind these controls. Rendering them on the
     /// terminal's own background instead would judge a contrast that never happens on screen.
-    private static func windowGround(_ appearance: NSAppearance.Name) -> RGB {
+    static func windowGround(_ appearance: NSAppearance.Name) -> RGB {
         var result = RGB(236, 236, 236)
         NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
             if let color = NSColor.windowBackgroundColor.usingColorSpace(.deviceRGB) {
@@ -1323,8 +1371,8 @@ enum UISnapshot {
 
     /// Draws on a background the way the window would, so contrast can be judged rather than
     /// guessed at -- a bar rendered on transparency tells you nothing about how it reads in place.
-    private static func write(_ view: NSView, named name: String, into directory: URL,
-                              background: RGB) {
+    static func write(_ view: NSView, named name: String, into directory: URL,
+                      background: RGB) {
         let scale: CGFloat = 2
         let size = view.bounds.size
         guard size.width > 0, size.height > 0 else { return }
@@ -1340,25 +1388,21 @@ enum UISnapshot {
         context.fill(CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
         context.scaleBy(x: scale, y: scale)
 
-        // `cacheDisplay`, not `displayIgnoringOpacity`.
+        // The layer's ground, then `cacheDisplay` -- see `ChromeGround`.
         //
-        // The custom-drawn panels here render identically either way, which is exactly why the one
-        // that did not was easy to misdiagnose: `NSTabView`'s strip is a segmented control that
-        // paints through the layer/CoreUI path, which `displayIgnoringOpacity` skips entirely, so
-        // the settings tabs came out as four blank white pills — in *both* appearances, which is
-        // the detail that rules out the appearance explanation I reached for first.
-        if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-            view.cacheDisplay(in: view.bounds, to: rep)
-            if let image = rep.cgImage {
-                context.draw(image, in: CGRect(origin: .zero, size: size))
-            }
-        } else {
-            let graphics = NSGraphicsContext(cgContext: context, flipped: false)
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = graphics
-            view.displayIgnoringOpacity(view.bounds, in: graphics)
-            NSGraphicsContext.restoreGraphicsState()
-        }
+        // `cacheDisplay`, not `displayIgnoringOpacity`, for the view half. The custom-drawn panels
+        // here render identically either way, which is exactly why the one that did not was easy to
+        // misdiagnose: `NSTabView`'s strip is a segmented control that paints through the
+        // layer/CoreUI path, which `displayIgnoringOpacity` skips entirely, so the settings tabs
+        // came out as four blank white pills — in *both* appearances, which is the detail that
+        // rules out the appearance explanation I reached for first.
+        //
+        // And `cacheDisplay` alone was not enough either: it draws the view, never the layer, so a
+        // ground that is a `layer.backgroundColor` was missing from every picture. On this flat fill
+        // that is invisible wherever the ground *is* the fill; it is not invisible for the sticky
+        // strip, whose ground is `foreground @ 0.10`, and it was not invisible at all in the
+        // composites, where the search bar came out with the terminal reading through it.
+        ChromeGround.draw(view, at: CGRect(origin: .zero, size: size), in: context)
 
         guard let image = context.makeImage() else { return }
         let url = directory.appendingPathComponent("\(name).png")

@@ -1192,6 +1192,19 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// "is the shell free?" is the one question a series asks before every send.
     var canWatch: Bool { session.withTerminal { $0.shellEmitsPromptMarks } }
 
+    /// The refusal itself, built apart from being shown so `UISnapshot` can picture it: an alert
+    /// nobody has looked at is a sentence nobody has read, and this one is three lines long.
+    static func watchRefusedAlert() -> NSAlert {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Cannot watch a request in this pane"
+        alert.informativeText = "A watch sends its next run only when the shell is back at a "
+            + "prompt, and this shell does not tell Nyx where its prompts are. Set "
+            + "shell-integration = auto and open a new tab, or run the request from a pane that "
+            + "has it."
+        return alert
+    }
+
     /// Says why a watch cannot start here.
     ///
     /// On the *window*, never on a sheet attached to it. `reportProjectWrite` puts its alert on
@@ -1201,13 +1214,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// never runs. The user saw nothing at all. So: the window, and after the sheet has gone --
     /// see `presentRequestEditor`, which holds the refusal until `beginSheet`'s completion.
     private func reportWatchRefused() {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Cannot watch a request in this pane"
-        alert.informativeText = "A watch sends its next run only when the shell is back at a "
-            + "prompt, and this shell does not tell Nyx where its prompts are. Set "
-            + "shell-integration = auto and open a new tab, or run the request from a pane that "
-            + "has it."
+        let alert = Pane.watchRefusedAlert()
         if let window {
             alert.beginSheetModal(for: window) { _ in }
         } else {

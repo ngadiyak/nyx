@@ -88,6 +88,24 @@ enum GridSnapshot {
                           case: .banner(kind), into: directory,
                           named: "composite-banner-\(kind.rawValue)-\(suffix)")
                 }
+                write(canvas: canvas, palette: palette, appearance: appearance,
+                      case: .tui, into: directory, named: "composite-tui-\(suffix)")
+            }
+        }
+
+        // The two settings that change the shape of every row, at the ends of their ranges. The
+        // chrome is placed from `cellSizePoints` and `PromptGutter.width(padding:)`, and both have
+        // only ever been pictured at their defaults -- so nothing said what a 12 pt row does to a
+        // 20 pt pill, or what the gutter does when the padding it lives in is gone.
+        let dark = Themes.builtin["nyx-dark"] ?? Palette.xtermDefault()
+        for (label, change) in [("line-height-08", { (c: inout Config) in c.lineHeight = 0.8 }),
+                                ("padding-0", { (c: inout Config) in c.padding = 0 })] {
+            var tweaked = config
+            change(&tweaked)
+            guard let canvas = GridCanvas(cols: 84, rows: 20, config: tweaked) else { continue }
+            for (name, kind) in [("strip", Case.hoverStrip(.full)), ("gutter", Case.gutter)] {
+                write(canvas: canvas, palette: dark, appearance: .darkAqua, case: kind,
+                      into: directory, named: "composite-\(label)-\(name)-nyx-dark-dark")
             }
         }
     }
@@ -133,6 +151,10 @@ enum GridSnapshot {
         /// The search bar over the grid, with the query's hits highlighted in the text under it.
         case search(String)
         case banner(BannerKind)
+        /// A full-screen program owning the display. `CommandBlockChrome.isAllowed` is false on the
+        /// alternate screen, so every piece of block chrome must step aside -- the rule that keeps
+        /// vim, htop and tmux behaving exactly as they did, and the one Warp's blocks do not have.
+        case tui
     }
 
     private static func write(canvas: GridCanvas, palette: Palette, appearance: NSAppearance.Name,
@@ -168,6 +190,8 @@ enum GridSnapshot {
             scene.search(query)
         case .banner:
             break
+        case .tui:
+            scene.enterTUI()
         }
 
         let built = scene.build()
@@ -327,15 +351,108 @@ struct GridCanvas {
         CGImageDestinationFinalize(destination)
     }
 
-    /// `cacheDisplay`, for the same reason `UISnapshot.write` uses it: it draws a view without the
-    /// window server, and it is the only path that renders the AppKit-drawn parts (a bezel, a
-    /// segmented control) rather than skipping them.
+    /// The layer's ground first, then the view over it.
+    ///
+    /// `cacheDisplay` alone was wrong here, and wrong in a way that made a picture accuse the wrong
+    /// control. It renders the *view* -- `draw(_:)` and every subview's -- and not the **layer**, so
+    /// a ground that is a `layer.backgroundColor` is simply absent from the bitmap. Over a flat fill
+    /// (`UISnapshot.write`) that is invisible, because the fill is the same colour the ground would
+    /// have been. Over a real grid it is not: the search bar came out with the terminal's text
+    /// reading straight through it, and the design review measured 3.85:1 against a bar that
+    /// `SearchBarView.apply` paints at `background @ 0.96`.
+    ///
+    /// In the window there is no choice to make: these views are layer-backed subviews of a pane
+    /// whose own layer is a `CAMetalLayer`, and Core Animation composites their layers over it. The
+    /// layer tree *is* what the user sees, so the ground is drawn from the layer -- fill, corner
+    /// radius and border, plus any sublayer that is pure geometry, which is how `BlockHeaderView`'s
+    /// leading fade (a `CAGradientLayer`) reaches the picture at all.
+    ///
+    /// Not `layer.render(in:)` for the whole thing: it re-enters the view's drawing through the
+    /// layer delegate and loses what `cacheDisplay` is here for -- AppKit's own control art, the
+    /// `.inline` button bezels on the hover strip and `NSTabView`'s segmented strip, which paint
+    /// through CoreUI. Ground from the layer, content from `cacheDisplay`: both halves come from the
+    /// path that really draws them.
     private func draw(_ view: NSView, at rect: NSRect, in context: CGContext) {
-        guard view.bounds.width > 0, view.bounds.height > 0,
-              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        ChromeGround.draw(view, at: rect, in: context)
+    }
+}
+
+/// Draws a chrome view the way the window server does: its **layer's** ground, then the view.
+///
+/// Shared by both snapshot paths, because the mistake was the same in both. `UISnapshot.write`
+/// draws each control on a flat fill of the terminal's background, so a missing ground is invisible
+/// there whenever the ground *is* that background -- which is true of the lens field (0.97) and the
+/// search bar (0.96) and false of the sticky strip (`foreground @ 0.10`) and the hover strip's
+/// fade. `GridSnapshot` draws them over real text, where every one of those is visible.
+enum ChromeGround {
+    static func draw(_ view: NSView, at rect: NSRect, in context: CGContext) {
+        guard view.bounds.width > 0, view.bounds.height > 0 else { return }
+        if let layer = view.layer {
+            context.saveGState()
+            context.translateBy(x: rect.origin.x, y: rect.origin.y)
+            paintGround(of: layer, in: context, size: rect.size)
+            context.restoreGState()
+        }
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
         guard let image = rep.cgImage else { return }
         context.draw(image, in: rect)
+    }
+
+    /// A layer's own painting -- background, corner radius, border, and the gradient sublayers the
+    /// chrome uses for its fades -- in the layer's frame, recursively.
+    ///
+    /// Deliberately not a general CA renderer: it draws the properties Nyx's chrome actually sets,
+    /// and nothing else. A layer that grows a shadow or a mask and is not seen in a picture is a
+    /// bug in this function, which is why the list is short enough to check against the views.
+    static func paintGround(of layer: CALayer, in context: CGContext, size: CGSize) {
+        let rect = CGRect(origin: .zero, size: size)
+        let path = CGPath(roundedRect: rect, cornerWidth: min(layer.cornerRadius, size.width / 2),
+                          cornerHeight: min(layer.cornerRadius, size.height / 2), transform: nil)
+        if let fill = layer.backgroundColor {
+            context.saveGState()
+            context.addPath(path)
+            context.clip()
+            context.setFillColor(fill)
+            context.fill(rect)
+            context.restoreGState()
+        }
+        if let gradient = layer as? CAGradientLayer, let colors = gradient.colors as? [CGColor],
+           colors.count > 1 {
+            let locations = (gradient.locations ?? []).map { CGFloat(truncating: $0) }
+            let space = colors[0].colorSpace ?? CGColorSpaceCreateDeviceRGB()
+            if let ramp = CGGradient(colorsSpace: space, colors: colors as CFArray,
+                                     locations: locations.count == colors.count ? locations : nil) {
+                context.saveGState()
+                context.addPath(path)
+                context.clip()
+                context.drawLinearGradient(
+                    ramp,
+                    start: CGPoint(x: rect.minX + gradient.startPoint.x * rect.width,
+                                   y: rect.minY + gradient.startPoint.y * rect.height),
+                    end: CGPoint(x: rect.minX + gradient.endPoint.x * rect.width,
+                                 y: rect.minY + gradient.endPoint.y * rect.height),
+                    options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                context.restoreGState()
+            }
+        }
+        if layer.borderWidth > 0, let border = layer.borderColor {
+            context.saveGState()
+            context.addPath(path)
+            context.setStrokeColor(border)
+            context.setLineWidth(layer.borderWidth)
+            context.strokePath()
+            context.restoreGState()
+        }
+        for sublayer in layer.sublayers ?? [] {
+            // Only the layers the chrome adds itself. A layer AppKit made to back a subview is that
+            // subview's business, and `cacheDisplay` is about to draw it properly.
+            guard sublayer.delegate == nil else { continue }
+            context.saveGState()
+            context.translateBy(x: sublayer.frame.origin.x, y: sublayer.frame.origin.y)
+            paintGround(of: sublayer, in: context, size: sublayer.frame.size)
+            context.restoreGState()
+        }
     }
 }
 
@@ -489,6 +606,9 @@ struct GridScene {
     /// A watch on the request block, so the timeline is placed by `overlayPlacement` against a real
     /// command row rather than measured in isolation.
     var watch: WatchHeader?
+    /// Whether a full-screen program has taken the display. Not a flag the frame pass reads
+    /// directly -- it asks `CommandBlockChrome.isAllowed`, exactly as `Pane.render` does.
+    private(set) var altScreen = false
     private var searchSession = SearchSession()
     private var searchQuery = ""
 
@@ -626,6 +746,33 @@ struct GridScene {
         cursor = DisplayCursor(row: max(0, promptRow - 3))
     }
 
+    /// Switches to the alternate screen and draws something that looks like a TUI on it.
+    ///
+    /// DECSET 1049 is what `vim`, `htop` and `less` send, and it is the condition
+    /// `CommandBlockChrome.isAllowed` refuses on: no spines, no summaries, no gutter marks, no
+    /// hover strip. Drawn with a status line and a selected row so the picture shows a program's
+    /// own interface rather than an empty screen -- chrome drawn over *that* is the bug.
+    mutating func enterTUI() {
+        folding = OutputFolding()
+        lenses = LensChoices()
+        buffers = [:]
+        terminal.feed("\u{1b}[?1049h\u{1b}[2J\u{1b}[H")
+        terminal.feed("\u{1b}[7m  1 \u{1b}[0m import AppKit\r\n")
+        terminal.feed("  2  import NyxCore\r\n  3 \r\n")
+        terminal.feed("  4  /// The terminal view: a CAMetalLayer, an NSTextInputClient, and\r\n")
+        terminal.feed("  5  /// every event a pane can be handed.\r\n")
+        terminal.feed("  6  final class Pane: NSView {\r\n")
+        terminal.feed("  7      private let renderer: Renderer\r\n")
+        terminal.feed("  8      private var folding = OutputFolding()\r\n")
+        terminal.feed("  9  \r\n 10      override func keyDown(with event: NSEvent) {\r\n")
+        terminal.feed(" 11          guard let bytes = encoder.bytes(for: event) else { return }\r\n")
+        terminal.feed(" 12          session.send(bytes)\r\n 13      }\r\n 14  }\r\n")
+        for row in 15...(canvas.rows - 2) { terminal.feed("\u{1b}[34m~\u{1b}[0m  \(row)\r\n") }
+        terminal.feed("\u{1b}[7m Pane.swift                          14,1        Top \u{1b}[0m")
+        altScreen = true
+        cursor = DisplayCursor(row: terminal.scrollback.count)
+    }
+
     /// Puts the request block's command row on screen with room under it, for the cases whose
     /// chrome hangs off that row.
     mutating func showRequestBlock() {
@@ -696,7 +843,12 @@ struct GridScene {
         let pad = max(0, rows - lines.count)
         lines += Array(repeating: Row(cols: cols), count: pad)
 
-        let marks = terminal.gutterMarks(onDisplayRows: display) + Array(repeating: nil, count: pad)
+        let allowed = CommandBlockChrome.isAllowed(altScreen: terminal.modes.altScreen,
+                                                   mouseReporting: terminal.modes.mouse != .none,
+                                                   hasMarks: terminal.shellEmitsPromptMarks)
+        let marks = allowed ? terminal.gutterMarks(onDisplayRows: display)
+                                + Array(repeating: nil, count: pad)
+                            : Array(repeating: nil, count: rows)
         let folded = terminal.foldStates(onDisplayRows: display, folding: folding)
             + Array(repeating: false, count: pad)
         let states = terminal.commandStates(onDisplayRows: display)
@@ -708,7 +860,13 @@ struct GridScene {
         let slotOfRow = DisplayRows.indexByAbsoluteRow(display)
         let windowTop = max(0, cursor.row)
         let lastOnScreen = slotOfRow.keys.max() ?? (windowTop + rows - 1)
-        let blocks = terminal.visibleBlocks(from: windowTop, through: lastOnScreen)
+        // The same gate `Pane.render` uses: block chrome is drawn over an unmodified grid, so it
+        // steps aside entirely when a full-screen program owns the display or the mouse.
+        let chromeAllowed = CommandBlockChrome.isAllowed(altScreen: terminal.modes.altScreen,
+                                                         mouseReporting: terminal.modes.mouse != .none,
+                                                         hasMarks: terminal.shellEmitsPromptMarks)
+        let blocks = chromeAllowed ? terminal.visibleBlocks(from: windowTop, through: lastOnScreen)
+                                   : []
 
         let failedColor = palette.readable(1)
         let runningColor = palette.readable(3)

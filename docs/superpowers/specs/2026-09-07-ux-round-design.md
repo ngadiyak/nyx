@@ -14,22 +14,21 @@ Every disagreement that mattered is written down where it applies, with the ruli
 ## 1. Goal, the bar, and what is in scope
 
 The owner's standing complaint about the block — the surface Nyx is used through more than any
-other — is "некрасиво и неочевидно как работает": four separate presentations of one command (an
-AppKit gutter capsule, a Metal spine, an in-grid summary with a chevron, an AppKit hover strip)
-that encode the same fact twice 1.5 pt apart, offer six routes to fold in three glyphs at three x
+other — is "некрасиво и неочевидно как работает": four presentations of one command (an AppKit
+gutter capsule, a Metal spine, an in-grid summary with a chevron, an AppKit hover strip) that
+encode the same fact twice 1.5 pt apart, offer six routes to fold in three glyphs at three x
 positions, label nothing below `Copy`, drop the status code before dropping a second menu, and
-*remove* information when the pointer arrives. This round does not patch those findings one by
-one; it makes the block one system with one Core decision table, and then walks the rest of the
-chrome — lenses, shell integration, settings, tab bar, palette, search, banners, remote — until
-each surface explains itself without a manual.
+*remove* information when the pointer arrives. This round does not patch those findings one by one;
+it makes the block one system with one Core decision table, then walks the rest of the chrome —
+lenses, shell integration, settings, tab bar, palette, search, banners, remote — until each surface
+explains itself without a manual.
 
 **The bar.** Warp for block interactions: labelled hover verbs, whole-row targets, the metadata
 bound to the block rather than stranded at the far margin. Ghostty for restraint: nothing costs a
-terminal column or a scrap of attention while the pointer is elsewhere. Where the two conflict,
-**restraint wins at idle and clarity wins on hover** (`decisions.md` §2). Nyx's own advantage over
-both is stated once and built once: *the gutter mark is the fold control, it costs no columns at
-idle, and it grows a label on hover* — iTerm2's mark column with Warp's verbs and Ghostty's silence
-when nobody is pointing at it.
+terminal column or a scrap of attention while the pointer is elsewhere. Where they conflict,
+**restraint wins at idle and clarity wins on hover** (`decisions.md` §2). Nyx's own advantage is
+stated once and built once: *the gutter mark is the fold control, it costs no columns at idle, and
+it grows a label on hover* — iTerm2's mark column with Warp's verbs and Ghostty's silence.
 
 **In scope:** drawn chrome outside the terminal grid, its Core decision logic, its keyboard paths,
 its VoiceOver labels and its pictures. Readability floors on existing palettes (4.5:1 for text,
@@ -48,9 +47,25 @@ about chrome; the build stays warning-free and `make bench` stays at or above 18
 in this order, each landing on its own commits: block chrome → lenses and watch → shell
 integration → settings and sheets → tab bar, palette, search, banners → remote strip and pairing.
 
+**Eight plans, not six.** Waves 1 and 5 are each too large for one plan of ≤ 10 tasks, so each
+splits at a seam that leaves both halves shippable: **1a** the mark and the strip (the block drawn
+as one system) and **1b** the keyboard on a block (one "which block" rule, one chord); **5a** the
+tab bar and **5b** palette, search and banners. Waves 2, 3, 4 and 6 each fit one plan; the task
+groupings that keep them under ten are named in their headings.
+
 ---
 
 ## 2. Wave 1 — block chrome as one system
+
+**Plan 1a (§2.1–§2.7), eight tasks:** the `CommandBlockChrome` decision table; the gutter mark as
+the head of the spine; the strip's geometry and pills; the lens chip; the fold column and the
+summary losing its chevron; the sticky strip; `hitRowHeight` everywhere (§8.4); the pictures and
+the rung-6 hook. Every pointer route is correct without any of 1b.
+**Plan 1b (§2.8), six tasks:** `BlockCursor`; re-targeting and re-titling the eight block-scoped
+actions; `block_actions` ⌘⇧A and `view.menu`; the `BlockAction → TerminalAction?` chords in the
+menu (moved here from §6.5, because ⌘⇧A's menu is what has to teach them);
+`scroll_to_sticky_prompt`; the finish announcement (§8.1). It touches no pixel 1a draws, and 1a is
+what makes its target visible.
 
 ### 2.1 The decision that replaces four presentations
 
@@ -66,23 +81,33 @@ public enum CommandBlockChrome {
     public static func widthClass(freeColumns: Int) -> WidthClass   // w3 ≥ 34, w2 18…33, w1 8…17, w0 < 8
 
     public struct StripPlan: Equatable {
-        public let readout: String            // the summary sentence, never re-worded
+        public let readout: String            // the summary sentence, abbreviated per §2.6, never re-worded
         public let readoutTone: SummaryTone
         public let dots: [WatchSeries.Dot]    // empty when dropped
-        public let overflowDot: String?       // "+18" when the 30-dot cap bites
+        public let overflowDot: String?       // "+N" when the 30-dot cap bites
         public let pills: [Pill]              // leading → trailing, already dropped to fit
-        public let firstColumn: Int           // never inside a word; nil-equivalent when W0
+        public let firstColumn: Int           // never inside a word
+        public let overlapsCommand: Bool      // true only for the lone `Stop` of §2.6's W0 row
     }
     public enum Pill: Equatable {
-        case fold(FoldLabel)                  // .fold / .unfold, .labelled or .bare
+        case fold(FoldLabel)                  // .fold ("Fold") / .unfold ("Unfold") — always a word;
+                                              // the bare `▾` pill is deleted (§2.4)
         case copy(enabled: Bool)
-        case lens(name: String, on: Bool)     // "Pretty" / "Raw" / "Headers" / "Body" / "Filter" / "Grep" / "Diff"
+        case lens(name: String, on: Bool)     // ResponseLens.chipTitle: Raw/Pretty/Headers/Body/Filter/Find/Diff
         case stop
         case actions(Actions)                 // .labelled ("Actions ▾") / .glyph ("⋯")
     }
+    /// `nil` when no strip is placed on that row: W0, or a plan that does not fit the free
+    /// columns. The gutter still folds, and the in-grid summary is *not* suppressed (§2.5).
     public static func stripPlan(_ header: BlockHeader, freeColumns: Int) -> StripPlan?
     public static func gutterCap(_ header: BlockHeader, hovered: Bool, folded: Bool) -> GutterCap
-    /// Every row-height hit target, clamped so `line-height = 0.8` cannot make it 13 pt.
+    /// The mark and the spine are one shape: 3 pt wide, `spineLeadingInset` from the pane's left
+    /// edge. The renderer reads the same two numbers, so the Metal spine and the AppKit cap cannot
+    /// drift apart.
+    public static let spineWidth: CGFloat = 3
+    public static func spineLeadingInset(padding: CGFloat) -> CGFloat  // min(4, max(0, padding - 3))
+    /// Every row-height *hit* target, clamped so `line-height = 0.8` cannot make it 13 pt. The
+    /// *drawn* mark stays `cellHeight` tall (§2.2).
     public static func hitRowHeight(cellHeight: CGFloat) -> CGFloat   // max(cellHeight, 16)
 }
 ```
@@ -99,12 +124,20 @@ padding no longer folds anything, because the padding is not a control and never
   This replaces `maximumWidth = 14` and the wrong comment at `PromptGutter.swift:64-68`; at the
   shipping `padding = 8` the real target today is **8 pt wide and 13 pt tall at `line-height 0.8`**
   (a11y 6.1), which is half what the code claims.
-- **Drawn mark 3 pt wide × `hitRowHeight(cellHeight:)` tall**, in the block's tone, and it is the
-  **head of the spine** — same 3 pt, same colour, continuous down the block's rows. The separate
-  1 pt Metal spine and the 4.5 pt capsule stop existing as two marks: one shape, one fact, no more
-  "a green line with beads on it" at x ≈ 1 pt (PM §1, design §2.7 MUST).
-- **The mark moves off the window edge**: its leading inset is 4 pt, so it is no longer inside the
-  window's resize margin.
+- **Drawn mark 3 pt wide × `cellHeight` tall**, in the block's tone, and it is the **head of the
+  spine** — same 3 pt, same colour, continuous down the block's rows. The separate 1 pt Metal
+  spine and the 4.5 pt capsule stop existing as two marks: one shape, one fact, no more "a green
+  line with beads on it" at x ≈ 1 pt (PM §1, design §2.7 MUST).
+  *Disagreement:* `findings-design` §3.2 gives the drawn mark `max(cellHeight, 16)`.
+  **Ruling: drawn = `cellHeight`, hit = `hitRowHeight` (§8.4).** A 16 pt mark on a 13 pt row at
+  `line-height 0.8` makes the spine lumpy and collides two blocks' marks; the height that must be
+  clamped is the one the mouse sees. The clamped rect may overhang the rows above and below —
+  usually output rows, which have no mark — and where two marks' rects do overlap (two prompts with
+  nothing between them) the point goes to the **nearer centre**, decided in Core.
+- **The mark moves off the window edge**: its leading inset is `spineLeadingInset(padding:)` =
+  `min(4, max(0, padding - 3))` — 4 pt at the shipping `padding = 8`, so it is no longer inside the
+  window's resize margin, and 0 pt at `padding = 0`, where it may draw over the first text column
+  rather than off the window.
 - **Shape carries state**, not colour alone (a11y 6.2): succeeded = solid cap; failed = solid cap
   **plus a full-row bar**; running = hollow cap; no output = cap at 40 % alpha and **not pressable**.
   *Disagreement:* a11y 6.2 proposed a half-height mark for success; `findings-design` §3.2 gives the
@@ -125,6 +158,8 @@ Geometry, exact (design §3.2):
 | pill height | 20 pt, corner radius 6 pt |
 | glyph pill width | 24 pt |
 | label pill width | text width + 16 pt |
+| pill text | `NSFont.systemFont(ofSize: 11, weight: .medium)` — the same font measures the width, so Core is given the measured width and never guesses (`BlockHeaderView.width(for:header:font:)` keeps its measuring cache) |
+| pill glyphs | `⋯` and `▾` drawn as paths 8 pt wide inside the 24 pt pill, not as text — the 5 pt glyph in a 20 pt pill is why design §2.7 measured the chevron "weak because of size" |
 | gap between pills | 6 pt |
 | trailing inset | 8 pt |
 | pill fill | `palette.foreground @ 0.14` |
@@ -132,28 +167,43 @@ Geometry, exact (design §3.2):
 | leading edge | 8 pt of solid strip ground, then a 2-cell gradient to transparent |
 | strip ground | the row's own hover tint, not `palette.background` — a `background` band on a tinted row reads as a floating rectangle |
 | dots | filled, 7 pt, on a 10 pt pitch; the running run is a **filled accent** dot, not a hollow amber ring (which shares a hue with redirect and reads as a smudge at 6 pt) |
-| dot cap | 30 dots; past it the leading dot is replaced by the label `+18` — the cap stops being silent (D16) |
+| dot cap | 30 dots; past it the leading dot is replaced by the label `+N` (`+18` at 48 runs), in the readout's font at the dots' own tone — the cap stops being silent (D16) |
 
 **The strip is right-aligned into the free columns *after the command's last glyph* and never
 begins inside a word.** `StripPlan.firstColumn` is a column index, computed in Core from the
 command row's last used cell; if the plan does not fit, there is no strip on that row and the
 gutter still folds. This kills `…'{"service":"we8.8s ⋯ ▾` (snapshot report §3.5) without the
-two-cell fade pretending to be a gap.
+two-cell fade pretending to be a gap. **The one exception is the lone `Stop` of §2.6's W0 row**
+(`StripPlan.overlapsCommand`): stopping a runaway watch must always be one click, so that pill is
+drawn over the command's tail on an *opaque* pill fill with no gradient, which reads as a control
+on top of text rather than as text colliding with text.
+
+**Labels and help, exact.** `Copy` — help `Copy this command's output` (a11y 6.7). `Stop` — label
+and help `Stop watching this request` (a11y 6.9; the pill's scope and ⌘.'s scope stop diverging in
+§2.8, where both target the block cursor). `Fold`/`Unfold` — help `Fold this command's output`.
+`Actions ▾` and `⋯` — label `Command actions`, and both open the menu `block_actions` opens.
 
 Every tinted control resolves through `SummaryTone.color(in:)` / `RGB.readable(_:on:towards:)`, so
 gruvbox-dark's lit `{ }` at 2.82:1 (snapshot §3.4) cannot recur.
 
-**The lens control is a chip carrying the lens name**, not `{ }`: `Pretty`, `Raw`, `Headers`,
-`Body`, `Filter`, `Grep`, `Diff`, with a trailing `▾` when the menu offers others. Off = the same
+**The lens control is a chip carrying the lens name**, not `{ }`: `Raw`, `Pretty`, `Headers`,
+`Body`, `Filter`, `Find`, `Diff`, with a trailing `▾` when the menu offers others. Off = the same
 pill fill as its neighbours. On = **filled `palette.accent` with `palette.textOn(accent)` ink** —
 the pattern `SearchBarView.updateScopeTint` (`:181-186`) and `tabbar-toggle-running` already use.
-`ResponseLens` gains `chipTitle: String` so the name is decided in Core.
+`ResponseLens` gains `chipTitle: String` — those seven strings exactly — so the name is decided in
+Core; `ResponseLens.title` keeps the longer menu wording it already has (`Pretty JSON`,
+`Find in Body…`, `Diff with Previous Run`), and `chipTitle` is its short head, never a third
+spelling.
 
 ### 2.4 One control folds
 
 **Fold triangles share one column.** Every `▸`/`▾` that means "fold" — a fold placeholder row, a
-lens container line, and nothing else — is drawn at **column 0 of the text area**, 8 pt, in the
-row's tone. The in-grid command-row summary keeps its right alignment and **loses its chevron**;
+lens container line, and nothing else — is drawn at **column 0 of the text area**, in the row's
+tone, as a glyph in the pane's own font at the pane's own cell size (these are Metal glyphs in the
+grid: "8 pt" applies only to the AppKit gutter cap's chevron in §2.2, which is a drawn path).
+Their hit box is column 0's cell, widened to **20 pt** and `hitRowHeight` tall — the same 20 pt the
+gutter uses, for the same reason. The in-grid command-row summary keeps its right alignment and
+**loses its chevron**;
 it is a readout, not a control, and it stops being clickable. That removes the contradiction
 between `Pane.swift:3053` and `:2016` about which chevron gets a pointing hand, and it means the
 pointing hand is now truthful everywhere: column-0 triangles and strip pills have it, the summary
@@ -170,7 +220,9 @@ deleted. Six down to four, and two of them are labelled.
 `.minimal` also dropped the summary, hovering a block *removed* the thing you were reading — worst
 on a watched block, which showed only `Stop ⋯ ▾` (snapshot §3.3, PM §16). The decision table below
 makes the status the **last thing dropped**, so the suppression is safe: whatever the summary said,
-the strip says at least as much.
+the strip says at least as much. Precisely: the in-grid summary is suppressed **only on a row where
+`stripPlan` actually returned a plan**. At W0, and on any row where the plan did not fit, the strip
+is absent and the summary stays — so hovering can never take a fact off the screen.
 
 ### 2.6 The decision table
 
@@ -189,13 +241,29 @@ Width class = free columns after the command's last glyph. **W3 ≥ 34, W2 18–
 | watched, finished | `●●●● 11 runs · p50 140 · p95 190 · 2 failures [Copy] [Actions ▾]` | `11 runs · 2 failures [Actions ▾]` | `11 runs [⋯]` | — |
 | no output | `‹summary› [Actions ▾]` | same | `[⋯]` | — |
 
-**Drop order, right to left:** dots → `Copy` → the `Fold`/`Unfold` label → `Actions ▾` collapses to
-`⋯` → interval and percentiles → run count. **Never dropped: `Stop`, and the status or exit code,
-which is the last thing to go.** That is the inverse of today, where a recoverable `Copy` outlived
-the unrecoverable status and two identical grey circles outlived it too.
+**Reading the table.** `‹summary›` is `BlockHeader.summary`, unchanged in wording. A `—` in the W0
+column means what the finished row's cell says: **no strip, the gutter cap alone** (`▾` unfolded,
+`▸` folded, absent with no output). `[Stop]` over the tail is the one exception — the
+`overlapsCommand` case of §2.3.
+
+**Two ladders, not one.** `findings-design` §3.3 states a single right-to-left drop order that its
+own table contradicts (the table drops `Fold` before `Copy`, and keeps `Unfold` past `Copy`).
+**Ruling: the table is what ships**, reproduced by two ladders, both in Core, both asserted cell by
+cell against it.
+
+*Pills, kept longest first:* `Stop` → `Actions` (which collapses from `Actions ▾` to `⋯` before any
+pill is dropped) → the lens chip when HTTP, or `Unfold` when folded → `Copy` → `Fold` → the dots.
+`Stop` and `Actions` are present at every width. A block that is both watched and HTTP takes
+`Stop`, never the lens chip: the two never share the strip, and the lens stays in the menu (§3.13).
+
+*Readout, longest first:* the full sentence → drop the interval (`every 5 s`) and the percentiles →
+drop the timing and size (`142 ms`, `1.2 KB`, `json`) → drop the run count → **the status or exit
+code alone, never dropped while a strip is drawn at all.** The inverse of today, where a
+recoverable `Copy` outlived the unrecoverable status and two grey circles outlived it too.
 
 `OverlayControls`' three levels (`.full`/`.noCopy`/`.minimal`) are replaced by `WidthClass` and the
-per-pill drop rule; the enum stays only as long as its callers need one commit to move.
+two ladders, and **the enum is deleted in the same task that moves its last caller** — it does not
+survive this wave under any condition.
 
 ### 2.7 The sticky strip
 
@@ -207,13 +275,18 @@ print on top of each other in every scrolled composite. Four changes, all small:
    (`:105`, written `:2221`) and is read only by the click handler (`:3642`).
 2. The band's ground becomes **opaque** `palette.background`, with the strip's own appearance pin.
 3. A **1 px bottom divider** at `palette.foreground @ 0.20`.
-4. A **leading `↑` glyph** at 8 pt in `palette.foreground @ 0.55`, so the band says it is a control
-   at all — today it has no bezel, no chevron, no pin and no divider, and the whole thing is a
-   click target (design §2.8).
+4. A **leading `↑` glyph** drawn as a path 8 pt wide in `palette.foreground @ 0.55`, so the band
+   says it is a control at all — today it has no bezel, no chevron, no pin and no divider, and the
+   whole thing is a click target (design §2.8). Its own height goes through
+   `hitRowHeight(cellHeight:)` (§8.4), so the band is never 13 pt tall.
 
 And the label stops lying: `StickyPromptLabel` says "Running command" for a finished one
 (a11y 7.1). It takes `BlockHeader.summary` and `SummaryTone` instead, so the pinned line reads
-`swift build … · exit 1 · 8.8s` in the failure tone.
+`swift build … · exit 1 · 8.8s` in the failure tone. Its VoiceOver label is
+`Pinned command: <summary>. Scrolls back to it.`
+
+The click keeps working and gains a keyboard path: **`scroll_to_sticky_prompt`** (§8.2), which
+lands with plan 1b.
 
 ### 2.8 Keyboard: `BlockCursor` and one route
 
@@ -224,16 +297,36 @@ Eight block-scoped actions currently use **five different rules** for "which blo
 
 ```swift
 public struct BlockCursor: Equatable {
+    public enum Direction: Equatable { case previous, next }
     public var commandID: CommandID?
+    /// The viewport moved for a reason other than ⌘↑/⌘↓ (a scroll, new output, a fold). `fallback`
+    /// is `commandToFold()`'s answer: the cursor keeps its block while that block is still in
+    /// `visible`, otherwise takes `fallback`, and clears when `fallback` is nil.
     public static func afterViewportMove(_ current: Self, visible: [CommandID], fallback: CommandID?) -> Self
+    /// Clamps at both ends rather than wrapping; from a cleared cursor `.previous` takes the last
+    /// element and `.next` the first; a block trimmed out of `among` by scrollback is gone, and the
+    /// move starts from the nearest surviving id in the direction of travel.
     public static func moved(_ current: Self, by: Direction, among: [CommandID]) -> Self
 }
 ```
 
 "The block the keyboard is on." Moved by ⌘↑/⌘↓ (which already move the viewport and now also move
-the cursor), reset to `commandToFold()`'s answer when the viewport moves for another reason, and
+the cursor), reset by `afterViewportMove` when the viewport moves for another reason, and
 targeted by `fold_command`, `select_command_output`, `copy_command_output`, `copy_block_markdown`,
 `save_command_output`, `edit_and_run_command`, `toggle_http_lens` and `stop_watch`.
+
+**The cursor is visible, or it is a trap.** `BlockHover` gains a source — `.pointer` or `.cursor` —
+and the cursor's block is drawn exactly as a hovered one: row tint, gutter chevron, and the strip
+of §2.6 at the block's own width class. The pointer wins while it is inside the pane; the cursor's
+presentation returns when the pointer leaves or the next ⌘↑/⌘↓ arrives, and it is cleared when the
+cursor clears. Nothing new is drawn at idle: a pane nobody has pressed ⌘↑ in has no cursor.
+
+**The titles stop saying "Last"** in the same commit, or the menu bar lies: `Copy Last Command
+Output` → **`Copy Command Output`**, `Copy Last Command as Markdown` → **`Copy Command as
+Markdown`**, `Save Last Command Output…` → **`Save Command Output…`**, `Edit Command Line…` →
+**`Edit This Command…`**. The other four keep their titles and change only their target, and
+`docs/configuration.md`'s scope sentences — including the documented divergence of ⌘. from the
+`Stop` button — are rewritten to "the block the keyboard is on".
 
 `block_actions` (**⌘⇧A**, free; Warp's chord) pops the block menu at the cursor's row, built through
 the same path as `morePressed` — `BlockHeader.actions` plus `menuHeader()`, so `hasPreviousRun` is
@@ -250,21 +343,26 @@ considered and rejected — it costs a terminal row per block and re-flows the t
 ## 3. Wave 2 — lenses and watch polish
 
 Prioritised by the PM at the end of the curl-workbench round; the lens as an idea is untouched.
+**Nine tasks:** 1+3 (fold state), 2 (drag), 4+12+14 (chip, cap label, watch vocabulary), 5, 6, 7+8
+(jq), 9+10 (rendering), 11 (the field), 13.
 
 1. **Clearing the Filter field returns to the previous lens**, not to raw. `LensChoices` keeps
    `previous: ResponseLens?` per block; clearing restores it. (PM's first item; today an empty
    field drops the reader to raw and loses the pretty view they were reading.)
 2. **Drag-select works on container lines.** Today a mouse-down anywhere on a foldable lens line
    folds it, so no drag can start there. The fold acts on **mouse-up without movement** and only
-   within the column-0 triangle's `hitRowHeight` row; a drag past 3 pt starts a selection.
+   inside the column-0 triangle's hit box of §2.4 (20 pt wide × `hitRowHeight` tall); a drag past
+   3 pt starts a selection, and a press anywhere else on the line starts one immediately. The fold
+   **placeholder** row keeps its whole-row target — it has no content worth selecting, and it is
+   the one affordance PM §4 found already legible.
 3. **Unfolded containers show a triangle** (D15): `▾` at column 0 on every foldable line, not only
-   on folded ones, in the row's tone at 8 pt — the same column the block's placeholder triangles
-   use (§2.4).
+   on folded ones, in the row's tone, at the pane's cell size — the same column and the same glyph
+   size as the block's placeholder triangles (§2.4).
 4. **The lens chip's on-state** is the filled accent chip of §2.3 (D6, snapshot §3.4). Measured
    again in all seven themes; the floor is 4.5:1 for the chip's ink on its own fill.
-5. **A refused `Repeat` keeps the form.** `RequestEditor` holds the sheet open when
-   `Pane.reportWatchRefused()` fires, instead of closing and losing everything the user typed
-   (carried from the curl round's Task 6 as a UX-round minor).
+5. **A refused `Watch ▾` (today's `Repeat ▾`, item 14) keeps the form.** `RequestEditor` holds the
+   sheet open when `Pane.reportWatchRefused()` fires, instead of closing and losing everything the
+   user typed (carried from the curl round's Task 6 as a UX-round minor).
 6. **Series tone versus run facts** (D7): the series sentence takes the **series** tone (any failure
    → `.failure`), and the newest run's own facts — `200`, `100 ms` — keep **their** tone inside it.
    *Disagreement:* the PM asked for plain foreground with the dots carrying colour;
@@ -286,26 +384,33 @@ Prioritised by the PM at the end of the curl-workbench round; the lens as an ide
     order the requests happened.
 11. **The Filter/Find field is anchored and closable.** It sits immediately under the command row of
     the block it filters — not floating mid-pane 700 pt from its own message — carries the block's
-    command as a caption prefix (`Filter · curl https://…`), and has a `✕` at 20 × 20 pt as well as
-    ⎋. Placement comes from `Pane.lensFieldFrame` reading the block's row, not the viewport centre.
-12. **The timeline says when it is capped** — the `+18` leading label of §2.3 (D16).
+    command as a caption prefix (`Filter · curl https://…`; the command is cut at the **tail** with
+    a `…` at whatever width the field has, never in the middle), and has a `✕` at 20 × 20 pt as
+    well as ⎋. Placement comes from `Pane.lensFieldFrame` reading the block's row, not the viewport
+    centre. `Run with jq` gets the VoiceOver label `Run this filter through jq in the shell` and
+    the ⌘⏎ key equivalent of §8.2 (a11y 6.16).
+12. **The timeline says when it is capped** — the `+N` leading label of §2.3 (D16).
 13. **The `⋯` menu and the lens chip agree on non-JSON.** `BlockHeader.showsLens(at:)` already gates
     the chip on `bodyKind == .json`; the menu's `Pretty JSON` row is gated on the same value and
     disabled with the reason `Pretty JSON — the body is not JSON` rather than offered and inert.
     Likewise when `lensTooLarge`, the chip does not vanish silently: the strip shows a disabled
     chip labelled `Body too large` (PM §15, snapshot §3.9).
+14. **One verb for the schedule feature** (PM §7: "four names … a user who used Repeat cannot find
+    it again"). The verb is **Watch**: the request editor's `Repeat ▾` → **`Watch ▾`** (presets
+    `Watch every…`, `Watch 10 times`, `Watch until 200`); the block menu's `Run Every N s` →
+    **`Watch Every N s`**, its `Watch…` unchanged; Settings' `Watch every:` →
+    **`Default for a new watch:`** (§5.5). All from one Core value, `WatchVocabulary`, so a fifth
+    spelling cannot be hand-written. A label change only; the PM asked for this one by name.
 
 ---
 
 ## 4. Wave 3 — shell integration for bash and fish, and telling the user
 
 The PM's ruling, adopted: **every differentiator Nyx has over Ghostty is behind OSC 133 marks, and
-today only zsh gets them, silently.** Without marks there are no blocks, no gutter, no spine, no
-summary, no fold, no `Copy`, no `⋯` menu, no lens, no watch, no `edit_and_run_command` routing into
-the workbench and no sticky prompt — and nothing on screen says so. `manualInstallCommand` and
-`isAutomatic` exist in `ShellIntegration.swift` with **zero callers**, and the comment on the first
-of them promises a settings window that does not exist. So this wave lands *before* Wave 1 is worth
-anything to a bash or fish user.
+today only zsh gets them, silently.** Without marks there are no blocks, gutter, spine, summary,
+fold, `Copy`, `⋯` menu, lens, watch, `edit_and_run_command` routing or sticky prompt — and nothing
+on screen says so. `manualInstallCommand` and `isAutomatic` have **zero callers**, and the comment
+on the first promises a settings window that does not exist.
 
 ### 4.1 Marks for bash and fish
 
@@ -331,13 +436,18 @@ is the injection. **[spec decision]** — none of the audit files chooses a mech
 ### 4.2 A Shell page in Settings, and `manualInstallCommand` with a caller
 
 New settings page **Shell**, between Behaviour and Keys. It carries, all decided in Core by a new
-`ShellIntegrationStatus` value (`shell: ShellKind`, `mode:`, `isAutomatic:`, `marksSeen: Bool`):
+`ShellIntegrationStatus` value — `shell: ShellKind` (the existing enum, gaining
+`name: String` = "zsh"/"bash"/"fish"/the binary's own name for `.other`),
+`mode: ShellIntegrationMode` (the existing `.auto`/`.off`), `isAutomatic: Bool` (from
+`ShellIntegration.isAutomatic(shellPath:mode:)`), `marksSeen: Bool` (this window has seen an
+OSC 133 A since it opened), and the derived `sentence: String` and `manualLine: String?`:
 
 - **`shell-integration`** — the existing `auto` / `off` pop-up.
-- A status sentence, exact strings:
+- A status sentence, exact strings; `<shell>` is `shell.name`, so the same value fills the page,
+  the banner and the alert:
   - automatic and marks seen: `Prompt marks are live. Blocks, folding, Copy Output, the pinned command and watches all work here.`
-  - automatic and no marks yet: `Nyx installs prompt marks into fish automatically. This window has not seen one yet — open a new tab if this is the first launch after an update.`
-  - a shell with no shim: `Your shell is ksh. Nyx has no hooks for it, so blocks, folding, Copy Output, the ⋯ menu, the pinned command and watches are all off.`
+  - automatic and no marks yet: `Nyx installs prompt marks into <shell> automatically. This window has not seen one yet — open a new tab if this is the first launch after an update.`
+  - a shell with no shim: `Your shell is <shell>. Nyx has no hooks for it, so blocks, folding, Copy Output, the ⋯ menu, the pinned command and watches are all off.`
   - `shell-integration = off`: `Prompt marks are off by your setting. Blocks, folding, Copy Output, the ⋯ menu, the pinned command and watches are all off.`
 - **The manual line**, shown whenever `isAutomatic` is false and `manualInstallCommand` returns
   something: a caption `Paste this into your startup file, then open a new tab:`, the line itself in
@@ -347,14 +457,16 @@ New settings page **Shell**, between Behaviour and Keys. It carries, all decided
 ### 4.3 Saying it where it bites
 
 - **A one-time note banner** the first time a pane's shell finishes starting with no marks:
-  `Nyx could not add prompt marks to ksh — blocks, folding and watches are off in this pane.`
-  with a `Shell Settings…` button and a `✕`. Note kind, quiet styling (§7.4), announced (§8.1),
-  and remembered per shell so it is shown once, not once per tab.
+  `Nyx could not add prompt marks to <shell> — blocks, folding and watches are off in this pane.`
+  with a `Shell Settings…` button and a `✕`. Note kind, quiet styling (**§6.4**), announced
+  (§8.1), and remembered **per shell path for the life of the process** — once per run of Nyx for
+  a given shell, not once per tab, and not persisted to disk (a user who changes shells in a new
+  session is told again, which is the case where the sentence is news).
 - **The "Cannot watch" alert is corrected.** Today it says *"Set `shell-integration = auto` and
   open a new tab"* — which is already the default, so a fish user follows the instruction, is
   refused identically, and has no next move (PM §2). New text:
   - message: `Cannot watch a request in this pane`
-  - informative: `A watch sends its next run only when the shell is back at a prompt, and this shell does not tell Nyx where its prompts are. Nyx adds prompt marks to zsh, bash and fish by itself; this pane is running ksh.`
+  - informative: `A watch sends its next run only when the shell is back at a prompt, and this shell does not tell Nyx where its prompts are. Nyx adds prompt marks to zsh, bash and fish by itself; this pane is running <shell>.` — and, when `mode == .off`, the second sentence is instead `Prompt marks are off by your setting.`
   - buttons: `Shell Settings…` (default) · `OK`.
   The three sentences are built in Core from `ShellIntegrationStatus` so the alert cannot drift
   from the page.
@@ -362,6 +474,9 @@ New settings page **Shell**, between Behaviour and Keys. It carries, all decided
 ---
 
 ## 5. Wave 4 — settings and sheets
+
+**Nine tasks:** 1+2 (the config round trip), 3, 4, 5, 6+7 (sheets and the request editor's
+layout), 8, 9, 10, 11+12+13 (focus, credentials, the Appearance sentences).
 
 1. **Every text field commits on end-editing and on window close.** `SettingsWindowController.textField`
    sets only `action`, so a paste followed by closing the window is lost silently — which is exactly
@@ -376,7 +491,12 @@ New settings page **Shell**, between Behaviour and Keys. It carries, all decided
    Remote page's status sentence currently sits ~300 px above the buttons it explains, with a table
    between, which is why the owner did not see it. A new Core value `RemotePageStatus` answers
    `(sentence, blocksPairing)`; the sentence is drawn in `secondaryLabelColor` **immediately beneath
-   the pairing row**, and it names the remedy: `Pairing needs a relay token — set Relay token above.`
+   the pairing row**, and it names the remedy. All four sentences, exact:
+   - `remote = off`: `Remote sessions are off — tick Enable remote sessions to pair.` (blocks)
+   - no relay URL: `Pairing needs a relay — set Relay above.` (blocks)
+   - no relay token: `Pairing needs a relay token — set Relay token above.` (blocks)
+   - ready: `Ready to pair. Both Macs must reach the same relay.` (does not block)
+
    `setAccessibilityHelp` carries the same sentence on both buttons.
    *Disagreement:* `decisions.md` offers "or keep the buttons enabled and route to the token field".
    **[spec decision]** Keep them disabled with the reason beneath: an enabled button that does not
@@ -386,10 +506,16 @@ New settings page **Shell**, between Behaviour and Keys. It carries, all decided
    empty page below it; a caption above it reads `These come from your config file. Edit Config File… changes them.`
    A Keys *editor* is out of scope (§9).
 5. **The Behaviour page gets headers and labels.** Six unlabelled checkboxes under one lone
-   `Requests` header become three labelled groups — `Windows and tabs`, `Commands`, `Requests` —
-   and `Watch every: 5 seconds` is re-labelled `Default for a new watch: 5 seconds` so it stops
-   reading as a global poll interval (D17). `Response body: Pretty JSON` takes `ResponseLens`'
-   own titles rather than a third hand-written spelling (`SettingsWindowController.swift:156`).
+   `Requests` header become **four** labelled groups (not three: the rows do not divide into three
+   honest headings, and a heading that lies is the defect being fixed) — **Windows and tabs**
+   (`restore-session`, `confirm-close-process`, `bell`), **Text and the mouse** (`copy-on-select`,
+   `middle-click-paste`, `mouse-scroll-alt-screen`, `clipboard-read` with its footnote,
+   `option-as-meta`, `multiline-paste`), **Commands** (`fold-keep-lines`, `fold-long-output`) and
+   **Requests** (`http-lens`, `http-hint`, `http-watch-interval`, `http-history`).
+   `Watch every: 5 seconds` is re-labelled
+   `Default for a new watch: 5 seconds` so it stops reading as a global poll interval (D17, §3.14).
+   `Response body: Pretty JSON` takes `ResponseLens.title` rather than a third hand-written
+   spelling (`SettingsWindowController.swift:156`).
 6. **Every sheet has a default button.** `pairing-client-idle-*` and `pairing-host-code-*` have
    none; `Pair`, `Done` and `Start` get `keyEquivalent = "\r"`, and every sheet gets a `Cancel`
    with `"\u{1b}"`.
@@ -399,9 +525,12 @@ New settings page **Shell**, between Behaviour and Keys. It carries, all decided
    horizontal stack gains a trailing constraint so it stops landing anywhere across ~200 pt of
    slack — the one non-deterministic picture in 422 (snapshot §3.8).
 8. **The quick-action editor's value versus placeholder, and its validation sentence.** Placeholder
-   text is drawn in `tertiaryLabelColor` (AppKit's default grey reads as a filled value on light
+   text is drawn in `placeholderTextColor` (AppKit's default grey reads as a filled value on light
    themes), and validation stops being a beep: `QuickActionEditorModel.problem` in Core returns
    `A button needs a name and a command.` shown in a label under the fields and announced.
+   **The placeholder rule is app-wide** and lands here at once: the lens field's `.users[0].name`,
+   Remote's `Device name` and token field, the quick-action editor's `Caffeine` / `caffeinate -d`
+   (design §2.5, §2.6, snapshot §3.9); the pairing sheet's is deleted outright by item 9.
 9. **An invalid pairing code becomes a `PairingFlow.State`.** `PairingSheet.readableErrorColor` /
    `setCodeError` / `invalidCodeMessage` (`:38`, `:219`, `:227`) are the one pairing state Core
    cannot express, so it has no picture and no announcement. New case
@@ -425,10 +554,27 @@ New settings page **Shell**, between Behaviour and Keys. It carries, all decided
     `Copy with Secrets…`. That changes what the workbench form does, which the PM's own do-not-touch
     list protects, and it is a product decision rather than a clarity fix. **Ruling: help text and
     announcement now; the split is listed in §9.**
+13. **The Appearance page says how its three theme pop-ups interact** (PM §12). One caption under
+    them, decided in Core beside `ThemeCatalog`:
+    `Theme is used unless Dark theme and Light theme are set; then Nyx follows the system appearance.`
+    The foot note stops naming three of eight rows: **[spec decision]** the task first drives every
+    row in the built app, then writes either `Everything on this page applies as soon as you change
+    it.` or a sentence naming the rows that need a new tab — from that answer, not from the current
+    guess. Also here: the foot diagnostics label is announced when it appears (a11y 5.3, §8.1).
 
 ---
 
 ## 6. Wave 5 — tab bar, palette, search, banners
+
+**Plan 5a (§6.1 + the `showMenu` fix of §6.5), eight tasks:** the width floor and overflow; tail
+truncation; the hovered slot and the revealed `✕`; the `+ Button` chip; chips yielding before tabs;
+the group band, collapsed chip and remote badge; `TabBarLabels` with an injected `chord:`, the three
+new actions and the close-with-process alert; `showMenu` and the pictures. It ships on its own: the
+bar stays legible past eight tabs and every control on it has a keyboard path.
+**Plan 5b (§6.2–§6.4), nine tasks:** the palette's selection band; section headers; the empty state
+and placeholder; keywords; `.selectedChildrenChanged` and disabled rows; the search readout
+announcement and `toggle_search_scope`; prev/next gating and the scope word; the banner split by
+kind with its native styling; `review_project_actions` / `dismiss_banner` and the pictures.
 
 ### 6.1 Tab bar
 
@@ -438,7 +584,10 @@ New settings page **Shell**, between Behaviour and Keys. It carries, all decided
   indistinguishable (snapshot §3.7).
 - **Titles truncate at the tail, not the middle.** `TabTitle.truncatedInMiddle` (`:796`) eats the
   distinguishing half of `nyx — zsh` / `nyx — vim`, and puts `…` next to a full stop in
-  `tail….log`. Tail truncation, and never an ellipsis adjacent to a `.`.
+  `tail….log`. Tail truncation: keep the head, append `…`. **Never an ellipsis adjacent to a `.`** —
+  if the cut falls immediately after a `.`, back the cut up one character at a time until it does
+  not (`TabTitle.truncatedAtTail`, tested with `tail.log`, `a.b.c.d.log` and a title that is all
+  full stops).
 - **The `≡` list is an action**: `tab_list`, "All Tabs…", Window section, so the only escape hatch
   from a crowded bar has a keyboard path and a truthful label.
 - **The close `✕` is revealed on hover or on the selected tab**, and its hit rect is **20 × 20 pt**
@@ -449,9 +598,19 @@ New settings page **Shell**, between Behaviour and Keys. It carries, all decided
 - **The collapsed group chip keeps the expanded pill's polarity** (ink 9.36:1, not 3.37:1 on a
   2.43:1 fill, which reads as disabled) and signals collapse with `▸` plus the tab count.
 - **One `+` on the bar.** **[spec decision]** The trailing `+` is New Tab and keeps the glyph alone.
-  The leading dashed `+` becomes a labelled chip **`+ Button`** while there is room for it, and
-  `New Button…` is always in the `≡` menu, so the two ~1000 px-apart identical glyphs stop existing
-  (PM §1). It is also an action: `new_quick_action`, "New Button…", Shell section.
+  The leading dashed `+` becomes a labelled chip **`+ Button`** (dashed outline kept, 20 pt tall,
+  its own width = text + 16 pt), and `New Button…` is always in the `≡` menu, so the two
+  ~1000 px-apart identical glyphs stop existing (PM §1). **When the bar runs out of room the chip
+  is dropped entirely** — it never degrades to a bare `+`, because a bare `+` is the defect. Order
+  of yielding: quick-action chips → the `+ Button` chip → tabs down to the floor → tabs into the
+  `≡` list. It is also an action: `new_quick_action`, "New Button…", Shell section.
+- **Every drawn control on the bar has a ≥ 20 pt hit rect** — the `≡` (a 12 pt glyph today), the
+  overflow chip, the `+`s and the `✕` — decided in `TabBarGeometry`.
+- **The hovered tab is tinted** `foreground @ 0.06`: the bar has no hover state at all today
+  (design §2.1). The same `Hit` hovered slot drives it and the revealed `✕`.
+- **Tab, group and quick-action menus get a keyboard path**: `tab_actions`, "Tab Actions…", Window
+  section (§8.2), popping the same menu `TabController.showTabMenu` builds for the selected tab —
+  whose item titles and `enabled:` rules move into Core with it (inventory C.4).
 - **Quick actions yield before tabs.** Today the 140 pt chips keep full width while tabs drop to
   60 pt and the chips get their *own* overflow. `TabBarGeometry` (not `TabBarView.resolvedLeading`,
   `:153`) decides the order: chips move into the overflow chip **before** any tab goes below the
@@ -462,8 +621,10 @@ New settings page **Shell**, between Behaviour and Keys. It carries, all decided
 - **Labels stop quoting literal chords.** `TabBarLabels` takes `chord: (TerminalAction) -> String?`
   the way `PaletteSource.items` does (`CommandPalette.swift:175`), so "(⌘T)" and "(⌘⇧P)" follow a
   rebinding and the false "Close … (⌘W)" claim (⌘W is `close_pane`) is dropped.
-- `TabBarGeometry.barHeight` ignores `grouping`, so `headerHeight` is always 0 and `Hit.groupHeader`
-  is unreachable dead geometry (a11y 11.3) — deleted or wired, whichever the code says.
+- **The dead group-header geometry is deleted**, not wired (a11y 11.3). `barHeight`'s own comment
+  says a group now names itself in a slot in front of its own tabs and the bar is one height
+  always, so `Hit.groupHeader`, `groupHeaderRect`, `TabBarMetrics.groupHeaderHeight` and every
+  `headerHeight:` parameter go, and `barHeight` loses its unused `grouping:` argument.
 - **A close-with-process alert names the process** (PM §9): `“vim” is still running. Closing this tab will end it.`
 
 ### 6.2 Command palette
@@ -474,7 +635,10 @@ New settings page **Shell**, between Behaviour and Keys. It carries, all decided
   `panelBackground`**, plus a **2 pt leading accent bar**.
 - **Section headers** — `Actions`, `Buttons`, `Themes`, `Tabs`, `Remote`, `Requests` — since
   `PaletteSource.items` already orders by section; today the only cue that `dracula` is a theme is
-  the word "Theme" right-aligned 900 px away.
+  the word "Theme" right-aligned 900 px away. **`Buttons` is the round's one word for quick
+  actions** (`+ Button`, `New Button…`, `Edit Button…`, `Save as Button…`), so the row detail word
+  changes from `Quick Action` to `Button` in the same task; the config key `quick-action` and the
+  docs keep their spelling, because renaming a config key is not a clarity fix.
 - **"No results"**, because today an unknown query gives a blank rectangle:
   `No results for "zzqq"` on the first line and, on a second, the honest inventory
   `The palette searches actions, buttons, themes, tabs, remote sessions and past requests.`
@@ -520,26 +684,33 @@ remedy (PM §14, snapshot §3.6).
 
 **Native quiet styling**: a `controlBackgroundColor` band with a 1 px bottom divider,
 `secondaryLabelColor` text and a tinted symbol — not a full-bleed saturated `systemBlue` band,
-which reads as a web cookie bar. **The banner pins its appearance** to the palette the way
-`BlockHeaderView` and `LensFieldView` do, so `Edit Config` stops being drawn with a button ground in
-dark and bare in light. The `✕` gets a 20 × 20 pt frame (a11y 8.2) and its label says the banner
-self-dismisses on a clean reload. The project bar's `Review…` is the default button — it is the
-security surface, and giving Review and Ignore identical weight is a decision the app should not
-be making for the user.
+which reads as a web cookie bar. **The banner pins its appearance** the way `BlockHeaderView` and
+`LensFieldView` do, so `Edit Config` stops being drawn with a button ground in dark and bare in
+light. The `✕` gets a 20 × 20 pt frame (a11y 8.2) and the label
+`Dismiss this notice. It also goes away by itself the next time the config file loads cleanly.`,
+plus keyboard paths for it and `Review…` (`dismiss_banner`, `review_project_actions`, §8.2). The
+project bar's `Review…` is the default button — it is the security surface, and giving Review and
+Ignore identical weight is a decision the app should not make for the user. Both of its wordings
+(new and changed) are pictured, not only `changed` (design §6.11).
 
-### 6.5 Two shared fixes that land here
+### 6.5 A shared fix that lands here
 
-- **`DrawnControlElement.showMenu`** (a11y 1.5): `Accessibility.swift:37-41` implements press only,
-  so the tab, group, quick-action and overflow menus are unreachable by VO-⇧-M. An optional
-  `showMenu` closure and `accessibilityPerformShowMenu()`.
-- **Menu items show their chords.** Every item in the block menu has an empty `keyEquivalent`
-  (`BlockHeaderView.swift:323-324`, `Pane.swift:2977-2978`) although the lower half of the same
-  menu sets them (`:3013-3018`). A `BlockAction → TerminalAction?` mapping **in Core** gives each
-  item its bound chord, which is also what makes ⌘⇧A's menu teach the chords it duplicates.
+**`DrawnControlElement.showMenu`** (a11y 1.5): `Accessibility.swift:37-41` implements press only,
+so the tab, group, quick-action and overflow menus are unreachable by VO-⇧-M. An optional
+`showMenu` closure and `accessibilityPerformShowMenu()`, with plan **5a**, where those menus live.
+
+(The other shared fix — **menu items showing their chords**, a `BlockAction → TerminalAction?`
+mapping in Core, so the block menu stops leaving `keyEquivalent` empty at
+`BlockHeaderView.swift:323-324` and `Pane.swift:2977-2978` while the lower half of the same menu
+sets it at `:3013-3018` — has moved to plan **1b**: ⌘⇧A's menu has to teach the chords it
+duplicates, so it cannot wait for Wave 5.)
 
 ---
 
-## 7. Wave 6 — remote strip and pairing
+## 7. Wave 6 — remote strip, pairing, and the universal binary
+
+**Five tasks**, the last of which is not UX at all and rides this branch on the owner's ruling
+(`decisions.md`, 2026-09-07).
 
 1. **The strip's button becomes visible.** `RemoteStripView.update` never pins `appearance` and sets
    `contentTintColor`, which does not colour a *titled* button — the exact trap `BlockHeaderView`'s
@@ -556,7 +727,14 @@ be making for the user.
    above the controls, decided in Core beside `RemotePageStatus` so the snapshot cannot drift:
    `A remote session is a Nyx tab on another of your Macs, reached through a relay both machines dial out to. Nyx never sends terminal text the relay can read.`
    and `The relay URL and token come from the nyx-server you run; Nyx cannot issue them.`
-   Recent activity stops being a raw ISO-8601 dump and uses a relative date.
+   Recent activity stops being a raw ISO-8601 dump and uses a relative date (`RelativeAge`, the
+   value the palette's Requests rows already use).
+5. **`make release` and `make app` build a universal binary.** The owner could not install Nyx on
+   an Intel Mac: both build for the host architecture only, so a copied bundle is refused on
+   x86_64. Both gain `--arch arm64 --arch x86_64`, and the recipe asserts the result — `lipo -info
+   build/Nyx.app/Contents/MacOS/Nyx` naming both slices, `file` agreeing, the make step failing if
+   either does not. The code has no architecture-specific paths; `docs/testing.md` gains a line
+   under the build rung saying a release bundle is universal and how to check it.
 
 ---
 
@@ -575,10 +753,16 @@ enum Announce { static func say(_ text: String) }   // .announcementRequested on
 **Wording stays in Core** — `ConfigDiagnostic`, `SearchSession.readout`, `BlockHeader.summary`,
 `WatchPlanEditorModel.problem`, `ProjectActionsGate`, `ShellIntegrationStatus`,
 `QuickActionEditorModel.problem` — so an announcement and the thing on screen cannot say different
-words. Sites: command finished, palette selection (`.selectedChildrenChanged` from
-`CommandPaletteView.refresh()`), search readout, config banner shown, project bar shown, watch
-refusal, quick-action validation, copy-with-credentials, pairing rejection. Plus `.layoutChanged`
-from `TabBarView.setTabs` and `PromptGutterView.update`.
+words. Sites: **a command finishing** (see the rule below), palette selection
+(`.selectedChildrenChanged` from `CommandPaletteView.refresh()`), search readout, config banner
+shown, project bar shown, the no-marks banner (§4.3), watch refusal, quick-action validation,
+copy-with-credentials, pairing rejection, and the settings window's foot diagnostics label when it
+appears (a11y 5.3). Plus `.layoutChanged` from `TabBarView.setTabs` and `PromptGutterView.update`.
+
+**When a finish is announced — [spec decision].** Announcing every command talks over the user;
+announcing none is a11y 0.2. The rule, in Core as `BlockAnnouncement.text(for:) -> String?` and
+tested there: the **focused pane only**, and only when the command **ran ≥ 2 s or exited
+non-zero**. The sentence is `BlockHeader.summary` — the words the strip shows.
 
 ### 8.2 New `TerminalAction`s
 
@@ -587,38 +771,43 @@ inside a pane or on the tab bar a `TerminalAction` is the **only** possible fix:
 sends a bare ⇥ to the PTY and `PaneTreeView`/`TabBarView` decline first responder, so there is no
 key-view loop over pane chrome and there cannot be one (a11y 0.1).
 
-| Action (`configName`) | Section | Title | Default chord | `canPerform` | Retires |
-|---|---|---|---|---|---|
-| `block_actions` | Go | `Command Actions…` | ⌘⇧A | the block cursor resolves to a block | the whole ⋯ menu (26 items), Copy, Stop, the lens chip, the dots |
-| `tab_actions` | Window | `Tab Actions…` | — | always | tab / group / quick-action context menus |
-| `tab_list` | Window | `All Tabs…` | — | more than one tab | the `≡` button |
-| `new_quick_action` | Shell | `New Button…` | — | always | the `+ Button` chip, the overflow chip's home |
-| `toggle_search_scope` | Edit | `Search All Tabs` | — | a search is open | the scope toggle |
-| `scroll_to_sticky_prompt` | Go | `Go to the Pinned Command` | — | a sticky prompt is showing | the sticky strip's click |
-| `review_project_actions` | Shell | `Review This Folder's Actions…` | — | `ProjectActionsGate.needsApproval` | the project bar's `Review…` |
-| `dismiss_banner` | Nyx | `Dismiss the Notice` | — | a banner is up | the banner `✕` |
+| Action (`configName`) | Plan | Section | Title | Default chord | `canPerform` | Gives a keyboard path to |
+|---|---|---|---|---|---|---|
+| `block_actions` | 1b | Go | `Command Actions…` | ⌘⇧A | the block cursor resolves to a block | the whole ⋯ menu (26 items) and, through it, `Copy`, `Stop`, the lens chip and the dots — none of which are removed from the strip |
+| `scroll_to_sticky_prompt` | 1b | Go | `Go to the Pinned Command` | — | a sticky prompt is showing | the sticky strip's click |
+| `tab_actions` | 5a | Window | `Tab Actions…` | — | always | tab / group / quick-action context menus |
+| `tab_list` | 5a | Window | `All Tabs…` | — | more than one tab | the `≡` button |
+| `new_quick_action` | 5a | Shell | `New Button…` | — | always | the `+ Button` chip, the overflow chip's home |
+| `toggle_search_scope` | 5b | Edit | `Search All Tabs` | — | a search is open | the scope toggle |
+| `review_project_actions` | 5b | Shell | `Review This Folder's Actions…` | — | `ProjectActionsGate.needsApproval` | the project bar's `Review…` |
+| `dismiss_banner` | 5b | Nyx | `Dismiss the Notice` | — | a banner is up | the banner `✕` |
+
+**Eight existing actions change their target** (plan 1b, §2.8): `fold_command`,
+`select_command_output`, `copy_command_output`, `copy_block_markdown`, `save_command_output`,
+`edit_and_run_command`, `toggle_http_lens`, `stop_watch` — all onto `BlockCursor`; four are
+re-titled in the same commit because they say "Last", and `select_command_output` gains the block
+it never named (§2.2).
 
 ⌘⏎ activates `Run with jq` while the lens field has focus; that is a field key equivalent, not an
-action. Every row goes into `ActionCatalog`, the menu bar, `docs/configuration.md` and the palette;
-`canPerform` is the same answer the menu bar and the palette's `enabled` closure already share.
+action. Every row goes into `ActionCatalog`, the menu bar, `docs/configuration.md` and the palette
+(with `keywords`, §6.2); `canPerform` is the answer the menu bar and the palette's `enabled`
+closure already share.
 
-Legitimately pointer-only after this round, and deliberately so: a lens selection drag, the palette
-scroller, click-outside-to-close, and the `⌘E Workbench` pill (⌘E does the same thing).
+Legitimately pointer-only after this round: a lens selection drag, the palette scroller,
+click-outside-to-close, the `⌘E Workbench` pill (⌘E does the same). Also not defects, per a11y
+§0.1: every control inside a window of its own — the request editor's buttons and tables, the
+settings buttons, the save panels — which are ⇥- and space-reachable already.
 
 ### 8.3 The pane's accessibility role — [verify]
 
 `Pane` declares `.textArea` **and** vends `accessibilityChildren` (`:433`, `:437`, `:459`). If
 VoiceOver treats a text area as a leaf, every in-pane element — gutter marks, fold placeholders,
 the strip — is unreachable and `Pane.accessibilityChildren`'s careful work is invisible. **One
-VoiceOver pass decides:**
-
-- **If children are reachable today:** change nothing; add a comment recording the pass and its
-  date beside `:433`.
-- **If they are not:** the pane becomes `.group`, and its **first child** is a `.textArea` carrying
-  the transcript value, with the chrome elements as siblings after it. That keeps ⌘C, selection and
-  the VoiceOver text-navigation commands working on the transcript while making the chrome exist.
-
-The same pass answers a11y 2.2 (palette row role) and 9.1 (remote strip leaf-or-container).
+VoiceOver pass decides:** if children are reachable today, change nothing and record the pass and
+its date in a comment beside `:433`; if they are not, the pane becomes `.group` with its **first
+child** a `.textArea` carrying the transcript value and the chrome elements as siblings after it,
+which keeps ⌘C, selection and text navigation on the transcript while making the chrome exist. The
+same pass answers a11y 2.2 (palette row role) and 9.1 (remote strip leaf-or-container).
 
 ### 8.4 Row-height targets at `line-height 0.8`
 
@@ -634,36 +823,35 @@ The compositor gains three capabilities before Wave 1's pictures can be trusted 
 layer-painted grounds are lost — composite through `layer.render(in:)` or have each chrome view
 paint its ground in `draw(_:)`), **hovered and pressed states**, and **menus and alerts**.
 
-| wave | cases |
+| plan | cases |
 |---|---|
-| 1 | `composite-strip-{w3,w2,w1,w0}-{finished,failed,running,folded,http,lensed,watch-running,watch-finished,no-output}-<palette>-<appearance>`; `gutter-cap-{succeeded,failed,running,no-output}-{idle,hovered,folded}-…`; `composite-sticky-…` retaken; every strip pill `hovered:` and `pressed:`; `block-menu-{plain,http,watched}` (26 rows) |
+| 1a | `composite-strip-{w3,w2,w1,w0}-{finished,failed,running,folded,http,lensed,watch-running,watch-finished,no-output}-<palette>-<appearance>`; `gutter-cap-{succeeded,failed,running,no-output}-{idle,hovered,folded}-…`; `composite-sticky-…` retaken; every strip pill `hovered:` and `pressed:`; `composite-strip-suppressed-tui` (the strip while a TUI owns the screen) and `composite-block-lineheight-08` + `-padding-0` (design §6.4, §6.5) |
+| 1b | `composite-block-cursor-{w3,w1}` (the cursor's block drawn as hovered, no pointer); `block-menu-{plain,http,watched}` (26 rows, with chords) |
 | 2 | `lens-container-{folded,unfolded}`; `lens-chip-{off,on}` in all seven themes; `lens-field-anchored`; `lens-field-jq-{missing,non-idempotent}`; `watch-timeline-capped`; `grep-count` |
 | 3 | `settings-shell-{automatic,manual,off}-{light,dark}`; `banner-no-marks`; `alert-cannot-watch` |
-| 4 | `settings-{keys,behaviour,remote}-…` retaken; `sheet-quick-action-{send,run}`; `pairing-code-rejected-{light,dark}`; `watch-plan-editor-{valid,invalid}` retaken; `request-editor-options-*` (now deterministic) |
-| 5 | `tabbar-{12,20}-tabs` retaken; `tabbar-hover-close`; `tabbar-group-collapsed`; `palette-{sections,no-results,selection}` in all seven themes; `search-bar-{scope-word,zero-matches}`; `banner-{config,note,quick-action,project}-{light,dark}` |
+| 4 | `settings-{keys,behaviour,appearance,remote}-…` retaken (with the page strip, so a picture says which page it is — design §6.8); `sheet-quick-action-{send,run}`; `pairing-code-rejected-{light,dark}`; `watch-plan-editor-{valid,invalid,after-n-runs}` retaken; `request-editor-{options,reveal-secrets}-*` (options now deterministic) |
+| 5a | `tabbar-{12,20}-tabs` retaken; `tabbar-hover-{tab,close}`; `tabbar-group-collapsed`; `tabbar-add-button-chip`; `tabbar-overflow-chip`; `menu-{tab,group,quick-action}` |
+| 5b | `palette-{sections,no-results,selection}` in all seven themes; `palette-eleven-results`; `search-bar-{scope-word,zero-matches}`; `banner-{config,note,quick-action,project-new,project-changed}-{light,dark}`; `alert-project-review` |
 | 6 | `remote-strip-*` retaken (the eight button states must become byte-identical across appearances); `pairing-host-{idle,opening}`; `settings-remote-explained` |
 
 `settings-remote-*` is rendered from the real `~/.config/nyx` and is therefore not reproducible
 across machines; it moves to a fixture `HOME` in Wave 4 (design §2.6).
 
-### 8.6 Note, not a wave: `make app` is not universal
+### 8.6 The universal binary
 
-The owner could not install Nyx on an Intel Mac: `make app` builds for the host architecture only,
-so a copied bundle is refused on x86_64. `make release`/`make app` should build
-`--arch arm64 --arch x86_64` and the result be checked with `lipo -info`. The code has no
-architecture-specific paths. Cheap, not UX, and not part of any wave here — recorded so it is not
-lost.
+`make app` building for the host architecture only is the last task of Wave 6 (§7.5), not a
+free-floating note: the owner asked about an Intel Mac on 2026-09-07 and ruled that it rides this
+branch.
 
 ---
 
 ## 9. Deliberately left out
 
 - **Tab drag-reorder.** Every competitor including Ghostty has it, and Nyx's only route to
-  reordering a tab is to put it in a group (PM §9). It is left out of this round because it is a
-  new interaction model rather than a clarity fix: drop targets, group boundaries, the overflow
-  list, autoscroll at the edges and what happens when a drag crosses a collapsed group are all
-  product decisions, and it touches `TabController`'s ordering and group membership rather than
-  drawn chrome. **Scheduled as its own task immediately after this round**, with its own spec.
+  reordering a tab is to put it in a group (PM §9). Left out because it is a new interaction model,
+  not a clarity fix: drop targets, group boundaries, the overflow list, autoscroll at the edges and
+  a drag crossing a collapsed group are product decisions, and it touches `TabController`'s
+  ordering rather than drawn chrome. **Its own task immediately after this round**, with its own spec.
 - **Full focus-ring navigation of chrome** (`decisions.md` §3). There is no key-view loop over a
   pane and there cannot be one while ⇥ belongs to the shell; `TerminalAction`s are the answer, and
   §8.2 gives one to everything that lacked a path.
@@ -683,6 +871,22 @@ lost.
   is always there (already committed), the palette's placeholder and empty state tell the truth
   (§6.2), the quick-action `+` carries a word (§6.1), and Wave 3 tells a bash or fish user why half
   the app is missing.
+- **A watch that is visible outside its pane, and a clickable timeline** (PM §8). Both are new
+  product surfaces — a background signal needs a rule for what it may interrupt, and a dot that
+  opens its run needs per-run data the block does not keep. This round only gets the timeline back
+  on screen (§2.6) and stops it lying about its cap (§3.12).
+- **An automatic "your long command finished" alert** (PM §3). `notify_when_done` stays a
+  deliberate act; what lands is the announcement of §8.1, which costs nothing to a user who is not
+  listening.
+- **Search-match colours** (design §2.4: the current match is *darker* than the others, inverting
+  the platform convention). Drawn by the renderer's highlight path, and this round does not touch
+  the render path — the bench guarantee in §10 exists to prove it did not.
+- **A settings search field, "Restore Defaults", page shortcuts, a font preview** (PM §12): four
+  features, none of them a lie being corrected. The window's real defects — a lost paste, a clipped
+  table, unlabelled groups, a hidden reason — are all fixed in Wave 4.
+- **Everything a11y marked "nice"** rather than must- or should-fix: the settings tab strip's own
+  label, the `Settings...` three-dot title, the config note's prefix, the ⏎-means-two-things
+  tooltips. One-line changes with no complaint behind them, and the round is already eight plans.
 
 ---
 
@@ -691,54 +895,140 @@ lost.
 The ladder is `docs/testing.md`; **nothing in a wave counts as done until it has been looked at as
 a picture and, where it has an AppKit edge, driven in the built app.** Per wave:
 
-**Wave 1 — block chrome.** Core: `CommandBlockChrome.widthClass` at the four boundaries (33/34,
-17/18, 7/8); `stripPlan` for every row of §2.6's table, asserting the drop order and that `Stop`
-and the status are never dropped; `firstColumn` never inside a word, including with a trailing wide
-cell (D19); `GutterCap` for the four states × hovered × folded; `hitRowHeight` at `line-height 0.8`;
-`BlockCursor.moved`/`afterViewportMove`; `StickyPromptLabel` for a finished command;
-`BlockAction → TerminalAction?`. App: the §8.5 Wave-1 snapshots, read at 1:1 and at 3× for the
-pills. Rung 6: a temporary `NYX_SMOKE_QA=blockchrome` hook that, in the built app, hovers each width
-class through `Pane.hitTest`, presses each pill, presses the gutter cap at nine points, and prints
-which action fired — the same shape as the G1 probe that found the 16 pt frame; removed before the
-commit.
+**Plan 1a — the mark and the strip.** Core: `CommandBlockChrome.widthClass` at the four boundaries
+(33/34, 17/18, 7/8); `stripPlan` for **every cell of §2.6's table**, asserting both ladders and
+that `Stop`, `Actions` and the status are never dropped; `firstColumn` never inside a word,
+including with a trailing wide cell (D19); `overlapsCommand` true only for the W0 watch;
+`spineLeadingInset` at `padding` 0, 3, 8 and 64; `GutterCap` for the four states × hovered ×
+folded; `hitRowHeight` at `line-height 0.8`; `StickyPromptLabel` for a finished command.
+App: the §8.5 plan-1a snapshots, read at 1:1 and at 3× for the pills. Rung 6: a temporary
+`NYX_SMOKE_QA=blockchrome` hook that, in the built app, hovers each width class through
+`Pane.hitTest`, presses each pill, presses the gutter cap at nine points, presses the left padding
+(which must now do **nothing**), and prints which action fired — the same shape as the G1 probe
+that found the 16 pt frame; removed before the commit.
+
+**Plan 1b — the keyboard on a block.** Core: `BlockCursor.moved` (both directions, from cleared, at
+both ends, with a trimmed id) and `afterViewportMove` (block still visible / gone / no fallback);
+`BlockAction → TerminalAction?` for every row of the menu; `BlockAnnouncement.text(for:)` at the
+2 s and non-zero-exit boundaries. App: `composite-block-cursor-*` and `block-menu-*`. Rung 6: a
+temporary `NYX_SMOKE_QA=blockcursor` hook that presses ⌘↑ twice, then ⌘⇧A, `copy_command_output`
+and ⌘. in the built app and prints which block each one hit — the five-rules bug is invisible to a
+unit test because the five rules were each individually correct.
 
 **Wave 2 — lenses and watch.** Core: `LensChoices.previous` restored on clear; `LensRendering` grep
 colours, line numbers and count; the redirect-chain order; `WatchSeries.headerTexts` series-tone vs
-run-facts; `RequestRun.isIdempotent`; the `| jq` pipeline text and its escaping. App: the Wave-2
-snapshots; rung 6 extends the curl-workbench smoke hook — filter, clear, container drag, `Run with
-jq` on a POST, a `jq`-less `PATH`.
+run-facts; `RequestRun.isIdempotent`; the `| jq` pipeline text and its escaping; `WatchVocabulary`'s
+four labels. App: the Wave-2 snapshots; rung 6 extends the curl-workbench smoke hook — filter,
+clear, container drag (a drag that must select and a click that must fold, at the same point),
+`Run with jq` on a POST, a `jq`-less `PATH`.
 
 **Wave 3 — shell integration.** Core: `ShellIntegration.environment` for bash and fish, with and
 without an existing `XDG_DATA_DIRS`, with missing resources (must return the base environment
-unchanged), `isAutomatic`, `manualInstallCommand`, and `ShellIntegrationStatus`' four sentences.
-Rung 6 is the real gate here: **launch the built app with `SHELL=/bin/bash` and with
+unchanged), `isAutomatic`, `manualInstallCommand`, and `ShellIntegrationStatus`' four sentences
+with `<shell>` substituted. App: the Wave-3 snapshots (the Shell page in three states, the banner,
+the alert). Rung 6 is the real gate here: **launch the built app with `SHELL=/bin/bash` and with
 `SHELL=/opt/homebrew/bin/fish`, run a command in each, and confirm a gutter mark, a fold and a
 `Copy` — a passing unit test proves nothing about a shell that will not start.** Then the same with
 `shell-integration = off` and with `SHELL=/bin/ksh`, confirming the banner and the corrected alert.
 
 **Wave 4 — settings and sheets.** Core: `ConfigWriter` trailing newline and a parser tolerating a
-file without one; `RemotePageStatus`; `QuickActionEditorModel.problem`;
-`PairingFlow.State.codeRejected`; `WatchPlanEditorModel` problem wording. App: the Wave-4 snapshots,
-including five consecutive runs of `request-editor-options-light` proving it byte-identical.
+file without one; `RemotePageStatus`' four sentences and its `blocksPairing`;
+`QuickActionEditorModel.problem`; `PairingFlow.State.codeRejected`; `WatchPlanEditorModel` problem
+wording; the Appearance caption beside `ThemeCatalog`. App: the Wave-4 snapshots, including five
+consecutive runs of `request-editor-options-light` proving it byte-identical.
 Rung 6: paste a token into Settings → Remote, close the window without pressing Return, reopen, and
-read the value back — the owner's exact 2026-09-07 report.
+read the value back — the owner's exact 2026-09-07 report; and press every row of Appearance to
+find which ones need a new tab, which is what item 13's sentence is written from.
 
-**Wave 5 — tab bar, palette, search, banners.** Core: `TabBarGeometry` at the 120 pt floor with
-2/8/12/20 tabs and with and without quick actions, asserting chips overflow before tabs;
-`closeHitRect`; tail truncation and the no-`…`-beside-`.` rule; `TabBarLabels` with an injected
-`chord:`; palette section ordering, `keywords`, the no-results text and the selection contrast
-against all seven `panelBackground`s; `SearchSession` prev/next gating. App: the Wave-5 snapshots.
-Rung 6: `Announce` verified with VoiceOver on for the palette, the search readout and both banners.
+**Plan 5a — the tab bar.** Core: `TabBarGeometry` at the 120 pt floor with 2/8/12/20 tabs, with and
+without quick actions, asserting chips overflow before the `+ Button` chip and both before any tab
+goes below the floor; `closeHitRect` and the ≥ 20 pt rule for every drawn control; tail truncation
+and the no-`…`-beside-`.` rule; `TabBarLabels` with an injected `chord:`; the hovered slot. App:
+the plan-5a snapshots. Rung 6: hover and press the `✕` on a 12-tab bar in the built app (a 14 pt
+overshoot must no longer *select* the tab), and reach the tab menu with VO-⇧-M.
 
-**Wave 6 — remote.** App: the eight remote-strip button states must come out **byte-identical across
-appearances**, the guard the whole `<palette>-<appearance>` naming scheme exists to enforce. Core:
-`PairingFlow.sheetText` renders no state blank; `RemotePageStatus` sentences.
+**Plan 5b — palette, search, banners.** Core: palette section ordering and headers, `keywords`, the
+no-results text, and the selection band's contrast against all seven `panelBackground`s;
+`SearchSession` prev/next gating and readout; the four banner kinds' symbol, text and buttons. App:
+the plan-5b snapshots. Rung 6: `Announce` verified with VoiceOver **on** for the palette selection,
+the search readout and all four banners.
+
+**Wave 6 — remote and the universal binary.** App: the eight remote-strip button states must come
+out **byte-identical across appearances**, the guard the whole `<palette>-<appearance>` naming
+scheme exists to enforce. Core: `PairingFlow.sheetText` renders no state blank; `RemotePageStatus`
+sentences. Rung 6: run the built app with a light theme under Dark Mode and read the strip's button
+with the eye, not the picture. **The binary:** `make app` then `lipo -info` and `file` on
+`build/Nyx.app/Contents/MacOS/Nyx`, both naming `x86_64` and `arm64`; the make step must fail if
+they do not, and `docs/testing.md` gains the line.
 
 **Every wave, every time.** `swift build` with **zero warnings**; `pkill -9 -f swiftpm-testing-helper;
 swift test --no-parallel`; **`make bench` ≥ 180 MB/s** (nothing in this round touches the render
 path, so a drop is a bug); `NYX_UI_SNAPSHOT=… ./build/Nyx.app/Contents/MacOS/Nyx` and read the
 PNGs, using the `<palette>-<appearance>` rule and `cmp` to cut the set to the distinct pictures.
 
-**Gates.** Each wave is reviewed by the `design-reviewer` over its pictures, by a VoiceOver pass
-for anything in §8.2 or §8.3, and by the `product-manager` last — a wave is not done until he says
+**Gates.** Each plan is reviewed by the `design-reviewer` over its pictures, by a VoiceOver pass
+for anything in §8.2 or §8.3, and by the `product-manager` last — a plan is not done until he says
 so (`docs/workflow.md`, `CLAUDE.md`).
+
+---
+
+## Appendix — Coverage
+
+Every must-fix in the three findings files, and the section that carries it. A `§9` entry means the
+spec drops it on purpose and says why there. Should-fixes are covered too where the spec takes
+them; they are not listed unless the spec's treatment differs from what the finding asked for.
+
+**`findings-a11y.md`**
+
+| finding | spec |
+|---|---|
+| 0.1 no key-view loop over pane chrome; `TerminalAction` is the only fix | §8.2 (preamble) |
+| 0.2 nothing ever posts an accessibility notification | §8.1, with the finish rule |
+| 2.1 palette selection never announced | §6.2 |
+| 3.1 `3 of 47` announced to nobody | §6.3 |
+| 6.1 gutter target 8 pt at the defaults, comment claims 14 | §2.2 (20 pt, independent of padding) |
+| 6.4 the strip cannot be raised without a pointer | §2.8 (`BlockCursor` + ⌘⇧A), §8.2 |
+| 6.12 pane is `.textArea` **and** vends children [verify] | §8.3 |
+| 7.1 sticky strip says "Running command" for a finished one | §2.7 |
+| 8.1 project-actions bar pointer-only and silent | §6.4, §8.1, §8.2 (`review_project_actions`) |
+| 6.2 success/failure by colour alone (should) | §2.2 — **design §3.2's shapes, not a11y's half-height mark**; ruling recorded there |
+| 6.9 `Stop` shares a name with ⌘. at a different scope (should) | §2.3 (label) + §2.8 (one target) |
+| 11.1 five rules for "which block" | §2.8 |
+| 11.3 dead group-header geometry | §6.1 — deleted, not wired |
+| 5.1 the Keys page cannot change a key (should, product) | §5.4 honest caption; the editor is §9 |
+| 5.3 settings foot diagnostics never heard (should) | §8.1 site list, §5.13 |
+
+**`findings-design.md`** (MUSTs, plus §3 as a system)
+
+| finding | spec |
+|---|---|
+| §0 compositor loses layer-painted grounds | §8.5 — machinery, in flight before Wave 1's pictures |
+| §2.1 tab titles collapse to stubs | §6.1 |
+| §2.6 disabled Pair with its reason across the page | §5.3 |
+| §2.7 two green marks 1.5 pt apart, padding-click folds | §2.2, §2.1 (`foldBlock(atPointInPadding:)` deleted) |
+| §2.7 pills clipped flat by a 16 pt frame | §2.3 (20 pt strip) |
+| §2.7 two identical grey circles; status dropped first | §2.6 (`Actions ▾`, the two ladders) |
+| §2.7 the strip cuts the command mid-token | §2.3 (`firstColumn`) |
+| §2.8 sticky strip: no affordance, nothing blanks the row | §2.7 |
+| §2.10 remote strip button invisible cross-appearance | §7.1 |
+| §3.2 geometry and colour rules | §2.2, §2.3 — one deviation (drawn mark height), ruled in §2.2 |
+| §3.3 the decision table | §2.6 verbatim; the single drop order it contradicts is replaced by two ladders, ruled there |
+| §6 states with no picture | §8.5 (TUI-suppressed, `line-height 0.8`, `padding 0`, reveal-secrets, the four menus, the alerts, the page strip, project-bar wordings) |
+
+**`findings-pm.md`** ("the five to fix first", then the numbered findings it raised alone)
+
+| finding | spec |
+|---|---|
+| the five to fix first: 1 sticky strip, 2 shell integration past zsh, 3 the block's controls as pixels, 4 the palette's first sentence and empty state, 5 the tab bar past eight tabs | §2.7 · §4 (a whole wave, placed before the block chrome because it is what makes the block exist for those users) · §2.2–§2.6 · §6.2 · §6.1, with drag-reorder in §9 |
+| §1 two identical `+` glyphs, unlabelled `≡` | §6.1 |
+| §5 `Copy` gone at narrow widths with no replacement | §2.6 — `Actions ▾`/`⋯` is never dropped and always carries Copy Output |
+| §7 `Copy` copies credentials in the clear | §5.12; the split is §9 |
+| §7 four names for the schedule feature | §3.14 |
+| §8 a watch is invisible outside its pane | §9 |
+| §9 close-with-process does not name the process | §6.1 |
+| §12 three theme pop-ups with no explanation; foot note names three of eight rows | §5.13 |
+| §13 the pairing placeholder reads as a value | §5.9 |
+| §14 three banners, one amber band, one wrong button | §6.4 |
+| §15 the lens field floats, has no close, never says which block | §3.11; `Body too large` is §3.13 |
+| §16 hovering destroys information | §2.5 |
+| §17 the block menu has never been pictured | §8.5 (plan 1b) |

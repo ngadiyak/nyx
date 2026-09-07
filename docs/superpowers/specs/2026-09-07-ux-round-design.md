@@ -1040,3 +1040,17 @@ them; they are not listed unless the spec's treatment differs from what the find
 | §15 the lens field floats, has no close, never says which block | §3.11; `Body too large` is §3.13 |
 | §16 hovering destroys information | §2.5 |
 | §17 the block menu has never been pictured | §8.5 (plan 1b) |
+
+## Addendum (2026-09-07, after the second snapshot-machinery pass, commit ef659cd)
+
+Seven findings from the new pictures, assigned to plans; each is binding on its plan:
+
+1. **Plan 1a.** The sticky strip is drawn over a full-screen program: `Pane.render` gates spines, summaries and the gutter on `CommandBlockChrome.isAllowed` but not `sticky`, and `stickyPrompt()` still returns a pinned command on the alternate screen (and loses the exit status there). The sticky strip obeys the same gate; a Core test on the alt screen.
+2. **Plan 1a.** `line-height = 0.8` makes the 20 pt strip cover three rows; `padding = 0` removes the gutter *and* the spines. The strip's height is `max(20, hitRowHeight)` centred on its row and never covers more than the rows §2.3 allows; at `padding = 0` the gutter hit area still exists (it may overlap the first text column, §2.2) and the spine is drawn in the first column's leading 3 pt.
+3. **Plan 1a / 5a.** No hover art exists anywhere on the tab bar or the gutter (five tab-bar hover pictures and one gutter picture are byte-identical to idle); pressing a strip pill changes 11/255 on a dark theme. §2.2's hover glyph and §6.1's hovered-tab tint are therefore new drawing, not adjustments; a pressed pill darkens its fill to `foreground @ 0.26`.
+4. **Plan 2.** Changing a watch condition does not re-validate its value (`Status class is` + `200` opens into an error; `Body contains` + `200` enables Start). `WatchPlanEditorModel` re-validates on every field change.
+5. **Plan 4.** Both destructive alerts default to the destructive answer (`Approve` on the project-actions review, `Close` on close-with-process). The default button is the safe one (`Cancel` / `Keep Running`); `Approve` is never the default.
+6. **Plan 5b.** The search readout truncates: `1234 of 5678` draws as `1234 of 567`. The readout's width is measured from the widest count it can show.
+7. **Plan 5a.** The tab, group, quick-action and overflow menus are the only user-facing verb lists not held in `NyxCore` as data (`MenuSnapshot` had to retype their titles). A `TabBarAction` enum with `title`/`isEnabled` in Core, built into `NSMenu` by the view, the way `BlockAction` already is; the snapshot reads the enum.
+
+Menus cannot be captured live in this environment (`popUp` needs a window, an offscreen window runs a modal loop, screen capture is denied); `MenuSnapshot` reconstructs them at AppKit's measured metrics from the real `NSMenu`. Alerts are the real thing.

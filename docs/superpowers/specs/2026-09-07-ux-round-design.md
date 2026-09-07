@@ -412,6 +412,14 @@ fold, `Copy`, `⋯` menu, lens, watch, `edit_and_run_command` routing or sticky 
 on screen says so. `manualInstallCommand` and `isAutomatic` have **zero callers**, and the comment
 on the first promises a settings window that does not exist.
 
+*Order:* `decisions.md`'s PM ruling says this is "its own wave in this round, before the
+block-chrome redesign is worth anything to those users", which reads two ways. **Ruling: it stays
+third in the numbering and is not pulled in front of Wave 1** — block chrome is decision 1 of the
+round and the owner's own complaint, the two waves have no dependency on each other, and "worth
+anything to those users" is a statement about value, not about sequence. If the owner would rather
+a bash user see blocks sooner, this wave can move to the front unchanged: nothing in it reads
+`CommandBlockChrome`.
+
 ### 4.1 Marks for bash and fish
 
 The scripts are already in the bundle (`Resources/shell-integration/{bash,fish}/…`). What is missing

@@ -108,3 +108,49 @@ private let sheetGreyDark = RGB(50, 50, 50)        // windowBackgroundColor, dar
     #expect(RGB.contrast(ink, fill) >= 4.5)
 }
 
+
+/// The gutter's `.faded` mark -- a command that finished cleanly with nothing to fold -- is the
+/// only cue there is that the command ran at all: it has no label, no chevron and no second
+/// treatment beside it, so the Global Constraints' floor for it is **3:1**, not the 4.5 a line of
+/// text needs.
+///
+/// §2.2 draws it as the solid mark at 40 %, and measured from the rendered pixels that came out at
+/// **2.61:1 on nyx-dark and 1.78:1 on nyx-light** -- under the floor in the two themes that ship as
+/// the defaults, and worse in the lighter of the two, where 40 % of a green over a near-white
+/// ground is a pale grey. `Palette.fadedMark` keeps the 40 % wherever 40 % clears 3:1 and raises it
+/// per theme until it does, capping at the solid mark's own colour, which by construction is the
+/// most a mark can be.
+///
+/// Measured after the fix, success tone, every built-in (40 % -> raised, against `background`):
+/// catppuccin-mocha 2.90 -> 3.33, dracula 2.86 -> 3.28, gruvbox-dark 1.88 -> 3.08,
+/// nyx-dark 2.60 -> 3.33, nyx-light 1.79 -> 3.02, one-dark 2.32 -> 3.17,
+/// solarized-dark 1.81 -> 3.24. All seven needed raising; none reaches its solid mark's own
+/// contrast (4.69:1 to 11.03:1), so the mark still reads as the quieter of the two.
+@Test func theFadedGutterMarkClearsThreeToOneInEveryTheme() {
+    for (name, palette) in Themes.builtin {
+        for (tone, colour) in [("success", SummaryTone.success), ("failure", .failure),
+                               ("running", .running)] {
+            let solid = colour.color(in: palette)
+            let faded = palette.fadedMark(solid)
+            let ratio = RGB.contrast(faded, palette.background)
+            #expect(ratio >= 3, "\(name) \(tone): \(ratio)")
+            // Never *more* than the solid mark: the faded treatment says "less", and a mark that
+            // came back brighter than the pressable one would say the opposite.
+            #expect(RGB.contrast(faded, palette.background)
+                <= RGB.contrast(solid, palette.background) + 0.001, "\(name) \(tone) is not louder")
+        }
+    }
+}
+
+/// And it is still *faded* wherever it can afford to be: `fadedMark` is a floor, not a repaint, so
+/// a mark whose 40 % already clears 3:1 comes back at exactly the 40 % §2.2 asks for. None of the
+/// seven built-ins is in that position -- the closest is catppuccin-mocha at 2.90:1 -- so the
+/// property is asserted where it can be, on a palette whose mark is white on black.
+@Test func theFadedMarkKeepsFortyPercentWhenFortyPercentAlreadyReads() {
+    var palette = Palette.xtermDefault()
+    palette.background = RGB(0, 0, 0)
+    let solid = RGB(255, 255, 255)
+    let forty = RGB.blend(solid, into: palette.background, amount: 0.6)
+    #expect(RGB.contrast(forty, palette.background) >= 3)
+    #expect(palette.fadedMark(solid) == forty)
+}

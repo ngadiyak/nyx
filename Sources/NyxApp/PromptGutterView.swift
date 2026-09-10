@@ -147,7 +147,12 @@ final class PromptGutterView: NSView {
             let box = max(CGFloat(8), cellHeight)
             guard dirtyRect.intersects(NSRect(x: markX, y: y - (box - cellHeight) / 2,
                                               width: max(width, 8), height: box)) else { continue }
-            let colour = nsColor(cap.tone.color(in: palette), alpha: cap.shape == .faded ? 0.4 : 1)
+            // The faded mark's colour is resolved in Core rather than drawn as an alpha here: 40 %
+            // of the solid mark measured 2.61:1 on nyx-dark and 1.78:1 on nyx-light against the
+            // 3:1 floor a shape that is the only cue has to clear, and every one of the seven
+            // built-ins needed raising. `Palette.fadedMark` keeps the 40 % wherever it reads.
+            let solid = cap.tone.color(in: palette)
+            let colour = nsColor(cap.shape == .faded ? palette.fadedMark(solid) : solid, alpha: 1)
             switch cap.shape {
             case .solid, .faded:
                 // Inset top and bottom, so a cap reads as one command's mark and a run of them

@@ -293,6 +293,32 @@ public struct Palette: Equatable {
         Palette.pushed(ground, toward: foreground, until: ground, reaches: 1.6, from: 0.30, to: 1.0)
     }
 
+    /// The gutter's faded mark: `solid` at 40 % over this palette's background, raised toward
+    /// `solid` in twentieths until it clears **3:1** against that background, and capped at `solid`
+    /// itself.
+    ///
+    /// 3 and not 4.5 because §2.2's mark is a *shape*, not text, and it is the only cue that a
+    /// command ran and printed nothing -- no label, no chevron, nothing beside it. 40 % is the
+    /// number §2.2 gives and it is kept wherever it reads; measured from the rendered pixels it did
+    /// not, in either default theme (2.61:1 on nyx-dark, 1.78:1 on nyx-light), because 40 % of a
+    /// green over a near-white ground is a pale grey.
+    ///
+    /// Walked *down* from 40 % rather than up from the solid colour, so the answer is the faintest
+    /// mark that still reads rather than the loudest one that does: the treatment means "less".
+    /// Resolved against `background` rather than `blockHoverBackground` -- a block with nothing to
+    /// fold is tinted while the pointer is on it, and the tint only ever moves the ground *towards*
+    /// the mark, so the plain background is the harder of the two grounds and the right one to hold
+    /// the floor against.
+    public func fadedMark(_ solid: RGB) -> RGB {
+        var amount = 0.60
+        while amount > 0 {
+            let candidate = RGB.blend(solid, into: background, amount: amount)
+            if RGB.contrast(candidate, background) >= 3 { return candidate }
+            amount -= 0.05
+        }
+        return solid
+    }
+
     /// One of the sixteen, picked for use as *text* or as a small filled shape: the normal variant
     /// of `index`, or the bright one where the normal is too dim to read and the bright is
     /// substantially better. gruvbox's red is 2.7:1 as a body colour and its bright red is 4.3:1; a

@@ -439,6 +439,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     override func makeBackingLayer() -> CALayer { CAMetalLayer() }
     override var acceptsFirstResponder: Bool { true }
 
+    /// Whether typing lands here: this pane is first responder *and* its window is the key one.
+    ///
+    /// Both halves, and asked in one place. The frame draws the cursor with it, and a finish is
+    /// announced only for it -- four panes in one window, three of them building, is four voices
+    /// -- and a second spelling of "focused" is how those two come to disagree.
+    private var isKeyboardFocused: Bool {
+        (window?.isKeyWindow ?? false) && window?.firstResponder === self
+    }
+
     // MARK: - Accessibility
     //
     // A pane is a Metal layer: there is no text in the view hierarchy at all, so without this it
@@ -1712,7 +1721,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             dirty.set()
             return
         }
-        let focused = (window?.isKeyWindow ?? false) && window?.firstResponder === self
+        let focused = isKeyboardFocused
         let preedit = markedText.isEmpty ? nil : markedText
         // The mark at the head of each block's spine, per display slot: shape, colour and whether
         // it can be pressed, all decided by `CommandBlockChrome.gutterCap`. Built from the very
@@ -4310,6 +4319,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                     runningID: bottom.runningID, now: now) else { return }
         let armed = armedNotifications
         armedNotifications.remove(finished.id)
+        // Before the notification rule and independent of it: a notification is for a window you
+        // are not looking at, an announcement is for the pane you are in. The focused pane only,
+        // and only a command that ran two seconds or failed; the sentence is the block's own
+        // summary, so the announcement and the strip say the same words about one command.
+        if let region = session.withTerminal({ $0.command(containingAbsoluteRow: finished.promptRow) }),
+           let spoken = BlockAnnouncement.text(for: region,
+                                               summary: blockMenuHeader(for: region.id)?.summary ?? "",
+                                               paneIsFocused: isKeyboardFocused) {
+            Announce.say(spoken)
+        }
         guard CommandNotificationRule.shouldNotify(finished, armed: armed,
                                                    windowFocused: window?.isKeyWindow == true,
                                                    minimumDuration: commandWatcher.minimumDuration) else { return }

@@ -302,6 +302,29 @@ public struct Palette: Equatable {
                        from: 0.30, to: 1.0)
     }
 
+    /// A **lit** pill's own two extra states: the accent-filled lens chip, hovered and pressed.
+    ///
+    /// The lit chip had neither (I2): `StripPillView` filled the accent and returned, so the one
+    /// pill in the strip that says "a lens is on" was also the one pill that never confirmed the
+    /// pointer was on it or that a press had landed. The unlit pills got both in D4 and this is the
+    /// same two treatments in the accent's own terms.
+    ///
+    /// `litPillHairline` walks from a tenth of the chip's own ink over its fill toward that ink
+    /// until it clears **3:1** -- the same floor a hovered unlit pill's hairline holds, so hover
+    /// reads the same on both kinds of pill. `textOn(fill)` is the ceiling and is itself ≥ 4.5:1
+    /// by construction, so the floor is always reachable.
+    public func litPillHairline(on fill: RGB) -> RGB {
+        Palette.pushed(fill, toward: textOn(fill), until: fill, reaches: 3, from: 0.10, to: 1.0)
+    }
+
+    /// `pressedFill` moves the accent toward `foreground` by **0.12** -- exactly the step the unlit
+    /// pill's fill takes from 0.14 to 0.26 (§2.3, Addendum 3), so a press moves the same distance
+    /// whichever pill it lands on. The label stays `textOn(pressedFill(...))`, which re-resolves
+    /// against the moved fill rather than keeping an ink calibrated for the one underneath it.
+    public func pressedFill(of fill: RGB) -> RGB {
+        RGB.blend(fill, into: foreground, amount: 0.12)
+    }
+
     /// The gutter's faded mark: `solid` at 40 % over this palette's background, raised toward
     /// `solid` in twentieths until it clears **3:1** against that background, and capped at `solid`
     /// itself.

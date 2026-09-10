@@ -106,8 +106,23 @@ final class StripPillView: NSView {
         // which reads on every palette because it *is* the palette.
         let ink: RGB
         if on {
-            nsColor(palette.accent, alpha: 1).setFill(); path.fill()
-            ink = palette.textOn(palette.accent)
+            // The lit chip gets the same two extra states the unlit pills got in D4, in the
+            // accent's own terms: it had **neither** -- the fill went on and this branch returned,
+            // so the one pill that says "a lens is on" was the one pill that never confirmed the
+            // pointer was on it or that a press had landed (I2). Pressed moves the accent toward
+            // `foreground` by the same 0.12 the unlit fill moves (0.14 → 0.26), and the label
+            // re-resolves against the moved fill rather than keeping an ink calibrated for the one
+            // underneath it.
+            let fill = pressed ? palette.pressedFill(of: palette.accent) : palette.accent
+            nsColor(fill, alpha: 1).setFill(); path.fill()
+            ink = palette.textOn(fill)
+            if hovered || pressed {
+                // The same 3:1 floor a hovered unlit pill's hairline holds, so hover reads the same
+                // on both kinds of pill.
+                nsColor(palette.litPillHairline(on: fill), alpha: 1).setStroke()
+                hairline.lineWidth = 1
+                hairline.stroke()
+            }
         } else {
             // §2.3's two fills and no third: `foreground @ 0.14`, and `@ 0.26` pressed
             // (Addendum 3). The 0.20 hovered step in between was an addition, and a measured

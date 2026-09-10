@@ -199,6 +199,11 @@ enum StateSnapshot {
                                   httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms", tone: .success),
                                   isHTTP: true, bodyIsJSON: true,
                                   watch: GridScene.watchHeader(runs: 11))
+        // The same request with a lens on, so its chip is lit: `Pretty` filled with the accent.
+        let lensed = BlockHeader(id: 5, state: .finished, folded: false, hasOutput: true,
+                                 anyFolds: false, notifyArmed: false, summary: "",
+                                 httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms", tone: .success),
+                                 isHTTP: true, lens: .pretty, bodyIsJSON: true)
         // The same block with its output folded: the fold pill reads `Unfold` there, and §2.3 gives
         // it its own help sentence, so it is its own control and gets its own two pictures.
         let foldedBlock = BlockHeader(id: 4, state: .finished, folded: true, hasOutput: true,
@@ -212,6 +217,10 @@ enum StateSnapshot {
                 ("actions-glyph", "", finished, .w1),
                 // The chip is a state readout: an unlensed response reads `Raw`, not `Pretty`.
                 ("lens", "Raw", request, .w3),
+                // And the **lit** chip, which is a different control's art: accent-filled, with the
+                // hover and pressed treatments I2 gave it. Without these two pictures the one pill
+                // in the strip whose states are drawn from the accent had none.
+                ("lens-on", "Pretty", lensed, .w3),
                 ("stop", "Stop", watched, .w3)]
     }
 

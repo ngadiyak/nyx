@@ -217,3 +217,35 @@ private let sheetGreyDark = RGB(50, 50, 50)        // windowBackgroundColor, dar
         #expect(RGB.contrast(dim, palette.background) >= 4.5, "\(name) placeholder dim on background")
     }
 }
+
+/// **I2.** The *lit* lens chip's two extra states — hovered and pressed — in the accent's own terms.
+///
+/// The chip had neither: `StripPillView` filled the accent and returned, so the one pill in the
+/// strip that says "a lens is on" was also the one pill that never confirmed the pointer was on it
+/// or that a press had landed. D4 gave the unlit pills a 3:1 hovered hairline and a 0.14 → 0.26 fill
+/// step for the press; these are the same two treatments where the ground is `palette.accent`.
+///
+/// Measured, all seven built-ins: the label on the accent 4.56–8.31, on the pressed fill 4.53–8.58
+/// (so the 4.5 text floor holds through the press, which moves the fill under it); the hairline
+/// 3.02–3.26 on the accent and 3.03–3.32 on the pressed fill.
+@Test func theLitChipsHoverAndPressAreReadableInEveryTheme() {
+    for (name, palette) in Themes.builtin {
+        for (state, fill) in [("lit", palette.accent),
+                              ("pressed", palette.pressedFill(of: palette.accent))] {
+            // The label is text and holds 4.5:1 — re-resolved against the fill it is actually on,
+            // not against the accent the unpressed chip had.
+            let ink = palette.textOn(fill)
+            #expect(RGB.contrast(ink, fill) >= 4.5, "\(name) \(state) label")
+            // The hairline is a shape and holds the 3:1 a hovered unlit pill's does, so hover reads
+            // the same on both kinds of pill.
+            let hairline = palette.litPillHairline(on: fill)
+            #expect(RGB.contrast(hairline, fill) >= 3, "\(name) \(state) hairline")
+            // …and it is never louder than the label, or the outline becomes the loudest thing on a
+            // control whose own name is what it is for.
+            #expect(RGB.contrast(hairline, fill) <= RGB.contrast(ink, fill) + 0.001,
+                    "\(name) \(state) hairline is louder than the label")
+        }
+        // The press really moves: the accent and its pressed fill are not the same colour.
+        #expect(palette.pressedFill(of: palette.accent) != palette.accent, "\(name) press")
+    }
+}

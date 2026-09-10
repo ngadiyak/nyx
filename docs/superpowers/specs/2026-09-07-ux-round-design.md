@@ -44,8 +44,9 @@ request workbench's form, automatic zsh injection through `ZDOTDIR`, and the sum
 **Architecture, unchanged and binding** (`CLAUDE.md`): every decision below is a value or a pure
 function in `NyxCore`, unit-tested; `NyxApp` converts events and draws; `NyxRender` learns nothing
 about chrome; the build stays warning-free and `make bench` stays at or above 180 MB/s. Six waves,
-in this order, each landing on its own commits: block chrome → lenses and watch → shell
-integration → settings and sheets → tab bar, palette, search, banners → remote strip and pairing.
+each landing on its own commits. Order (owner's ruling of 2026-09-10 — the lens and watch polish
+goes last, after every design and UX fix): block chrome → shell integration → settings and sheets →
+tab bar, palette, search, banners → remote strip and pairing → lenses and watch.
 
 **Eight plans, not six.** Waves 1 and 5 are each too large for one plan of ≤ 10 tasks, so each
 splits at a seam that leaves both halves shippable: **1a** the mark and the strip (the block drawn

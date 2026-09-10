@@ -128,6 +128,17 @@ produces there. Write the key as the unshifted ASCII character it carries (`cmd+
 `cmd++`) and put `shift` in the modifiers. Without ⌘, a key press is text: it reaches the shell
 as the character the layout makes, so typing Cyrillic sends Cyrillic.
 
+**Control chords are physical too.** ⌃C sends 0x03 — and interrupts — on a Russian, Greek or
+Hebrew layout, where the C key types `с`, `ψ` or `ב` and none of those characters names a control
+byte. The byte is the one the same keycap gives on the ASCII layout: ⌃Z is 0x1A, ⌃D is 0x04, ⌃[ is
+Escape, and the four that need shift on a PC keyboard (⌃⇧2 = NUL, ⌃⇧6 = RS, ⌃⇧- = US, ⌃⇧/ = DEL)
+come from the keycap's second legend rather than from whatever the layout puts on shift. What the
+layout *does* name still wins, so a key that types plain ASCII is never re-read: on RussianWin the
+`/` keycap types `.`, and ⌃. is `.`. Typing and ⌥ chords are untouched — ⌥`с` with
+`option-as-meta` set sends ESC and the two UTF-8 bytes of `с`, not ESC `c`. An application that
+turns on xterm's `modifyOtherKeys` gets the layout's own code point in the report (⌃C on a Cyrillic
+layout is `CSI 27;5;1089~`, U+0441), which is what xterm, Ghostty and iTerm2 all report there.
+
 | Action | Default | What it does |
 |---|---|---|
 | `new_window` | ⌘N | |

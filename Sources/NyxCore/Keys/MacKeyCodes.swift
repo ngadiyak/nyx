@@ -146,6 +146,43 @@ public enum MacKeyCodes {
         }
     }
 
+    /// The other legend on the same keycap: what an ANSI key types with shift held.
+    ///
+    /// Layout-independent for the same reason `asciiScalar` is -- an ASCII-capable layout is one
+    /// that can type ASCII from these positions -- and needed because the four control characters
+    /// that need shift on a PC keyboard (`@` on ⇧2, `^` on ⇧6, `_` on ⇧-, `?` on ⇧/) are
+    /// unreachable through the active layout's own shifted character: RussianWin makes those four
+    /// keys type `"`, `:`, `_` and `,`. Anything with no second legend is itself.
+    public static func shiftedAscii(_ scalar: Unicode.Scalar) -> Unicode.Scalar {
+        switch scalar {
+        case "1": return "!"
+        case "2": return "@"
+        case "3": return "#"
+        case "4": return "$"
+        case "5": return "%"
+        case "6": return "^"
+        case "7": return "&"
+        case "8": return "*"
+        case "9": return "("
+        case "0": return ")"
+        case "-": return "_"
+        case "=": return "+"
+        case "[": return "{"
+        case "]": return "}"
+        case "\\": return "|"
+        case ";": return ":"
+        case "'": return "\""
+        case ",": return "<"
+        case ".": return ">"
+        case "/": return "?"
+        case "`": return "~"
+        case "a"..."z":
+            // `Unicode.Scalar` has no case conversion of its own, and these are all ASCII.
+            return Unicode.Scalar(scalar.value - 0x20) ?? scalar
+        default: return scalar
+        }
+    }
+
     /// Which `Key` a key press means *as a chord*, as opposed to as text.
     ///
     /// A binding names a physical key. `charactersIgnoringModifiers` is the active layout's

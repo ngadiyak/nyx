@@ -100,3 +100,24 @@ private let table = KeyBindingTable(user: [])
     #expect(bindings.action(for: russian, modifiers: [.cmd]) == .copy)
     #expect(bindings.action(for: .char("c"), modifiers: [.cmd, .shift]) == .copy)
 }
+
+/// The second legend on every keycap the ANSI table names, because a control chord that needs
+/// shift (⌃@, ⌃^, ⌃_, ⌃?) is found through this and through nothing else.
+@Test func everyAnsiKeycapHasItsSecondLegend() {
+    #expect(MacKeyCodes.shiftedAscii("2") == "@")
+    #expect(MacKeyCodes.shiftedAscii("6") == "^")
+    #expect(MacKeyCodes.shiftedAscii("-") == "_")
+    #expect(MacKeyCodes.shiftedAscii("/") == "?")
+    #expect(MacKeyCodes.shiftedAscii("c") == "C")
+    #expect(MacKeyCodes.shiftedAscii("=") == "+")
+    // Space and anything already shifted are themselves.
+    #expect(MacKeyCodes.shiftedAscii(" ") == " ")
+    #expect(MacKeyCodes.shiftedAscii("@") == "@")
+    // Every key code the ANSI table names has a legend, and no key code invents a letter.
+    for code in UInt16(0)...127 {
+        guard let cap = MacKeyCodes.asciiScalar(code) else { continue }
+        let shifted = MacKeyCodes.shiftedAscii(cap)
+        #expect(shifted.isASCII)
+        #expect(!("a"..."z" ~= shifted))
+    }
+}

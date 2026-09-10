@@ -2432,8 +2432,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // `isKeypad` comes from the key code, not from `NSEvent.numericPad`: macOS sets that flag
         // on the arrow keys too, so trusting it would send SS3 for arrows in application-keypad
         // mode and break every full-screen program the moment one turned the mode on.
+        // `baseLayoutKey` is the keycap's own ASCII character, and it is what makes ⌃C interrupt on
+        // a Cyrillic layout: `key` there is `с`, which names no control byte. The encoder falls
+        // back to it, and only for a control chord -- see `KeyEncoder.controlByte(for:)`.
         return KeyEvent(key: key, modifiers: mods, text: e.characters,
-                        isKeypad: MacKeyCodes.isKeypad(e.keyCode))
+                        isKeypad: MacKeyCodes.isKeypad(e.keyCode),
+                        baseLayoutKey: MacKeyCodes.asciiScalar(e.keyCode))
     }
 
     /// `KeyEncoderOptions.optionAsMeta` is a plain bool -- it doesn't distinguish which side of the

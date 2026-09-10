@@ -63,26 +63,40 @@ enum MenuShortcut {
         }
     }
 
+    /// The `Key` a menu item's `keyEquivalent` came from, or nil when the character names no key
+    /// this table knows -- which is every ordinary letter, and is what `.char` answers for.
+    ///
+    /// The inverse exists because a chord is sometimes *drawn* rather than handed to AppKit:
+    /// `MenuSnapshot` reconstructs a real `NSMenu` pixel by pixel, and the character in a key
+    /// equivalent for an arrow is one of AppKit's private-use function-key scalars, which the
+    /// system font has no glyph for. Going back to a `Key` lets `Key.displayName` -- the one place
+    /// that decides how ↑ ⇞ ⌦ ↩ are spelled, and what the command palette's chord column already
+    /// uses -- answer there too, instead of a third copy of the same table.
+    static func key(forKeyEquivalent keyEquivalent: String) -> Key? {
+        let scalars = Array(keyEquivalent.unicodeScalars)
+        guard scalars.count == 1, let scalar = scalars.first else { return nil }
+        let code = Int(scalar.value)
+        if let named = MenuShortcut.functionKeys.first(where: { $0.code == code })?.key { return named }
+        if code >= NSF1FunctionKey, code <= NSF35FunctionKey { return .f(code - NSF1FunctionKey + 1) }
+        return nil
+    }
+
     private static func functionKeyScalar(_ key: Key) -> Unicode.Scalar? {
-        let code: Int
-        switch key {
-        case .up: code = NSUpArrowFunctionKey
-        case .down: code = NSDownArrowFunctionKey
-        case .left: code = NSLeftArrowFunctionKey
-        case .right: code = NSRightArrowFunctionKey
-        case .home: code = NSHomeFunctionKey
-        case .end: code = NSEndFunctionKey
-        case .pageUp: code = NSPageUpFunctionKey
-        case .pageDown: code = NSPageDownFunctionKey
-        case .delete: code = NSDeleteFunctionKey
-        case .insert: code = NSInsertFunctionKey
-        case .enter: return Unicode.Scalar(13)
-        case .tab: return Unicode.Scalar(9)
-        case .escape: return Unicode.Scalar(27)
-        case .backspace: return Unicode.Scalar(8)
-        case .f(let n): code = NSF1FunctionKey + n - 1
-        case .char: return nil
-        }
+        if case .f(let n) = key { return Unicode.Scalar(NSF1FunctionKey + n - 1) }
+        guard let code = MenuShortcut.functionKeys.first(where: { $0.key == key })?.code
+        else { return nil }
         return Unicode.Scalar(code)
     }
+
+    /// One table, read in both directions, so a key cannot be spelled one character going out and
+    /// recognised as another coming back. `.f` is the arithmetic case and stays out of it; `.char`
+    /// is not in here at all, because AppKit takes its character as itself.
+    private static let functionKeys: [(key: Key, code: Int)] = [
+        (.up, NSUpArrowFunctionKey), (.down, NSDownArrowFunctionKey),
+        (.left, NSLeftArrowFunctionKey), (.right, NSRightArrowFunctionKey),
+        (.home, NSHomeFunctionKey), (.end, NSEndFunctionKey),
+        (.pageUp, NSPageUpFunctionKey), (.pageDown, NSPageDownFunctionKey),
+        (.delete, NSDeleteFunctionKey), (.insert, NSInsertFunctionKey),
+        (.enter, 13), (.tab, 9), (.escape, 27), (.backspace, 8)
+    ]
 }

@@ -420,23 +420,16 @@ private final class MenuSheetView: NSView {
     /// AppKit's private-use function-key characters (`NSUpArrowFunctionKey` and its neighbours),
     /// and AppKit knows to draw those as ↑ ↓ ← →. This reconstruction draws the character itself
     /// with a system font that has no glyph for that codepoint, which is a missing-glyph box, not
-    /// the chord `Fold Output` actually has -- so the private-use range is mapped back to the same
-    /// arrows `Key.displayName` uses, and anything else falls back to an uppercase character.
+    /// the chord `Fold Output` actually has.
+    ///
+    /// So the character goes back through `MenuShortcut` to the `Key` it was made from and is
+    /// spelled by `Key.displayName`, the one table that decides these glyphs -- rather than a
+    /// third copy of it here, which knew nothing of ↩ ⇥ ⎋ ⌫ or the F-keys and drew each of them
+    /// as itself. Anything that names no key falls back to an uppercase character, which is what
+    /// an ordinary letter equivalent is.
     private static func keyGlyph(_ keyEquivalent: String) -> String {
-        guard let scalar = keyEquivalent.unicodeScalars.first, keyEquivalent.unicodeScalars.count == 1
+        guard let key = MenuShortcut.key(forKeyEquivalent: keyEquivalent)
         else { return keyEquivalent.uppercased() }
-        switch Int(scalar.value) {
-        case NSUpArrowFunctionKey: return "\u{2191}"
-        case NSDownArrowFunctionKey: return "\u{2193}"
-        case NSLeftArrowFunctionKey: return "\u{2190}"
-        case NSRightArrowFunctionKey: return "\u{2192}"
-        case NSHomeFunctionKey: return "\u{2196}"
-        case NSEndFunctionKey: return "\u{2198}"
-        case NSPageUpFunctionKey: return "\u{21DE}"
-        case NSPageDownFunctionKey: return "\u{21DF}"
-        case NSDeleteFunctionKey: return "\u{2326}"
-        case NSInsertFunctionKey: return "Ins"
-        default: return keyEquivalent.uppercased()
-        }
+        return Key.displayName(key)
     }
 }

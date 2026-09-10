@@ -980,14 +980,51 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
 
 // MARK: - D5/D6/P2: the cap is the head of the spine, and the chevron stays in the padding
 
-/// **D5.** One rect for every mark shape, and it is the spine's own: same x, same 3 pt, the whole
-/// row. The cap was `y + 2` tall by `cellHeight - 4` with a 1.5 pt corner radius, which the design
-/// review measured at 10× as a soft capsule on a half-pixel boundary over a crisp stick, with a
-/// break above *and* below every head -- and `.bar` had neither inset nor radius, so a **failed**
-/// block's spine was continuous and a succeeded one's was not.
-@Test func everyMarkShapeIsTheSpinesOwnRect() {
+/// **D5**, and **I1**: every mark is the spine's own *column* -- same x, same 3 pt -- and `.bar` is
+/// the one that is also the spine's own *height*.
+///
+/// The cap was `y + 2` tall by `cellHeight - 4` with a 1.5 pt corner radius, which the design review
+/// measured at 10× as a soft capsule on a half-pixel boundary over a crisp stick, with a break above
+/// *and* below every head. D5 made every shape one square, pixel-aligned rect with a 2 pt top inset
+/// -- and collapsed `.solid` and `.bar` into the same geometry, so a success and a failure differed
+/// only in **hue**. §2.2 gives failure the extra ink ("failed = solid cap *plus* a full-row bar")
+/// and a11y 6.2 asks for shape, not colour alone; the final review called that out as I1.
+///
+/// So `.bar` drops the inset: a failed block's 3 pt column runs from the top of its prompt row
+/// straight into the rows below, joining whatever mark is above it, while a success, a run in flight
+/// and a silent command are each a *separated* cap. That is the choice `markRect`'s own comment
+/// already offered, and it is the one shape difference that survives being read at 3 pt.
+@Test func everyMarkIsTheSpinesColumnAndOnlyTheBarIsItsHeight() {
     let cell = 17.0
-    let rect = CommandBlockChrome.markRect(row: 3, cellHeight: cell, topPadding: 8, padding: 8)
+    // Every shape shares the spine's column…
+    for shape in [CommandBlockChrome.GutterCap.Shape.solid, .bar, .hollow, .faded] {
+        let any = CommandBlockChrome.markRect(shape, row: 3, cellHeight: cell, topPadding: 8,
+                                              padding: 8)
+        #expect(any.x == CommandBlockChrome.spineLeadingInset(padding: 8), "\(shape)")
+        #expect(any.width == CommandBlockChrome.spineWidth, "\(shape)")
+        // …and every one ends at the row's bottom, so a cap meets the first row of its own spine.
+        #expect(any.y + any.height == 8 + 4 * cell, "\(shape)")
+    }
+    // …but the four shapes are not one rect: a failure is taller, by the inset the others keep.
+    let bar = CommandBlockChrome.markRect(.bar, row: 3, cellHeight: cell, topPadding: 8, padding: 8)
+    let rect = CommandBlockChrome.markRect(.solid, row: 3, cellHeight: cell, topPadding: 8,
+                                           padding: 8)
+    #expect(bar.height > rect.height)
+    #expect(bar.height == cell)
+    #expect(bar.y == 8 + 3 * cell)
+    let distinct = Set([CommandBlockChrome.GutterCap.Shape.solid, .bar, .hollow, .faded].map {
+        CommandBlockChrome.markRect($0, row: 3, cellHeight: cell, topPadding: 8, padding: 8).height
+    })
+    #expect(distinct.count >= 2)
+    // `.hollow` and `.faded` are the success rect: one stroked, one at the faded colour. Their
+    // geometry is deliberately the *same* -- the ring and the wash are what tell them apart, and a
+    // third and fourth height at 3 pt would be four shapes nobody can measure by eye.
+    for shape in [CommandBlockChrome.GutterCap.Shape.hollow, .faded] {
+        let same = CommandBlockChrome.markRect(shape, row: 3, cellHeight: cell, topPadding: 8,
+                                               padding: 8)
+        #expect(same.height == rect.height, "\(shape)")
+        #expect(same.y == rect.y, "\(shape)")
+    }
     #expect(rect.x == CommandBlockChrome.spineLeadingInset(padding: 8))
     #expect(rect.width == CommandBlockChrome.spineWidth)
     // The mark's **bottom** is the row's bottom, so the cap meets the first row of its own spine
@@ -999,7 +1036,8 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     #expect(rect.y == 8 + 3 * cell + CommandBlockChrome.markTopInset)
     #expect(rect.height == cell - CommandBlockChrome.markTopInset)
     // A row shorter than the inset still gets a mark rather than an inverted rect.
-    let tiny = CommandBlockChrome.markRect(row: 0, cellHeight: 1.5, topPadding: 0, padding: 8)
+    let tiny = CommandBlockChrome.markRect(.solid, row: 0, cellHeight: 1.5, topPadding: 0,
+                                           padding: 8)
     #expect(tiny.height > 0)
 }
 
@@ -1017,7 +1055,7 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
         #expect(box.x >= 0, "padding \(padding)")
         #expect(box.width == box.height, "padding \(padding)")
         // Never past the mark's own trailing edge…
-        let mark = CommandBlockChrome.markRect(row: 2, cellHeight: cell, topPadding: 0,
+        let mark = CommandBlockChrome.markRect(.solid, row: 2, cellHeight: cell, topPadding: 0,
                                                padding: padding)
         #expect(box.x + box.width <= mark.x + mark.width + 0.001, "padding \(padding)")
         // …and therefore never over column 0's ink, wherever the padding leaves the mark room for

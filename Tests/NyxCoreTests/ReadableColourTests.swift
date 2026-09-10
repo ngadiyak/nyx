@@ -59,7 +59,8 @@ private let sheetGreyDark = RGB(50, 50, 50)        // windowBackgroundColor, dar
 
 /// `Stop` is drawn in the theme's failure colour, pushed toward `foreground` (via `RGB.readable`)
 /// on the pill's own ground -- `blockHoverBackground` washed by exactly the alpha the fill state
-/// draws (0.14 idle, 0.20 hovered, 0.26 pressed) -- rather than resolved once against plain
+/// draws (0.14 idle and hovered, 0.26 pressed -- D4 removed the 0.20 step) -- rather than
+/// resolved once against plain
 /// `background` and reused everywhere: gruvbox-dark's `Stop` read at 2.82:1 hovered when the two
 /// disagreed. The hairline is `Palette.pillHairline`, which starts at the 0.30 wash the pill used
 /// to draw unconditionally and widens further wherever a state's own fill has washed the ground too

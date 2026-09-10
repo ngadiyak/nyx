@@ -141,6 +141,17 @@ padding no longer folds anything, because the padding is not a control and never
   rather than off the window.
 - **Shape carries state**, not colour alone (a11y 6.2): succeeded = solid cap; failed = solid cap
   **plus a full-row bar**; running = hollow cap; no output = cap at 40 % alpha and **not pressable**.
+
+  **Amended 2026-09-10 (final review, I1) — the shipped shapes, all four in one 3 pt column.**
+  Success is a filled column inset 2 pt from the row's top, so it reads as one command's mark.
+  **Failure drops the inset**: its column runs the whole row and joins the marks above and below it,
+  which is where "plus a full-row bar" lands once the spine is drawn for every block rather than for
+  failures alone — the extra ink is the two points a success gives up, and it is the one shape
+  difference that survives being read at 3 pt. Running is success's rect *stroked*; no output is
+  success's rect at `Palette.fadedMark`. The 40 % is **nominal**: 40 % of a green over a near-white
+  ground measured 1.78:1, so `fadedMark` raises it per theme until it clears **3:1 against the harder
+  of the plain background and the hover tint** (the tint became the harder one when D6 moved it under
+  the gutter), capped at the solid mark's own colour. Six of seven built-ins end above 40 %.
   *Disagreement:* a11y 6.2 proposed a half-height mark for success; `findings-design` §3.2 gives the
   four shapes above. **Ruling: design §3.2** — failure is the state that must be findable while
   scrolling, so failure gets the extra ink, not success.
@@ -164,7 +175,7 @@ Geometry, exact (design §3.2):
 | gap between pills | 6 pt |
 | trailing inset | 8 pt |
 | pill fill | `palette.foreground @ 0.14` |
-| pill hairline | `palette.foreground @ 0.22`, ≥ 1.6:1 against the fill |
+| pill hairline | `Palette.pillHairline(on:minimum:)`: `foreground @ 0.30` over the fill's own ground, pushed further toward `foreground` until it clears **1.6:1 idle** and **3:1 hovered or pressed** (D4 moved hover onto the hairline; a flat `@ 0.22` cleared 1.6 in no theme's pressed state). Stroked inside the pill's box, not on it |
 | leading edge | 8 pt of solid strip ground, then a 2-cell gradient to transparent |
 | strip ground | the row's own hover tint, not `palette.background` — a `background` band on a tinted row reads as a floating rectangle |
 | dots | filled, 7 pt, on a 10 pt pitch; the running run is a **filled accent** dot, not a hollow amber ring (which shares a hue with redirect and reads as a smudge at 6 pt) |
@@ -278,7 +289,9 @@ Width class = free columns after the command's last glyph. **W3 ≥ 34, W2 18–
 
 **Reading the table.** `‹summary›` is `BlockHeader.summary`, unchanged in wording. A `—` in the W0
 column means what the finished row's cell says: **no strip, the gutter cap alone** (`▾` unfolded,
-`▸` folded, absent with no output). `[Stop]` over the tail is the one exception — the
+`▸` folded). A command that printed nothing still has a cap — faded and not pressable, because the
+cap is the block's identity and a block that ran is a fact (F3); what it has no chevron for is the
+folding it cannot do. `[Stop]` over the tail is the one exception — the
 `overlapsCommand` case of §2.3.
 
 **Two ladders, not one.** `findings-design` §3.3 states a single right-to-left drop order that its

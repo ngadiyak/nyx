@@ -649,15 +649,21 @@ public extension CommandBlockChrome {
     /// on its own (a11y 6.2).
     struct GutterCap: Equatable {
         public enum Shape: Equatable {
-            /// A rounded capsule inset from the row's top and bottom: the command succeeded.
+            /// A filled 3 pt column, square, inset `markTopInset` from the row's top so it reads as
+            /// **one command's** mark: the command succeeded.
             case solid
-            /// The full row height, square ends, so failures join up down a scrolling screen and
-            /// carry more ink than successes -- the state that has to be findable. Task 2 draws
-            /// this as the cap plus a full-row bar down the spine, both from this one shape.
+            /// The same column with **no inset at all**, so it runs from the top of the prompt row
+            /// straight into the rows below and joins whatever mark is above it: failures join up
+            /// down a scrolling screen and carry more ink than successes, which is the state that
+            /// has to be findable (§2.2, over a11y 6.2's half mark). The extra ink *is* the two
+            /// points a success gives up -- the one shape difference that survives being read at
+            /// 3 pt (I1).
             case bar
-            /// A stroked capsule: still running.
+            /// `solid`'s rect, stroked rather than filled: still running.
             case hollow
-            /// `solid` at 40 % and not pressable: a command that printed nothing to fold.
+            /// `solid`'s rect at `Palette.fadedMark` -- nominally 40 % of the solid colour, raised
+            /// per theme until it clears 3:1 against the harder of the plain background and the
+            /// hover tint -- and not pressable: a command that printed nothing to fold.
             case faded
             case chevronDown, chevronRight
         }
@@ -724,22 +730,31 @@ public extension CommandBlockChrome {
     /// succeeded one's was not: two states differing in continuity for a reason that is not about
     /// state. They are one rect now.
     ///
-    /// The one inset that survives is at the **top**, and it is what separates one block from the
-    /// next rather than a block from its own spine. The design review offered both forms -- "keep a
-    /// top inset, or better, inset the block's last spine row's bottom" -- and the top is the one
-    /// that needs no second opinion: the mark's bottom is the row's bottom, so it meets the first
-    /// spine row exactly, while two adjacent blocks (a command's last output row and the next
-    /// command's prompt row) are held apart by the lower block's own cap. Dropping it outright
-    /// would run two successive successes into one unbroken green line, which is the *other* half
-    /// of what §2.2 means by "a green line with beads on it".
+    /// The one inset is at the **top**, and it is what separates one block from the next rather
+    /// than a block from its own spine. The design review offered both forms -- "keep a top inset,
+    /// or better, inset the block's last spine row's bottom" -- and the top is the one that needs no
+    /// second opinion: the mark's bottom is the row's bottom, so it meets the first spine row
+    /// exactly, while two adjacent blocks (a command's last output row and the next command's prompt
+    /// row) are held apart by the lower block's own cap. Dropping it for *every* shape would run two
+    /// successive successes into one unbroken green line, which is the other half of what §2.2 means
+    /// by "a green line with beads on it".
+    ///
+    /// **`.bar` is the shape that drops it** (I1). D5 gave all four shapes the same rect, so a
+    /// success and a failure differed only in hue -- and §2.2 gives failure the extra ink ("failed =
+    /// solid cap *plus* a full-row bar") while a11y 6.2 asks for shape, not colour alone. A failed
+    /// block's column therefore runs the whole row and joins its neighbours', and a success, a run
+    /// in flight and a silent command are each a separated cap. `.hollow` and `.faded` share
+    /// `.solid`'s rect on purpose: a ring and a wash are what tell those two apart, and a third and
+    /// fourth height at 3 pt would be four shapes nobody could measure by eye.
     ///
     /// A tuple of `Double`s rather than a `CGRect`: `NyxCore` has no CoreGraphics type in it. The
     /// caller snaps it to the device pixel grid -- `y` is `topPadding + row × cellHeight` and a
     /// cell height is rarely a whole number of points.
     static let markTopInset: Double = 2
-    static func markRect(row: Int, cellHeight: Double, topPadding: Double,
+    static func markRect(_ shape: GutterCap.Shape, row: Int, cellHeight: Double,
+                         topPadding: Double,
                          padding: Double) -> (x: Double, y: Double, width: Double, height: Double) {
-        let inset = min(markTopInset, max(0, cellHeight - 1))
+        let inset = shape == .bar ? 0 : min(markTopInset, max(0, cellHeight - 1))
         return (x: spineLeadingInset(padding: padding),
                 y: topPadding + Double(row) * cellHeight + inset,
                 width: spineWidth, height: cellHeight - inset)

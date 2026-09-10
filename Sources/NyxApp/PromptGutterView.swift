@@ -172,17 +172,20 @@ final class PromptGutterView: NSView {
             // built-ins needed raising. `Palette.fadedMark` keeps the 40 % wherever it reads.
             let solid = cap.tone.color(in: palette)
             let colour = nsColor(cap.shape == .faded ? palette.fadedMark(solid) : solid, alpha: 1)
-            // One rect for every shape, from Core, snapped to the pixel grid: the cap *is* the
-            // head of the spine, so it is the spine's rect and the shapes differ only in ink (D5).
-            let box = snapped(CommandBlockChrome.markRect(row: row, cellHeight: Double(cellHeight),
+            // The rect is Core's, per shape, snapped to the pixel grid: the cap *is* the head of
+            // the spine, so every shape is the spine's own 3 pt column (D5) -- and `.bar` is the
+            // one that is also the spine's own height, so a failure joins its neighbours' rows
+            // while a success stays a separated cap (I1).
+            let box = snapped(CommandBlockChrome.markRect(cap.shape, row: row,
+                                                          cellHeight: Double(cellHeight),
                                                           topPadding: Double(topPadding),
                                                           padding: Double(panePadding)))
             switch cap.shape {
             case .solid, .faded, .bar:
-                // Square ends and the whole row, so a block's own rows join up and a *failure* is
-                // no more continuous than a success -- it carries more ink because its colour runs
-                // down every row of the block, not because its head is a different shape
-                // (design §3.2, over a11y 6.2's half mark).
+                // Square ends, filled. `.bar` arrives two points taller than the other two and
+                // starting at the row's own top, which is where a failure's extra ink comes from:
+                // its column runs into the mark above and below it and reads as one continuous
+                // stroke down a scrolling screen (§2.2, over a11y 6.2's half mark).
                 colour.setFill()
                 NSBezierPath(rect: box).fill()
             case .hollow:

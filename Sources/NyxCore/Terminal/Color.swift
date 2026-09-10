@@ -284,7 +284,7 @@ public struct Palette: Equatable {
     /// before this, then further in the same twentieths `pushed` walks in until it clears 1.6:1.
     ///
     /// A fixed 0.30 is not enough on its own: `ground` already carries some of that same wash (the
-    /// fill itself, 0.14 idle, 0.20 hovered, 0.26 pressed), so the *gap* the hairline has left to
+    /// fill itself, 0.14 idle and hovered, 0.26 pressed), so the *gap* the hairline has left to
     /// work with shrinks as the fill's own alpha rises -- at 0.30 flat, every theme's pressed state
     /// measured under 1.6. Walking further towards `foreground` is always available: the ceiling is
     /// `contrast(foreground, ground)`, which is what a hairline of *pure* foreground would read at,

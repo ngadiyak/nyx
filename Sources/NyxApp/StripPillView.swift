@@ -92,6 +92,15 @@ final class StripPillView: NSView {
                          width: bounds.width, height: StripPillView.height)
         let path = NSBezierPath(roundedRect: box, xRadius: StripPillView.radius,
                                 yRadius: StripPillView.radius)
+        // The hairline's own path, inset half its width. `NSBezierPath` centres a stroke on its
+        // path, so a 1 pt line drawn on `box` -- which is the view's full width and, at
+        // `line-height` 20 pt or more, its full height -- put half of itself outside the view and
+        // the clip threw that half away. The line drew at half strength, which is half of the ink
+        // D4 moved hover onto. The *fill* keeps `box`, so the pill is still the 20 pt shape §2.3
+        // fixes; only the stroke moves in.
+        let hairline = NSBezierPath(roundedRect: box.insetBy(dx: 0.5, dy: 0.5),
+                                    xRadius: StripPillView.radius - 0.5,
+                                    yRadius: StripPillView.radius - 0.5)
         // An "on" chip is the accent fill everything else in Nyx uses for "on" (the search bar's
         // scope toggle, a running quick action); the rest are a wash of the theme's own foreground,
         // which reads on every palette because it *is* the palette.
@@ -127,8 +136,8 @@ final class StripPillView: NSView {
             // raised hairline, because a pill is only pressed while it is under the pointer.
             nsColor(palette.pillHairline(on: ground, minimum: hovered || pressed ? 3 : 1.6),
                     alpha: 1).setStroke()
-            path.lineWidth = 1
-            path.stroke()
+            hairline.lineWidth = 1
+            hairline.stroke()
             ink = tint(of: pill, on: ground)
         }
         if pill.glyph != nil {

@@ -98,6 +98,22 @@ final class StripPillView: NSView {
         // the clip threw that half away. The line drew at half strength, which is half of the ink
         // D4 moved hover onto. The *fill* keeps `box`, so the pill is still the 20 pt shape §2.3
         // fixes; only the stroke moves in.
+        //
+        // Measured at a **true 2×** -- `draw` called once into a context created at the scale,
+        // because the composite harness caches chrome at scale 1 and upscales, and because
+        // `cacheDisplay` on a layer-backed view composites the layer's content *and* draws again,
+        // putting the 0.14 wash on twice. Both of those inflate a reading, and the "1.58 → 2.96"
+        // in the commit that added this inset came off the first of them (I3). The line's own two
+        // device pixels, hairline against the fill:
+        //
+        //     nyx-dark   idle 1.95   hovered 3.25   pressed 3.07
+        //     nyx-light  idle 1.72   hovered 3.29   pressed 3.18
+        //
+        // Every floor met -- 1.6 idle, 3:1 hovered -- with no change to `pillHairline`'s push, and
+        // the drawn fill equal to `groundColour`'s prediction to within one 8-bit unit in all six
+        // cells, which is what says the model under the whole ladder is the surface really painted.
+        // The two pixels read identical, so the 1 pt line lands square on the grid rather than
+        // smeared across three.
         let hairline = NSBezierPath(roundedRect: box.insetBy(dx: 0.5, dy: 0.5),
                                     xRadius: StripPillView.radius - 0.5,
                                     yRadius: StripPillView.radius - 0.5)
@@ -181,8 +197,8 @@ final class StripPillView: NSView {
     /// The pill's own row background, before the translucent wash this state paints over it --
     /// `background` where the pill sits opaquely over the command's own text, the row's hover tint
     /// everywhere else -- washed by exactly the alpha `draw` is about to fill with. What `tint(of:)`
-    /// resolves ink against, so the two can never drift the way a colour calibrated only for
-    /// `palette.background` did.
+    /// and `pillHairline` resolve against, so the two can never drift the way a colour calibrated
+    /// only for `palette.background` did.
     private func groundColour(alpha: CGFloat) -> RGB {
         let base = opaqueGround ? palette.background : palette.blockHoverBackground
         return RGB.blend(base, into: palette.foreground, amount: Double(alpha))

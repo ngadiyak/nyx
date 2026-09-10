@@ -129,15 +129,31 @@ produces there. Write the key as the unshifted ASCII character it carries (`cmd+
 as the character the layout makes, so typing Cyrillic sends Cyrillic.
 
 **Control chords are physical too.** ⌃C sends 0x03 — and interrupts — on a Russian, Greek or
-Hebrew layout, where the C key types `с`, `ψ` or `ב` and none of those characters names a control
-byte. The byte is the one the same keycap gives on the ASCII layout: ⌃Z is 0x1A, ⌃D is 0x04, ⌃[ is
-Escape, and the four that need shift on a PC keyboard (⌃⇧2 = NUL, ⌃⇧6 = RS, ⌃⇧- = US, ⌃⇧/ = DEL)
-come from the keycap's second legend rather than from whatever the layout puts on shift. What the
-layout *does* name still wins, so a key that types plain ASCII is never re-read: on RussianWin the
-`/` keycap types `.`, and ⌃. is `.`. Typing and ⌥ chords are untouched — ⌥`с` with
-`option-as-meta` set sends ESC and the two UTF-8 bytes of `с`, not ESC `c`. An application that
-turns on xterm's `modifyOtherKeys` gets the layout's own code point in the report (⌃C on a Cyrillic
-layout is `CSI 27;5;1089~`, U+0441), which is what xterm, Ghostty and iTerm2 all report there.
+Hebrew layout, where the C key types `с`, `ψ` or `ב`. The rule, in order: **the control byte the
+layout's own character names, and only when it names none, the byte the same physical key gives on
+a US keyboard.** So ⌃Z is 0x1A, ⌃D is 0x04 and ⌃[ is Escape wherever those keycaps are, and ⌃ü on
+a German layout is Escape because `ü` sits on the `[` key.
+
+Which of the two answers a chord gets is worth being concrete about, because both happen on Latin
+layouts:
+
+- German ⌃⇧- is **DEL**, because ⇧- types `?` there and `?` names DEL. The character wins; the
+  keycap's `_` (0x1F) is not consulted.
+- German ⌃⇧6 is **RS** (0x1E), because ⇧6 types `&`, which names nothing, so the `^` on the US
+  keycap answers. This changed: it used to send `&`. The same rule reaches ⌃@ and ⌃? on layouts
+  that put something else on ⇧2 and ⇧/ — RussianWin types `"` and `,` there.
+- With ctrl alone a plain ASCII character is never re-read: on RussianWin the `/` keycap types `.`,
+  and ⌃. is `.`, not 0x1F.
+
+The digit row carries xterm's aliases on every layout: ⌃2 is NUL, ⌃3 to ⌃7 are Escape, FS, GS, RS
+and US, and ⌃8 is DEL, while ⌃1, ⌃9 and ⌃0 send their digit. The numeric keypad is left out of all
+of this — ⌃keypad-2 is `2` — because keypad keys carry no second legend and xterm does not modify
+them either.
+
+Typing and ⌥ chords are untouched: ⌥`с` with `option-as-meta` set sends ESC and the two UTF-8 bytes
+of `с`, not ESC `c`. An application that turns on xterm's `modifyOtherKeys` gets the layout's own
+code point in the report (⌃C on a Cyrillic layout is `CSI 27;5;1089~`, U+0441), which is what
+xterm, Ghostty and iTerm2 all report there.
 
 | Action | Default | What it does |
 |---|---|---|

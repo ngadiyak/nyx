@@ -396,9 +396,12 @@ enum StateSnapshot {
         // and no scroll indicator, so a query matching thirty actions looks exactly like one
         // matching ten.
         let table = KeyBindingTable(user: config.keybinds)
+        // `KeyBinding.displayName`, in Core: the chord is not a decision this file gets to make,
+        // and the local spelling it used to carry dropped every key that is not a character --
+        // `Fold Output` (⌘⇧↑) printed as a bare `⇧⌘` in every palette picture.
         let items = ActionCatalog.allMenuActions.map { action in
             PaletteItem(title: action.title,
-                        detail: table.binding(for: action).map(StateSnapshot.chordText) ?? "",
+                        detail: table.binding(for: action).map(\.displayName) ?? "",
                         kind: .action(action))
         }
         FileHandle.standardError.write("palette long list: \(items.count) items\n"
@@ -445,19 +448,6 @@ enum StateSnapshot {
                                  background: palette.background)
             }
         }
-    }
-
-    /// `UISnapshot.chordText`, which is file-private there. The chord is not a decision -- the
-    /// binding is, in `KeyBindingTable` -- so two spellings of the same four glyphs cannot drift
-    /// into disagreeing about anything a reader would notice.
-    static func chordText(_ binding: KeyBinding) -> String {
-        var out = ""
-        if binding.modifiers.contains(.ctrl) { out += "\u{2303}" }
-        if binding.modifiers.contains(.alt) { out += "\u{2325}" }
-        if binding.modifiers.contains(.shift) { out += "\u{21E7}" }
-        if binding.modifiers.contains(.cmd) { out += "\u{2318}" }
-        if case .char(let c) = binding.key { out += String(c).uppercased() }
-        return out
     }
 
     // MARK: - The settings window's own chrome

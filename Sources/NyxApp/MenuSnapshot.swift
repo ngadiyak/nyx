@@ -50,6 +50,9 @@ enum MenuSnapshot {
             write(menu: editMenu(config: config),
                   caption: "the Edit menu: the items a text field needs, and Nyx's own",
                   appearance: appearance, named: "menu-edit-\(name)", into: directory)
+            write(menu: menuBarSection(titled: "Go", config: config),
+                  caption: "the Go menu \u{2014} every block action and the chord it answers to",
+                  appearance: appearance, named: "menu-go-\(name)", into: directory)
             write(menu: tabMenu(), caption: "right-click a tab", appearance: appearance,
                   named: "menu-tab-\(name)", into: directory)
             write(menu: groupMenu(), caption: "right-click a group header", appearance: appearance,
@@ -68,7 +71,7 @@ enum MenuSnapshot {
 
     // MARK: - The menus, from the real `NSMenu`
 
-    /// The ⋯ menu on each kind of block, built by `Pane.blockMenu(for:target:action:)` -- the one
+    /// The ⋯ menu on each kind of block, built by `Pane.blockMenu(for:target:action:bindings:)` -- the
     /// builder the pill, the right-click menu, ⌘⇧A and the screen reader's *Show Menu* all use:
     /// `BlockHeader.actions` in order, a separator wherever `BlockAction.startsGroup`, the title
     /// from `BlockHeader.title(for:)` and the tick from `isChecked`. Every one of those is NyxCore,
@@ -110,7 +113,7 @@ enum MenuSnapshot {
         }
     }
 
-    /// The product's own builder, with no target: `Pane.blockMenu(for:target:action:)` is the one
+    /// The product's own builder, with no target: `Pane.blockMenu(for:target:action:bindings:)` is the
     /// loop the ⋯ pill, the right-click menu, ⌘⇧A and the pane's accessibility menu all go through,
     /// so these pictures are of *that* menu rather than of a fourth copy of it. It was retyped here
     /// while both product copies were `private`, which is exactly how a picture drifts.
@@ -125,9 +128,18 @@ enum MenuSnapshot {
     /// Nyx's actions on AppKit's selectors, which is what lets the focused text field answer them.
     /// Everything is drawn enabled: `isEnabled` on an auto-enabling menu is only resolved while it
     /// is on screen, and a menu on screen is what this machine cannot photograph.
-    private static func editMenu(config: Config) -> NSMenu {
+    private static func editMenu(config: Config) -> NSMenu { menuBarSection(titled: "Edit", config: config) }
+
+    /// One section of the menu bar, as `MainMenu.build(bindings:)` really builds it.
+    ///
+    /// `Go` is where plan 1b's work is visible: eight block-scoped rows whose titles stopped saying
+    /// "Last", `Command Actions…` with ⌘⇧A, `Go to the Pinned Command` with no chord at all, and
+    /// `Fold Output`'s ⌘⇧↑ -- the first arrow chord any of these pictures had to draw. There was no
+    /// picture of the menu bar at all before this, so a title or a chord could change in
+    /// `ActionCatalog` and no reviewer would ever see it.
+    private static func menuBarSection(titled title: String, config: Config) -> NSMenu {
         let main = MainMenu.build(bindings: KeyBindingTable(user: config.keybinds))
-        return main.items.first { $0.title == "Edit" }?.submenu ?? NSMenu()
+        return main.items.first { $0.title == title }?.submenu ?? NSMenu()
     }
 
     /// The right-click menu: the block group when the pointer is on a command, then the four

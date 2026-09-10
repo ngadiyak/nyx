@@ -24,7 +24,7 @@ so that template and this page are the two places a new key must be added.
 | `cursor-style` | `block` | `block`, `underline`, `bar`. A program's DECSCUSR wins while it runs |
 | `cursor-blink` | `true` | |
 | `scrollback-lines` | `10000` | Per pane. Takes effect for new sessions; the banner says so |
-| `padding` | `8` | Points between the window edge and the grid |
+| `padding` | `8` | Points between the window edge and the grid. **At `0` the block spine is drawn in the first text column's leading 3 pt, so the first glyph of every command and output row of a block is clipped** — the mark moves inward as the padding grows and is clear of the text from 3 pt up |
 | `background-opacity` | `1.0` | 0–1 |
 | `background-blur` | `0` | Blur radius behind a translucent window. A value above 0 implies opacity 0.9 unless `background-opacity` says otherwise |
 | `window-decorations` | `true` | |

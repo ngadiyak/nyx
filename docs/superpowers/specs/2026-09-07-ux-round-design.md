@@ -85,7 +85,7 @@ public enum CommandBlockChrome {
         public let readout: String            // the summary sentence, abbreviated per §2.6, never re-worded
         public let readoutTone: SummaryTone
         public let dots: [WatchSeries.Dot]    // empty when dropped
-        public let overflowDot: String?       // "+N" when the 30-dot cap bites
+        public let overflowDot: String?       // "+N" when the 12-dot cap bites
         public let pills: [Pill]              // leading → trailing, already dropped to fit
         public let firstColumn: Int           // never inside a word
         public let overlapsCommand: Bool      // true only for the lone `Stop` of §2.6's W0 row
@@ -168,16 +168,38 @@ Geometry, exact (design §3.2):
 | leading edge | 8 pt of solid strip ground, then a 2-cell gradient to transparent |
 | strip ground | the row's own hover tint, not `palette.background` — a `background` band on a tinted row reads as a floating rectangle |
 | dots | filled, 7 pt, on a 10 pt pitch; the running run is a **filled accent** dot, not a hollow amber ring (which shares a hue with redirect and reads as a smudge at 6 pt) |
-| dot cap | 30 dots; past it the leading dot is replaced by the label `+N` (`+18` at 48 runs), in the readout's font at the dots' own tone — the cap stops being silent (D16) |
+| dot cap | **12 dots** (amended 2026-09-10, below); past it the leading dot is replaced by the label `+N` (`+36` at 48 runs), in the readout's font at the dots' own tone — the cap stops being silent (D16) |
+
+**Amended 2026-09-10, after the plan-1a design review: the dot cap is 12, not 30.** Thirty dots on
+a 10 pt pitch is 300 pt — 41 % of a 730 pt window, thirty-four columns — for information nobody
+reads dot-by-dot, and the extra dots carry none even when drawn, because amber and red are not
+separable by eye at 8 pt. §2.6's amendment had just made the dots outlive `Copy`, which only pays
+off if they are cheap enough for the rest of the ladder to survive them. Twelve is a minute of a
+five-second watch, still shows the shape of a flapping endpoint, and stops the strip growing without
+bound: measured, the W3 watch cell goes from 92 to 70 columns at 30 runs and from 94 to 71 at 48. It
+does **not** narrow an eleven-run series' cell — that one was already under the old cap and is 67
+columns either way, of which the sentence is thirty-three — so W3's threshold stays where it is, and
+the full series belongs to the ⋯ menu or the watch panel rather than to a 20 pt strip.
 
 **The strip is right-aligned into the free columns *after the command's last glyph* and never
 begins inside a word.** `StripPlan.firstColumn` is a column index, computed in Core from the
 command row's last used cell; if the plan does not fit, there is no strip on that row and the
 gutter still folds. This kills `…'{"service":"we8.8s ⋯ ▾` (snapshot report §3.5) without the
-two-cell fade pretending to be a gap. **The one exception is the lone `Stop` of §2.6's W0 row**
-(`StripPlan.overlapsCommand`): stopping a runaway watch must always be one click, so that pill is
-drawn over the command's tail on an *opaque* pill fill with no gradient, which reads as a control
-on top of text rather than as text colliding with text.
+two-cell fade pretending to be a gap. **The exception is the strip's last rung** (`StripPlan.overlapsCommand`): where nothing fits beside
+the command, the narrowest rung is drawn *over the command's tail* on an **opaque** ground with no
+gradient, which reads as a control on top of text rather than as text colliding with text. It
+carries the two pills §2.6 never drops — `Stop` while a watch is running, and `Actions` collapsed to
+`⋯` — and the narrowest readout when the in-grid summary is not already showing the sentence on that
+row.
+
+**Amended 2026-09-10 (PM P1, design D2).** The exception was the lone `Stop` of §2.6's W0 row and
+nothing else. Measured from the pictures, that left a *hovered* block with no controls at all
+wherever the leftover gap after the in-grid summary was smaller than a lone `⋯` at 40 pt — a failed
+block at 14–18 free columns of 84, one in sixteen of them, and every HTTP block at 29–33. A lone `⋯`
+is the route to every action on the block, including the lens rows, and earns the same exception;
+the lens chip does not, because it *says* something rather than doing it, and thirteen columns of
+somebody's command line is not a price for a readout. A W0 row is unchanged: there the only pill
+that may cost a column is `Stop`.
 
 **Labels and help, exact.** `Copy` — help `Copy this command's output` (a11y 6.7). `Stop` — label
 and help `Stop watching this request` (a11y 6.9; the pill's scope and ⌘.'s scope stop diverging in
@@ -198,8 +220,20 @@ spelling.
 
 ### 2.4 One control folds
 
+**Amended 2026-09-10, after the plan-1a design review: a *lens* fold triangle sits at its own
+indent, not at column 0.** A disclosure triangle for tree-structured content belongs to the row it
+folds — Chrome DevTools, Xcode's variable view and every JSON viewer put it there — and column 0
+for a deeply nested key strands the control ten columns from the thing it controls. Column 0 is the
+right rule for a *block-level* fold, where the row stands for the whole of a command's output and
+has no indent of its own; it is the wrong rule for a nested one. So: a fold placeholder's triangle
+is at column 0, a lens container's is at its indent (`LensBuffer.foldMarkerColumn`), and both keep
+the same 20 pt × `hitRowHeight` target. The one genuine inconsistency inside the deviation — a
+folded value on a key line takes its triangle *after* the key while a standalone container takes it
+*leading* the line — is left to plan 2, which owns the lenses; leading for both is the answer.
+
 **Fold triangles share one column.** Every `▸`/`▾` that means "fold" — a fold placeholder row, a
-lens container line, and nothing else — is drawn at **column 0 of the text area**, in the row's
+lens container line, and nothing else — is drawn at **column 0 of the text area** (a lens
+container's at its own indent, per the amendment above), in the row's
 tone, as a glyph in the pane's own font at the pane's own cell size (these are Metal glyphs in the
 grid: "8 pt" applies only to the AppKit gutter cap's chevron in §2.2, which is a drawn path).
 Their hit box is column 0's cell, widened to **20 pt** and `hitRowHeight` tall — the same 20 pt the

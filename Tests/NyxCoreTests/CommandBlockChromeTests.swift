@@ -565,3 +565,32 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     // The chevron says a menu opens; every chip carries one, because every lens has neighbours.
     #expect(CommandBlockChrome.Pill.lens(name: "Raw", on: false).trailingChevron)
 }
+
+/// The 16 pt floor has to be real on the *click*, not only on the pointing hand.
+///
+/// The band is the whole point of the floor: at `line-height = 0.8` a row is 13 pt and the target is
+/// 16, so it overhangs its row by 1.5 pt top and bottom. A click path that divided the point by the
+/// cell height instead -- which is what `Pane.visibleRow(at:)` does, correctly, for text -- put the
+/// hand and the click in different places in that band: the pointer said "control" and the click
+/// moved the caret on the row above.
+@Test func aFoldTargetIsHitThroughoutItsSixteenPointBand() {
+    // Rows of 13 pt from a padding of 8: row 2 spans y 34…47 and its target y 32.5…48.5.
+    func hit(_ y: Double) -> Int? {
+        CommandBlockChrome.hitRow(atY: y, cellHeight: 13, padding: 8, hitHeight: 16, rows: [2, 5])
+    }
+    #expect(hit(40.5) == 2)          // the centre
+    #expect(hit(33) == 2)            // 1 pt above the row's own top edge
+    #expect(hit(48) == 2)            // 1 pt below its own bottom edge
+    #expect(hit(32) == nil)          // past the target
+    #expect(hit(49) == nil)
+    // Two targets whose bands overlap -- adjacent rows -- go to the nearer centre, and an exact tie
+    // to the upper row, so the answer never depends on the order the rows arrive in.
+    func adjacent(_ y: Double) -> Int? {
+        CommandBlockChrome.hitRow(atY: y, cellHeight: 13, padding: 8, hitHeight: 16, rows: [3, 2])
+    }
+    // Centres are 40.5 and 53.5, so 47 is the exact tie and 48 is nearer the lower row's centre.
+    #expect(adjacent(47) == 2)
+    #expect(adjacent(48) == 3)
+    #expect(CommandBlockChrome.hitRow(atY: 40, cellHeight: 0, padding: 8, hitHeight: 16, rows: [2]) == nil)
+    #expect(CommandBlockChrome.hitRow(atY: 40, cellHeight: 13, padding: 8, hitHeight: 16, rows: []) == nil)
+}

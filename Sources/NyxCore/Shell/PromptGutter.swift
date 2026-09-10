@@ -58,15 +58,10 @@ public enum PromptGutter {
     /// the answer never depends on the order `markedRows` arrives in.
     public static func markedRow(atY y: Double, cellHeight: Double, padding: Double,
                                  hitHeight: Double, markedRows: [Int]) -> Int? {
-        guard cellHeight > 0, hitHeight > 0 else { return nil }
-        var best: (row: Int, distance: Double)?
-        for row in markedRows.sorted() {
-            let centre = padding + (Double(row) + 0.5) * cellHeight
-            let distance = abs(y - centre)
-            guard distance <= hitHeight / 2 else { continue }
-            if best == nil || distance < best!.distance { best = (row, distance) }
-        }
-        return best?.row
+        // The gutter cap and the in-grid fold triangles are the same target at the same height, so
+        // they resolve a point the same way -- one implementation, in `CommandBlockChrome`.
+        CommandBlockChrome.hitRow(atY: y, cellHeight: cellHeight, padding: padding,
+                                  hitHeight: hitHeight, rows: markedRows)
     }
 
     /// The visible row a point falls on, measured from the top of the pane including its padding.

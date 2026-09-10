@@ -97,7 +97,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// same top row. Present only on a remote pane; when it is up, the sticky strip moves down a
     /// row rather than the two of them sharing one.
     private let remoteStrip = RemoteStripView(frame: .zero)
-    /// The hovered block's Copy/⋯/chevron strip, drawn over its command row the same way.
+    /// The hovered block's strip of labelled pills -- `Fold`, `Copy`, `Actions ▾` -- drawn over its
+    /// command row the same way. What it carries at a given width is `CommandBlockChrome.stripPlan`.
     private let blockHeader = BlockHeaderView(frame: .zero)
     /// `⌘E Workbench`, at the end of a `curl` that has just been pasted. See `WorkbenchHint`.
     private let workbenchHint = WorkbenchHintView(frame: .zero)
@@ -138,7 +139,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// and the overlay can be fed without another walk.
     private var headersOnScreen: [Int: BlockHeader] = [:]
     /// The cell range of each summary on its row, for the chevron click target.
-    private var summaryColumnsOnScreen: [Int: Range<Int>] = [:]
     /// What each finished block on screen turned out to be: a request and what it said, or not a
     /// request at all. One reading per block, ever -- see `RequestSummaryCache`, which owns that
     /// rule and is tested on its own.
@@ -465,10 +465,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// no `Fold` pill.
     override func accessibilityChildren() -> [Any]? {
         var children = subviews.filter { !$0.isHidden } as [Any]
-        for (row, entry) in foldRowsOnScreen.enumerated() {
-            guard case .fold(let id, let hidden, _) = entry, id != 0 else { continue }
-            // The same box the pointer gets, from the same rule: one row of cells is 13 pt at
-            // `line-height 0.8`, below the floor for a target VoiceOver rings (§8.4).
+        for row in foldPlaceholderRowsOnScreen {
+            guard case .fold(let id, let hidden, _) = foldRowsOnScreen[row] else { continue }
+            // The same box the pointer gets and the same box a click is tested against: one row of
+            // cells is 13 pt at `line-height 0.8`, below the floor for a target VoiceOver rings
+            // (§8.4), so all three read it from `foldPlaceholderRect`.
             let frame = foldPlaceholderRect(onVisibleRow: row)
             children.append(DrawnControlElement.make(
                 label: "Unfold the \(hidden) hidden lines of the command on line \(row + 1)",
@@ -2019,7 +2020,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // something to say -- `exit 0` on a command that took no time is not news.
             let now = t.now()
             var headers: [Int: BlockHeader] = [:]
-            var summaryColumns: [Int: Range<Int>] = [:]
             // Which display slot the hover strip goes on. Only the hovered block ever sets it, so
             // "no room for a strip anywhere on this command" comes out as no overlay at all.
             var stripSlots: [UInt32: Int] = [:]
@@ -2121,7 +2121,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // target and the pixels can never disagree.
                 guard let placement = summaryHere, let slot = slotOf[placement.row] else { return nil }
                 headers[slot] = header
-                summaryColumns[slot] = placement.columns
                 notesSpokenFor.insert(slot)
                 notesSpokenFor.insert(promptSlot)
                 // A running block used to differ from a finished one only by the digit in the
@@ -2134,14 +2133,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // The overlay goes where it fits, which is not always the prompt row: a strip placed
             // from the prompt row alone and sized only from its own content painted over the end of
             // the command it describes, and in a narrow split hid a word of it. No placement means
-            // no overlay: the tint, the Metal chevron, the gutter mark and the context menu remain.
+            // no overlay: the tint, the gutter cap, the in-grid summary and the context menu remain.
             if let hover = self.hoveredBlock, hover.headerRow != nil,
                stripSlots[hover.id] != hover.headerRow {
                 self.hoveredBlock = hover.attachingHeader(to: stripSlots[hover.id])
             }
             hoverChanged = self.hoveredBlock != previousHover
             self.headersOnScreen = headers
-            self.summaryColumnsOnScreen = summaryColumns
             anyRunningOnScreen = blocks.contains { $0.isRunning && $0.showsHeader }
             // The summary already carries the duration, and both draw right-aligned on a row of the
             // command: left alone they paint the same glyphs twice in two colours, on the failure
@@ -3150,8 +3148,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // dragging across it is selecting. The box is the gutter's own 20 pt by `hitRowHeight`
         // (§2.4) -- one cell is about 8 pt and one row 13 pt at `line-height 0.8`, neither a target.
         if !lenses.isEmpty {
-            for (visible, entry) in foldRowsOnScreen.enumerated() {
-                guard case .lens(let id, let line) = entry,
+            for visible in lensMarkerRowsOnScreen {
+                guard case .lens(let id, let line) = foldRowsOnScreen[visible],
                       let column = lensBuffers[id]?.foldMarkerColumn(line: line) else { continue }
                 rects.append(foldTriangleRect(onVisibleRow: visible, markerColumn: column))
             }
@@ -3160,8 +3158,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // the one affordance the PM's read found already legible. It had no pointing hand (a11y
         // 6.13), which is the one thing that said so.
         if !folding.isEmpty {
-            for (visible, entry) in foldRowsOnScreen.enumerated() {
-                guard case .fold(let id, _, _) = entry, id != 0 else { continue }
+            for visible in foldPlaceholderRowsOnScreen {
                 rects.append(foldPlaceholderRect(onVisibleRow: visible))
             }
         }
@@ -3677,23 +3674,58 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// the gutter cap gets. `foldMarkerColumn` is what says which cell -- a pretty-printed body
     /// writes its indent and its key before the triangle, so it is not column 0.
     private func toggleLensFold(at point: NSPoint) -> Bool {
-        guard let hit = lensLine(at: point), let buffer = lensBuffers[hit.id],
-              let node = buffer.line(hit.line)?.node,
-              let column = buffer.foldMarkerColumn(line: hit.line) else { return false }
-        // The same rect `updateHoverCursor` drew the hand on, so what looks pressable is.
-        let box = foldTriangleRect(onVisibleRow: visibleRow(at: point) ?? -1, markerColumn: column)
-        guard point.x >= box.minX, point.x < box.maxX else { return false }
-        lenses.toggleFold(node, in: hit.id)
-        rebuildLens(for: hit.id)
+        guard !lenses.isEmpty,
+              let visible = foldHitRow(at: point, among: lensMarkerRowsOnScreen),
+              case .lens(let id, let line) = foldRowsOnScreen[visible],
+              let buffer = lensBuffers[id], let node = buffer.line(line)?.node,
+              let column = buffer.foldMarkerColumn(line: line) else { return false }
+        // The very rect `updateHoverCursor` drew the hand on, tested whole: what looks pressable is.
+        guard foldTriangleRect(onVisibleRow: visible, markerColumn: column).contains(point) else {
+            return false
+        }
+        lenses.toggleFold(node, in: id)
+        rebuildLens(for: id)
         return true
+    }
+
+    /// The visible rows carrying a lens fold marker. A candidate list rather than a lookup by row,
+    /// because a 16 pt target on a 13 pt row overhangs its neighbours and two of them can claim the
+    /// same point (§8.4); `hitRow` settles it by the nearer centre.
+    private var lensMarkerRowsOnScreen: [Int] {
+        foldRowsOnScreen.enumerated().compactMap { visible, entry in
+            guard case .lens(let id, let line) = entry,
+                  lensBuffers[id]?.foldMarkerColumn(line: line) != nil else { return nil }
+            return visible
+        }
+    }
+
+    /// The visible rows carrying a fold placeholder.
+    private var foldPlaceholderRowsOnScreen: [Int] {
+        foldRowsOnScreen.enumerated().compactMap { visible, entry in
+            guard case .fold(let id, _, _) = entry, id != 0 else { return nil }
+            return visible
+        }
+    }
+
+    /// Which of `rows` a point lands on, through the same `hitRowHeight` band the hand is drawn at.
+    /// Not `visibleRow(at:)`: that divides by the cell height, which is right for text and wrong for
+    /// a target with a floor under it -- the two disagreed by 1.5 pt at each end of every row.
+    private func foldHitRow(at point: NSPoint, among rows: [Int]) -> Int? {
+        let cell = Double(cellSizePoints.height)
+        guard cell > 0, !rows.isEmpty else { return nil }
+        return CommandBlockChrome.hitRow(atY: Double(bounds.height - point.y), cellHeight: cell,
+                                         padding: Double(padding),
+                                         hitHeight: CommandBlockChrome.hitRowHeight(cellHeight: cell),
+                                         rows: rows)
     }
 
     /// A click on a fold placeholder puts the output back. Returns false when the click was on
     /// ordinary text, so it can go on to mean what it usually means.
     private func unfoldPlaceholder(at point: NSPoint) -> Bool {
-        guard !folding.isEmpty, let visible = visibleRow(at: point),
-              foldRowsOnScreen.indices.contains(visible),
-              case .fold(let id, _, _) = foldRowsOnScreen[visible] else { return false }
+        guard !folding.isEmpty,
+              let visible = foldHitRow(at: point, among: foldPlaceholderRowsOnScreen),
+              case .fold(let id, _, _) = foldRowsOnScreen[visible],
+              foldPlaceholderRect(onVisibleRow: visible).contains(point) else { return false }
         folding.unfold(id)
         markDirty()
         return true

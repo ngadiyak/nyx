@@ -386,8 +386,8 @@ public extension CommandBlockChrome {
         return StripPlan(content: content, firstColumn: first, overlapsCommand: overlaps)
     }
 
-    /// Where the in-grid summary is going and what it says there -- the sentence only, so a
-    /// placement that had room for the chevron alone carries an empty string.
+    /// Where the in-grid summary is going and what it says there. Always the whole sentence:
+    /// `summaryPlacement` refuses a row rather than shortening what is on it (§2.4).
     typealias PlacedSummary = (row: Int, text: String)
 
     /// Whether the strip on `stripRow` speaks for the summary on `summary.row`, and may therefore
@@ -545,14 +545,44 @@ public extension CommandBlockChrome {
     /// What the strip actually *paints*: one row, whatever its frame is. A 20 pt opaque band on a
     /// 13 pt grid covers three rows of somebody's output (Addendum 2).
     static func stripGroundHeight(cellHeight: Double) -> Double { cellHeight }
-    /// Column 0's fold triangle, widened to the same 20 pt the gutter uses, for the same reason.
+    /// An in-grid fold triangle's cell, widened to the same 20 pt the gutter uses, for the same
+    /// reason: one cell is about 8 pt, which is not a target.
     static let foldColumnWidth: Double = 20
-    /// A column-0 triangle's target: 20 pt wide, `hitRowHeight` tall. The same 20 pt the gutter
+    /// An in-grid fold triangle's target: 20 pt wide, `hitRowHeight` tall. The same 20 pt the gutter
     /// uses, so the two fold controls on screen are the same size (§2.4, §8.4).
+    ///
+    /// Which *column* it starts at is the caller's: a fold placeholder's marker is at column 0, and
+    /// a lens line's is wherever `LensBuffer.foldMarkerColumn` says, which for a pretty-printed body
+    /// is past the indent and the key.
     ///
     /// A tuple of `Double`s rather than a `CGSize`: `NyxCore` has no CoreGraphics type in it.
     static func foldTriangleHit(cellHeight: Double) -> (width: Double, height: Double) {
         (width: foldColumnWidth, height: hitRowHeight(cellHeight: cellHeight))
+    }
+
+    /// Which of `rows` a point at `y` falls on, when each is a `hitHeight`-tall target centred on
+    /// its row. `y` is measured from the top of the pane, padding included.
+    ///
+    /// This exists because `hitRowHeight`'s floor is only real if the *click* honours it. Dividing
+    /// the point by the cell height is right for text and wrong for a target that overhangs its own
+    /// row: at `line-height = 0.8` a row is 13 pt and the target is 16, so 1.5 pt of hand at each
+    /// end of every fold control belonged to the neighbouring row, and a click there moved the caret
+    /// instead of folding. One rule for the hand, the click and the accessibility frame.
+    ///
+    /// Where two targets genuinely overlap -- adjacent rows -- the nearer centre wins, and an exact
+    /// tie goes to the upper row so the answer never depends on the order `rows` arrives in. That is
+    /// `PromptGutter.markedRow`'s rule, and it forwards here so there is one of it.
+    static func hitRow(atY y: Double, cellHeight: Double, padding: Double,
+                       hitHeight: Double, rows: [Int]) -> Int? {
+        guard cellHeight > 0, hitHeight > 0 else { return nil }
+        var best: (row: Int, distance: Double)?
+        for row in rows.sorted() {
+            let centre = padding + (Double(row) + 0.5) * cellHeight
+            let distance = abs(y - centre)
+            guard distance <= hitHeight / 2 else { continue }
+            if best == nil || distance < best!.distance { best = (row, distance) }
+        }
+        return best?.row
     }
 }
 

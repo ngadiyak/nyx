@@ -23,6 +23,25 @@ extension NSResponder {
     }
 }
 
+extension StandardEditing {
+    /// The AppKit selector for one of the standard editing commands.
+    ///
+    /// The mapping lives here and not in `NyxCore` because a `Selector` is the one part of this
+    /// decision that is AppKit's. `undo:` and `redo:` are strings: they are declared nowhere in
+    /// any Swift header -- AppKit's own Edit menu targets First Responder by name and the undo
+    /// manager answers -- so `#selector` cannot name them.
+    static func selector(for command: StandardEditingCommand) -> Selector {
+        switch command {
+        case .undo: return Selector(("undo:"))
+        case .redo: return Selector(("redo:"))
+        case .cut: return #selector(NSText.cut(_:))
+        case .copy: return #selector(NSText.copy(_:))
+        case .paste: return #selector(NSText.paste(_:))
+        case .selectAll: return #selector(NSResponder.selectAll(_:))
+        }
+    }
+}
+
 /// Translating a `KeyBinding` into what AppKit needs to show and match it in a menu.
 enum MenuShortcut {
     /// The `keyEquivalent` string and modifier mask for a chord, or nil when AppKit cannot express

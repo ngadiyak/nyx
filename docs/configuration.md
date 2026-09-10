@@ -157,6 +157,13 @@ as the character the layout makes, so typing Cyrillic sends Cyrillic.
 The menu is generated from `ActionCatalog.sections`, so every action is discoverable there with
 its current chord, and the settings window's Keys page lists them all.
 
+The Edit menu also carries AppKit's own **Undo ⌘Z**, **Redo ⌘⇧Z**, **Cut ⌘X** and
+**Select All ⌘A**. Those four are not actions and cannot be rebound: they go to whatever has the
+keyboard. In a text field — the search bar, the Rename Tab sheet, the request editor — they edit
+that field; over the terminal grid, Select All selects the whole scrollback and the rest are greyed
+out. `copy` and `paste` travel the same route, which is why ⌘C and ⌘V work inside Nyx's own fields
+instead of reaching the shell behind them.
+
 ## Quick actions
 
 ```

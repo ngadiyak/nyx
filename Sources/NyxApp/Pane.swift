@@ -3021,6 +3021,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(copy(_:)) { return hasSelection }
         if item.action == #selector(selectAll(_:)) { return session.withTerminal { $0.totalRows > 0 } }
+        // Edit ▸ Paste is `paste:` now, so it is validated here rather than by
+        // `TabController.canPerform(.paste)` -- the two must agree, or the item is enabled on a
+        // remote pane that is only observing and ⌘V beeps instead of greying out.
+        if item.action == #selector(paste(_:)) {
+            return acceptsInput && NSPasteboard.general.string(forType: .string)?.isEmpty == false
+        }
         // The block group sets its own `isEnabled` per action (`.copyOutput` needs output,
         // `.editAndRun` needs the command to have finished). This menu leaves auto-enabling on, so
         // AppKit asks here as well; handing back what the item already decided is what keeps the

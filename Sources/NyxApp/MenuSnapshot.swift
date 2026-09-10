@@ -43,6 +43,9 @@ enum MenuSnapshot {
             write(menu: contextMenu(over: nil, config: config),
                   caption: "right-click over plain output", appearance: appearance,
                   named: "menu-context-plain-\(name)", into: directory)
+            write(menu: editMenu(config: config),
+                  caption: "the Edit menu: the items a text field needs, and Nyx's own",
+                  appearance: appearance, named: "menu-edit-\(name)", into: directory)
             write(menu: tabMenu(), caption: "right-click a tab", appearance: appearance,
                   named: "menu-tab-\(name)", into: directory)
             write(menu: groupMenu(), caption: "right-click a group header", appearance: appearance,
@@ -118,6 +121,17 @@ enum MenuSnapshot {
             menu.addItem(item)
         }
         return menu
+    }
+
+    /// The **real** Edit menu, pulled out of `MainMenu.build` -- not a reconstruction, so this
+    /// picture is the menu a user pulls down, in its order and with its chords. Undo, Redo, Cut and
+    /// Select All are AppKit's own commands (`StandardEditing.extras`) and Copy and Paste are
+    /// Nyx's actions on AppKit's selectors, which is what lets the focused text field answer them.
+    /// Everything is drawn enabled: `isEnabled` on an auto-enabling menu is only resolved while it
+    /// is on screen, and a menu on screen is what this machine cannot photograph.
+    private static func editMenu(config: Config) -> NSMenu {
+        let main = MainMenu.build(bindings: KeyBindingTable(user: config.keybinds))
+        return main.items.first { $0.title == "Edit" }?.submenu ?? NSMenu()
     }
 
     /// The right-click menu: the block group when the pointer is on a command, then the four

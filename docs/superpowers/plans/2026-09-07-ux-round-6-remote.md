@@ -1096,6 +1096,39 @@ public extension RemoteMessage {
     #expect(text.contains("alpha"))
 }
 
+/// The third face, and the one that arrives through ordinary traffic. `presence` is a snapshot of
+/// *every* peer, re-sent whenever any of them changes, so a held client is named `offline` again and
+/// again while it is away -- once per lid-opening on some other Mac. A `suspend` that re-baselined
+/// on each of those would move `heldAtSequence` past the chunks this client missed and hand it a
+/// resume with no snapshot; it would also arm a fresh sweep timer every time, so a client that never
+/// came back would never be swept.
+@Test func aSecondOfflinePresenceDuringOneHoldDoesNotEraseWhatWasMissed() throws {
+    let f = try HostFixture(script: "read x; printf \"got:$x\\n\"; sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(try f.attach(peer) != nil)
+
+    let offline = RemoteMessage(t: "presence", devices: [
+        RemotePresence(deviceID: peer.deviceID, name: "laptop", online: false),
+    ])
+    f.host.handle(offline)
+    f.host.flush()
+    f.session.send(Array("go\n".utf8))
+    #expect(waitForShell(f, containing: "got:go"))
+    f.host.flush()
+    f.host.handle(offline)          // another Mac's presence changed; this one is still away
+    f.host.flush()
+
+    f.link.reset()
+    peer.rotateEphemeral()
+    #expect(try f.attach(peer) != nil)
+    let text = f.text(peer, f.link.frames)
+    #expect(text.hasPrefix(RemoteSnapshot.reset))
+    #expect(text.contains("got:go"))
+}
+
 /// The device is gone for good -- unpaired, not merely asleep -- so there is nothing to come back
 /// to and holding the attachment would strand the writer token on a Mac that is no longer allowed
 /// to type. This is the one path that drops immediately, and the one that audits it.
@@ -1428,16 +1461,36 @@ public struct RemotePresence: Codable, Equatable {
     /// Marks every attachment of `deviceID` as held, and arms the sweep that ends them if it does
     /// not come back. One timer per suspension, not one per session: a device is offline from all
     /// of them at once.
+    ///
+    /// **An attachment that is already held is left exactly as it is.** `presence` is a *snapshot*,
+    /// not an event: `presenceFor` lists every peer the device declared, offline ones included
+    /// (`relay/hub.go:161-172`), and `broadcastPresence` rebuilds and sends it whenever **any**
+    /// mutually paired peer's presence changes (`:178-184`). So with three or more paired Macs --
+    /// which is the feature's premise -- a *different* Mac opening its lid twenty seconds into this
+    /// client's hold delivers another snapshot that still says this one is offline. Re-baselining on
+    /// it would move `heldAtSequence` forward over the chunks the client actually missed and turn
+    /// its re-attach into a resume with no snapshot: C1's defect again, reached through ordinary
+    /// presence traffic. It would also arm a fresh timer with a fresh `suspendedAt` each time, so a
+    /// client that never comes back but whose *peers* keep changing presence would never be swept
+    /// and would hold the writer token for as long as the traffic lasted.
+    ///
+    /// Hold once. The first `suspendedAt` and the first `heldAtSequence` are the record, and the
+    /// first timer is still pending with an identity check that still matches.
     private func suspend(_ deviceID: String) {
         let now = clock.now()
         var held = false
-        for key in order where registrations[key]?.attachments[deviceID] != nil {
-            registrations[key]?.attachments[deviceID]?.suspendedAt = now
+        for key in order {
+            guard let registration = registrations[key],
+                  let attachment = registration.attachments[deviceID],
+                  attachment.suspendedAt == nil else { continue }
+            registration.attachments[deviceID]?.suspendedAt = now
             // Per registration, because `sequence` is: a device attached to two of this Mac's
             // sessions is held on both, and each one remembers its own session's chunk number.
-            registrations[key]?.attachments[deviceID]?.heldAtSequence = registrations[key]?.sequence
+            registration.attachments[deviceID]?.heldAtSequence = registration.sequence
             held = true
         }
+        // False when everything was already held, and then no second timer is armed -- which is the
+        // whole point of the guard above.
         guard held else { return }
         // One tick past the window, so the sweep and a re-attach that arrives at the last second
         // cannot both believe they were first.
@@ -1529,6 +1582,9 @@ public struct RemotePresence: Codable, Equatable {
             self.link.send(.paired(self.paired().ids))
             let devices = Set(self.order.compactMap { self.registrations[$0] }
                 .flatMap { $0.attachments.keys })
+            // `suspend` is idempotent by its own guard, which matters here: a client whose socket
+            // dropped before this host's did is already held, and re-baselining it on this host's
+            // reconnect would erase the record of what it missed.
             for deviceID in devices.sorted() { self.suspend(deviceID) }
             self.publishSessions()
         }
@@ -1563,8 +1619,9 @@ public struct RemotePresence: Codable, Equatable {
         // by the relay, and *counted* -- so it lands below `heldAtSequence` and the resume believes
         // the mirror is whole. Closing it needs the client to say how much it actually received,
         // which is a wire field and a byte-accounting handshake on both sides; it is in the ledger,
-        // and the cost of the residual is a hole of at most one chunk after a socket drop that the
-        // fixed relay makes rare.
+        // and the cost of the residual is whatever this host produced in that window -- usually
+        // nothing, one chunk on a quiet session, several on a printing one, since `deliver` runs
+        // once per PTY read -- after a socket drop that the fixed relay makes rare.
         let resuming = existing?.suspendedAt != nil
             && existing?.heldAtSequence == registration.sequence
 ```
@@ -1836,7 +1893,7 @@ public extension RemoteCatalogue {
         public var online: Bool
         /// This device is connected and has removed the pairing with this Mac.
         /// **Defaulted to `false`**, which is what keeps `applyCatalogue`'s and `setPaired`'s
-        /// existing `Device(id:name:online:sessions:)` calls (`RemoteCatalogue.swift:48`, `:68`)
+        /// existing `Device(id:name:online:sessions:)` calls (`RemoteCatalogue.swift:49`, `:70`)
         /// compiling untouched.
         public var notPaired: Bool = false
         public var sessions: [RemoteSessionInfo]
@@ -3510,8 +3567,8 @@ public enum RemoteAnnouncement {
     /// that are not also written on a button.
     ///
     /// So: a leaf carrying the whole sentence when there is nothing to press, a container vending
-    /// the button when there is. `WorkbenchHintView` (`:160-165`) is a fair precedent for the
-    /// second half only, because it always has a button.
+    /// the button when there is. `WorkbenchHintView` is a fair precedent for the
+    /// second half only (`WorkbenchHintView.swift:161-165`), because it always has a button.
     override func isAccessibilityElement() -> Bool { !isHidden && button.isHidden }
 
     override func accessibilityChildren() -> [Any]? {

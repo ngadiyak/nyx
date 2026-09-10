@@ -126,6 +126,55 @@ private func palette(_ titles: [String]) -> CommandPalette {
     #expect(KeyBinding(key: .f(5), modifiers: [], action: .copy).displayName == "F5")
 }
 
+// MARK: - The character a menu item carries for a key
+
+/// One list, walked both ways, so a key cannot go out into a menu as one character and come back
+/// as another. The menu bar hands AppKit these scalars for `keyEquivalent`; `MenuSnapshot` reads
+/// them back to ask `Key.displayName` how to draw the chord, since AppKit's private-use scalars
+/// have no glyph in the system font -- and a table that only went one way is how a picture drifts
+/// from the menu it is a picture of.
+@Test func everyKeyAMenuCanCarryGoesOutAndComesBackAsItself() {
+    let keys: [Key] = [.up, .down, .left, .right, .home, .end, .pageUp, .pageDown, .insert,
+                       .delete, .backspace, .tab, .enter, .escape, .f(1), .f(5), .f(35)]
+    for key in keys {
+        let scalar = key.menuKeyEquivalent
+        #expect(scalar != nil, "\(key) has no menu key equivalent")
+        #expect(scalar.flatMap(Key.init(menuKeyEquivalent:)) == key, "\(key) did not come back")
+    }
+}
+
+/// AppKit's own numbers, pinned: they are Unicode private-use scalars (`NSUpArrowFunctionKey` and
+/// friends, 0xF700 up), and NyxCore cannot import AppKit to read the constants. A typo here would
+/// put the wrong chord in the menu bar, which no test on the round trip above could see.
+@Test func theScalarsAreTheOnesAppKitDocuments() {
+    #expect(Key.up.menuKeyEquivalent == "\u{F700}")
+    #expect(Key.down.menuKeyEquivalent == "\u{F701}")
+    #expect(Key.left.menuKeyEquivalent == "\u{F702}")
+    #expect(Key.right.menuKeyEquivalent == "\u{F703}")
+    #expect(Key.f(1).menuKeyEquivalent == "\u{F704}")
+    #expect(Key.f(35).menuKeyEquivalent == "\u{F726}")
+    #expect(Key.insert.menuKeyEquivalent == "\u{F727}")
+    #expect(Key.delete.menuKeyEquivalent == "\u{F728}")
+    #expect(Key.home.menuKeyEquivalent == "\u{F729}")
+    #expect(Key.end.menuKeyEquivalent == "\u{F72B}")
+    #expect(Key.pageUp.menuKeyEquivalent == "\u{F72C}")
+    #expect(Key.pageDown.menuKeyEquivalent == "\u{F72D}")
+    // The four that are real control characters rather than private-use scalars.
+    #expect(Key.backspace.menuKeyEquivalent == "\u{8}")
+    #expect(Key.tab.menuKeyEquivalent == "\u{9}")
+    #expect(Key.enter.menuKeyEquivalent == "\u{d}")
+    #expect(Key.escape.menuKeyEquivalent == "\u{1b}")
+}
+
+/// A character key has no entry: AppKit takes the character itself as the key equivalent, which is
+/// why the menu builder switches on `.char` before it asks this at all -- and why reading a letter
+/// back must answer nil rather than guessing at a key.
+@Test func anOrdinaryCharacterIsNotInTheTable() {
+    #expect(Key.char("a").menuKeyEquivalent == nil)
+    #expect(Key(menuKeyEquivalent: "a") == nil)
+    #expect(Key(menuKeyEquivalent: "\u{F7FF}") == nil)
+}
+
 // MARK: - Quick actions
 
 @Test func quickActionsSitBetweenTheActionsAndTheThemes() {

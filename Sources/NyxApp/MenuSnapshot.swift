@@ -68,7 +68,8 @@ enum MenuSnapshot {
 
     // MARK: - The menus, from the real `NSMenu`
 
-    /// The ⋯ menu on each kind of block, built exactly as `BlockHeaderView.morePressed` builds it:
+    /// The ⋯ menu on each kind of block, built by `Pane.blockMenu(for:target:action:)` -- the one
+    /// builder the pill, the right-click menu, ⌘⇧A and the screen reader's *Show Menu* all use:
     /// `BlockHeader.actions` in order, a separator wherever `BlockAction.startsGroup`, the title
     /// from `BlockHeader.title(for:)` and the tick from `isChecked`. Every one of those is NyxCore,
     /// so what these pictures show is the decision rather than a copy of it.

@@ -362,7 +362,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         addSubview(stickyStrip)
         blockHeader.onAction = { [weak self] action, id in self?.perform(action, on: id) }
         blockHeader.onToggleFold = { [weak self] id, full in self?.toggleFold(ofCommand: id, full: full) }
-        blockHeader.onNeedsPreviousRun = { [weak self] id in self?.previousRun(of: id) != nil }
         blockHeader.onActionsMenu = { [weak self] id in self?.blockMenu(for: id) }
         addSubview(blockHeader)
         workbenchHint.onPress = { [weak self] in self?.openWorkbenchFromHint() }
@@ -2988,12 +2987,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     ///
     /// `hasPreviousRun` means parsing every cached command line (`RequestSummaryCache.previousRun`),
     /// which `render` leaves false: without it `Diff with Previous Run` was greyed on every route
-    /// but the right-click menu. `needsPreviousRun: false` is for a caller that wants the header's
-    /// *sentence* rather than its rows, where the answer changes nothing.
-    func blockMenuHeader(for id: UInt32, needsPreviousRun: Bool = true) -> BlockHeader? {
+    /// that builds a menu from the frame's own header. It is asked for here, on the press, because
+    /// a press is not a frame -- and unconditionally, since every caller of this wants the rows.
+    func blockMenuHeader(for id: UInt32) -> BlockHeader? {
         // Asked before the lock: finding the previous run of this request parses command lines out
         // of the cache, and this is a menu press rather than a frame.
-        let previousRun = needsPreviousRun ? self.previousRun(of: id) : nil
+        let previousRun = self.previousRun(of: id)
         let header: BlockHeader? = session.withTerminal { t in
             guard let row = t.promptRow(ofCommand: id),
                   let region = t.command(containingAbsoluteRow: row) else { return nil }
@@ -3021,7 +3020,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// One block's menu: `BlockHeader.actions` in order, a separator wherever `startsGroup`, the
     /// title from `title(for:)` and the tick from `isChecked`. The ⋯ button, the right-click menu,
-    /// ⌘⇧A and `view.menu` all pop *this*, so the four routes cannot offer different things.
+    /// ⌘⇧A and the screen reader's *Show Menu* all pop *this*, so the four routes cannot offer
+    /// different things.
     func blockMenu(for id: UInt32) -> NSMenu? {
         guard let header = blockMenuHeader(for: id) else { return nil }
         return Pane.blockMenu(for: header, target: self,
@@ -3084,8 +3084,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // answerable from a right-click.
         //
         // The rows themselves are `blockMenu(for:)`, moved into this bigger menu: the ⋯ pill, this
-        // menu, ⌘⇧A and `view.menu` are one builder, so no two of the four can offer different
-        // things or grey out differently.
+        // menu, ⌘⇧A and the screen reader's *Show Menu* are one builder, so no two of the four
+        // can offer different things or grey out differently.
         if let point, let id = commandID(under: point), let block = blockMenu(for: id) {
             for item in block.items {
                 block.removeItem(item)
@@ -3793,22 +3793,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                          cellHeight: Double(cellSizePoints.height)))
     }
 
-    /// The cursor's menu, hung on the view so a screen reader can find it (a11y 6.4).
+    /// VoiceOver's *Show Menu* (VO-⇧-M) on the pane: the block menu ⌘⇧A pops, on the block ⌘⇧A
+    /// would act on, built on the press (a11y 6.4).
     ///
-    /// Rebuilt on ⌘↑/⌘↓ and on ⌘K, and nowhere else: building a menu costs a header, a request
-    /// summary and a previous-run search, which is a keystroke's work and not a frame's.
-    /// `rightMouseDown` never calls `super`, so this menu cannot steal the right-click one -- and
-    /// what VoiceOver's own *Show Menu* pops is `accessibilityPerformShowMenu`, which builds a
-    /// fresh one, so a menu left standing after the viewport re-anchored the cursor is a
-    /// declaration that there is a menu rather than a menu anybody can act through.
-    private func updateBlockMenu() {
-        menu = blockCursor.commandID.flatMap { blockMenu(for: $0) }
-    }
-
-    /// VoiceOver's *Show Menu* (VO-⇧-M) on the pane: the same menu ⌘⇧A pops, at the same row,
-    /// built now. `menu` alone would have been enough for AppKit to pop something, but it is only
-    /// rebuilt on a keypress, and the block the cursor is on can change when the viewport moves
-    /// under it -- a menu naming a block the cursor has left would act on the wrong command.
+    /// **`self.menu` is deliberately left nil**, and this override is how the menu is found
+    /// instead. Hanging it on the view was the obvious way, and it broke control-click: AppKit
+    /// resolves a control-left-click through `menu(for:)`/`self.menu` *before* `mouseDown` is
+    /// delivered, so a pane carrying a menu popped that block's rows instead of `contextMenu(at:)`
+    /// -- no Copy, no Paste, no Split, no Clear, the wrong block whenever the cursor was not under
+    /// the pointer, no selection started, and nothing reported to a program that had asked for
+    /// mouse events. Measured in the built app: with the menu set, `mouseDown` was never called.
+    ///
+    /// Nothing is lost by leaving it nil. `isAccessibilitySelectorAllowed` answers for an override
+    /// of this selector on its own, and building the menu on the press means it is the *current*
+    /// resolved target -- `targetBlockID`, the same block ⌘⇧A acts on -- rather than whatever a
+    /// keypress cached before the viewport moved the cursor under it.
     override func accessibilityPerformShowMenu() -> Bool { showBlockActions() }
 
     /// ⌘↑ / ⌘↓: one block back or forward, and the viewport brought to it.
@@ -3860,9 +3859,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             }
         }
         blockCursor = outcome.cursor
-        // The menu the pane vends to a screen reader names the block the cursor is on, so it is
-        // rebuilt here and only here -- one press, one header, one previous-run search.
-        updateBlockMenu()
         // Only when this press really moved the viewport. Set unconditionally, a refused press --
         // ⌘↑ already at the oldest block -- would leave the flag standing until some *later*
         // scroll changed the signature, and swallow that scroll's re-anchor instead.
@@ -4653,8 +4649,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // Every id in the buffer names rows that are gone. A cursor kept across ⌘K would sit on a
         // stranger's command, exactly as a kept watch header would.
         blockCursor = BlockCursor()
-        // And the menu that named it: every id in the buffer names rows that are gone.
-        updateBlockMenu()
         // `markDirty`, not `dirty.set()`. On an idle pane the display link is parked -- that is how
         // this terminal holds 0% CPU doing nothing -- and setting the flag without waking it means
         // the screen is cleared in the model and unchanged on screen until something else happens

@@ -1279,21 +1279,23 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return true
     }
 
-    /// Whether `⌘.` has a series to stop here: the block the two request actions target must be the
-    /// series' newest run.
+    /// Whether `⌘.` has a series to stop here: an unfinished series in this pane, and the keyboard
+    /// on any run of it or on no request at all.
     ///
-    /// With no cursor -- or a cursor on something that is not a request -- that is the old rule word
-    /// for word: the target is then the last request in the pane, so a watch scrolled away from
-    /// cannot be killed by a chord pressed for something else. With the cursor *on* that run the
-    /// chord and the strip's `Stop` pill name the same series, which is the half of a11y 6.9 this
-    /// can fix; the pill itself keeps no such rule and always stops the series it belongs to,
-    /// because pressing it names the series and pressing `⌘.` does not.
-    ///
-    /// A series that has not run anything yet passes: nothing can be later than nothing.
+    /// `WatchSeries.mayBeStopped(byChordOnRequest:)` is the rule; what this adds is the one thing
+    /// only the pane can answer -- which request block the cursor is on, if any. Note that this is
+    /// the *cursor's* block and not `targetRequestBlockID`: that resolver falls back to the last
+    /// request in the pane, and the fallback is what made ⌘. accept on a request belonging to no
+    /// series (PM P3). Nothing under the keyboard is not a reason to refuse; somebody else's
+    /// request is.
     var canStopWatch: Bool {
-        guard let series = watch, !series.isFinished else { return false }
-        guard let newest = series.runs.last?.id else { return true }
-        return session.withTerminal { self.targetRequestBlockID(in: $0) } == newest
+        guard let series = watch else { return false }
+        let cursorRequest: UInt32? = session.withTerminal { t in
+            guard let id = self.blockCursor.commandID, id != 0, self.requestCache.isRequest(id: id),
+                  t.promptRow(ofCommand: id) != nil else { return nil }
+            return id
+        }
+        return series.mayBeStopped(byChordOnRequest: cursorRequest)
     }
 
     /// The last block in the pane whose command was a request. Takes the terminal rather than

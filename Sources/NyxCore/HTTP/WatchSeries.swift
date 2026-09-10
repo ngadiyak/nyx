@@ -214,6 +214,25 @@ public struct WatchSeries: Equatable {
         return false
     }
 
+    /// Whether `⌘.` may stop this series while the keyboard is on `requestUnderCursor` -- the block
+    /// the cursor is on when that block is a request, and nil for every other position.
+    ///
+    /// The scope is the **series**, not its newest run. Requiring the newest run read as a bug from
+    /// either side (PM P3): scrolling up one run to compare two answers -- the obvious thing to do
+    /// with a watch -- refused the chord, while a request belonging to no series at all accepted it,
+    /// because the pane's request target falls back to the last request in the pane. Any run of the
+    /// series, or no request under the keyboard, and the chord means what the strip's `Stop` pill
+    /// means; a request that is not part of the series is somebody else's block, and greying the
+    /// row is better than quietly killing a watch elsewhere in the pane.
+    ///
+    /// A series with no runs yet passes from anywhere: nothing can belong to it, and whoever armed
+    /// it a second ago must be able to take it back.
+    public func mayBeStopped(byChordOnRequest requestUnderCursor: UInt32?) -> Bool {
+        guard !isFinished else { return false }
+        guard let id = requestUnderCursor else { return true }
+        return runs.isEmpty || runs.contains { $0.id == id }
+    }
+
     // MARK: - The clock
 
     /// Whether the pane should send the command now: the series is waiting, its deadline has

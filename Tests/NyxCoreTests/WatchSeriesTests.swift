@@ -414,3 +414,47 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
     #expect(small.dots.count == 4)
     #expect(small.hiddenRuns == 0)
 }
+
+// MARK: - What ⌘. is allowed to stop
+
+/// ⌘. used to require the block the keyboard was on to be the series' **newest** run, which read
+/// as a bug from either side (PM P3): scrolling up one run of the series -- the obvious way to
+/// compare two answers -- refused the chord, while a request block belonging to nothing at all
+/// accepted it, because the target rule falls back to the last request in the pane.
+///
+/// The scope is the *series*: any run of it, or no request under the keyboard at all. That makes
+/// the chord agree with the strip's `Stop` pill, which stops the series it belongs to wherever the
+/// pointer happens to be -- the two disagreed on exactly the blocks a user scrolls to.
+@Test func aChordOnAnyRunOfTheSeriesMayStopIt() {
+    var series = watchSeries(interval: 5, startedAt: 0)
+    watchRun(&series, id: 1, status: 200, start: 0, end: 1)
+    watchRun(&series, id: 2, status: 200, start: 6, end: 7)
+    #expect(series.mayBeStopped(byChordOnRequest: 2))   // the newest run
+    #expect(series.mayBeStopped(byChordOnRequest: 1))   // an older run: scrolled up to compare
+    #expect(series.mayBeStopped(byChordOnRequest: nil)) // nothing, or a block that is no request
+}
+
+/// A request that is not part of the series is somebody else's block, and the chord pressed on it
+/// means nothing -- greyed in the menu, absent from the palette, rather than silently killing a
+/// watch somewhere else in the pane.
+@Test func aChordOnAnUnrelatedRequestMayNotStopTheSeries() {
+    var series = watchSeries(interval: 5, startedAt: 0)
+    watchRun(&series, id: 1, status: 200, start: 0, end: 1)
+    #expect(!series.mayBeStopped(byChordOnRequest: 99))
+}
+
+/// A series that has not run anything yet passes from anywhere: nothing can belong to it, and the
+/// user who just armed it must be able to take it back.
+@Test func aSeriesWithNoRunsYetMayBeStoppedFromAnywhere() {
+    let series = watchSeries(interval: 5, startedAt: 0)
+    #expect(series.mayBeStopped(byChordOnRequest: 99))
+}
+
+/// A series that has already ended has nothing to stop, wherever the keyboard is.
+@Test func aFinishedSeriesMayNotBeStopped() {
+    var series = watchSeries(interval: 5, startedAt: 0)
+    watchRun(&series, id: 1, status: 200, start: 0, end: 1)
+    series.stop(.stopped)
+    #expect(!series.mayBeStopped(byChordOnRequest: 1))
+    #expect(!series.mayBeStopped(byChordOnRequest: nil))
+}

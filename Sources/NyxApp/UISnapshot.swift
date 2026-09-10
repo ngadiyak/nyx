@@ -342,9 +342,15 @@ enum UISnapshot {
                     }
                 }
                 for (name, failed, summary, tone, columns) in stickyPromptStates() {
-                    write(stickyPrompt(palette: themePalette, failed: failed, summary: summary,
-                                       tone: tone, columns: columns, appearance: appearance),
-                          named: "sticky-prompt-\(name)-\(suffix)", into: directory,
+                    let band = stickyPrompt(palette: themePalette, failed: failed, summary: summary,
+                                            tone: tone, columns: columns, appearance: appearance)
+                    // The band hides itself on empty text, and a hidden band writes a picture of
+                    // the background: a state that is *meant* to be up and is not would be a blank
+                    // PNG nobody reads as a defect. Said out loud instead (S2).
+                    if band.isHidden {
+                        print("sticky-prompt-\(name): the band hid itself — nothing to picture")
+                    }
+                    write(band, named: "sticky-prompt-\(name)-\(suffix)", into: directory,
                           background: themePalette.background)
                 }
             }
@@ -1199,13 +1205,19 @@ enum UISnapshot {
         // the drawn-height rule (D3) over a 13 pt row.
         let cell: CGFloat = 22
         let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cell)))
-        let view = StickyPromptView(frame: NSRect(x: 0, y: 0, width: 900, height: height))
+        // The frame is the pane the band is being pictured in: `columns` cells wide, plus the
+        // leading inset the gutter takes, capped at the 900 pt the wide states use. A narrow band
+        // drawn in a wide frame is a picture of a wide band whose label happens to be short (S2's
+        // fixture half, review minor 5).
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let advance = ("M" as NSString).size(withAttributes: [.font: font]).width
+        let width = min(900, CGFloat(columns) * advance + CGFloat(StickyPromptView.minimumTextInset))
+        let view = StickyPromptView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         view.appearance = NSAppearance(named: appearance)
         // The system's mono, and a cell measured from that same font, because there is no grid in
-        // this picture: these four are the band's *states*, and the kern is 0 by construction. The
+        // this picture: these are the band's *states*, and the kern is 0 by construction. The
         // band over a real grid in a face that is not the system's is
         // `composite-font-menlo-sticky-*` in `GridSnapshot`.
-        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         // Through `StickyPromptLabel.text`, with the note it will be drawn beside, so each picture
         // says the status exactly where the real band would: in the note when there is one, in the
         // text when there is not (`sticky-prompt-failed-*` is the second case).
@@ -1214,8 +1226,7 @@ enum UISnapshot {
             exitStatus: failed ? 2 : 0, columns: columns, summary: summary)
         view.update(text: text, summary: summary, tone: tone ?? (failed ? .failure : .plain),
                     palette: palette, font: font, padding: 8,
-                    cellWidth: ("M" as NSString).size(withAttributes: [.font: font]).width,
-                    cellHeight: cell)
+                    cellWidth: advance, cellHeight: cell)
         view.layoutSubtreeIfNeeded()
         return view
     }
@@ -1234,6 +1245,11 @@ enum UISnapshot {
     /// `narrow` is P4's fix in a picture: 20 columns for an 11-column command and a 13-column note,
     /// so the command is cut to `$ mak…` and the status appears **once**, in the note. The band used
     /// to append the suffix as well and read `$ make te…  exit 2      exit 2 · 8.8s`.
+    ///
+    /// Its **frame** is 20 columns wide too, not the 900 pt every other state is drawn at: a picture
+    /// of a narrow band in a wide frame says nothing about what a narrow band looks like -- the
+    /// label had room for the whole command and the cut was invisible. The fourth number is the
+    /// column count the text is cut to, and the frame follows it.
     private static func stickyPromptStates() -> [(String, Bool, String, SummaryTone?, Int)] {
         [
             ("running", false, "", nil, 100),
@@ -1241,6 +1257,12 @@ enum UISnapshot {
             ("summary", true, "exit 2 \u{b7} 8.8s", nil, 100),
             ("http", false, "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json", .success, 100),
             ("narrow", true, "exit 2 \u{b7} 8.8s", nil, 20),
+            // The width S2 was about: a note as wide as the band. The text is one ellipsis and the
+            // note carries the status, and the **band is still up** -- `StickyPromptLabel.text`
+            // returned `""` here and `StickyPromptView.update` hides the view on empty text, so the
+            // arrow, the command and the note all vanished. Every pane of 29 columns or fewer did
+            // that with an HTTP summary, and 34 or fewer with a watch sentence.
+            ("narrowest", true, "exit 2 \u{b7} 8.8s", nil, 14),
         ]
     }
 

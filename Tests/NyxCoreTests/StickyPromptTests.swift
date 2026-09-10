@@ -134,12 +134,25 @@ private func session() -> Terminal {
     // One column short: the command loses its last character, and still no second `exit 3`.
     #expect(StickyPromptLabel.text(command: "$ ab", exitStatus: 3, columns: 10,
                                    summary: "exit 3") == "$ \u{2026}")
-    // And in the extreme -- a note as wide as the band -- the text is an ellipsis or nothing at
-    // all, rather than a status the note is already carrying.
+    // And in the extreme -- a note at least as wide as the band -- the text is an **ellipsis**,
+    // never `""`. `StickyPromptView.update` hides the whole band on empty text, so returning it
+    // took the arrow, the command *and* the note off the screen: at an HTTP summary of 28
+    // characters that was every pane of 29 columns or fewer, and at a watch sentence every pane of
+    // 34 or fewer -- an ordinary vertical split (S2). One glyph of "there is more here" keeps the
+    // band up, and the note beside it is still carrying the status.
+    for columns in 1...15 {
+        let text = StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: columns,
+                                          summary: "exit 2 \u{b7} 8.8s")
+        #expect(!text.isEmpty, "columns=\(columns)")
+        #expect(!text.contains("exit"), "columns=\(columns)")
+    }
     #expect(StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: 14,
-                                   summary: "exit 2 \u{b7} 8.8s") == "")
+                                   summary: "exit 2 \u{b7} 8.8s") == "\u{2026}")
     #expect(StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: 15,
                                    summary: "exit 2 \u{b7} 8.8s") == "\u{2026}")
+    // A band with no columns at all is the only empty answer, and it is the pane having no width.
+    #expect(StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: 0,
+                                   summary: "exit 2 \u{b7} 8.8s") == "")
 }
 
 /// The band draws in `monospacedSystemFont`, whose advance is not the pane's cell: the cell is

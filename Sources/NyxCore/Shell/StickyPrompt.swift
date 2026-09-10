@@ -89,7 +89,14 @@ public enum StickyPromptLabel {
             // A column of gap between the two, so they never touch. Cut to fit, never appended to.
             let room = max(0, columns - summary.count - 1)
             guard body.count > room else { return body }
-            guard room > 1 else { return room == 1 ? "\u{2026}" : "" }
+            // Never `""` while there is a note. `StickyPromptView.update` hides the whole band on
+            // empty text, so returning it took the arrow, the command *and* the note off the
+            // screen -- at an HTTP summary of 28 characters that was every pane of 29 columns or
+            // fewer, and at a watch sentence every pane of 34 or fewer, which is an ordinary
+            // vertical split (S2). One glyph of "there is more here" keeps the band up, and the
+            // note beside it is still carrying the status; the band's own label truncates what it
+            // cannot draw, which is what it does at every other width too.
+            guard room > 1 else { return "\u{2026}" }
             return String(body.prefix(room - 1)) + "\u{2026}"
         }
         let status = (exitStatus ?? 0) != 0 ? "  exit \(exitStatus!)" : ""

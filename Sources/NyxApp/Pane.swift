@@ -2420,38 +2420,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if f.contains(.control) { mods.insert(.ctrl) }
         if f.contains(.option) { mods.insert(.alt) }
         if f.contains(.command) { mods.insert(.cmd) }
-        let key: Key
-        switch e.keyCode {
-        case 126: key = .up
-        case 125: key = .down
-        case 123: key = .left
-        case 124: key = .right
-        case 115: key = .home
-        case 119: key = .end
-        case 116: key = .pageUp
-        case 121: key = .pageDown
-        case 117: key = .delete
-        case 114: key = .insert
-        case 51: key = .backspace
-        case 48: key = .tab
-        case 36, 76: key = .enter
-        case 53: key = .escape
-        case 122: key = .f(1)
-        case 120: key = .f(2)
-        case 99: key = .f(3)
-        case 118: key = .f(4)
-        case 96: key = .f(5)
-        case 97: key = .f(6)
-        case 98: key = .f(7)
-        case 100: key = .f(8)
-        case 101: key = .f(9)
-        case 109: key = .f(10)
-        case 103: key = .f(11)
-        case 111: key = .f(12)
-        default:
-            guard let chars = e.charactersIgnoringModifiers, let s = chars.unicodeScalars.first else { return nil }
-            key = .char(s)
-        }
+        // Which key this is, as a chord, is `MacKeyCodes.bindingKey` -- a pure function of the key
+        // code and the two character strings, so the Russian cases the QA report captured are
+        // pinned by tests rather than by a switch in a view handler nothing can reach. It reads
+        // `charactersIgnoringModifiers` for plain typing and the key code's own ASCII character
+        // once ⌘ is held, which is why ⌘C now copies on a Cyrillic layout without the menu.
+        guard let key = MacKeyCodes.bindingKey(keyCode: e.keyCode, characters: e.characters,
+                                               charactersIgnoringModifiers: e.charactersIgnoringModifiers,
+                                               modifiers: mods) else { return nil }
         // `isKeypad` comes from the key code, not from `NSEvent.numericPad`: macOS sets that flag
         // on the arrow keys too, so trusting it would send SS3 for arrows in application-keypad
         // mode and break every full-screen program the moment one turned the mode on.

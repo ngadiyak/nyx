@@ -112,6 +112,13 @@ character (lowercase; add `shift` explicitly), or one of `enter`/`return`, `tab`
 `left`, `right`, `f1`…`f12`. The chord is split at the *last* `=`, so `cmd+,=open_config` works.
 A user binding beats a default for the same chord; the last line in the file wins.
 
+A chord names a **physical key, not a character**. Once ⌘ is held, the key is read from its
+position on the keyboard — the letter on the keycap — so `cmd+c` is the C key on a Russian,
+Greek or Hebrew layout as much as on a US one, and `cmd+shift+d` matches whatever glyph shift
+produces there. Write the key as the unshifted ASCII character it carries (`cmd+shift+=`, not
+`cmd++`) and put `shift` in the modifiers. Without ⌘, a key press is text: it reaches the shell
+as the character the layout makes, so typing Cyrillic sends Cyrillic.
+
 | Action | Default | What it does |
 |---|---|---|
 | `new_window` | ⌘N | |
@@ -126,7 +133,7 @@ A user binding beats a default for the same chord; the last line in the file win
 | `copy` / `paste` | ⌘C / ⌘V | Paste is bracketed when the program asked for it |
 | `paste_with_editor` | ⌘⇧V | Open the clipboard in the editor first |
 | `clear_screen` | ⌘K | Clears screen and scrollback (`ED 3`) |
-| `font_bigger` / `font_smaller` / `font_reset` | ⌘+ (⌘=) / ⌘- / ⌘0 | |
+| `font_bigger` / `font_smaller` / `font_reset` | ⌘+ / ⌘- / ⌘0 | Zoom in also answers to ⌘= — the same key without shift — and to the keypad's `+` |
 | `open_config` / `reload_config` | ⌘, / ⌘⇧, | ⌘, opens the settings window |
 | `previous_prompt` / `next_prompt` | ⌘↑ / ⌘↓ | Needs shell integration |
 | `select_command_output` / `copy_command_output` | — | The output of the command under the cursor / the last command |

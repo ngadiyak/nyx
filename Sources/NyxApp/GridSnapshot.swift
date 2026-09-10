@@ -45,16 +45,23 @@ enum GridSnapshot {
             guard let canvas = GridCanvas(cols: 84, rows: 20, config: config) else { continue }
             for (appearanceName, appearance) in appearances {
                 let suffix = "\(paletteName)-\(appearanceName)"
-                // One picture per width class, at `.finished`. Task 8 loops the nine states of
-                // §2.6's table over them; the names are what plan 1b's `cmp` compares.
+                // `composite-strip-<class>-<state>-<palette>-<appearance>`: §2.6's table as
+                // pictures, each over a command line whose free columns put the block in that
+                // class. Nine states by four classes, and the point is that no cell of the table
+                // ships unlooked-at -- `cmp` pairs off the ones that come out the same, which is
+                // itself a finding when two cells were meant to differ.
                 for width in GridScene.widthClasses {
-                    write(canvas: canvas, palette: palette, appearance: appearance,
-                          case: .hoverStrip(width, .finished), into: directory,
-                          named: "composite-strip-\(name(of: width))-finished-\(suffix)")
+                    for state in GridScene.StripState.allCases {
+                        write(canvas: canvas, palette: palette, appearance: appearance,
+                              case: .hoverStrip(width, state), into: directory,
+                              named: "composite-strip-\(name(of: width))-\(state.rawValue)-\(suffix)")
+                    }
                 }
+                // The strip while a TUI owns the screen: the pointer is on a block and there is no
+                // strip, no spine and no cap, because there is no block chrome on the alt screen.
                 write(canvas: canvas, palette: palette, appearance: appearance,
-                      case: .hoverStrip(.w3, .lensed), into: directory,
-                      named: "composite-strip-lens-\(suffix)")
+                      case: .suppressedTUI, into: directory,
+                      named: "composite-strip-suppressed-tui-\(suffix)")
                 // The timeline's own width and its `+N` cap: three run counts, because one cell of
                 // the state matrix cannot say what thirty circles do to a strip's width.
                 for runs in [4, 30, 48] {
@@ -163,6 +170,9 @@ enum GridSnapshot {
         /// measured width, so the picture is of `stripPlacement` choosing this class rather than of
         /// it being told to.
         case hoverStrip(CommandBlockChrome.WidthClass, GridScene.StripState)
+        /// A block under the pointer with a full-screen program in front of it: every piece of
+        /// block chrome stands down, which is the rule that keeps vim behaving as it always did.
+        case suppressedTUI
         /// The strip on a *watched* request, after `runs` runs. The timeline is the widest thing
         /// this chrome can hold, and measuring it alone says nothing about whether a pane has room
         /// for it -- which is what these pictures are for.
@@ -197,12 +207,14 @@ enum GridSnapshot {
 
         switch kind {
         case .hoverStrip(let width, let state):
-            if state == .lensed {
-                scene.applyLens(.pretty, toRequest: true)
-                scene.hovered = scene.requestID
-            } else {
-                scene.hovered = scene.commandFitting(width)
-            }
+            scene.show(state, at: width)
+        case .suppressedTUI:
+            // The pointer parked on a block, and *then* a full-screen program takes the display:
+            // `CommandBlockChrome.isAllowed` is false, so the strip, the spines and the caps all go
+            // -- while the hover itself is still set, which is the condition the rule has to hold
+            // under. A picture of a TUI with no pointer anywhere near it proves nothing.
+            scene.show(.finished, at: .w3)
+            scene.enterTUI()
         case .hoverStripWatching(let runs):
             scene.watch = GridScene.watchHeader(runs: runs)
             scene.showRequestBlock()
@@ -214,13 +226,13 @@ enum GridSnapshot {
         case .gutterStates:
             scene.showRunningAndSilentCommands()
         case .lensField(let lens):
-            scene.applyLens(lens, toRequest: true)
+            scene.applyLens(lens, to: scene.requestID)
             scene.showsLensField = true
         case .lens(let lens):
-            scene.applyLens(lens, toRequest: true)
+            scene.applyLens(lens, to: scene.requestID)
         case .lensOnHTML(let lens):
             scene.htmlBody = true
-            scene.applyLens(lens, toRequest: true)
+            scene.applyLens(lens, to: scene.requestID)
         case .search(let query):
             scene.search(query)
         case .banner:
@@ -626,6 +638,12 @@ extension GridCanvas {
 /// spine that stops at a fold, a strip placed on a row whose wide cells it miscounts, a gutter mark
 /// beside the wrong line -- and a fixture of three short commands pictures none of them.
 struct GridScene {
+    /// The scene's clock, in a box. `Terminal.now` is a closure that outlives `init`, and a
+    /// `struct`'s stored property cannot be captured by one -- so the seconds live here, where both
+    /// the fixture and a block appended afterwards can move them and every duration in a picture is
+    /// still the same duration next week.
+    private final class Clock { var seconds: Double = 1_000 }
+
     let canvas: GridCanvas
     let palette: Palette
     let terminal: Terminal
@@ -634,7 +652,17 @@ struct GridScene {
     /// The long build, folded in every picture: a fold on screen is what makes display slots and
     /// absolute rows different numbers, which is where chrome placement goes wrong.
     let buildID: UInt32
-    private let commandIDs: [CommandBlockChrome.WidthClass: UInt32]
+    private let clock: Clock
+    /// Which blocks carry an HTTP summary and a lens chip.
+    ///
+    /// A set rather than `id == requestID`, which is what it was: that tied every HTTP, lensed and
+    /// watched picture to the one command line the fixture happens to give its `curl`, and §2.6 is
+    /// a table of *width classes* against states -- so each of those states has to be reachable on
+    /// a command row of any length.
+    private var httpIDs: Set<UInt32>
+    /// Which block the watch header belongs to, and which one the lens field is anchored to.
+    private var watchID: UInt32
+    private var lensID: UInt32
 
     var folding = OutputFolding()
     var lenses = LensChoices()
@@ -671,18 +699,19 @@ struct GridScene {
         terminal.palette = palette
         // A fixed clock, so a duration in a picture is the same duration next week. `now` is the
         // terminal's own hook, which is what makes command timings testable at all.
-        var clock = 1_000.0
-        terminal.now = { clock }
+        let clock = Clock()
+        self.clock = clock
+        terminal.now = { clock.seconds }
 
         func mark(_ letter: String, _ status: Int32? = nil) -> String {
-            "\u{1b}]133;\(status.map { "\(letter);\($0)" } ?? letter)\u{7}"
+            GridScene.mark(letter, status)
         }
         func run(_ command: String, output: [String], status: Int32, seconds: Double) -> UInt32 {
             terminal.feed(mark("A") + "$ " + mark("B") + command + "\r\n" + mark("C"))
             for line in output { terminal.feed(line + "\r\n") }
-            clock += seconds
+            clock.seconds += seconds
             terminal.feed(mark("D", status))
-            clock += 1
+            clock.seconds += 1
             return terminal.command(containingAbsoluteRow: terminal.totalRows - 1)?.id ?? 0
         }
 
@@ -707,25 +736,18 @@ struct GridScene {
         _ = run("make lint", output: ["Sources/NyxApp/Pane.swift:2210:9: warning: unused result",
                                       "make: *** [lint] Error 1"], status: 1, seconds: 2.4)
 
-        // One command per width class. The class is read from the *free* columns after the
-        // command's last glyph, and the shell's own `$ ` is two of them: a length that forgets the
-        // prompt leaves two columns too few, which is exactly enough to move a picture into the
-        // next class down. Never less room than the strip actually measures, or the picture named
-        // after a class would show the class below it.
+        // One command per width class, in the scrollback. These are no longer anybody's hover
+        // target -- `show(_:at:)` appends the block a strip picture is of, so that all nine states
+        // of a class are the same command line in the same place and the table reads as a table --
+        // but they stay, because command rows of four different lengths above the block being
+        // pictured are exactly the context a gutter, a spine or a summary is judged against.
         let promptColumns = 2
-        var byWidth: [CommandBlockChrome.WidthClass: UInt32] = [:]
         for width in GridScene.widthClasses {
-            // Exactly the band's own free columns, never `max(…, what the strip measures)`: taking
-            // the wider of the two lifted a row into the class *above* the one the picture is named
-            // after, so `composite-strip-w1-…` would have shown a W2 strip. A class the strip does
-            // not fit is not a broken fixture -- the placement steps down, which is the picture.
             let free = GridScene.freeColumns(for: width)
             let length = max(8, cols - free - promptColumns)
-            byWidth[width] = run(GridScene.commandLine(ofLength: length),
-                                 output: ["ok  \(width) \u{b7} 3 files changed"],
-                                 status: 0, seconds: 8.8)
+            _ = run(GridScene.commandLine(ofLength: length),
+                    output: ["ok  \(width) \u{b7} 3 files changed"], status: 0, seconds: 8.8)
         }
-        commandIDs = byWidth
 
         let request = run("curl -sSi https://api.example.com/v1/users",
                           output: ["HTTP/2 200",
@@ -736,12 +758,110 @@ struct GridScene {
         terminal.feed(mark("A") + "$ ")
         requestID = request
         buildID = build
+        httpIDs = [request]
+        watchID = request
+        lensID = request
         self.terminal = terminal
         // Folded from the start: the long build is scrollback nobody wants, and a fold on screen is
         // the condition every placement rule here has to survive.
         folding.fold(build, .all)
         cursor = terminal.displayBottomCursor(folding: folding, lenses: lenses,
                                               viewportRows: canvas.rows, buffers: { _ in nil })
+    }
+
+    /// One OSC 133 mark. The shell's own vocabulary, so every block in this fixture is a block for
+    /// the same reason a user's is.
+    private static func mark(_ letter: String, _ status: Int32? = nil) -> String {
+        "\u{1b}]133;\(status.map { "\(letter);\($0)" } ?? letter)\u{7}"
+    }
+
+    /// One more command, at the bottom of the day's work, with the marks that put it in `state`.
+    ///
+    /// The scene leaves a bare prompt at the end, so this fills that prompt in rather than emitting
+    /// a second `$ ` on the same row -- the continuation `showRunningAndSilentCommands` also makes
+    /// -- and leaves a fresh bare prompt behind it. `status` is `nil` for a command that has not
+    /// finished: no `D` mark, which is the only thing that makes a block *running*.
+    private func append(_ command: String, output: [String], status: Int32?,
+                        seconds: Double) -> UInt32 {
+        terminal.feed(GridScene.mark("B") + command + "\r\n" + GridScene.mark("C"))
+        for line in output { terminal.feed(line + "\r\n") }
+        clock.seconds += seconds
+        // Read *before* the shell's next prompt is fed. Asking for the command at the last row
+        // afterwards answers with the bare prompt's own region, and the first run of this hovered
+        // that: every picture in the table showed a lone `Actions ▾` on the prompt row.
+        let id = terminal.command(containingAbsoluteRow: max(0, terminal.totalRows - 1))?.id ?? 0
+        if let status {
+            terminal.feed(GridScene.mark("D", status))
+            clock.seconds += 1
+            terminal.feed(GridScene.mark("A") + "$ ")
+        }
+        return id
+    }
+
+    /// The block §2.6's table names one cell of: `state`, on a command row whose free columns put
+    /// the strip in `width`, hovered, at the bottom of the day's work.
+    ///
+    /// One appended block rather than thirty-six standing ones. The fixture built one block per
+    /// width class and every one of them was `finished`, so four cells of the table (`folded`,
+    /// `lensed`, `watch-finished`, `no-output`) had no block anywhere in the scene that could be in
+    /// them at all -- and a scene carrying all thirty-six would put nine of every ten off screen
+    /// and nine of every ten command rows in the wrong width class. Appending the one block the
+    /// picture is of keeps everything behind it real: the fold, the wrapped rows, the wide cells and
+    /// the failed `make lint` are all still above it.
+    mutating func show(_ state: StripState, at width: CommandBlockChrome.WidthClass) {
+        // The same arithmetic the fixture's own per-class commands use, prompt included: the class
+        // is read from the free columns after the last glyph, and the shell's `$ ` is two of them.
+        let line = GridScene.commandLine(ofLength: max(8, canvas.cols
+                                                          - GridScene.freeColumns(for: width) - 2))
+        let response = ["HTTP/2 200", "content-type: application/json; charset=utf-8", "",
+                        "{\"page\":1,\"total\":3,\"users\":[\u{2026}]}"]
+        let id: UInt32
+        switch state {
+        case .finished:
+            id = append(line, output: ["ok  3 files changed"], status: 0, seconds: 8.8)
+        case .failed:
+            id = append(line, output: ["error: could not resolve host api.example.com",
+                                       "make: *** [deploy] Error 1"], status: 1, seconds: 8.8)
+        case .running:
+            // No `D` mark: still going. Output under it, because a running command with nothing
+            // printed yet is the `no-output` shape and not this one.
+            id = append(line, output: ["[1201/1200] Linking Nyx"], status: nil, seconds: 3)
+        case .folded:
+            id = append(line, output: (1...6).map { "[\($0)/6] Compiling NyxCore Terminal.swift" },
+                        status: 0, seconds: 8.8)
+            folding.fold(id, .all)
+        case .http:
+            id = append(line, output: response, status: 0, seconds: 0.142)
+            httpIDs.insert(id)
+        case .lensed:
+            id = append(line, output: response, status: 0, seconds: 0.142)
+            httpIDs.insert(id)
+            applyLens(.pretty, to: id)
+        case .watchRunning, .watchFinished:
+            id = append(line, output: response, status: 0, seconds: 0.142)
+            httpIDs.insert(id)
+            watchID = id
+            watch = GridScene.watchHeader(runs: 11, running: state == .watchRunning)
+        case .noOutput:
+            // A command that printed *literally* nothing -- `cd`, `export`, `true` -- so its `C`
+            // mark lands on the row its successor's prompt lands on. That is the deliberate
+            // difference from `composite-gutter-states-*`, whose silent command printed one blank
+            // line and therefore has an output region: `PromptGutter.outputStartRow` answers `nil`
+            // for this one, so `commandDidStart` is false and the gutter draws no mark at all while
+            // the strip still draws `Actions ▾`. Both shapes are everyday; only one of them had a
+            // picture, and which one a person sees is not a detail the set gets to skip.
+            id = append(line, output: [], status: 0, seconds: 0.4)
+        }
+        hovered = id
+        // `applyLens` has already put the command row three rows from the top, which is the only
+        // way a lensed block has a header at all: a pretty-printed response is taller than the
+        // window, so the bottom of the display is somewhere in the middle of it. Everything else is
+        // pictured at the bottom of the scrollback, where a user actually is.
+        if state != .lensed {
+            cursor = terminal.displayBottomCursor(folding: folding, lenses: lenses,
+                                                  viewportRows: canvas.rows,
+                                                  buffers: { [buffers] in buffers[$0] })
+        }
     }
 
     /// A `curl` cut or padded to exactly `length` columns. Real text, because a row of `x`s would
@@ -765,6 +885,14 @@ struct GridScene {
 
     /// Free columns to leave after the command's last glyph for a picture of `width`: comfortably
     /// inside each band (W3 >= 34, W2 18-33, W1 8-17, W0 < 8), never on a boundary.
+    ///
+    /// The band's own number, never `max(…, what the strip measures)`: taking the wider of the two
+    /// lifts a row into the class *above* the one the picture is named after, so
+    /// `composite-strip-w1-…` would show a W2 strip. A class whose own strip does not fit in it is
+    /// not a broken fixture — the placement steps down a rung, or draws nothing and leaves the
+    /// summary where it was, and *that* is the picture. Two of §2.6's cells turn out to be
+    /// unreachable at these numbers (the W3 HTTP and watch rows measure 52–75 columns against a
+    /// band that begins at 34), which is a finding about the table rather than about the fixture.
     static func freeColumns(for width: CommandBlockChrome.WidthClass) -> Int {
         switch width {
         case .w3: return 40
@@ -774,24 +902,21 @@ struct GridScene {
         }
     }
 
-    /// The block whose command row leaves exactly enough room for `width` and no more.
-    func commandFitting(_ width: CommandBlockChrome.WidthClass) -> UInt32? { commandIDs[width] }
-
-    /// Puts `lens` on the request and builds its buffer the way `Pane.rebuildLens` does.
-    mutating func applyLens(_ lens: ResponseLens, toRequest: Bool) {
-        guard toRequest else { return }
+    /// Puts `lens` on one block and builds its buffer the way `Pane.rebuildLens` does.
+    mutating func applyLens(_ lens: ResponseLens, to id: UInt32) {
         let exchange = htmlBody ? GridScene.htmlExchange() : GridScene.jsonExchange()
         let input = LensInput(exchange: exchange, previous: nil,
                               folded: [ResponseLens.headersNode])
         guard let lines = LensRendering.lines(for: lens, input: input) else { return }
-        lenses.set(lens, for: requestID)
-        buffers[requestID] = LensBuffer(commandID: requestID, lens: lens, lines: lines,
-                                        contentVersion: terminal.contentVersion)
+        lenses.set(lens, for: id)
+        lensID = id
+        buffers[id] = LensBuffer(commandID: id, lens: lens, lines: lines,
+                                 contentVersion: terminal.contentVersion)
         // Three rows of context above the command, not `displayBottomCursor`. A lens is usually
         // taller than the window, so the bottom of the display is somewhere in the middle of the
         // response -- with the command row off the top the block has no header, `stripPlacement`
         // is never asked, and the picture named after the strip has no strip in it.
-        let promptRow = terminal.promptRow(ofCommand: requestID) ?? 0
+        let promptRow = terminal.promptRow(ofCommand: id) ?? 0
         cursor = DisplayCursor(row: max(0, promptRow - 3))
     }
 
@@ -830,7 +955,11 @@ struct GridScene {
     }
 
     /// A series of `runs` finished requests: the header a watched block would carry.
-    static func watchHeader(runs: Int) -> WatchHeader {
+    ///
+    /// `running` is the difference between §2.6's two watch rows: a series with a run in flight
+    /// carries `Stop` and a filled accent dot, and one that has stopped carries neither -- which is
+    /// the readout ladder's other half and had no picture over a grid.
+    static func watchHeader(runs: Int, running: Bool = true) -> WatchHeader {
         var series = WatchSeries(plan: WatchPlan(interval: 5, stop: .never),
                                  command: "curl -sSi https://api.example.com/v1/users", startedAt: 0)
         var clock = 0.0
@@ -842,7 +971,17 @@ struct GridScene {
                                timeTotal: 0.1 + Double(index % 10) * 0.01, body: "", at: clock)
             clock += 5
         }
-        series.runStarted(id: 9_999, at: clock)
+        if running {
+            series.runStarted(id: 9_999, at: clock)
+        } else {
+            // *Stopped*, not merely between runs. A series whose plan is `.never` still shows
+            // `Stop` however long it has been idle -- the first take of these pictures left the
+            // series armed and `w0-watch-finished` came out byte-identical to `w0-watch-running`,
+            // a lone `Stop` where §2.6's finished row has no strip at all. `.count` because a plan
+            // that ran out is the everyday way a watch ends; `.stopped` is the button, which
+            // `block-header-watch-finished-*` already pictures.
+            series.stop(.count)
+        }
         return series.header()
     }
 
@@ -956,7 +1095,7 @@ struct GridScene {
 
         for block in blocks {
             guard block.showsHeader, let promptSlot = slotOfRow[block.region.promptRow] else { continue }
-            let isRequest = block.region.id == requestID
+            let isRequest = httpIDs.contains(block.region.id)
             let header = block.header(now: terminal.now(), folding: folding, notifyArmed: false,
                                       anyFolds: !folding.isEmpty,
                                       hasOutput: terminal.commandHasOutput(atAbsoluteRow: block.region.promptRow),
@@ -973,8 +1112,8 @@ struct GridScene {
                                       isHTTP: isRequest,
                                       lens: lenses.lens(of: block.region.id),
                                       bodyIsJSON: isRequest && !htmlBody,
-                                      watch: isRequest ? watch : nil)
-            if isRequest { lensFieldSlot = promptSlot }
+                                      watch: block.region.id == watchID ? watch : nil)
+            if block.region.id == lensID { lensFieldSlot = promptSlot }
             if let cap = CommandBlockChrome.gutterCap(
                     header,
                     hasStarted: terminal.commandDidStart(atAbsoluteRow: block.region.promptRow),
@@ -1064,7 +1203,7 @@ struct GridScene {
             .map { Cursor(x: terminal.screen.cursor.x, y: $0) }
         var field: (slot: Int, caption: String, text: String, message: String?, offersJq: Bool)?
         if showsLensField, let slot = lensFieldSlot {
-            switch lenses.lens(of: requestID) {
+            switch lenses.lens(of: lensID) {
             case .filter(let path):
                 let body = htmlBody ? nil : LensRendering.bodyValue(GridScene.jsonExchange())
                 let problem = LensRendering.filterError(path, body: body)

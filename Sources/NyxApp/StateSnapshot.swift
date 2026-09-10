@@ -107,32 +107,42 @@ enum StateSnapshot {
                 UISnapshot.write(gutter, named: "gutter-marks-hovered-\(suffix)", into: directory,
                                  background: themePalette.background)
 
-                // Each pill of the hover strip in its pressed art. The pills are drawn views now,
-                // so the pressed fill is a value this process can set -- where an `.inline` bezel's
-                // hovered art was AppKit's own tracking, unreachable without a window, which is why
-                // the round before this had no pressed or hovered strip picture worth the name.
+                // Each pill of the hover strip, hovered and pressed. The pills are drawn views now,
+                // so both are states this process can reach -- where an `.inline` bezel's hovered
+                // art was AppKit's own tracking, unreachable without a window, which is why the
+                // round before this had no pressed or hovered strip picture worth the name.
+                //
+                // The hovered one goes through the pill's own `mouseEntered` with a synthesised
+                // event, the way the tab bar's sweep above does: a picture taken by setting the
+                // flag behind the handler would not say whether the tracking area is wired.
+                // Pressed is a setter, because a press is a `mouseDown` the pill has already
+                // consumed by the time it draws.
                 for (label, title, header, width) in strippedButtons() {
                     guard let content = CommandBlockChrome.stripContent(header, at: width) else { continue }
-                    let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-                    let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: cell))
-                    view.appearance = NSAppearance(named: appearance)
-                    let plan = CommandBlockChrome.StripPlan(content: content, firstColumn: 0,
-                                                            overlapsCommand: false)
-                    view.update(header: header, plan: plan, palette: themePalette, font: font,
-                                groundHeight: cell)
-                    view.frame = NSRect(
-                        x: 0, y: 0, width: view.width(of: content, font: font),
-                        height: CGFloat(CommandBlockChrome.stripFrameHeight(cellHeight: Double(cell))))
-                    view.layoutSubtreeIfNeeded()
-                    // A picture named `-pressed-copy-` with no pressed pill in it is worse than no
-                    // picture, so a title that is not on the strip says so rather than passing.
-                    if !view.setPressedForSnapshot(title: title) {
-                        FileHandle.standardError.write(
-                            "pressed-state snapshot: no pill titled \"\(title)\" on the strip\n"
-                                .data(using: .utf8)!)
+                    for (state, put) in [("hovered", { (v: BlockHeaderView) in v.setHoveredForSnapshot(title: title) }),
+                                         ("pressed", { (v: BlockHeaderView) in v.setPressedForSnapshot(title: title) })] {
+                        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+                        let view = BlockHeaderView(frame: NSRect(x: 0, y: 0, width: 320, height: cell))
+                        view.appearance = NSAppearance(named: appearance)
+                        let plan = CommandBlockChrome.StripPlan(content: content, firstColumn: 0,
+                                                                overlapsCommand: false)
+                        view.update(header: header, plan: plan, palette: themePalette, font: font,
+                                    groundHeight: cell)
+                        view.frame = NSRect(
+                            x: 0, y: 0, width: view.width(of: content, font: font),
+                            height: CGFloat(CommandBlockChrome.stripFrameHeight(cellHeight: Double(cell))))
+                        view.layoutSubtreeIfNeeded()
+                        // A picture named `-pressed-copy-` with no pressed pill in it is worse than
+                        // no picture, so a title that is not on the strip says so rather than
+                        // passing.
+                        if !put(view) {
+                            FileHandle.standardError.write(
+                                "\(state)-state snapshot: no pill titled \"\(title)\" on the strip\n"
+                                    .data(using: .utf8)!)
+                        }
+                        UISnapshot.write(view, named: "block-header-\(state)-\(label)-\(suffix)",
+                                         into: directory, background: themePalette.background)
                     }
-                    UISnapshot.write(view, named: "block-header-pressed-\(label)-\(suffix)",
-                                     into: directory, background: themePalette.background)
                 }
 
                 // The remote strip's own button, pressed. Its title is invisible at rest whenever
@@ -189,8 +199,13 @@ enum StateSnapshot {
                                   httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms", tone: .success),
                                   isHTTP: true, bodyIsJSON: true,
                                   watch: GridScene.watchHeader(runs: 11))
+        // The same block with its output folded: the fold pill reads `Unfold` there, and §2.3 gives
+        // it its own help sentence, so it is its own control and gets its own two pictures.
+        let foldedBlock = BlockHeader(id: 4, state: .finished, folded: true, hasOutput: true,
+                                      anyFolds: true, notifyArmed: false, summary: "8.8s")
         return [("copy", "Copy", finished, .w3),
                 ("fold", "Fold", finished, .w3),
+                ("unfold", "Unfold", foldedBlock, .w3),
                 ("actions", "Actions", finished, .w3),
                 // The glyph pill has no title at all: at W1 `Actions` collapses to the `\u{22EF}`,
                 // and the pressed art of the one control that is on every width is worth a picture.

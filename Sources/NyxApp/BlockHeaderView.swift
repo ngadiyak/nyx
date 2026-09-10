@@ -409,6 +409,25 @@ final class BlockHeaderView: NSView {
         return true
     }
 
+    /// Puts one pill under the pointer, by the title it draws, through the pill's own
+    /// `mouseEntered` with a synthesised event -- the way `StateSnapshot` hovers the tab bar.
+    ///
+    /// Not a `hovered` setter: the hover is the pill's tracking area talking to `mouseEntered`,
+    /// and a picture taken by setting the flag behind that would say nothing about whether the
+    /// handler is wired at all. The event's location is unused by the handler and passed for
+    /// honesty rather than effect.
+    func setHoveredForSnapshot(title: String) -> Bool {
+        guard let view = pillViews.first(where: { !$0.isHidden && $0.pill?.title == title }),
+              let event = NSEvent.enterExitEvent(
+                  with: .mouseEntered,
+                  location: convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), from: view),
+                  modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0,
+                  trackingNumber: 0, userData: nil)
+        else { return false }
+        view.mouseEntered(with: event)
+        return true
+    }
+
     override func isAccessibilityElement() -> Bool { false }   // the pills are the elements
     override func accessibilityRole() -> NSAccessibility.Role? { .group }
     override func accessibilityLabel() -> String? { header.map { "Command block: \($0.summary)" } }

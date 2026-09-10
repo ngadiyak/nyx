@@ -296,6 +296,46 @@ enum UISnapshot {
                 gutter.layoutSubtreeIfNeeded()
                 write(gutter, named: "gutter-marks-\(suffix)", into: directory,
                       background: themePalette.background)
+                // `gutter-cap-<state>-<presentation>-<palette>-<appearance>`: §8.5's twelve cases,
+                // one cap alone on one row, drawn by the real `gutterCap(_:hasStarted:hovered:)`.
+                //
+                // The picture above is a *run* of marks and answers a different question (does a
+                // column of them read as several commands); this answers what each single mark is,
+                // including the two presentations the set had no picture of at all -- hovered, the
+                // only new mark this wave draws, and hovered-while-folded, which points right
+                // because pressing it unfolds.
+                //
+                // `no-output`'s three come out byte-identical on purpose: a block that finished
+                // cleanly with nothing to fold is not pressable, so `gutterCap` never gives it a
+                // chevron. That is the rule, and a picture that shows it is worth more than a case
+                // left out because it would look the same.
+                for (stateName, header, started) in gutterCapStates() {
+                    for (presentation, hovered, folded) in [("idle", false, false),
+                                                            ("hovered", true, false),
+                                                            ("folded", true, true)] {
+                        // `BlockHeader.folded` is a `let`, so the folded case is a second header
+                        // rather than a mutation.
+                        let shown = folded ? gutterCapHeader(stateName, folded: true) : header
+                        guard let cap = CommandBlockChrome.gutterCap(shown, hasStarted: started,
+                                                                     hovered: hovered)
+                        else { continue }
+                        let view = PromptGutterView(frame: NSRect(x: 0, y: 0,
+                                                                  width: CGFloat(PromptGutter.hitWidth),
+                                                                  height: cell))
+                        view.appearance = NSAppearance(named: appearance)
+                        _ = view.update(caps: [0: cap],
+                                        labels: [0: GutterMarkLabel.Key(
+                                            mark: shown.failed ? .failed
+                                                : (shown.isRunning ? .running : .succeeded),
+                                            folded: shown.folded, hasOutput: shown.hasOutput,
+                                            line: 1)],
+                                        palette: themePalette, cellHeight: cell, padding: 8,
+                                        topPadding: 0)
+                        view.layoutSubtreeIfNeeded()
+                        write(view, named: "gutter-cap-\(stateName)-\(presentation)-\(suffix)",
+                              into: directory, background: themePalette.background)
+                    }
+                }
                 for (name, failed, summary, tone) in stickyPromptStates() {
                     write(stickyPrompt(palette: themePalette, failed: failed, summary: summary,
                                        tone: tone, appearance: appearance),
@@ -913,6 +953,38 @@ enum UISnapshot {
             ("folded", BlockHeader(id: 4, state: .finished, folded: true, hasOutput: true, anyFolds: true, notifyArmed: false, summary: "8.8s")),
             ("no-output", BlockHeader(id: 5, state: .finished, folded: false, hasOutput: false, anyFolds: false, notifyArmed: false, summary: "")),
         ]
+    }
+
+    /// The four states the gutter's mark has a shape for, and whether the command had started when
+    /// the cap was asked for.
+    ///
+    /// `hasStarted` is in the tuple rather than assumed because `gutterCap` returns `nil` before a
+    /// command starts -- the prompt you are typing at gets no mark -- and a picture set that could
+    /// not express that would be a set that had never tested it. All four have started here; the
+    /// unstarted case has no picture because it has no mark.
+    private static func gutterCapStates() -> [(String, BlockHeader, Bool)] {
+        ["succeeded", "failed", "running", "no-output"].map {
+            ($0, gutterCapHeader($0, folded: false), true)
+        }
+    }
+
+    /// One of `gutterCapStates`' headers, with `folded` set. A second header rather than a
+    /// mutation: `BlockHeader.folded` is a `let`.
+    private static func gutterCapHeader(_ state: String, folded: Bool) -> BlockHeader {
+        switch state {
+        case "failed":
+            return BlockHeader(id: 2, state: .failed(status: 1), folded: folded, hasOutput: true,
+                               anyFolds: folded, notifyArmed: false, summary: "exit 1 \u{b7} 8.8s")
+        case "running":
+            return BlockHeader(id: 3, state: .running(elapsed: 12), folded: folded, hasOutput: true,
+                               anyFolds: folded, notifyArmed: true, summary: "12s")
+        case "no-output":
+            return BlockHeader(id: 5, state: .finished, folded: folded, hasOutput: false,
+                               anyFolds: folded, notifyArmed: false, summary: "")
+        default:
+            return BlockHeader(id: 1, state: .finished, folded: folded, hasOutput: true,
+                               anyFolds: folded, notifyArmed: false, summary: "8.8s")
+        }
     }
 
     /// The three answers a request can give, each in the colour that says which it was. The command

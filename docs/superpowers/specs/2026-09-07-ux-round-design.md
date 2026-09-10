@@ -834,6 +834,18 @@ announcing none is a11y 0.2. The rule, in Core as `BlockAnnouncement.text(for:) 
 tested there: the **focused pane only**, and only when the command **ran ≥ 2 s or exited
 non-zero**. The sentence is `BlockHeader.summary` — the words the strip shows.
 
+**Amended 2026-09-10 (plan 1b's PM gate P1, final review F3): the sentence composes, it is not the
+bare summary.** `BlockAnnouncement.text` says `<command line> — <summary>` — `swift build -c
+release — exit 1 · 815ms` — because `exit 1 · 815ms` on its own names no command, and a VoiceOver
+user with a build in one pane, a test run in another and a `curl` in a third was told that
+something had failed and left to find out what. The command is `Terminal.commandLine(of:)` (the
+shell's own prompt sliced off at the `B` mark, so it is `swift build` and not `nik@nik-newmac ~ %
+swift build`), collapsed and cut to 60 characters by `CommandNotification.summarise` — the same
+limit the notification for a finished command has always used, because a spoken sentence is a
+glance. A block with no command line to name (no `B` mark, or a command row trimmed out of the
+scrollback) is still announced by its summary alone, with no separator hanging off the front.
+The rule about *when* is unchanged.
+
 ### 8.2 New `TerminalAction`s
 
 Every mouse-reachable action must have a keyboard path (`decisions.md` §3), and for anything drawn

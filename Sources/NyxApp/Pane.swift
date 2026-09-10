@@ -4321,10 +4321,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         armedNotifications.remove(finished.id)
         // Before the notification rule and independent of it: a notification is for a window you
         // are not looking at, an announcement is for the pane you are in. The focused pane only,
-        // and only a command that ran two seconds or failed; the sentence is the block's own
-        // summary, so the announcement and the strip say the same words about one command.
+        // and only a command that ran two seconds or failed; the sentence is the command and the
+        // block's own summary, so the announcement and the strip say the same words about one
+        // command -- and say *which* command.
         if let region = session.withTerminal({ $0.command(containingAbsoluteRow: finished.promptRow) }),
            let spoken = BlockAnnouncement.text(for: region,
+                                               command: session.withTerminal { $0.commandLine(of: region) },
                                                summary: blockMenuHeader(for: region.id)?.summary ?? "",
                                                paneIsFocused: isKeyboardFocused) {
             Announce.say(spoken)

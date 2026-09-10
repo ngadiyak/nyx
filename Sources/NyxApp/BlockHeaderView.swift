@@ -17,9 +17,14 @@ import NyxCore
 final class BlockHeaderView: NSView {
     var onAction: ((BlockAction, UInt32) -> Void)?
     var onToggleFold: ((UInt32, Bool) -> Void)?
-    /// Whether an earlier block ran this same request, asked when the ⋯ menu opens. See
+    /// Whether an earlier block ran this same request, asked when the lens chip's `▾` opens. See
     /// `menuHeader()` for why it is not on the header the frame built.
     var onNeedsPreviousRun: ((UInt32) -> Bool)?
+    /// The ⋯ menu itself, built by the pane (`Pane.blockMenu(for:)`) rather than here. The four
+    /// routes to a block's actions -- this pill, the right-click menu, ⌘⇧A and the menu the pane
+    /// vends to a screen reader -- were the same loop written out more than once, and a loop
+    /// written twice is two menus that can grey out differently over one block.
+    var onActionsMenu: ((UInt32) -> NSMenu?)?
 
     /// 8 pt of solid ground at each end (§2.3). The leading one is what the two-cell gradient fades
     /// *into*, so the strip never begins hard against a glyph.
@@ -342,13 +347,14 @@ final class BlockHeaderView: NSView {
         init(action: BlockAction, id: UInt32) { self.action = action; self.id = id }
     }
 
-    /// The header the ⋯ menu is built from: the one the frame drew, plus the one answer that is too
-    /// expensive to have per frame.
+    /// The header the lens chip's own menu is built from: the one the frame drew, plus the one
+    /// answer that is too expensive to have per frame.
     ///
     /// `hasPreviousRun` means parsing every cached command line (`RequestSummaryCache.previousRun`),
-    /// so `render` leaves it false and it is asked for here, on the press. Without this the strip's
+    /// so `render` leaves it false and it is asked for here, on the press. Without this the chip's
     /// `Diff with Previous Run` was greyed on every block however many earlier runs there were --
     /// only the right-click menu, which asks the same question at the same moment, ever enabled it.
+    /// The ⋯ menu asks it through `Pane.blockMenuHeader`, which is the same question again.
     private func menuHeader() -> BlockHeader? {
         guard var header else { return nil }
         header.hasPreviousRun = onNeedsPreviousRun?(header.id) ?? false
@@ -356,19 +362,7 @@ final class BlockHeaderView: NSView {
     }
 
     private func openActionsMenu() {
-        guard let header = menuHeader() else { return }
-        let menu = NSMenu()
-        for (index, entry) in header.actions.enumerated() {
-            if index > 0 && entry.action.startsGroup { menu.addItem(.separator()) }
-            let item = NSMenuItem(title: header.title(for: entry.action), action: #selector(menuPressed(_:)),
-                                  keyEquivalent: "")
-            item.target = self
-            item.representedObject = MenuEntry(action: entry.action, id: header.id)
-            item.isEnabled = entry.enabled
-            item.state = header.isChecked(entry.action) ? .on : .off
-            menu.addItem(item)
-        }
-        menu.autoenablesItems = false
+        guard let id = header?.id, let menu = onActionsMenu?(id) else { return }
         // Dropped from under the pill it came from. `StripPillView` is flipped, so its bottom-left
         // -- where a menu that drops down should start -- is `(0, height)`, not `(0, 0)`.
         guard let anchor = pillViews.first(where: {

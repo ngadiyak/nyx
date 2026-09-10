@@ -31,6 +31,8 @@ public enum TerminalAction: String, Equatable, CaseIterable {
     case newRequest = "new_request"
     case toggleHTTPLens = "toggle_http_lens"
     case stopWatch = "stop_watch"
+    case blockActions = "block_actions"
+    case scrollToStickyPrompt = "scroll_to_sticky_prompt"
 }
 
 /// A parsed `modifier+modifier+key=action` line from the config's `keybind` setting.
@@ -187,5 +189,9 @@ public struct KeyBinding: Equatable {
         // always gets the keystroke first.
         KeyBinding(key: .char("."), modifiers: [.cmd], action: .stopWatch),
         KeyBinding(key: .char("j"), modifiers: [.cmd, .shift], action: .toggleHTTPLens),
+        // The one keyboard route to a block's own menu, and the only chord this round adds. ⌘⇧A is
+        // free -- AppKit's Select All is ⌘A and modifiers must match exactly -- and it is Warp's
+        // chord for the same act, so the muscle memory somebody arrives with is right.
+        KeyBinding(key: .char("a"), modifiers: [.cmd, .shift], action: .blockActions),
     ]
 }

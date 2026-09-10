@@ -158,3 +158,14 @@ private func table(_ lines: String...) -> KeyBindingTable {
     #expect(go.actions.contains(.saveCommandOutput))
     #expect(go.actions.contains(.notifyWhenDone))
 }
+
+/// The one keyboard route to everything the hover strip offers. Without a chord it is not a route.
+@Test func theBlockAndStickyActionsAreInTheGoSectionWithTheirTitles() {
+    #expect(TerminalAction.blockActions.title == "Command Actions\u{2026}")
+    #expect(TerminalAction.scrollToStickyPrompt.title == "Go to the Pinned Command")
+    #expect(TerminalAction.blockActions.configName == "block_actions")
+    #expect(TerminalAction.scrollToStickyPrompt.configName == "scroll_to_sticky_prompt")
+    let go = ActionCatalog.sections.first { $0.title == "Go" }
+    #expect(go?.actions.contains(.blockActions) == true)
+    #expect(go?.actions.contains(.scrollToStickyPrompt) == true)
+}

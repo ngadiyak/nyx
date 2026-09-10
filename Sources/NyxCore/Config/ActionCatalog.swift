@@ -66,6 +66,8 @@ public extension TerminalAction {
         case .newRequest: return "New Request\u{2026}"
         case .toggleHTTPLens: return "Toggle Pretty Response"
         case .stopWatch: return "Stop Watching"
+        case .blockActions: return "Command Actions\u{2026}"
+        case .scrollToStickyPrompt: return "Go to the Pinned Command"
         }
     }
 
@@ -111,8 +113,9 @@ public enum ActionCatalog {
         ]),
         Section(title: "Go", groups: [
             Group([.commandPalette]),
-            Group([.previousPrompt, .nextPrompt]),
-            Group([.selectCommandOutput, .copyCommandOutput, .copyBlockMarkdown, .saveCommandOutput]),
+            Group([.previousPrompt, .nextPrompt, .scrollToStickyPrompt]),
+            Group([.blockActions, .selectCommandOutput, .copyCommandOutput, .copyBlockMarkdown,
+                   .saveCommandOutput]),
             Group([.editAndRunCommand]),
             Group([.foldCommand, .foldAllLongOutput]),
             Group([.notifyWhenDone]),

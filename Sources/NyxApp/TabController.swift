@@ -1568,6 +1568,13 @@ extension TabController: ActionTarget {
                 NSSound.beep()
                 return
             }
+
+        // The whole ⋯ menu, on the block the keyboard is on, at that block's own row. The one
+        // keyboard route to Copy, Stop, the lens chip and the dots: a pane's chrome has no key-view
+        // loop and cannot have one (a11y 0.1), so an action is the only fix there is.
+        case .blockActions: if focusedPane?.showBlockActions() != true { NSSound.beep() }
+        // The sticky band's click, as a chord: back to the command pinned at the top.
+        case .scrollToStickyPrompt: if focusedPane?.scrollToStickyPrompt() != true { NSSound.beep() }
         }
     }
 
@@ -1638,6 +1645,14 @@ extension TabController: ActionTarget {
             // row is greyed in the menu and absent from the palette rather than beeping at whoever
             // chose it.
             return focusedPane?.canStopWatch == true
+        case .blockActions:
+            // The cursor has to resolve to a block. Greyed on a shell with no integration and on a
+            // pane where nothing has run -- there is no menu to pop for a block that is not there.
+            return focusedPane?.hasBlockTarget ?? false
+        case .scrollToStickyPrompt:
+            // Only while a command is actually pinned at the top. With no band there is nowhere to
+            // go back to, and the row says so rather than beeping.
+            return focusedPane?.hasStickyPrompt ?? false
         // `newRequest` falls through to here and is right to: a blank request needs nothing to
         // exist but a pane to run it in.
         default:

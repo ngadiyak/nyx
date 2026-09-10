@@ -109,22 +109,12 @@ enum MenuSnapshot {
         }
     }
 
-    /// `BlockHeaderView.morePressed`'s loop, and `Pane.contextMenu`'s block half, which are the
-    /// same loop written twice in the product. Written a third time here rather than reached into,
-    /// because both product copies are `private` -- see the report: the menu's *structure* is the
-    /// one part of it that is not a NyxCore value.
+    /// The product's own builder, with no target: `Pane.blockMenu(for:target:action:)` is the one
+    /// loop the ⋯ pill, the right-click menu, ⌘⇧A and the pane's accessibility menu all go through,
+    /// so these pictures are of *that* menu rather than of a fourth copy of it. It was retyped here
+    /// while both product copies were `private`, which is exactly how a picture drifts.
     private static func menu(for header: BlockHeader) -> NSMenu {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        for (index, entry) in header.actions.enumerated() {
-            if index > 0 && entry.action.startsGroup { menu.addItem(.separator()) }
-            let item = NSMenuItem(title: header.title(for: entry.action), action: nil,
-                                  keyEquivalent: "")
-            item.isEnabled = entry.enabled
-            item.state = header.isChecked(entry.action) ? .on : .off
-            menu.addItem(item)
-        }
-        return menu
+        Pane.blockMenu(for: header, target: nil, action: nil)
     }
 
     /// The **real** Edit menu, pulled out of `MainMenu.build` -- not a reconstruction, so this

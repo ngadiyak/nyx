@@ -75,6 +75,7 @@ private func p(_ s: String) -> KeyBinding? { KeyBinding.parse(s) }
     #expect(has([.cmd], .char(","), .openConfig))
     #expect(has([.cmd], .char("1"), .tab1))
     #expect(has([.cmd], .char("9"), .tab9))
+    #expect(has([.cmd, .shift], .char("a"), .blockActions))
 }
 
 @Test func noTwoDefaultsShareAChord() {
@@ -144,6 +145,10 @@ private func p(_ s: String) -> KeyBinding? { KeyBinding.parse(s) }
         // Task 9 gives this its own editor; a bare "new request" chord competing with ⌘E and ⌘N
         // for a feature the palette and menu already reach is not worth a default yet.
         .newRequest,
+        // No default chord by design (spec §8.2): it is the keyboard path to the sticky band's
+        // click, and the band is only up while you are already reading one command's output --
+        // ⌘⇧A's menu, the palette and `keybind =` are how it is reached.
+        .scrollToStickyPrompt,
     ]
     for action in ActionCatalog.allMenuActions where !expectedUnbound.contains(action) {
         #expect(table.binding(for: action) != nil, "\(action.configName) lost its shortcut")

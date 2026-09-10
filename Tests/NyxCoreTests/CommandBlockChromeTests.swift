@@ -1155,3 +1155,41 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     // And a pane wide enough to be worth splitting is clear of it at any command length.
     #expect(!absent.contains { $0.cols > 40 })
 }
+
+// MARK: - Where ⌘⇧A's menu drops from
+
+/// ⌘⇧A pops the block's menu at the block's own row, so the menu belongs to a block visibly as
+/// well as logically. The pane is unflipped, so "the row's bottom edge" counts down from the top:
+/// slot 0's bottom edge is one cell below the top padding, and slot 3's is four.
+///
+/// The sticky band is why this is arithmetic in Core rather than three terms written out in a view
+/// handler: the band is drawn *over* the first row, and a menu anchored one cell too high would
+/// hang off the band instead of the command. `stickyPrompt` only appears while the pinned
+/// command's own row is above the viewport, so a block whose row is on screen at all is never the
+/// block the band is covering -- and this function does not need to know the band exists.
+@Test func theBlockMenuAnchorIsTheBottomEdgeOfTheBlocksOwnRow() {
+    let height = 400.0, padding = 8.0, cell = 16.0
+    #expect(CommandBlockChrome.menuAnchorY(slot: 0, viewHeight: height, padding: padding,
+                                           cellHeight: cell) == 400 - 8 - 16)
+    #expect(CommandBlockChrome.menuAnchorY(slot: 3, viewHeight: height, padding: padding,
+                                           cellHeight: cell) == 400 - 8 - 64)
+    // One row further down is one cell lower, at every padding.
+    for padding in [0.0, 8.0, 24.0] {
+        let first = CommandBlockChrome.menuAnchorY(slot: 5, viewHeight: height, padding: padding,
+                                                   cellHeight: cell)
+        let next = CommandBlockChrome.menuAnchorY(slot: 6, viewHeight: height, padding: padding,
+                                                  cellHeight: cell)
+        #expect(first - next == cell)
+    }
+}
+
+/// A block the last frame did not draw -- scrolled off the top, with every output row still on
+/// screen and the cursor still on it -- anchors at the top of the pane rather than off-screen,
+/// which is where `bounds.height - padding - slot × cell` for a slot nobody has would have put it.
+@Test func aBlockWithNoRowOnScreenAnchorsAtTheTopOfThePane() {
+    #expect(CommandBlockChrome.menuAnchorY(slot: nil, viewHeight: 400, padding: 8,
+                                           cellHeight: 16) == 400)
+    // Before the first frame has measured a cell, every slot is the same place: the top.
+    #expect(CommandBlockChrome.menuAnchorY(slot: 2, viewHeight: 400, padding: 8,
+                                           cellHeight: 0) == 400)
+}

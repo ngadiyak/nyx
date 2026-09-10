@@ -819,6 +819,27 @@ public extension CommandBlockChrome {
     /// What the strip actually *paints*: one row, whatever its frame is. A 20 pt opaque band on a
     /// 13 pt grid covers three rows of somebody's output (Addendum 2).
     static func stripGroundHeight(cellHeight: Double) -> Double { cellHeight }
+    /// Where a menu dropped from a block's own row starts, measured up from the bottom of an
+    /// unflipped pane: the *bottom* edge of that row, because a menu drops downwards from where it
+    /// is anchored (§2.8, `block_actions`).
+    ///
+    /// `slot` is the row the last frame drew the block's command line in -- through whatever folds
+    /// and lenses were on screen, which is why the caller looks it up rather than subtracting the
+    /// viewport top. `nil` means the block has no row on screen at all: its prompt scrolled off the
+    /// top while its output stayed, and the cursor can still be on it. Then the anchor is the top
+    /// of the pane, which is where the block is in the direction of, rather than a negative y off
+    /// the bottom of the window.
+    ///
+    /// Here rather than in the view because the arithmetic has to be checkable against the sticky
+    /// band: the band is painted *over* the first row, so an anchor one cell too high would hang a
+    /// block's menu off the band instead of off the block. `Terminal.stickyPrompt` only puts the
+    /// band up while the pinned command's own row is above the viewport, so the block under a slot
+    /// is never the block the band is naming, and this needs no term for it.
+    static func menuAnchorY(slot: Int?, viewHeight: Double, padding: Double,
+                            cellHeight: Double) -> Double {
+        guard let slot, cellHeight > 0 else { return viewHeight }
+        return viewHeight - padding - Double(slot + 1) * cellHeight
+    }
     /// An in-grid fold triangle's cell, widened to the same 20 pt the gutter uses, for the same
     /// reason: one cell is about 8 pt, which is not a target.
     static let foldColumnWidth: Double = 20

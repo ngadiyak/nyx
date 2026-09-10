@@ -175,6 +175,8 @@ xterm, Ghostty and iTerm2 all report there.
 | `select_command_output` / `copy_command_output` | — | The output of the block the keyboard is on — moved by ⌘↑/⌘↓, and the last command when nothing has moved it |
 | `find` / `find_next` / `find_previous` | ⌘F / ⌘G / ⌘⇧G | The bar has an "All tabs" scope toggle |
 | `command_palette` | ⌘⇧P | Actions, themes, tabs, quick actions |
+| `block_actions` | ⌘⇧A | Opens the block menu — every action the hover strip offers — on the block the keyboard is on, at its own row |
+| `scroll_to_sticky_prompt` | — | Scrolls back to the command pinned at the top of the pane |
 | `edit_and_run_command` | ⌘E | Opens the line being typed — or, at an empty prompt, the command of the block the keyboard is on — in the editor |
 | `rename_tab` | ⌘⇧R | |
 | `group_tab` / `ungroup_tab` / `toggle_tab_group` | ⌘⌃G / — / — | |

@@ -142,8 +142,9 @@ final class StickyPromptView: NSView {
         // the bug the block header already has a comment about.
         //
         // Set through an attributed string rather than `stringValue` + `textColor`, because the
-        // kerning has to go on with them: `monospacedSystemFont`'s advance is not the pane's cell,
-        // and a plain label drifted half a pixel per character out from under the grid.
+        // kerning has to go on with them: the pane's cell is its font's advance rounded up to whole
+        // device pixels, and a plain label drifted that rounding -- half a pixel a character -- out
+        // from under the grid.
         label.attributedStringValue = StickyPromptView.attributed(
             text, font: font, colour: nsColor(palette.foreground, alpha: 1), kern: kern)
         // The note follows the block's tone rather than the command line's: `curl` reporting 404
@@ -183,7 +184,9 @@ final class StickyPromptView: NSView {
     }
 
     /// One glyph's advance in the band's font, measured the way `FontSet` measures the cell's: from
-    /// `M`, in points. The difference between the two is what `StickyPromptLabel.kern` closes.
+    /// `M`, in points. The difference between the two is what `StickyPromptLabel.kern` closes --
+    /// which is only the cell's rounding as long as `font` is the pane's own terminal face, so the
+    /// caller passes `Pane.terminalFont` and not the system's mono.
     private func glyphAdvance(of font: NSFont) -> CGFloat {
         ("M" as NSString).size(withAttributes: [.font: font]).width
     }

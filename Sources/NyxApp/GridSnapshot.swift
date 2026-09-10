@@ -107,7 +107,14 @@ enum GridSnapshot {
         // the spine land when the padding they used to live in is gone.
         let dark = Themes.builtin["nyx-dark"] ?? Palette.xtermDefault()
         for (label, change) in [("line-height-08", { (c: inout Config) in c.lineHeight = 0.8 }),
-                                ("padding-0", { (c: inout Config) in c.padding = 0 })] {
+                                ("padding-0", { (c: inout Config) in c.padding = 0 }),
+                                // A face that is not the system's. Every picture of the chrome had
+                                // been taken at `fontFamily = "system"`, where the band's own font
+                                // and the grid's happen to be the same face; at any other family
+                                // they are not, and the pinned line was drawn in SF Mono over a
+                                // Menlo grid. Menlo because it ships with macOS, so this picture is
+                                // the same picture on every machine.
+                                ("font-menlo", { (c: inout Config) in c.fontFamily = "Menlo" })] {
             var tweaked = config
             change(&tweaked)
             guard let canvas = GridCanvas(cols: 84, rows: 20, config: tweaked) else { continue }
@@ -510,7 +517,8 @@ extension GridCanvas {
                                                   width: width, height: height))
         view.appearance = NSAppearance(named: appearance)
         view.update(text: sticky.text, summary: sticky.summary, tone: sticky.tone, palette: palette,
-                    font: .monospacedSystemFont(ofSize: CGFloat(config.fontSize), weight: .regular),
+                    font: Pane.terminalFont(family: config.fontFamily, fonts: fonts,
+                                            size: CGFloat(config.fontSize)),
                     padding: padding, cellWidth: cell.width)
         view.layoutSubtreeIfNeeded()
         return view

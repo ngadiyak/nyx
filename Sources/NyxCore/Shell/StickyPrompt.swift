@@ -132,11 +132,20 @@ public extension StickyPromptLabel {
 
     /// The letter spacing the band's label needs so that its N-th glyph starts N whole cells in.
     ///
-    /// The band draws in `NSFont.monospacedSystemFont`, whose advance is *not* the pane's cell: the
-    /// cell is `ceil(advance × scale)` device pixels (`FontSet`), so at scale 2 a 16 px advance
-    /// lives in a 17 px cell. Half a pixel per character is invisible at the first glyph and two
-    /// and a half cells out by the 44th, which is a pinned command line sliding out from under the
-    /// output it names -- the drift `textInset` alone cannot fix, because it only places the start.
+    /// `glyphAdvance` must be measured from **the same face the cell was measured from** -- the
+    /// pane's own terminal font (`Pane.terminalFont`). Then this is nothing but the rounding
+    /// `FontSet` does: it builds the font at `pointSize × scale` and takes `ceil` of the advance in
+    /// whole device pixels, so the cell is `ceil(advance × scale) / scale` and the kern is what the
+    /// `ceil` added -- at least 0 and less than one device pixel. Half a pixel per character is
+    /// invisible at the first glyph and two and a half cells out by the 44th, which is a pinned
+    /// command line sliding out from under the output it names: the drift `textInset` cannot fix,
+    /// because it only places the start.
+    ///
+    /// Measured from a *different* face -- which is what `.monospacedSystemFont` against a cell
+    /// built from `font-family = Menlo` was -- the number is not a rounding at all but the gap
+    /// between two fonts, of either sign, and the band was drawn in SF Mono over a Menlo grid. The
+    /// arithmetic here still behaves (a cell narrower than the advance kerns negative, so the
+    /// letters crowd but stay on their columns); it is the caller that must not do it.
     ///
     /// Zero for an unmeasured pane rather than a nonsense number: a band laid out before its font
     /// or its grid has been measured is one frame from being laid out again.

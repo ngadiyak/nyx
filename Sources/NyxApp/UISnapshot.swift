@@ -1088,6 +1088,10 @@ enum UISnapshot {
         let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: 22))
         let view = StickyPromptView(frame: NSRect(x: 0, y: 0, width: 900, height: height))
         view.appearance = NSAppearance(named: appearance)
+        // The system's mono, and a cell measured from that same font, because there is no grid in
+        // this picture: these four are the band's *states*, and the kern is 0 by construction. The
+        // band over a real grid in a face that is not the system's is
+        // `composite-font-menlo-sticky-*` in `GridSnapshot`.
         let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         // Through `StickyPromptLabel.text`, with the note it will be drawn beside, so each picture
         // says the status exactly where the real band would: in the note when there is one, in the

@@ -153,6 +153,29 @@ private func session() -> Terminal {
     #expect(StickyPromptLabel.kern(cellWidth: 8.5, glyphAdvance: 0) == 0)
 }
 
+/// What bounds the kern, and why it is a rounding gap rather than a difference of opinion about the
+/// font: the band draws in the pane's own face, so the cell it is being fitted to is
+/// `ceil(advance × scale) / scale` of the very advance being kerned. The kern is what the `ceil`
+/// added -- never negative, never a whole device pixel.
+///
+/// It was `monospacedSystemFont` against a cell built from `config.fontFamily`, where the two are
+/// different faces at `fontFamily = "Menlo"` and the "rounding gap" was several points.
+@Test func theKernIsOnlyEverTheRoundingTheCellDoesToTheAdvance() {
+    for scale in [1.0, 2.0, 3.0] {
+        for advance in [7.2, 7.8, 8.0, 8.4331, 10.5, 14.0] {
+            let cell = (advance * scale).rounded(.up) / scale
+            let kern = StickyPromptLabel.kern(cellWidth: cell, glyphAdvance: advance)
+            #expect(kern >= 0)
+            #expect(kern < 1 / scale + 1e-9)
+        }
+    }
+    // And if a cell ever *is* narrower than the advance -- two different faces, which the band no
+    // longer allows -- it kerns negative rather than pretending. The letters crowd, but they crowd
+    // on the columns, which is the one thing the band cannot give up.
+    #expect(abs(StickyPromptLabel.kern(cellWidth: 8, glyphAdvance: 8.4) + 0.4) < 0.001)
+    #expect(abs(StickyPromptLabel.kern(cellWidth: 7.8, glyphAdvance: 8.5) + 0.7) < 0.001)
+}
+
 /// The band begins at the gutter's edge, which is not a column boundary: at the shipping
 /// `padding = 8` a 20 pt gutter puts it two thirds of the way into column 1, and the pinned command
 /// line was then drawn a fraction of a cell out of step with the output under it -- which reads as

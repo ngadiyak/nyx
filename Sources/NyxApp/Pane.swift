@@ -2262,9 +2262,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
         stickyPromptRow = sticky?.row
         let wasHidden = stickyStrip.isHidden
+        // The pane's own face, not `.monospacedSystemFont`: the band's text is a copy of a row of
+        // this grid and is kerned onto this grid's columns, and at any `font-family` but `system`
+        // those were two different faces.
         stickyStrip.update(text: sticky?.text, summary: sticky?.summary ?? "", tone: sticky?.tone ?? .plain,
                            palette: frame.palette,
-                           font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular),
+                           font: Pane.terminalFont(family: config.fontFamily, fonts: fonts,
+                                                   size: effectiveFontSize),
                            padding: padding, cellWidth: cellSizePoints.width)
         // The strip claims the pointer only while it is up, so appearing or disappearing changes
         // which view the cursor over the top row belongs to.
@@ -4280,6 +4284,28 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     static func systemMonospacedFont(for family: String) -> CTFont? {
         guard family.lowercased() == "system" else { return nil }
         return NSFont.monospacedSystemFont(ofSize: 13, weight: .regular) as CTFont
+    }
+
+    /// The pane's own terminal face, as an `NSFont` at point size, for the chrome that has to sit on
+    /// the grid's columns -- which is the pinned band's label and nothing else.
+    ///
+    /// Taken from the `FontSet` the renderer is drawing with rather than resolved a second time from
+    /// the family name: the band is kerned by the difference between its advance and the cell's
+    /// width, and that is only the `ceil` in `FontSet` (which builds its font at `pointSize × scale`
+    /// and rounds the advance up to whole device pixels) if the two are the same face. Asking
+    /// `.monospacedSystemFont` for it is why `↑ $ swift build` was drawn in SF Mono over a Menlo
+    /// grid, with a kern of `(Menlo cell) − (SF Mono advance)` -- a different number, of a different
+    /// sign, from the rounding it claimed to be.
+    ///
+    /// The `system` family goes through `NSFont` for the same reason `systemMonospacedFont` exists:
+    /// SF Mono is reachable only through that call, and its descriptor does not resolve by name.
+    static func terminalFont(family: String, fonts: FontSet, size: CGFloat) -> NSFont {
+        guard family.lowercased() != "system" else {
+            return .monospacedSystemFont(ofSize: size, weight: .regular)
+        }
+        let descriptor = CTFontCopyFontDescriptor(fonts.regular) as NSFontDescriptor
+        return NSFont(descriptor: descriptor, size: size)
+            ?? .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
     /// Whether ⌘C has anything to copy, so the menu item can grey out.

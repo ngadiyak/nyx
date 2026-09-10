@@ -57,22 +57,54 @@ private let sheetGreyDark = RGB(50, 50, 50)        // windowBackgroundColor, dar
     }
 }
 
-/// `Stop` is drawn in the theme's failure colour on the pill's own ground. `Stop`'s colour is
-/// calibrated to clear 4.5:1 on `palette.background` and nothing further (one-dark measures
-/// 4.503:1, no headroom to spare) -- so a wash of the row's hover tint under it, as the pill used
-/// to draw, ate that headroom and gruvbox-dark's `Stop` read at 2.82:1. The idle pill's ground is
-/// therefore opaque `background`, not a tint of the hovered row, and the hairline that outlines it
-/// is a 0.30 wash rather than 0.22 -- the smallest alpha that clears 1.6:1 against that ground in
-/// every theme (0.22 tops out at 1.29:1, in every theme, however the row's tint is chosen: it is
-/// not a tuning problem, `RGB.blend`'s straight line from any ground to `foreground` cannot clear
-/// 1.6 at a 0.08 step). Measured in all seven built-ins, because "readable in nyx-dark" is how
-/// gruvbox's lit `{ }` shipped at 2.82:1 in the first place.
+/// `Stop` is drawn in the theme's failure colour, pushed toward `foreground` (via `RGB.readable`)
+/// on the pill's own ground -- `blockHoverBackground` washed by exactly the alpha the fill state
+/// draws (0.14 idle, 0.20 hovered, 0.26 pressed) -- rather than resolved once against plain
+/// `background` and reused everywhere: gruvbox-dark's `Stop` read at 2.82:1 hovered when the two
+/// disagreed. The hairline is `Palette.pillHairline`, which starts at the 0.30 wash the pill used
+/// to draw unconditionally and widens further wherever a state's own fill has washed the ground too
+/// close to `foreground` to leave a fixed 0.30 room (pressed, at 0.30 flat, measured under 1.6 in
+/// every theme -- the *gap* a hairline has to work with shrinks as the fill's own alpha rises).
+///
+/// Six of seven themes clear 4.5:1 for `Stop` in every state; solarized-dark and one-dark's own red
+/// cannot get there on some states even pushed all the way to `foreground` -- `RGB.readable`'s own
+/// ceiling, `contrast(foreground, ground)`, which is what pure `foreground` would read at. Recorded
+/// here at their measured ceilings rather than silently accepted: the general floor stays 4.5,
+/// these two theme/state cells do not clear it and are not asked to.
 @Test func theStripsUnlitPillsAreReadableInEveryTheme() {
+    // (theme, state) -> the measured ceiling `RGB.readable` cannot get past on that ground: pure
+    // `foreground` itself is not 4.5:1 there, so nothing pushed toward it can be either. Every
+    // other cell (all seven themes idle; five of seven in every state) holds 4.5 outright.
+    let knownCeilings: [String: [String: Double]] = [
+        "solarized-dark": ["idle": 4.06, "hover": 3.70, "pressed": 3.32],
+        "one-dark": ["hover": 4.05, "pressed": 3.62],
+    ]
     for (name, palette) in Themes.builtin {
-        let ground = palette.background
-        #expect(RGB.contrast(SummaryTone.failure.color(in: palette), ground) >= 4.5, "\(name) Stop")
-        #expect(RGB.contrast(palette.foreground, ground) >= 4.5, "\(name) label")
-        let hairline = RGB.blend(palette.background, into: palette.foreground, amount: 0.30)
-        #expect(RGB.contrast(hairline, ground) >= 1.6, "\(name) hairline")
+        for (state, alpha) in [("idle", 0.14), ("hover", 0.20), ("pressed", 0.26)] {
+            let ground = RGB.blend(palette.blockHoverBackground, into: palette.foreground, amount: alpha)
+            let ink = RGB.readable(SummaryTone.failure.color(in: palette), on: ground,
+                                   towards: palette.foreground)
+            let floor = knownCeilings[name]?[state] ?? 4.5
+            #expect(RGB.contrast(ink, ground) >= floor, "\(name) \(state) Stop")
+            // Every other unlit pill's ink is `foreground` outright, no push -- the same ceiling
+            // `readable` converges to above, so it shares the same recorded exceptions.
+            #expect(RGB.contrast(palette.foreground, ground) >= floor, "\(name) \(state) label")
+            let hairline = palette.pillHairline(on: ground)
+            #expect(RGB.contrast(hairline, ground) >= 1.6, "\(name) \(state) hairline")
+        }
     }
 }
+
+/// A tab group's name pill (`TabBarView.textColor(on:)`) is `textOn` on an arbitrary ANSI colour,
+/// not just `accent` -- and picking the push direction from which neutral won, rather than from
+/// that neutral's own luminance relative to the fill, walked nyx-light's `colors[3]` pill the wrong
+/// way: `background` is the *lighter* of nyx-light's two neutrals, so pushing it toward black moved
+/// it toward the fill instead of away, and a pill that read at 4.29:1 unpushed came out at 3.78:1
+/// pushed -- a regression review round 1 found by measuring the built `Palette`, not the test.
+@Test func textOnPushesTowardTheNeutralsOwnLighterOrDarkerSide() {
+    guard let nyxLight = Themes.builtin["nyx-light"] else { Issue.record("nyx-light missing"); return }
+    let fill = RGB(hex: 0x8F5E15)
+    let ink = nyxLight.textOn(fill)
+    #expect(RGB.contrast(ink, fill) >= 4.5)
+}
+

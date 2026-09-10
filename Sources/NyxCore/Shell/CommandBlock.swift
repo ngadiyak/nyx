@@ -244,7 +244,10 @@ public extension CommandBlockChrome {
 
         public var accessibilityLabel: String {
             switch self {
-            case .lens(let name, let on): return on ? "Response lens: \(name)" : "Show this response as \(name)"
+            // The chip is a state readout, not a suggestion -- `name` already names *this*
+            // response's current lens (`Raw` when there is none), on or off, so the label says
+            // what is showing and that the `▾` opens a menu rather than performing an action.
+            case .lens(let name, _): return "Response shown as \(name); opens a menu"
             case .actions: return "Command actions"
             // "Stop" alone collides with ⌘.'s differently-scoped Stop (a11y 6.9): VoiceOver has to
             // hear what this one stops.
@@ -315,7 +318,9 @@ public extension CommandBlockChrome {
         if watching {
             list.append(.stop)
         } else if !watched, lensable {
-            list.append(.lens(name: (header.lens ?? .pretty).chipTitle, on: header.lens != nil))
+            // The chip is a state readout, not a suggestion: `nil` is the response showing raw, so
+            // the chip reads `Raw` unlit rather than naming the lens pressing it would switch to.
+            list.append(.lens(name: (header.lens ?? .raw).chipTitle, on: header.lens != nil))
         } else if header.folded, header.hasOutput {
             list.append(.fold(.unfold))
         }

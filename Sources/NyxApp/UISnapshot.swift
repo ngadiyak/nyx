@@ -1173,6 +1173,10 @@ enum UISnapshot {
             ("http-lens-on", request(11, lens: .pretty, tooLarge: false, json: true), .w3),
             ("http-lens-body", request(12, lens: .body, tooLarge: false, json: true), .w3),
             ("http-lens-too-large", request(13, lens: nil, tooLarge: true, json: true), .w3),
+            // `.raw` chosen explicitly (from the menu, after some other lens was on) is lit, unlike
+            // `nil` -- the chip is a state readout, and both read `Raw`, but only one of them is the
+            // response actually having been switched back to it on purpose.
+            ("http-lens-raw", request(25, lens: .raw, tooLarge: false, json: true), .w3),
             // The same "there is nothing behind this control" state on a crowded command line: the
             // narrow strip is where a missing control is easiest to mistake for a dropped one.
             ("http-lens-too-large-w2", request(14, lens: nil, tooLarge: true, json: true), .w2),

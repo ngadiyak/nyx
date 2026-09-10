@@ -96,9 +96,9 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
 @Test func theTableHTTP() {
     let h = header(summary: "", http: HTTPSummary(text: "200 · 142 ms · 1.2 KB · json", tone: .success),
                    isHTTP: true, json: true)
-    #expect(pills(h, .w3) == [.lens(name: "Pretty", on: false), .fold(.fold),
+    #expect(pills(h, .w3) == [.lens(name: "Raw", on: false), .fold(.fold),
                               .copy(enabled: true), .actions(.labelled)])
-    #expect(pills(h, .w2) == [.lens(name: "Pretty", on: false), .actions(.labelled)])
+    #expect(pills(h, .w2) == [.lens(name: "Raw", on: false), .actions(.labelled)])
     #expect(pills(h, .w1) == [.actions(.glyph)])
     #expect(readout(h, .w3) == "200 · 142 ms · 1.2 KB · json")
     #expect(readout(h, .w2) == "200 · 142 ms")
@@ -495,7 +495,7 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
         h, commandRows: [(absoluteRow: 4, lastUsedColumn: 44)], cols: 84, summary: nil,
         measure: columns))
     #expect(free.plan.readout == "200 · 142 ms")
-    #expect(free.plan.pills == [.lens(name: "Pretty", on: false), .actions(.labelled)])
+    #expect(free.plan.pills == [.lens(name: "Raw", on: false), .actions(.labelled)])
 }
 
 /// The 30-run watch row: the sentence plus even the narrowest pills is wider than the row, so there
@@ -537,17 +537,21 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
 /// The chip names the lens rather than drawing `{ }`, and it names the one that is *on* -- a chip
 /// reading `Pretty` beside a response being read through `Headers` is the control lying about the
 /// thing it controls.
+/// Review round 1 (I3): the chip is a state readout whose `▾` opens choices, not a suggestion of
+/// what pressing it would switch to -- an unlensed response is *already* showing raw, so the chip
+/// reads `Raw` unlit, not `Pretty`.
 @Test func theChipNamesTheLensThatIsOn() {
     func chip(_ lens: ResponseLens?) -> CommandBlockChrome.Pill? {
         let h = header(summary: "", http: HTTPSummary(text: "200 · 142 ms", tone: .success),
                        isHTTP: true, lens: lens, json: true)
         return CommandBlockChrome.pills(h, at: .w3).first
     }
-    #expect(chip(nil) == .lens(name: "Pretty", on: false))
+    #expect(chip(nil) == .lens(name: "Raw", on: false))
+    #expect(chip(.raw) == .lens(name: "Raw", on: true))
     #expect(chip(.pretty) == .lens(name: "Pretty", on: true))
     #expect(chip(.headers) == .lens(name: "Headers", on: true))
     #expect(chip(.body) == .lens(name: "Body", on: true))
     #expect(chip(.grep("alpha")) == .lens(name: "Find", on: true))
     // The chevron says a menu opens; every chip carries one, because every lens has neighbours.
-    #expect(CommandBlockChrome.Pill.lens(name: "Pretty", on: false).trailingChevron)
+    #expect(CommandBlockChrome.Pill.lens(name: "Raw", on: false).trailingChevron)
 }

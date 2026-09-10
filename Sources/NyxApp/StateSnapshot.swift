@@ -192,7 +192,8 @@ enum StateSnapshot {
                 // The glyph pill has no title at all: at W1 `Actions` collapses to the `\u{22EF}`,
                 // and the pressed art of the one control that is on every width is worth a picture.
                 ("actions-glyph", "", finished, .w1),
-                ("lens", "Pretty", request, .w3),
+                // The chip is a state readout: an unlensed response reads `Raw`, not `Pretty`.
+                ("lens", "Raw", request, .w3),
                 ("stop", "Stop", watched, .w3)]
     }
 

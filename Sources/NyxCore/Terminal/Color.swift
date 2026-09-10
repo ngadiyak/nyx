@@ -261,13 +261,36 @@ public struct Palette: Equatable {
     /// its chip. Whichever of the theme's two neutrals reads on it; assuming the background always
     /// does gives dark-on-dark wherever the fill is a dark red. Neither neutral is guaranteed to
     /// clear 4.5:1 on its own -- gruvbox-dark's cream foreground on its own blue accent measured
-    /// 3.48:1, one-dark's grey foreground on its own blue 4.33:1 -- so the winner is pushed toward
-    /// pure black or white, the same way `accentText` is pushed toward the page, until it does.
+    /// 3.48:1, one-dark's grey foreground on its own blue 4.33:1 -- so the winner is pushed further
+    /// in the direction it already reads better, the same way `accentText` is pushed toward the
+    /// page, until it does.
+    ///
+    /// The push direction is `base`'s own luminance relative to `fill`'s, not which neutral won:
+    /// picking white whenever `background` was the winner sent nyx-light's `colors[3]` chip toward
+    /// *black* -- `background` there is the lighter neutral, so pushing it dark walked it toward
+    /// the fill instead of away, and a pill that read at 4.29:1 unpushed came out at 3.78:1 pushed.
+    /// And a push that ends up worse than where it started is never used: `pushed` can only walk in
+    /// twentieths, and the step that first clears (or fails to clear) `minimum` is not guaranteed
+    /// to beat the colour it started from.
     public func textOn(_ fill: RGB) -> RGB {
-        let useBackground = RGB.contrast(background, fill) >= RGB.contrast(foreground, fill)
-        let base = useBackground ? background : foreground
-        let extreme = useBackground ? RGB(0, 0, 0) : RGB(255, 255, 255)
-        return Palette.pushed(base, toward: extreme, until: fill, reaches: 4.5, from: 0, to: 1)
+        let base = RGB.contrast(background, fill) >= RGB.contrast(foreground, fill) ? background : foreground
+        let extreme = base.relativeLuminance >= fill.relativeLuminance ? RGB(255, 255, 255) : RGB(0, 0, 0)
+        let pushed = Palette.pushed(base, toward: extreme, until: fill, reaches: 4.5, from: 0, to: 1)
+        return RGB.contrast(pushed, fill) >= RGB.contrast(base, fill) ? pushed : base
+    }
+
+    /// The hairline that outlines an unlit strip pill, on the ground the pill is actually filled
+    /// with -- `foreground` composited at 0.30 first, the alpha the pill drew unconditionally
+    /// before this, then further in the same twentieths `pushed` walks in until it clears 1.6:1.
+    ///
+    /// A fixed 0.30 is not enough on its own: `ground` already carries some of that same wash (the
+    /// fill itself, 0.14 idle, 0.20 hovered, 0.26 pressed), so the *gap* the hairline has left to
+    /// work with shrinks as the fill's own alpha rises -- at 0.30 flat, every theme's pressed state
+    /// measured under 1.6. Walking further towards `foreground` is always available: the ceiling is
+    /// `contrast(foreground, ground)`, which is what a hairline of *pure* foreground would read at,
+    /// and every theme's is comfortably above 1.6 in every state (worst: one-dark pressed, 3.63:1).
+    public func pillHairline(on ground: RGB) -> RGB {
+        Palette.pushed(ground, toward: foreground, until: ground, reaches: 1.6, from: 0.30, to: 1.0)
     }
 
     /// One of the sixteen, picked for use as *text* or as a small filled shape: the normal variant

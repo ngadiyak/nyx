@@ -238,7 +238,7 @@ final class BlockHeaderView: NSView {
             if newBlock || view.isHidden { view.resetInteraction() }
             let pill = plan.pills[index]
             view.isHidden = false
-            view.configure(pill, palette: palette)
+            view.configure(pill, palette: palette, opaque: plan.overlapsCommand)
             view.onPress = { [weak self] in self?.press(pill) }
         }
     }
@@ -364,8 +364,10 @@ final class BlockHeaderView: NSView {
 
     /// The lens rows of the ⋯ menu, on their own, under the chip that names them. Built from
     /// `header.actions` rather than from a second list, so the chip cannot offer a lens the menu
-    /// does not -- the failure `BlockHeader.showsLens` and the menu had before them.
-    private func lensMenu(for header: BlockHeader) -> NSMenu {
+    /// does not -- the failure `BlockHeader.showsLens` and the menu had before them. `nil` when
+    /// there are none, so a pill that should not have been offered in the first place cannot pop
+    /// up an empty menu.
+    private func lensMenu(for header: BlockHeader) -> NSMenu? {
         let menu = NSMenu()
         for entry in header.actions {
             guard case .setLens = entry.action else { continue }
@@ -377,22 +379,23 @@ final class BlockHeaderView: NSView {
             item.state = header.isChecked(entry.action) ? .on : .off
             menu.addItem(item)
         }
+        guard !menu.items.isEmpty else { return nil }
         menu.autoenablesItems = false
         return menu
     }
 
     /// The chip's `▾`: opens the lens rows alone, rather than the whole ⋯ menu -- a chip that
     /// carries one control's own name opens that control's own choices. `menuHeader()` because
-    /// `Diff with Previous Run`'s `enabled` is answered late, same as `openActionsMenu`.
+    /// `Diff with Previous Run`'s `enabled` is answered late, same as `openActionsMenu`; it is
+    /// `nil` only when `header` itself already is, in which case there is no pill to have pressed.
     private func openLensMenu() {
-        guard let header = menuHeader() ?? header else { return }
+        guard let header = menuHeader() else { return }
         // Dropped from under the pill it came from, same reasoning as `openActionsMenu`:
         // `StripPillView` is flipped, so its bottom-left is `(0, height)`, not `(0, 0)`.
         guard let anchor = pillViews.first(where: {
             if case .lens = $0.pill { return true } else { return false }
-        }) else { return }
-        lensMenu(for: header).popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height),
-                                    in: anchor)
+        }), let menu = lensMenu(for: header) else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height), in: anchor)
     }
 
     // MARK: - Snapshots

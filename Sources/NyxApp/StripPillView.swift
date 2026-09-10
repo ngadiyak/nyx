@@ -28,6 +28,9 @@ final class StripPillView: NSView {
     var onPress: (() -> Void)?
     private(set) var pill: CommandBlockChrome.Pill?
     private var palette = Palette.xtermDefault()
+    /// `opaqueGround` rather than `opaque`: `NSView` already has an `opaque` property from its
+    /// Objective-C days, and a stored one here overrides it.
+    private var opaqueGround = false
     private var hovered = false
     private var pressed = false
     private var tracking: NSTrackingArea?
@@ -47,11 +50,12 @@ final class StripPillView: NSView {
         needsDisplay = true
     }
 
-    func configure(_ pill: CommandBlockChrome.Pill, palette: Palette) {
+    func configure(_ pill: CommandBlockChrome.Pill, palette: Palette, opaque: Bool) {
         if pill != self.pill { resetInteraction() }
-        guard pill != self.pill || palette != self.palette else { return }
+        guard pill != self.pill || palette != self.palette || opaque != opaqueGround else { return }
         self.pill = pill
         self.palette = palette
+        opaqueGround = opaque
         toolTip = pill.help
         setAccessibilityLabel(pill.accessibilityLabel)
         setAccessibilityHelp(pill.help)
@@ -107,24 +111,25 @@ final class StripPillView: NSView {
             nsColor(palette.accent, alpha: 1).setFill(); path.fill()
             ink = palette.textOn(palette.accent)
         } else {
-            // Opaque `background` always -- including where the pill sits over the command's own
-            // text, which used to be the one case that got a solid fill. `Stop`'s colour is
-            // calibrated to clear 4.5:1 on `background` with no headroom to spare (one-dark:
-            // 4.503:1), and a translucent wash of the row's hover-tinted band underneath it spent
-            // that headroom: gruvbox-dark's `Stop` read at 2.82:1 hovered
-            // (`ReadableColourTests.theStripsUnlitPillsAreReadableInEveryTheme`). The wash is now
-            // purely the hover/press cue on top of that solid ground; idle draws none.
-            nsColor(palette.background, alpha: 1).setFill(); path.fill()
-            let alpha: CGFloat = pressed ? 0.26 : (hovered ? 0.20 : 0)
-            if alpha > 0 { nsColor(palette.foreground, alpha: alpha).setFill(); path.fill() }
-            // 0.30, not the old 0.22: against an opaque `background` ground, 0.22 tops out at
-            // 1.29:1 in every theme -- a straight `RGB.blend` line from any ground to `foreground`
-            // cannot clear 1.6 at a 0.08 step, so this was never a tuning problem. 0.30 is the
-            // smallest alpha that clears 1.6:1 everywhere.
-            nsColor(palette.foreground, alpha: 0.30).setStroke()
+            let alpha: CGFloat = pressed ? 0.26 : (hovered ? 0.20 : 0.14)
+            if opaqueGround {
+                // The W0 `Stop`, drawn over the command's tail: an opaque pill reads as a control
+                // on top of text, where a translucent one reads as text colliding with text.
+                nsColor(palette.background, alpha: 1).setFill(); path.fill()
+            }
+            nsColor(palette.foreground, alpha: alpha).setFill(); path.fill()
+            // Resolved against the ground this pill is *actually* painted on for the state it is
+            // actually in -- `SummaryTone.failure.color(in:)` alone is calibrated for
+            // `palette.background`, not for a wash of `foreground` over the row's hover tint, and
+            // gruvbox-dark's `Stop` read at 2.82:1 hovered when the two disagreed. `pillHairline`
+            // likewise widens past its usual 0.30 wherever a state's own fill has washed the ground
+            // close enough to `foreground` to leave it too little room (`ReadableColourTests.-
+            // theStripsUnlitPillsAreReadableInEveryTheme`).
+            let ground = groundColour(alpha: alpha)
+            nsColor(palette.pillHairline(on: ground), alpha: 1).setStroke()
             path.lineWidth = 1
             path.stroke()
-            ink = enabled ? tint(of: pill) : palette.noteForeground
+            ink = enabled ? tint(of: pill, on: ground) : palette.noteForeground
         }
         if pill.glyph != nil {
             draw(.ellipsis, in: NSRect(x: box.midX - StripPillView.glyphWidth / 2,
@@ -149,10 +154,27 @@ final class StripPillView: NSView {
         }
     }
 
-    /// `Stop` is the one pill with a running side effect and keeps the theme's own red; everything
-    /// else is the foreground. Through `SummaryTone`, so gruvbox-dark's 2.82:1 cannot recur.
-    private func tint(of pill: CommandBlockChrome.Pill) -> RGB {
-        if case .stop = pill { return SummaryTone.failure.color(in: palette) }
+    /// The pill's own row background, before the translucent wash this state paints over it --
+    /// `background` where the pill sits opaquely over the command's own text, the row's hover tint
+    /// everywhere else -- washed by exactly the alpha `draw` is about to fill with. What `tint(of:)`
+    /// resolves ink against, so the two can never drift the way a colour calibrated only for
+    /// `palette.background` did.
+    private func groundColour(alpha: CGFloat) -> RGB {
+        let base = opaqueGround ? palette.background : palette.blockHoverBackground
+        return RGB.blend(base, into: palette.foreground, amount: Double(alpha))
+    }
+
+    /// `Stop` is the one pill with a running side effect and keeps the theme's own red -- pushed,
+    /// if the theme's own red does not already clear 4.5:1 on `ground`, further toward `foreground`
+    /// until it does. Solarized-dark (every state) and one-dark (hovered, pressed) cannot reach
+    /// 4.5:1 even pushed all the way to `foreground` -- their own recorded ceilings, in
+    /// `ReadableColourTests.theStripsUnlitPillsAreReadableInEveryTheme`. Everything else is the
+    /// foreground outright, which is always at least as readable on a wash of itself.
+    private func tint(of pill: CommandBlockChrome.Pill, on ground: RGB) -> RGB {
+        if case .stop = pill {
+            return RGB.readable(SummaryTone.failure.color(in: palette), on: ground,
+                                towards: palette.foreground)
+        }
         return palette.foreground
     }
 
@@ -205,7 +227,16 @@ final class StripPillView: NSView {
     /// the pool can recognise it, so "is there a pill" is not the question -- "is it on the strip"
     /// is.
     override func isAccessibilityElement() -> Bool { !isHidden && pill != nil }
-    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    /// `.menuButton` for the two pills whose press opens a menu rather than performing an action
+    /// directly (`Actions ▾` and the lens chip's `▾`) -- VoiceOver announces a menu button
+    /// differently from a plain button, and a control that opens a menu is not the same shape of
+    /// control as one that acts.
+    override func accessibilityRole() -> NSAccessibility.Role? {
+        switch pill {
+        case .actions, .lens: return .menuButton
+        default: return .button
+        }
+    }
     override func accessibilityPerformPress() -> Bool {
         guard !isHidden, isEnabled, let onPress else { return false }
         onPress()

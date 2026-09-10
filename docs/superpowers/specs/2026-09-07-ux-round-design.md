@@ -44,9 +44,10 @@ request workbench's form, automatic zsh injection through `ZDOTDIR`, and the sum
 **Architecture, unchanged and binding** (`CLAUDE.md`): every decision below is a value or a pure
 function in `NyxCore`, unit-tested; `NyxApp` converts events and draws; `NyxRender` learns nothing
 about chrome; the build stays warning-free and `make bench` stays at or above 180 MB/s. Six waves,
-each landing on its own commits. Order (owner's ruling of 2026-09-10 — the lens and watch polish
-goes last, after every design and UX fix): block chrome → shell integration → settings and sheets →
-tab bar, palette, search, banners → remote strip and pairing → lenses and watch.
+each landing on its own commits. Order (owner's rulings of 2026-09-10: the lens and watch polish
+goes last; remote sessions are the product's most important feature and go right after the block
+chrome): block chrome → remote strip and pairing → shell integration → settings and sheets →
+tab bar, palette, search, banners → lenses and watch.
 
 **Eight plans, not six.** Waves 1 and 5 are each too large for one plan of ≤ 10 tasks, so each
 splits at a seam that leaves both halves shippable: **1a** the mark and the strip (the block drawn
@@ -779,10 +780,12 @@ duplicates, so it cannot wait for Wave 5.)
 
 ---
 
-## 7. Wave 6 — remote strip, pairing, and the universal binary
+## 7. Wave 6 — remote strip and pairing (now second in the order)
 
-**Five tasks**, the last of which is not UX at all and rides this branch on the owner's ruling
-(`decisions.md`, 2026-09-07).
+**Four tasks** (the universal-binary task was struck by the owner on 2026-09-10: Intel builds are
+not being done for now; a Mac builds its own bundle with `make install`), preceded by an end-to-end
+QA of pairing and attach on two local instances so the plan fixes what breaks, not only what the
+pictures showed.
 
 1. **The strip's button becomes visible.** `RemoteStripView.update` never pins `appearance` and sets
    `contentTintColor`, which does not colour a *titled* button — the exact trap `BlockHeaderView`'s
@@ -801,12 +804,7 @@ duplicates, so it cannot wait for Wave 5.)
    and `The relay URL and token come from the nyx-server you run; Nyx cannot issue them.`
    Recent activity stops being a raw ISO-8601 dump and uses a relative date (`RelativeAge`, the
    value the palette's Requests rows already use).
-5. **`make release` and `make app` build a universal binary.** The owner could not install Nyx on
-   an Intel Mac: both build for the host architecture only, so a copied bundle is refused on
-   x86_64. Both gain `--arch arm64 --arch x86_64`, and the recipe asserts the result — `lipo -info
-   build/Nyx.app/Contents/MacOS/Nyx` naming both slices, `file` agreeing, the make step failing if
-   either does not. The code has no architecture-specific paths; `docs/testing.md` gains a line
-   under the build rung saying a release bundle is universal and how to check it.
+5. ~~Universal binary~~ — struck 2026-09-10 (owner): not for now.
 
 ---
 

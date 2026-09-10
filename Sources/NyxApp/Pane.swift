@@ -2278,7 +2278,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                            palette: frame.palette,
                            font: Pane.terminalFont(family: config.fontFamily, fonts: fonts,
                                                    size: effectiveFontSize),
-                           padding: padding, cellWidth: cellSizePoints.width)
+                           padding: padding, cellWidth: cellSizePoints.width,
+                           cellHeight: cellSizePoints.height)
         // The strip claims the pointer only while it is up, so appearing or disappearing changes
         // which view the cursor over the top row belongs to.
         if wasHidden != stickyStrip.isHidden { window?.invalidateCursorRects(for: stickyStrip) }

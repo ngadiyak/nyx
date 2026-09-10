@@ -557,7 +557,7 @@ extension GridCanvas {
         view.update(text: sticky.text, summary: sticky.summary, tone: sticky.tone, palette: palette,
                     font: Pane.terminalFont(family: config.fontFamily, fonts: fonts,
                                             size: CGFloat(config.fontSize)),
-                    padding: padding, cellWidth: cell.width)
+                    padding: padding, cellWidth: cell.width, cellHeight: cell.height)
         view.layoutSubtreeIfNeeded()
         return view
     }

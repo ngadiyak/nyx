@@ -20,10 +20,18 @@ final class StickyPromptView: NSView {
     /// The right-aligned "exit 1 · 8.8s" -- the same summary the hover overlay shows for this
     /// command, so scrolling to it after reading the strip finds the header saying the same thing.
     private let note = NSTextField(labelWithString: "")
-    /// The 1 pt hairline along the bottom edge. Without it the band's opaque ground ended in mid
-    /// air: an opaque rectangle the colour of the terminal's background, over the terminal's
-    /// background, is invisible at its own boundary, which is where a reader needs it most.
-    private let divider = NSView(frame: .zero)
+    /// The opaque ground and the hairline along its bottom edge, drawn together in one view that is
+    /// **as tall as the terminal row** rather than as tall as this view's frame.
+    ///
+    /// The frame is `hitRowHeight`, which at `line-height = 0.8` is 16 pt over a 13 pt row: the band
+    /// overhung its own row by 1.5 pt at each end, so the divider -- pinned to the frame's bottom --
+    /// was drawn *through* the row below. At 10× the design review watched it cross the top-left of
+    /// a `[` and the upper strokes of `日本語`, in the configuration §8.4 was written for (D3/F6).
+    /// §2.2 already ruled on exactly this shape for the gutter mark -- **drawn = `cellHeight`, hit =
+    /// `hitRowHeight`** -- so the precedent is two sections earlier in the spec and no new decision
+    /// is needed: the band still catches a click aimed at its edge, and paints only the row it
+    /// covers and blanked.
+    private let band = StickyBandView(frame: .zero)
     /// The leading `↑`, drawn as a path. Before it the band had no bezel, no chevron, no pin and no
     /// divider, and was a click target end to end -- a control that said nothing about being one.
     private let arrow = StickyArrowView(frame: .zero)
@@ -32,9 +40,11 @@ final class StickyPromptView: NSView {
     /// without changing a word, and a guard that ignored them left the old theme's colours and the
     /// old grid's alignment on screen.
     private var shown: (text: String, summary: String, tone: SummaryTone, palette: Palette,
-                        inset: CGFloat, kern: CGFloat, font: NSFont)?
+                        inset: CGFloat, kern: CGFloat, font: NSFont, cellHeight: CGFloat)?
     /// The label's leading constraint, moved to whichever column boundary clears the arrow.
     private var labelLeading: NSLayoutConstraint!
+    /// What the band *paints*: one terminal row, centred in a frame that is `hitRowHeight` tall.
+    private var bandHeight: NSLayoutConstraint!
     /// `NSTextField` insets its string inside its own frame, and the amount is a property of the
     /// cell and the font -- not of the frame, the string or anything that changes per frame. Asked
     /// once per font: this is on the render path.
@@ -57,12 +67,12 @@ final class StickyPromptView: NSView {
         addSubview(note)
         arrow.translatesAutoresizingMaskIntoConstraints = false
         addSubview(arrow)
-        divider.wantsLayer = true
-        divider.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(divider)
+        band.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(band, positioned: .below, relativeTo: label)
 
         labelLeading = label.leadingAnchor.constraint(equalTo: leadingAnchor,
                                                       constant: CGFloat(StickyPromptView.minimumTextInset))
+        bandHeight = band.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             labelLeading,
             label.trailingAnchor.constraint(lessThanOrEqualTo: note.leadingAnchor, constant: -6),
@@ -76,10 +86,10 @@ final class StickyPromptView: NSView {
             arrow.centerYAnchor.constraint(equalTo: centerYAnchor),
             arrow.widthAnchor.constraint(equalToConstant: StickyPromptView.arrowWidth),
             arrow.heightAnchor.constraint(equalToConstant: StickyPromptView.arrowWidth),
-            divider.leadingAnchor.constraint(equalTo: leadingAnchor),
-            divider.trailingAnchor.constraint(equalTo: trailingAnchor),
-            divider.bottomAnchor.constraint(equalTo: bottomAnchor),
-            divider.heightAnchor.constraint(equalToConstant: 1),
+            band.leadingAnchor.constraint(equalTo: leadingAnchor),
+            band.trailingAnchor.constraint(equalTo: trailingAnchor),
+            band.centerYAnchor.constraint(equalTo: centerYAnchor),
+            bandHeight,
         ])
         // One element, one sentence: the band's two text fields are children, and VoiceOver read
         // the whole sentence and then both fields -- the command line twice and the summary twice.
@@ -106,8 +116,10 @@ final class StickyPromptView: NSView {
     /// `padding` and `cellWidth` are the pane's own, and only so the text can be put on the column
     /// grid -- `StickyPromptLabel.textInset` for where it starts and `.kern` for every glyph after
     /// that. Nothing else in the band is measured in cells.
+    /// `cellHeight` is what the band *paints* -- one terminal row -- while its frame stays
+    /// `hitRowHeight` tall (§2.2's ruling, applied to the band by D3).
     func update(text: String?, summary: String, tone: SummaryTone, palette: Palette, font: NSFont,
-                padding: CGFloat, cellWidth: CGFloat) {
+                padding: CGFloat, cellWidth: CGFloat, cellHeight: CGFloat) {
         guard let text, !text.isEmpty else {
             if !isHidden { isHidden = true; shown = nil }
             return
@@ -122,11 +134,15 @@ final class StickyPromptView: NSView {
                                                   glyphAdvance: Double(glyphAdvance(of: font))))
         guard shown?.text != text || shown?.summary != summary || shown?.tone != tone
                 || shown?.palette != palette || shown?.inset != inset || shown?.kern != kern
-                || shown?.font != font else {
+                || shown?.font != font || shown?.cellHeight != cellHeight else {
             isHidden = false
             return
         }
-        shown = (text, summary, tone, palette, inset, kern, font)
+        shown = (text, summary, tone, palette, inset, kern, font, cellHeight)
+        // The same rule the hover strip's ground obeys, from the same place: what a one-row band
+        // *paints* is one row, whatever its hit frame is (§2.2's ruling, D3 for this band).
+        bandHeight.constant = max(1, CGFloat(CommandBlockChrome.stripGroundHeight(
+            cellHeight: Double(cellHeight))))
         note.stringValue = summary
         note.isHidden = summary.isEmpty
         labelLeading.constant = inset
@@ -155,9 +171,12 @@ final class StickyPromptView: NSView {
         // why every scrolled composite showed a pinned command and the output beneath it printed on
         // top of each other.
         appearance = NSAppearance(named: palette.isLight ? .aqua : .darkAqua)
-        layer?.backgroundColor = nsColor(palette.background, alpha: 1).cgColor
+        // Nothing on the view's own layer: the ground is `band`'s, one terminal row tall, so a
+        // 16 pt frame over a 13 pt row cannot paint the rows either side of the one it blanked.
+        layer?.backgroundColor = nil
         layer?.borderWidth = 0
-        divider.layer?.backgroundColor = nsColor(palette.foreground, alpha: 0.20).cgColor
+        band.ground = palette.background
+        band.line = palette.foreground
         arrow.colour = palette.foreground
         isHidden = false
     }
@@ -249,5 +268,54 @@ private final class StickyArrowView: NSView {
         head.fill()
         NSBezierPath(rect: NSRect(x: bounds.midX - 0.75, y: bounds.minY,
                                   width: 1.5, height: bounds.height - 4)).fill()
+    }
+}
+
+/// The band's opaque ground and the hairline along its bottom edge.
+///
+/// Both drawn rather than constrained, for one reason: the hairline has to be **one device pixel**,
+/// snapped to the device pixel grid. A 1 pt-high subview at a fractional y -- and its y *is*
+/// fractional, `(hitRowHeight - cellHeight) / 2` is 1.5 pt at `line-height = 0.8` -- rendered as a
+/// 3-device-pixel smear whose peak measured 1.86:1 against the background, which is a fuzzy grey
+/// band where §2.7 asked for a rule (D3). `backingAlignedRect` puts it on whole pixels, and
+/// `convertFromBacking` makes it exactly one of them: 0.5 pt on a Retina display, 1 pt on a 1×
+/// one, which is what "1 px" in §2.7 means.
+private final class StickyBandView: NSView {
+    var ground: RGB = RGB(0, 0, 0) { didSet { if ground != oldValue { needsDisplay = true } } }
+    var line: RGB = RGB(255, 255, 255) { didSet { if line != oldValue { needsDisplay = true } } }
+
+    override var isFlipped: Bool { true }
+    /// The band is chrome over the terminal and the *whole* of `StickyPromptView` is the click
+    /// target, including the 1.5 pt it overhangs its row by; this subview must not take the point
+    /// off its own parent.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        nsColor(ground, alpha: 1).setFill()
+        bounds.fill()
+        nsColor(line, alpha: 0.20).setFill()
+        hairlineAtBottom().fill()
+    }
+
+    /// One device pixel along the bottom edge, on the device pixel grid.
+    ///
+    /// Snapped through the *context's* own transform rather than through
+    /// `NSView.backingAlignedRect`: that one asks the view's window for the scale, and the offscreen
+    /// snapshot path has no window -- it rounded a half-point rule to nothing and the divider
+    /// disappeared from the picture altogether. The graphics context always carries the scale it is
+    /// drawing at, so this is right in a window, in a bitmap, and at 1× where one pixel is a whole
+    /// point.
+    private func hairlineAtBottom() -> NSBezierPath {
+        let fallback = NSRect(x: bounds.minX, y: bounds.maxY - 1, width: bounds.width, height: 1)
+        guard let ctx = NSGraphicsContext.current?.cgContext else {
+            return NSBezierPath(rect: fallback)
+        }
+        // `abs`: this view is flipped, so the context's y scale is negative.
+        let onePixel = abs(ctx.convertToUserSpace(CGSize(width: 0, height: 1)).height)
+        guard onePixel > 0 else { return NSBezierPath(rect: fallback) }
+        let edge = ctx.convertToDeviceSpace(CGPoint(x: bounds.minX, y: bounds.maxY))
+        let snapped = ctx.convertToUserSpace(CGPoint(x: edge.x, y: edge.y.rounded())).y
+        return NSBezierPath(rect: NSRect(x: bounds.minX, y: snapped - onePixel,
+                                         width: bounds.width, height: onePixel))
     }
 }

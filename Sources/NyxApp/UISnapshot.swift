@@ -1189,7 +1189,11 @@ enum UISnapshot {
     private static func stickyPrompt(palette: Palette, failed: Bool, summary: String = "",
                                      tone: SummaryTone? = nil,
                                      appearance: NSAppearance.Name = .darkAqua) -> NSView {
-        let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: 22))
+        // 22 pt cells, so the frame's `hitRowHeight` floor does not bite: what these pictures are
+        // of is the band's *states*, and `composite-block-lineheight-08-sticky-*` is the picture of
+        // the drawn-height rule (D3) over a 13 pt row.
+        let cell: CGFloat = 22
+        let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cell)))
         let view = StickyPromptView(frame: NSRect(x: 0, y: 0, width: 900, height: height))
         view.appearance = NSAppearance(named: appearance)
         // The system's mono, and a cell measured from that same font, because there is no grid in
@@ -1205,7 +1209,8 @@ enum UISnapshot {
             exitStatus: failed ? 2 : 0, columns: 100, summary: summary)
         view.update(text: text, summary: summary, tone: tone ?? (failed ? .failure : .plain),
                     palette: palette, font: font, padding: 8,
-                    cellWidth: ("M" as NSString).size(withAttributes: [.font: font]).width)
+                    cellWidth: ("M" as NSString).size(withAttributes: [.font: font]).width,
+                    cellHeight: cell)
         view.layoutSubtreeIfNeeded()
         return view
     }

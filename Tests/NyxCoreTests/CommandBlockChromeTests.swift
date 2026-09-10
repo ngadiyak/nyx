@@ -640,6 +640,27 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
 
 /// Addendum 2: a 20 pt opaque band on a 13 pt grid covers three rows of somebody's output. The
 /// frame may be 20 pt -- `hitTest` rejects anything outside it -- but what it *paints* is one row.
+/// **D3/F6.** The pinned band obeys the same pair, and it is the same two functions: what it paints
+/// is one terminal row, what it catches is `hitRowHeight`.
+///
+/// Its ground and its divider used to fill the *frame*, which is 16 pt over a 13 pt row at
+/// `line-height = 0.8` -- so the band overhung its own row by 1.5 pt at each end and the divider,
+/// pinned to the frame's bottom, was drawn **through** the row below: at 10× the design review
+/// watched it cross the top-left of a `[` and the upper strokes of `日本語`. §2.2 had already ruled
+/// on this shape for the gutter mark two sections earlier in the spec, so no new decision was
+/// needed -- only the same one, applied.
+@Test func theStickyBandPaintsOneRowAndCatchesTheHitFloor() {
+    for cell in [13.0, 15.5, 17, 22] {
+        #expect(CommandBlockChrome.stripGroundHeight(cellHeight: cell) == cell)
+        #expect(CommandBlockChrome.hitRowHeight(cellHeight: cell) >= 16)
+        #expect(CommandBlockChrome.hitRowHeight(cellHeight: cell) >= cell)
+    }
+    // The overhang the floor buys, at the configuration §8.4 was written for: 1.5 pt at each end,
+    // which the band may be *clicked* in and must not *paint* in.
+    #expect((CommandBlockChrome.hitRowHeight(cellHeight: 13)
+             - CommandBlockChrome.stripGroundHeight(cellHeight: 13)) / 2 == 1.5)
+}
+
 @Test func theStripPaintsOneRowHoweverTallItsFrameIs() {
     for cell in [13.0, 16, 17, 24] {
         #expect(CommandBlockChrome.stripGroundHeight(cellHeight: cell) == cell, "\(cell)")

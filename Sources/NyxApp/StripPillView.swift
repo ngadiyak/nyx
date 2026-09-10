@@ -111,7 +111,12 @@ final class StripPillView: NSView {
             nsColor(palette.accent, alpha: 1).setFill(); path.fill()
             ink = palette.textOn(palette.accent)
         } else {
-            let alpha: CGFloat = pressed ? 0.26 : (hovered ? 0.20 : 0.14)
+            // §2.3's two fills and no third: `foreground @ 0.14`, and `@ 0.26` pressed
+            // (Addendum 3). The 0.20 hovered step in between was an addition, and a measured
+            // failure -- 1.219:1 on nyx-dark, 1.088:1 on nyx-light. Hover is the hairline's now, so
+            // the fill step is the *press*, which is what it was for: idle → pressed moves 27/255
+            // where hovered → pressed used to move 15 (D4).
+            let alpha: CGFloat = pressed ? 0.26 : 0.14
             if opaqueGround {
                 // The W0 `Stop`, drawn over the command's tail: an opaque pill reads as a control
                 // on top of text, where a translucent one reads as text colliding with text.
@@ -126,7 +131,13 @@ final class StripPillView: NSView {
             // close enough to `foreground` to leave it too little room (`ReadableColourTests.-
             // theStripsUnlitPillsAreReadableInEveryTheme`).
             let ground = groundColour(alpha: alpha)
-            nsColor(palette.pillHairline(on: ground), alpha: 1).setStroke()
+            // Hover lives on the **hairline**, not on the fill: the fill's own idle → hovered step
+            // measures 1.219:1 on nyx-dark and 1.088:1 on nyx-light, which is a hover a person
+            // cannot see -- and "restraint at idle, clarity on hover" is the whole premise of a
+            // strip that appears under the pointer (D4). Pressed keeps the darker fill *and* the
+            // raised hairline, because a pill is only pressed while it is under the pointer.
+            nsColor(palette.pillHairline(on: ground, minimum: hovered || pressed ? 3 : 1.6),
+                    alpha: 1).setStroke()
             path.lineWidth = 1
             path.stroke()
             ink = enabled ? tint(of: pill, on: ground) : palette.noteForeground

@@ -289,8 +289,17 @@ public struct Palette: Equatable {
     /// measured under 1.6. Walking further towards `foreground` is always available: the ceiling is
     /// `contrast(foreground, ground)`, which is what a hairline of *pure* foreground would read at,
     /// and every theme's is comfortably above 1.6 in every state (worst: one-dark pressed, 3.63:1).
-    public func pillHairline(on ground: RGB) -> RGB {
-        Palette.pushed(ground, toward: foreground, until: ground, reaches: 1.6, from: 0.30, to: 1.0)
+    ///
+    /// `minimum` is where **hover** lives now. The fill alone cannot carry it: measured from the
+    /// pictures, idle → hovered is 1.219:1 on nyx-dark and **1.088:1** on nyx-light, and in
+    /// nyx-light the whole fill range from 0.14 to pure foreground spans about 1.22:1 → 4:1, so no
+    /// alpha step buys much -- the hovered `Copy` could not be told from the unhovered `Fold` 6 pt
+    /// away, and the lone `⋯` at W1, which has no neighbour to compare against, was indistinguishable
+    /// from its own pressed art (D4/F7). The hairline has the headroom the fill does not, so a
+    /// hovered pill asks it for **3:1** and an idle one keeps 1.6. One parameter, both palettes.
+    public func pillHairline(on ground: RGB, minimum: Double = 1.6) -> RGB {
+        Palette.pushed(ground, toward: foreground, until: ground, reaches: minimum,
+                       from: 0.30, to: 1.0)
     }
 
     /// The gutter's faded mark: `solid` at 40 % over this palette's background, raised toward

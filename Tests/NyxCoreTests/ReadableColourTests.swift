@@ -80,7 +80,9 @@ private let sheetGreyDark = RGB(50, 50, 50)        // windowBackgroundColor, dar
         "one-dark": ["hover": 4.05, "pressed": 3.62],
     ]
     for (name, palette) in Themes.builtin {
-        for (state, alpha) in [("idle", 0.14), ("hover", 0.20), ("pressed", 0.26)] {
+        // §2.3's two fills and no third: hover is the hairline's job now, so a hovered pill is
+        // filled exactly as an idle one is and only a pressed one is darker (D4).
+        for (state, alpha) in [("idle", 0.14), ("hover", 0.14), ("pressed", 0.26)] {
             let ground = RGB.blend(palette.blockHoverBackground, into: palette.foreground, amount: alpha)
             let ink = RGB.readable(SummaryTone.failure.color(in: palette), on: ground,
                                    towards: palette.foreground)
@@ -89,8 +91,25 @@ private let sheetGreyDark = RGB(50, 50, 50)        // windowBackgroundColor, dar
             // Every other unlit pill's ink is `foreground` outright, no push -- the same ceiling
             // `readable` converges to above, so it shares the same recorded exceptions.
             #expect(RGB.contrast(palette.foreground, ground) >= floor, "\(name) \(state) label")
-            let hairline = palette.pillHairline(on: ground)
-            #expect(RGB.contrast(hairline, ground) >= 1.6, "\(name) \(state) hairline")
+            // D4: hover lives on the hairline, so an idle pill holds 1.6:1 and a hovered or
+            // pressed one holds **3:1**. Measured after: idle 1.67-2.12, hovered 3.01-3.20,
+            // pressed 3.04-3.18, against ceilings (pure `foreground` on the same ground) of
+            // 3.32 (solarized-dark) to 5.40 (dracula) -- so every theme has the room, which the
+            // *fill* did not: idle → hovered on the fill is 1.219:1 on nyx-dark and 1.088:1 on
+            // nyx-light, and nyx-light's whole fill range spans 1.22:1 to about 4:1.
+            let floorForState = state == "idle" ? 1.6 : 3.0
+            let hairline = palette.pillHairline(on: ground, minimum: floorForState)
+            #expect(RGB.contrast(hairline, ground) >= floorForState,
+                    "\(name) \(state) hairline")
+            // And the raise is real, not a relabelling: a hovered pill's hairline is further from
+            // its ground than an idle one's is from *its* ground, in every theme.
+            if state != "idle" {
+                let idleGround = RGB.blend(palette.blockHoverBackground, into: palette.foreground,
+                                           amount: 0.14)
+                #expect(RGB.contrast(hairline, ground)
+                    > RGB.contrast(palette.pillHairline(on: idleGround), idleGround) + 0.5,
+                        "\(name) \(state) hairline is not a visible step")
+            }
         }
     }
 }

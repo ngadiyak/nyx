@@ -3025,7 +3025,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func blockMenu(for id: UInt32) -> NSMenu? {
         guard let header = blockMenuHeader(for: id) else { return nil }
         return Pane.blockMenu(for: header, target: self,
-                              action: #selector(blockActionFromMenu(_:)))
+                              action: #selector(blockActionFromMenu(_:)), bindings: bindings)
     }
 
     /// The rows, from a header alone. Static because `MenuSnapshot` has a header and no pane, and
@@ -3035,7 +3035,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Auto-enabling is turned off, so `entry.enabled` is what a row's greying means on every route
     /// that pops this menu as it stands. The `contextMenu` route moves these items into a menu that
     /// leaves auto-enabling on, and `validateMenuItem` hands the same flag back there.
-    static func blockMenu(for header: BlockHeader, target: AnyObject?, action: Selector?) -> NSMenu {
+    static func blockMenu(for header: BlockHeader, target: AnyObject?, action: Selector?,
+                          bindings: KeyBindingTable) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         for (index, entry) in header.actions.enumerated() {
@@ -3048,6 +3049,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // The lens rows are a radio group and the notification row is a switch; both are one
             // question to the header, so a third state cannot be invented here.
             item.state = header.isChecked(entry.action) ? .on : .off
+            // The chord, where the row has one. `MenuShortcut` is the same converter the menu bar
+            // and the right-click menu use, and `binding(for:)` answers honestly when the user has
+            // rebound the chord to something else.
+            if let action = entry.action.terminalAction, let binding = bindings.binding(for: action),
+               let (key, mask) = MenuShortcut.keyEquivalent(for: binding) {
+                item.keyEquivalent = key
+                item.keyEquivalentModifierMask = mask
+            }
             menu.addItem(item)
         }
         return menu

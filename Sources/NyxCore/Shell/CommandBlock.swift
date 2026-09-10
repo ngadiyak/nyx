@@ -970,6 +970,32 @@ public enum BlockAction: Equatable {
         default: return false
         }
     }
+
+    /// The `TerminalAction` this row *is*, when there is one, so the menu can print its chord.
+    ///
+    /// Every item in the block menu used to be built with an empty `keyEquivalent`, so the one
+    /// place a user could learn that ⌘⇧↑ folds, ⌘E edits and ⌘. stops a watch was the menu bar --
+    /// where the rows are named for a block the user cannot see (a11y 6.10). Decided here rather
+    /// than in the three views that build this menu, which is three chances to disagree.
+    ///
+    /// The lens rows deliberately have none: ⌘⇧J toggles pretty against raw, so printing it beside
+    /// `Pretty JSON` would promise the wrong act half the time.
+    public var terminalAction: TerminalAction? {
+        switch self {
+        case .copyOutput: return .copyCommandOutput
+        case .copyMarkdown: return .copyBlockMarkdown
+        case .saveOutput: return .saveCommandOutput
+        case .editAndRun: return .editAndRunCommand
+        case .toggleFold: return .foldCommand
+        case .toggleFoldAll: return .foldAllLongOutput
+        case .toggleLens: return .toggleHTTPLens
+        case .stopWatch: return .stopWatch
+        case .notifyWhenDone: return .notifyWhenDone
+        case .copyCommand, .runAgain, .openInWorkbench, .copyAs, .saveAsButton, .saveToProject,
+             .setLens, .copyBody, .copyHeaders, .runEvery, .watch, .lensUnavailable:
+            return nil
+        }
+    }
 }
 
 /// What colour a block's summary is drawn in, as a meaning rather than as an index.

@@ -33,7 +33,7 @@ enum MenuSnapshot {
     static func run(into directory: URL, config: Config) {
         let palette = Pane.resolvedPalette(for: config)
         for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-            for (caseName, menu) in blockMenus() {
+            for (caseName, menu) in blockMenus(config: config) {
                 write(menu: menu, caption: caseName, appearance: appearance,
                       named: "menu-block-\(caseName)-\(name)", into: directory)
             }
@@ -73,8 +73,8 @@ enum MenuSnapshot {
     /// `BlockHeader.actions` in order, a separator wherever `BlockAction.startsGroup`, the title
     /// from `BlockHeader.title(for:)` and the tick from `isChecked`. Every one of those is NyxCore,
     /// so what these pictures show is the decision rather than a copy of it.
-    private static func blockMenus() -> [(String, NSMenu)] {
-        BlockKind.allCases.map { ($0.rawValue, menu(for: blockHeader(kind: $0))) }
+    private static func blockMenus(config: Config) -> [(String, NSMenu)] {
+        BlockKind.allCases.map { ($0.rawValue, menu(for: blockHeader(kind: $0), config: config)) }
     }
 
     private enum BlockKind: String, CaseIterable {
@@ -114,8 +114,9 @@ enum MenuSnapshot {
     /// loop the ⋯ pill, the right-click menu, ⌘⇧A and the pane's accessibility menu all go through,
     /// so these pictures are of *that* menu rather than of a fourth copy of it. It was retyped here
     /// while both product copies were `private`, which is exactly how a picture drifts.
-    private static func menu(for header: BlockHeader) -> NSMenu {
-        Pane.blockMenu(for: header, target: nil, action: nil)
+    private static func menu(for header: BlockHeader, config: Config) -> NSMenu {
+        let bindings = KeyBindingTable(user: config.keybinds)
+        return Pane.blockMenu(for: header, target: nil, action: nil, bindings: bindings)
     }
 
     /// The **real** Edit menu, pulled out of `MainMenu.build` -- not a reconstruction, so this
@@ -145,7 +146,7 @@ enum MenuSnapshot {
             menu.addItem(.separator())
         }
         if let header {
-            let block = self.menu(for: header)
+            let block = self.menu(for: header, config: config)
             for item in block.items {
                 block.removeItem(item)
                 menu.addItem(item)
@@ -153,15 +154,14 @@ enum MenuSnapshot {
             menu.addItem(.separator())
         }
         let bindings = KeyBindingTable(user: config.keybinds)
+        // `MenuShortcut` is the same converter the menu bar and the block menu use, not a
+        // `case .char` of its own: a chord like `fold_command`'s default (⌘⇧↑) has no character,
+        // so re-deriving the mask by hand dropped it and this picture disagreed with the app.
         func actionItem(_ action: TerminalAction) -> NSMenuItem {
             let item = NSMenuItem(title: action.title, action: nil, keyEquivalent: "")
-            if let binding = bindings.binding(for: action), case .char(let c) = binding.key {
-                item.keyEquivalent = String(c).lowercased()
-                var mask: NSEvent.ModifierFlags = []
-                if binding.modifiers.contains(.cmd) { mask.insert(.command) }
-                if binding.modifiers.contains(.shift) { mask.insert(.shift) }
-                if binding.modifiers.contains(.alt) { mask.insert(.option) }
-                if binding.modifiers.contains(.ctrl) { mask.insert(.control) }
+            if let binding = bindings.binding(for: action),
+               let (key, mask) = MenuShortcut.keyEquivalent(for: binding) {
+                item.keyEquivalent = key
                 item.keyEquivalentModifierMask = mask
             }
             return item
@@ -413,6 +413,30 @@ private final class MenuSheetView: NSView {
         if mask.contains(.option) { out += "\u{2325}" }
         if mask.contains(.shift) { out += "\u{21E7}" }
         if mask.contains(.command) { out += "\u{2318}" }
-        return out + item.keyEquivalent.uppercased()
+        return out + MenuSheetView.keyGlyph(item.keyEquivalent)
+    }
+
+    /// A real `NSMenu` draws its own key-equivalent glyphs -- an arrow key equivalent is one of
+    /// AppKit's private-use function-key characters (`NSUpArrowFunctionKey` and its neighbours),
+    /// and AppKit knows to draw those as ↑ ↓ ← →. This reconstruction draws the character itself
+    /// with a system font that has no glyph for that codepoint, which is a missing-glyph box, not
+    /// the chord `Fold Output` actually has -- so the private-use range is mapped back to the same
+    /// arrows `Key.displayName` uses, and anything else falls back to an uppercase character.
+    private static func keyGlyph(_ keyEquivalent: String) -> String {
+        guard let scalar = keyEquivalent.unicodeScalars.first, keyEquivalent.unicodeScalars.count == 1
+        else { return keyEquivalent.uppercased() }
+        switch Int(scalar.value) {
+        case NSUpArrowFunctionKey: return "\u{2191}"
+        case NSDownArrowFunctionKey: return "\u{2193}"
+        case NSLeftArrowFunctionKey: return "\u{2190}"
+        case NSRightArrowFunctionKey: return "\u{2192}"
+        case NSHomeFunctionKey: return "\u{2196}"
+        case NSEndFunctionKey: return "\u{2198}"
+        case NSPageUpFunctionKey: return "\u{21DE}"
+        case NSPageDownFunctionKey: return "\u{21DF}"
+        case NSDeleteFunctionKey: return "\u{2326}"
+        case NSInsertFunctionKey: return "Ins"
+        default: return keyEquivalent.uppercased()
+        }
     }
 }

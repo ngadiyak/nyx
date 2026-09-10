@@ -288,6 +288,14 @@ private let spineColor = RGB(0, 255, 0)
         for y in noteRow..<(noteRow + m.height) where px(x, y) != black { inNote += 1 }
     }
     #expect(inNote > 4)
+    // …and it starts on *that* column and not one further in: `cols - count` is 8 - 4, so the fifth
+    // pixel cell is where the `1` of `1.2s` lands. Sampling the whole right half would pass for a
+    // note placed anywhere in it.
+    var inFirstNoteColumn = 0
+    for x in (pad + m.width * 4)..<(pad + m.width * 5) {
+        for y in noteRow..<(noteRow + m.height) where px(x, y) != black { inFirstNoteColumn += 1 }
+    }
+    #expect(inFirstNoteColumn > 0)
     // The block cursor is one pixel cell wide, at the pixel padding: column 0 of row 2, and column
     // 1 is not painted with it.
     let mid = noteRow + m.height / 2

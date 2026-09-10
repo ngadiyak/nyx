@@ -917,9 +917,14 @@ struct GridScene {
     /// lifts a row into the class *above* the one the picture is named after, so
     /// `composite-strip-w1-…` would show a W2 strip. A class whose own strip does not fit in it is
     /// not a broken fixture — the placement steps down a rung, or draws nothing and leaves the
-    /// summary where it was, and *that* is the picture. Two of §2.6's cells turn out to be
-    /// unreachable at these numbers (the W3 HTTP and watch rows measure 52–75 columns against a
-    /// band that begins at 34), which is a finding about the table rather than about the fixture.
+    /// summary where it was, and *that* is the picture. **Four** of §2.6's cells turn out to be
+    /// unreachable at these numbers -- the W3 rows for `http`, `lensed` and the two watch states
+    /// measure 58 to 76 columns against a band that begins at 34 -- which is a finding about the
+    /// table rather than about the fixture, and is why `pictureFreeColumns` overrides W3 for
+    /// exactly those four (F4). The narrower classes keep the band's own number, so
+    /// `composite-strip-w1-http-*` is a picture of the ladder **stepping down** rather than of
+    /// §2.6's amended W1 cell; `block-header-http-lens-w1-*`, which has the free columns the cell
+    /// needs, is the picture of the cell itself.
     ///
     /// W3 has no ceiling -- it is "34 or more" -- so the class a picture is named after does not say
     /// how much room the picture leaves, and `pictureFreeColumns` is where that is decided.
@@ -1053,8 +1058,6 @@ struct GridScene {
         return series.header()
     }
 
-    /// Scrolls into the middle of the folded build's own output, which is where a sticky strip
-    /// exists at all: the command that produced what is on screen is far above it.
     /// Two more commands after everything else: one that finished having printed only a blank
     /// line, and one still running with output under it.
     ///

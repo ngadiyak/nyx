@@ -312,18 +312,27 @@ public struct Palette: Equatable {
     /// not, in either default theme (2.61:1 on nyx-dark, 1.78:1 on nyx-light), because 40 % of a
     /// green over a near-white ground is a pale grey.
     ///
-    /// Walked *down* from 40 % rather than up from the solid colour, so the answer is the faintest
-    /// mark that still reads rather than the loudest one that does: the treatment means "less".
+    /// Walked from the **faintest** mark towards the solid one -- the loop's `amount` is how much
+    /// *background* is blended in, so stepping it down strengthens the mark -- and it stops at the
+    /// first step that reads. So the answer is the faintest mark that still clears the floor rather
+    /// than the loudest one that does: the treatment means "less". (The first take of this comment
+    /// said "walked *down* from 40 %", which reads as the mark getting fainter and is the opposite
+    /// of what happens.)
+    ///
     /// Resolved against `background` rather than `blockHoverBackground` -- a block with nothing to
     /// fold is tinted while the pointer is on it, and the tint only ever moves the ground *towards*
     /// the mark, so the plain background is the harder of the two grounds and the right one to hold
     /// the floor against.
+    ///
+    /// The steps are explicit rather than a `while amount > 0` countdown, whose last iteration
+    /// landed on a floating-point residue of 0.60 - 12 × 0.05 and made the final `return solid` a
+    /// path nothing could reach: the cap is real now, and it is what a theme whose own solid mark
+    /// is under 3:1 gets.
     public func fadedMark(_ solid: RGB) -> RGB {
-        var amount = 0.60
-        while amount > 0 {
+        for step in 0...11 {
+            let amount = 0.60 - Double(step) * 0.05
             let candidate = RGB.blend(solid, into: background, amount: amount)
             if RGB.contrast(candidate, background) >= 3 { return candidate }
-            amount -= 0.05
         }
         return solid
     }

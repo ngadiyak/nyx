@@ -316,6 +316,11 @@ enum UISnapshot {
                         // `BlockHeader.folded` is a `let`, so the folded case is a second header
                         // rather than a mutation.
                         let shown = folded ? gutterCapHeader(stateName, folded: true) : header
+                        // nil is a *state*, not a gap in the set: `gutterCap` answers nil for a
+                        // command that has not started, which is the prompt you are typing at. The
+                        // gutter is a record, so there is nothing there to draw and nothing to
+                        // picture -- `gutterCapStates` includes that row so the rule is exercised,
+                        // and this is where it is skipped rather than written as a blank PNG.
                         guard let cap = CommandBlockChrome.gutterCap(shown, hasStarted: started,
                                                                      hovered: hovered)
                         else { continue }

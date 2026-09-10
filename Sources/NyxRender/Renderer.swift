@@ -179,6 +179,9 @@ public final class Renderer {
 
     /// Draws `frame` into the layer's next drawable, unless the application is mid-update.
     ///
+    /// **`padding` is in device pixels**, and is passed straight to `render` -- see the unit note
+    /// there, which is the one thing to read before adding a number to this file.
+    ///
     /// `.noDrawable` and `.held` both mean nothing reached the screen, so the caller keeps the frame
     /// marked stale and tries again on the next tick instead of leaving stale pixels up -- and,
     /// since the per-row cache clears `Row.dirty` only on `.presented`, keeps the rows that were
@@ -196,6 +199,10 @@ public final class Renderer {
 
     /// The same decision against an offscreen texture: the pixels stop changing while the
     /// application is mid-update. Tests render through this to look at what a reader would see.
+    ///
+    /// **`padding` is in device pixels** here too: a test that passes the point padding measures
+    /// every chrome distance at half its size on a 2× fixture, which is the shape of the defect the
+    /// unit note on `render` describes.
     @discardableResult
     public func draw(_ frame: RenderFrame, to texture: MTLTexture, commandBuffer: MTLCommandBuffer,
                      padding: Int, syncOutput: Bool, now: TimeInterval) -> FramePresentation {

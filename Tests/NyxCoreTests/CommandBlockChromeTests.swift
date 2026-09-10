@@ -1043,3 +1043,77 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     #expect(shipping.x == 1)
     #expect(shipping.width == 6)
 }
+
+/// The limit of "`Stop` is present at every width", named and pinned.
+///
+/// §2.6 says `Stop` and `Actions` are present at every width, and F1's rungs made that true for
+/// every pane a person has. It is not *universally* true, and the review round that found the gap
+/// asked for the boundary to be documented rather than chased: the last rung is right-aligned
+/// against the in-grid summary's first column, because it may sit on the command's tail and never
+/// on the sentence, so where the sentence has only just started fitting in the grid the gap it
+/// leaves can be narrower than the 8 columns a lone `Stop` needs.
+///
+/// Swept over every (pane width, command length) pair from 20 to 120 columns -- 7,171 of them --
+/// with the pill widths the shipping 11 pt medium system font really measures (`Stop` 42 pt, glyph
+/// pill 24, insets 16, gap 6, on a 7.6 pt cell). `Stop` is absent in **28**: panes of **34 to 40
+/// columns** carrying a command of **0 to 6 columns**. Both halves are needed. Below 34 the
+/// sentence (33 columns plus a gap) does not fit in the grid at all, so the strip carries it itself
+/// and keeps `Stop`; above 40 the gap the sentence leaves is wide enough for the pill. And a
+/// command of six columns or fewer is not a `curl`: `curl x` alone is six characters and a shell
+/// prompt is two more.
+///
+/// The PM's ruling: measured unreachable, pin the limit with a test. If it ever has to be closed,
+/// the only thing left to give is the in-grid sentence -- and that is §2.5's own prohibition, so it
+/// would be a spec change and not a fix.
+@Test func theStopInvariantHoldsExceptInAPaneNoCurlFitsIn() {
+    // The pill widths `StripPillView.width(of:)` measures, in points, over a 7.6 pt cell -- so the
+    // band this test names is the band the app has, not one an invented measure produces.
+    func appColumns(_ content: CommandBlockChrome.StripContent) -> Int {
+        let cell = 7.6
+        func pill(_ p: CommandBlockChrome.Pill) -> Double {
+            switch p {
+            case .actions(.glyph): return 24
+            case .actions(.labelled): return 69
+            case .stop: return 42
+            case .copy: return 44
+            case .fold(.fold): return 40
+            case .fold(.unfold): return 52
+            case .lens(let name, _): return name == "Raw" ? 51 : 61
+            }
+        }
+        var parts: [Double] = []
+        if let overflow = content.overflowDot { parts.append(Double(overflow.count) * 7) }
+        if !content.dots.isEmpty { parts.append(Double(content.dots.count) * 10) }
+        if !content.readout.isEmpty { parts.append(Double(content.readout.count) * cell) }
+        parts.append(contentsOf: content.pills.map(pill))
+        var total = 16.0
+        for (index, part) in parts.enumerated() { total += part + (index > 0 ? 6 : 0) }
+        return Int((total / cell).rounded(.up))
+    }
+    let sentence = "run 12 \u{b7} 200 \u{b7} 100 ms \u{b7} every 5 s"
+    let watching = header(summary: sentence, isHTTP: true,
+                          watch: WatchHeader(text: sentence, dots: [.success, .running],
+                                             showsStop: true, tone: .success))
+    var swept = 0
+    var absent: [(cols: Int, command: Int)] = []
+    for cols in 20...120 {
+        for last in -1..<cols {
+            swept += 1
+            let rows = [(absoluteRow: 4, lastUsedColumn: last)]
+            let summary = CommandBlockChrome.summaryPlacement(commandRows: rows,
+                                                              textCount: sentence.count, cols: cols)
+            let placement = CommandBlockChrome.stripPlacement(
+                watching, commandRows: rows, cols: cols,
+                summary: summary.map { (row: $0.row, text: sentence) }, measure: appColumns)
+            if placement?.plan.pills.contains(.stop) != true { absent.append((cols, last + 1)) }
+        }
+    }
+    #expect(swept == 7171)
+    #expect(absent.count == 28)
+    // Exactly the band above, and nothing outside it.
+    #expect(absent.allSatisfy { (34...40).contains($0.cols) && (0...6).contains($0.command) })
+    // The shortest command line a `curl` can occupy -- `$ curl x` -- is already clear of it.
+    #expect(!absent.contains { $0.command >= 8 })
+    // And a pane wide enough to be worth splitting is clear of it at any command length.
+    #expect(!absent.contains { $0.cols > 40 })
+}

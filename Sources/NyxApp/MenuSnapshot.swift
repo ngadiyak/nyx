@@ -33,7 +33,7 @@ enum MenuSnapshot {
     static func run(into directory: URL, config: Config) {
         let palette = Pane.resolvedPalette(for: config)
         for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-            for (caseName, menu) in blockMenus() {
+            for (caseName, menu) in blockMenus(config: config) {
                 write(menu: menu, caption: caseName, appearance: appearance,
                       named: "menu-block-\(caseName)-\(name)", into: directory)
             }
@@ -50,6 +50,9 @@ enum MenuSnapshot {
             write(menu: editMenu(config: config),
                   caption: "the Edit menu: the items a text field needs, and Nyx's own",
                   appearance: appearance, named: "menu-edit-\(name)", into: directory)
+            write(menu: menuBarSection(titled: "Go", config: config),
+                  caption: "the Go menu \u{2014} every block action and the chord it answers to",
+                  appearance: appearance, named: "menu-go-\(name)", into: directory)
             write(menu: tabMenu(), caption: "right-click a tab", appearance: appearance,
                   named: "menu-tab-\(name)", into: directory)
             write(menu: groupMenu(), caption: "right-click a group header", appearance: appearance,
@@ -68,12 +71,13 @@ enum MenuSnapshot {
 
     // MARK: - The menus, from the real `NSMenu`
 
-    /// The ⋯ menu on each kind of block, built exactly as `BlockHeaderView.morePressed` builds it:
+    /// The ⋯ menu on each kind of block, built by `Pane.blockMenu(for:target:action:bindings:)` -- the
+    /// builder the pill, the right-click menu, ⌘⇧A and the screen reader's *Show Menu* all use:
     /// `BlockHeader.actions` in order, a separator wherever `BlockAction.startsGroup`, the title
     /// from `BlockHeader.title(for:)` and the tick from `isChecked`. Every one of those is NyxCore,
     /// so what these pictures show is the decision rather than a copy of it.
-    private static func blockMenus() -> [(String, NSMenu)] {
-        BlockKind.allCases.map { ($0.rawValue, menu(for: blockHeader(kind: $0))) }
+    private static func blockMenus(config: Config) -> [(String, NSMenu)] {
+        BlockKind.allCases.map { ($0.rawValue, menu(for: blockHeader(kind: $0), config: config)) }
     }
 
     private enum BlockKind: String, CaseIterable {
@@ -109,22 +113,13 @@ enum MenuSnapshot {
         }
     }
 
-    /// `BlockHeaderView.morePressed`'s loop, and `Pane.contextMenu`'s block half, which are the
-    /// same loop written twice in the product. Written a third time here rather than reached into,
-    /// because both product copies are `private` -- see the report: the menu's *structure* is the
-    /// one part of it that is not a NyxCore value.
-    private static func menu(for header: BlockHeader) -> NSMenu {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        for (index, entry) in header.actions.enumerated() {
-            if index > 0 && entry.action.startsGroup { menu.addItem(.separator()) }
-            let item = NSMenuItem(title: header.title(for: entry.action), action: nil,
-                                  keyEquivalent: "")
-            item.isEnabled = entry.enabled
-            item.state = header.isChecked(entry.action) ? .on : .off
-            menu.addItem(item)
-        }
-        return menu
+    /// The product's own builder, with no target: `Pane.blockMenu(for:target:action:bindings:)` is the
+    /// loop the ⋯ pill, the right-click menu, ⌘⇧A and the pane's accessibility menu all go through,
+    /// so these pictures are of *that* menu rather than of a fourth copy of it. It was retyped here
+    /// while both product copies were `private`, which is exactly how a picture drifts.
+    private static func menu(for header: BlockHeader, config: Config) -> NSMenu {
+        let bindings = KeyBindingTable(user: config.keybinds)
+        return Pane.blockMenu(for: header, target: nil, action: nil, bindings: bindings)
     }
 
     /// The **real** Edit menu, pulled out of `MainMenu.build` -- not a reconstruction, so this
@@ -133,9 +128,18 @@ enum MenuSnapshot {
     /// Nyx's actions on AppKit's selectors, which is what lets the focused text field answer them.
     /// Everything is drawn enabled: `isEnabled` on an auto-enabling menu is only resolved while it
     /// is on screen, and a menu on screen is what this machine cannot photograph.
-    private static func editMenu(config: Config) -> NSMenu {
+    private static func editMenu(config: Config) -> NSMenu { menuBarSection(titled: "Edit", config: config) }
+
+    /// One section of the menu bar, as `MainMenu.build(bindings:)` really builds it.
+    ///
+    /// `Go` is where plan 1b's work is visible: eight block-scoped rows whose titles stopped saying
+    /// "Last", `Command Actions…` with ⌘⇧A, `Go to the Pinned Command` with no chord at all, and
+    /// `Fold Output`'s ⌘⇧↑ -- the first arrow chord any of these pictures had to draw. There was no
+    /// picture of the menu bar at all before this, so a title or a chord could change in
+    /// `ActionCatalog` and no reviewer would ever see it.
+    private static func menuBarSection(titled title: String, config: Config) -> NSMenu {
         let main = MainMenu.build(bindings: KeyBindingTable(user: config.keybinds))
-        return main.items.first { $0.title == "Edit" }?.submenu ?? NSMenu()
+        return main.items.first { $0.title == title }?.submenu ?? NSMenu()
     }
 
     /// The right-click menu: the block group when the pointer is on a command, then the four
@@ -154,7 +158,7 @@ enum MenuSnapshot {
             menu.addItem(.separator())
         }
         if let header {
-            let block = self.menu(for: header)
+            let block = self.menu(for: header, config: config)
             for item in block.items {
                 block.removeItem(item)
                 menu.addItem(item)
@@ -162,15 +166,14 @@ enum MenuSnapshot {
             menu.addItem(.separator())
         }
         let bindings = KeyBindingTable(user: config.keybinds)
+        // `MenuShortcut` is the same converter the menu bar and the block menu use, not a
+        // `case .char` of its own: a chord like `fold_command`'s default (⌘⇧↑) has no character,
+        // so re-deriving the mask by hand dropped it and this picture disagreed with the app.
         func actionItem(_ action: TerminalAction) -> NSMenuItem {
             let item = NSMenuItem(title: action.title, action: nil, keyEquivalent: "")
-            if let binding = bindings.binding(for: action), case .char(let c) = binding.key {
-                item.keyEquivalent = String(c).lowercased()
-                var mask: NSEvent.ModifierFlags = []
-                if binding.modifiers.contains(.cmd) { mask.insert(.command) }
-                if binding.modifiers.contains(.shift) { mask.insert(.shift) }
-                if binding.modifiers.contains(.alt) { mask.insert(.option) }
-                if binding.modifiers.contains(.ctrl) { mask.insert(.control) }
+            if let binding = bindings.binding(for: action),
+               let (key, mask) = MenuShortcut.keyEquivalent(for: binding) {
+                item.keyEquivalent = key
                 item.keyEquivalentModifierMask = mask
             }
             return item
@@ -422,6 +425,23 @@ private final class MenuSheetView: NSView {
         if mask.contains(.option) { out += "\u{2325}" }
         if mask.contains(.shift) { out += "\u{21E7}" }
         if mask.contains(.command) { out += "\u{2318}" }
-        return out + item.keyEquivalent.uppercased()
+        return out + MenuSheetView.keyGlyph(item.keyEquivalent)
+    }
+
+    /// A real `NSMenu` draws its own key-equivalent glyphs -- an arrow key equivalent is one of
+    /// AppKit's private-use function-key characters (`NSUpArrowFunctionKey` and its neighbours),
+    /// and AppKit knows to draw those as ↑ ↓ ← →. This reconstruction draws the character itself
+    /// with a system font that has no glyph for that codepoint, which is a missing-glyph box, not
+    /// the chord `Fold Output` actually has.
+    ///
+    /// So the character goes back through `MenuShortcut` to the `Key` it was made from and is
+    /// spelled by `Key.displayName`, the one table that decides these glyphs -- rather than a
+    /// third copy of it here, which knew nothing of ↩ ⇥ ⎋ ⌫ or the F-keys and drew each of them
+    /// as itself. Anything that names no key falls back to an uppercase character, which is what
+    /// an ordinary letter equivalent is.
+    private static func keyGlyph(_ keyEquivalent: String) -> String {
+        guard let key = MenuShortcut.key(forKeyEquivalent: keyEquivalent)
+        else { return keyEquivalent.uppercased() }
+        return Key.displayName(key)
     }
 }

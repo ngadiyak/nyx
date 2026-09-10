@@ -394,3 +394,41 @@ private func httpHeader(lens: ResponseLens? = nil, tooLarge: Bool = false,
                                        anyFolds: false, hasOutput: true)
     #expect(!plain.actions.contains { if case .runEvery = $0.action { return true } else { return false } })
 }
+
+// MARK: - The chord a menu row carries
+
+@Test func theMenuRowsThatAreAlsoActionsNameThem() {
+    #expect(BlockAction.copyOutput.terminalAction == .copyCommandOutput)
+    #expect(BlockAction.copyMarkdown.terminalAction == .copyBlockMarkdown)
+    #expect(BlockAction.saveOutput.terminalAction == .saveCommandOutput)
+    #expect(BlockAction.editAndRun.terminalAction == .editAndRunCommand)
+    #expect(BlockAction.toggleFold.terminalAction == .foldCommand)
+    #expect(BlockAction.toggleFoldAll.terminalAction == .foldAllLongOutput)
+    #expect(BlockAction.toggleLens.terminalAction == .toggleHTTPLens)
+    #expect(BlockAction.stopWatch.terminalAction == .stopWatch)
+    #expect(BlockAction.notifyWhenDone(armed: false).terminalAction == .notifyWhenDone)
+}
+
+/// A row whose act has no action shows no chord. The lens rows in particular: ⌘⇧J *toggles* pretty
+/// against raw, so printing it beside `Pretty JSON` would be a promise that is wrong half the time.
+@Test func theRowsWithNoActionOfTheirOwnCarryNoChord() {
+    var rows: [BlockAction] = [.copyCommand, .runAgain, .openInWorkbench, .saveAsButton,
+                               .saveToProject, .setLens(.raw), .setLens(.pretty),
+                               .setLens(.filter("")), .copyBody, .copyHeaders, .lensUnavailable,
+                               .runEvery(seconds: 5), .watch(WatchPlan(interval: 5, stop: .never))]
+    rows += ExportFormat.allCases.map { BlockAction.copyAs($0) }
+    for row in rows { #expect(row.terminalAction == nil, "\(row.title) should carry no chord") }
+}
+
+/// Whatever a row names must be a real menu-bar action, or the chord printed beside it comes from
+/// a table nothing else can reach.
+@Test func everyChordedRowIsAnActionTheMenuBarAlsoOffers() {
+    let header = BlockHeader(id: 1, state: .finished, folded: false, hasOutput: true,
+                             anyFolds: true, notifyArmed: false, summary: "8.8s",
+                             httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms", tone: .success),
+                             isHTTP: true, bodyIsJSON: true, hasPreviousRun: true)
+    for entry in header.actions {
+        guard let action = entry.action.terminalAction else { continue }
+        #expect(ActionCatalog.allMenuActions.contains(action), "\(action.configName) is not in the menu")
+    }
+}

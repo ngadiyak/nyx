@@ -79,3 +79,73 @@ private func blocks() -> [CommandBlock] {
     let display: [DisplayRow] = [.row(0), .row(1), .row(2)]
     #expect(DisplayRows.slots(coveredBy: 20..<25, commandID: 9, in: display, viewportTop: 0) == nil)
 }
+
+// MARK: - The cursor's block is drawn as a hovered one
+
+@Test func theCursorsBlockHoversItselfAndSaysSo() {
+    let hover = BlockHover.resolve(cursor: BlockCursor(commandID: 2), blocks: blocks(), allowed: true)
+    #expect(hover?.id == 2)
+    #expect(hover?.rows == 3..<19)
+    #expect(hover?.headerRow == 3)
+    #expect(hover?.source == .cursor)
+}
+
+@Test func aCursorOnABlockThatIsNotOnScreenHoversNothing() {
+    #expect(BlockHover.resolve(cursor: BlockCursor(commandID: 99), blocks: blocks(), allowed: true) == nil)
+    #expect(BlockHover.resolve(cursor: BlockCursor(), blocks: blocks(), allowed: true) == nil)
+    #expect(BlockHover.resolve(cursor: BlockCursor(commandID: 2), blocks: blocks(), allowed: false) == nil)
+}
+
+@Test func thePointerWinsWhileItIsOnABlockOfItsOwn() {
+    let pointer = BlockHover.resolve(pointerRow: 1, blocks: blocks(), allowed: true)
+    let cursor = BlockHover.resolve(cursor: BlockCursor(commandID: 2), blocks: blocks(), allowed: true)
+    let chosen = BlockHover.choose(pointer: pointer, cursor: cursor, cursorMovedLast: false)
+    #expect(chosen?.id == 1)
+    #expect(chosen?.source == .pointer)
+}
+
+/// Inside the pane but on no block at all -- resting two rows below the last block, or on the blank
+/// screen under a short session -- is not the pointer winning: it is the pointer having no answer.
+/// The cursor's block stays raised, because otherwise brushing the trackpad after ⌘↑ put out the
+/// only thing on screen saying where the keyboard was.
+@Test func aPointerOnNoBlockLeavesTheCursorsBlockRaised() {
+    let cursor = BlockHover.resolve(cursor: BlockCursor(commandID: 2), blocks: blocks(), allowed: true)
+    let chosen = BlockHover.choose(pointer: nil, cursor: cursor, cursorMovedLast: false)
+    #expect(chosen?.id == 2)
+    #expect(chosen?.source == .cursor)
+}
+
+/// With neither a pointer on a block nor a cursor there is nothing to raise: a pane nobody has
+/// pressed ⌘↑ in draws no block chrome at idle.
+@Test func aPointerOnNoBlockWithNoCursorRaisesNothing() {
+    #expect(BlockHover.choose(pointer: nil, cursor: nil, cursorMovedLast: false) == nil)
+}
+
+@Test func theCursorReturnsWhenThePointerLeavesOrTheChordArrives() {
+    let pointer = BlockHover.resolve(pointerRow: 1, blocks: blocks(), allowed: true)
+    let cursor = BlockHover.resolve(cursor: BlockCursor(commandID: 2), blocks: blocks(), allowed: true)
+    #expect(BlockHover.choose(pointer: nil, cursor: cursor, cursorMovedLast: false)?.id == 2)
+    #expect(BlockHover.choose(pointer: pointer, cursor: cursor, cursorMovedLast: true)?.id == 2)
+}
+
+@Test func placingAHoverOnDisplayRowsKeepsItsSource() {
+    let hover = try! #require(BlockHover.resolve(cursor: BlockCursor(commandID: 2),
+                                                 blocks: blocks(), allowed: true))
+    let display: [DisplayRow] = (0..<19).map { .row(12 + $0) }
+    #expect(hover.placed(onDisplayRows: display, viewportTop: 12)?.source == .cursor)
+    #expect(hover.attachingHeader(to: nil).source == .cursor)
+}
+
+// MARK: - Which block an action acts on
+
+@Test func anActionTargetsTheCursorWhenThereIsOne() {
+    #expect(BlockTarget.resolve(cursor: BlockCursor(commandID: 7), exists: { _ in true },
+                                fallback: 9) == 7)
+}
+
+@Test func anActionFallsBackWhenTheCursorIsClearedOrItsBlockIsGone() {
+    #expect(BlockTarget.resolve(cursor: BlockCursor(), exists: { _ in true }, fallback: 9) == 9)
+    #expect(BlockTarget.resolve(cursor: BlockCursor(commandID: 7), exists: { _ in false },
+                                fallback: 9) == 9)
+    #expect(BlockTarget.resolve(cursor: BlockCursor(), exists: { _ in true }, fallback: nil) == nil)
+}

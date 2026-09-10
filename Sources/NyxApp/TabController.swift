@@ -1491,8 +1491,8 @@ extension TabController: ActionTarget {
         case .previousPrompt: if focusedPane?.jumpToPrompt(forward: false) != true { NSSound.beep() }
         case .nextPrompt: if focusedPane?.jumpToPrompt(forward: true) != true { NSSound.beep() }
         case .selectCommandOutput: if focusedPane?.selectCommandOutput() != true { NSSound.beep() }
-        case .copyCommandOutput: if focusedPane?.copyLastCommandOutput() != true { NSSound.beep() }
-        case .editAndRunCommand: if focusedPane?.editAndRunLastCommand() != true { NSSound.beep() }
+        case .copyCommandOutput: if focusedPane?.performOnBlockCursor(.copyOutput) != true { NSSound.beep() }
+        case .editAndRunCommand: if focusedPane?.editAndRunCurrentCommand() != true { NSSound.beep() }
         case .pasteWithEditor: if focusedPane?.pasteWithEditor() != true { NSSound.beep() }
 
         // The group and rename commands existed only on a tab's context menu, which is a mouse and
@@ -1515,8 +1515,8 @@ extension TabController: ActionTarget {
         case .commandPalette: toggleCommandPalette()
         case .foldCommand: if focusedPane?.toggleFoldOfCurrentCommand() != true { NSSound.beep() }
         case .foldAllLongOutput: if focusedPane?.foldAllLongOutput() != true { NSSound.beep() }
-        case .copyBlockMarkdown: if focusedPane?.copyLastCommandAsMarkdown() != true { NSSound.beep() }
-        case .saveCommandOutput: if focusedPane?.saveLastCommandOutput() != true { NSSound.beep() }
+        case .copyBlockMarkdown: if focusedPane?.performOnBlockCursor(.copyMarkdown) != true { NSSound.beep() }
+        case .saveCommandOutput: if focusedPane?.performOnBlockCursor(.saveOutput) != true { NSSound.beep() }
         case .notifyWhenDone: if focusedPane?.armNotificationForRunningCommand() != true { NSSound.beep() }
         case .saveScrollback: saveScrollback()
         case .newRequest: if focusedPane?.newRequest() != true { NSSound.beep() }
@@ -1552,21 +1552,29 @@ extension TabController: ActionTarget {
             // and the menu item is greyed out for exactly this reason.
             if focusedPane?.takeControl() != true { NSSound.beep() }
 
-        // The block under the pointer, else the last request in the pane: pretty ↔ raw. Beeps when
-        // the pane has no response to show -- the menu and the palette already grey it there, and a
-        // `keybind` line reaches `perform` directly.
+        // The block the keyboard is on when that is a request, else the last request in the pane:
+        // pretty ↔ raw. Beeps when the pane has no response to show -- the menu and the palette
+        // already grey it there, and a `keybind` line reaches `perform` directly.
         case .toggleHTTPLens:
             if focusedPane?.toggleLensOfCurrentBlock() != true { NSSound.beep() }
 
-        // Only while the series' own newest run is the last request in the pane: `⌘.` is a chord
-        // people press for many reasons, and one that silently killed a watch they had scrolled
-        // away from would be a stop they never saw. The block header's Stop button has no such
-        // rule -- pressing it names the series.
+        // Scoped to the series, not to its newest run: any run of it, the block it was armed from,
+        // or no request under the keyboard at all. `⌘.` is a chord people press for many reasons,
+        // and one that silently killed a watch belonging to some *other* request would be a stop
+        // they never saw -- which is the only case it refuses. The strip's `Stop` pill always
+        // stops the series it belongs to, so the two agree everywhere the pill exists.
         case .stopWatch:
             guard focusedPane?.canStopWatch == true, focusedPane?.stopWatch(.stopped) == true else {
                 NSSound.beep()
                 return
             }
+
+        // The whole ⋯ menu, on the block the keyboard is on, at that block's own row. The one
+        // keyboard route to Copy, Stop, the lens chip and the dots: a pane's chrome has no key-view
+        // loop and cannot have one (a11y 0.1), so an action is the only fix there is.
+        case .blockActions: if focusedPane?.showBlockActions() != true { NSSound.beep() }
+        // The sticky band's click, as a chord: back to the command pinned at the top.
+        case .scrollToStickyPrompt: if focusedPane?.scrollToStickyPrompt() != true { NSSound.beep() }
         }
     }
 
@@ -1603,10 +1611,18 @@ extension TabController: ActionTarget {
         case .findNext, .findPrevious:
             // Nothing to step through until ⌘F has been pressed and something typed.
             return focusedPane?.isSearching ?? false
-        case .previousPrompt, .nextPrompt, .selectCommandOutput, .copyCommandOutput,
-             .foldCommand, .foldAllLongOutput, .copyBlockMarkdown, .saveCommandOutput:
+        case .previousPrompt, .nextPrompt, .foldAllLongOutput:
             // A shell with no integration emits no marks, and these do nothing without them.
             return focusedPane?.hasPromptMarks ?? false
+        case .selectCommandOutput, .copyCommandOutput, .foldCommand, .copyBlockMarkdown,
+             .saveCommandOutput:
+            // Marks, and a block for the cursor to be on: a pane with no blocks greys all five
+            // rather than beeping at whoever chose one. A block that printed *nothing* still
+            // enables them, and `select_command_output` and `fold_command` then beep -- the two
+            // that need output, where the other three are meaningful without it (the command line
+            // is still copied, saved and fenced). One gate cannot say both, and the honest gate for
+            // five rows is "is there a block at all".
+            return focusedPane?.hasBlockTarget ?? false
         case .notifyWhenDone:
             return focusedPane?.hasRunningCommand ?? false
         case .focusLeft, .focusRight, .focusUp, .focusDown,
@@ -1625,9 +1641,19 @@ extension TabController: ActionTarget {
             // the menu and absent from the palette rather than beeping at whoever chose it.
             return focusedPane?.hasResponseToLens == true
         case .stopWatch:
-            // A series to stop, on the block it is running in. Without one the row is greyed in
-            // the menu and absent from the palette rather than beeping at whoever chose it.
+            // An unfinished series in this pane that the block the keyboard is on belongs to -- any
+            // of its runs, or the block it was armed from -- and any position that is not somebody
+            // else's request. Without one the row is greyed in the menu and absent from the palette
+            // rather than beeping at whoever chose it.
             return focusedPane?.canStopWatch == true
+        case .blockActions:
+            // The cursor has to resolve to a block. Greyed on a shell with no integration and on a
+            // pane where nothing has run -- there is no menu to pop for a block that is not there.
+            return focusedPane?.hasBlockTarget ?? false
+        case .scrollToStickyPrompt:
+            // Only while a command is actually pinned at the top. With no band there is nowhere to
+            // go back to, and the row says so rather than beeping.
+            return focusedPane?.hasStickyPrompt ?? false
         // `newRequest` falls through to here and is right to: a blank request needs nothing to
         // exist but a pane to run it in.
         default:

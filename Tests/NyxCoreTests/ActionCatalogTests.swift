@@ -26,6 +26,29 @@ import Testing
     #expect(Set(titles).count == titles.count)
 }
 
+/// The menu bar must not say "Last" for an action that targets the block the keyboard is on: the
+/// user can put the cursor three blocks up, and a row promising the *last* command would be a
+/// menu that lies about what pressing it does.
+@Test func theBlockScopedTitlesNameTheBlockRatherThanTheLastOne() {
+    let scoped: [TerminalAction] = [.selectCommandOutput, .copyCommandOutput, .copyBlockMarkdown,
+                                    .saveCommandOutput, .editAndRunCommand, .foldCommand,
+                                    .toggleHTTPLens, .stopWatch]
+    for action in scoped {
+        #expect(!action.title.contains("Last"), "\(action.configName) still says Last")
+    }
+    #expect(TerminalAction.copyCommandOutput.title == "Copy Command Output")
+    #expect(TerminalAction.copyBlockMarkdown.title == "Copy Command as Markdown")
+    #expect(TerminalAction.saveCommandOutput.title == "Save Command Output\u{2026}")
+    // The ⋯ menu row's own words, so the menu bar and the block menu are not two spellings of one
+    // act on one block (`BlockAction.editAndRun.title`).
+    #expect(TerminalAction.editAndRunCommand.title == "Edit and Run This Command\u{2026}")
+    // The four the plan leaves alone: they changed their target, not their words.
+    #expect(TerminalAction.foldCommand.title == "Fold Command Output")
+    #expect(TerminalAction.selectCommandOutput.title == "Select Command Output")
+    #expect(TerminalAction.toggleHTTPLens.title == "Toggle Pretty Response")
+    #expect(TerminalAction.stopWatch.title == "Stop Watching")
+}
+
 @Test func sectionsAreNamedAndNonEmpty() {
     for section in ActionCatalog.sections {
         #expect(!section.title.isEmpty)
@@ -134,4 +157,15 @@ private func table(_ lines: String...) -> KeyBindingTable {
     #expect(go.actions.contains(.copyBlockMarkdown))
     #expect(go.actions.contains(.saveCommandOutput))
     #expect(go.actions.contains(.notifyWhenDone))
+}
+
+/// The one keyboard route to everything the hover strip offers. Without a chord it is not a route.
+@Test func theBlockAndStickyActionsAreInTheGoSectionWithTheirTitles() {
+    #expect(TerminalAction.blockActions.title == "Command Actions\u{2026}")
+    #expect(TerminalAction.scrollToStickyPrompt.title == "Go to the Pinned Command")
+    #expect(TerminalAction.blockActions.configName == "block_actions")
+    #expect(TerminalAction.scrollToStickyPrompt.configName == "scroll_to_sticky_prompt")
+    let go = ActionCatalog.sections.first { $0.title == "Go" }
+    #expect(go?.actions.contains(.blockActions) == true)
+    #expect(go?.actions.contains(.scrollToStickyPrompt) == true)
 }

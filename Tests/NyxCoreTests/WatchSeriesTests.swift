@@ -414,3 +414,60 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
     #expect(small.dots.count == 4)
     #expect(small.hiddenRuns == 0)
 }
+
+// MARK: - What ⌘. is allowed to stop
+
+/// ⌘. used to require the block the keyboard was on to be the series' **newest** run, which read
+/// as a bug from either side (PM P3): scrolling up one run of the series -- the obvious way to
+/// compare two answers -- refused the chord, while a request block belonging to nothing at all
+/// accepted it, because the target rule falls back to the last request in the pane.
+///
+/// The scope is the *series*: any run of it, or no request under the keyboard at all. That makes
+/// the chord agree with the strip's `Stop` pill, which stops the series it belongs to wherever the
+/// pointer happens to be -- the two disagreed on exactly the blocks a user scrolls to.
+@Test func aChordOnAnyRunOfTheSeriesMayStopIt() {
+    var series = watchSeries(interval: 5, command: "curl -sS https://example.com", startedAt: 0)
+    watchRun(&series, id: 1, status: 200, start: 0, end: 1)
+    watchRun(&series, id: 2, status: 200, start: 6, end: 7)
+    let elsewhere = "curl -sS https://other.example.com"
+    #expect(series.mayBeStopped(byChordOn: (2, elsewhere)))   // the newest run
+    #expect(series.mayBeStopped(byChordOn: (1, elsewhere)))   // an older run: scrolled up to compare
+    #expect(series.mayBeStopped(byChordOn: nil))              // no request under the keyboard
+}
+
+/// The block the watch was armed **from** is the same request and is not one of the runs:
+/// `startWatch` opens a series with none, and the runs are what the series sent afterwards. It is
+/// also exactly where the cursor is when somebody presses `Run Every 5 s` and then changes their
+/// mind, so it counts -- by its command line, which is what makes it the same request. Found by
+/// pressing the keys in the built app: `canStop` came back false on the block just armed.
+@Test func aChordOnTheBlockTheWatchWasArmedFromMayStopIt() {
+    var series = watchSeries(interval: 5, command: "curl -sS https://example.com", startedAt: 0)
+    watchRun(&series, id: 7, status: 200, start: 0, end: 1)
+    #expect(series.mayBeStopped(byChordOn: (4, "curl -sS https://example.com")))
+}
+
+/// A request that is neither a run nor the same request is somebody else's block, and the chord
+/// pressed on it means nothing -- greyed in the menu, absent from the palette, rather than
+/// silently killing a watch somewhere else in the pane.
+@Test func aChordOnAnUnrelatedRequestMayNotStopTheSeries() {
+    var series = watchSeries(interval: 5, command: "curl -sS https://example.com", startedAt: 0)
+    watchRun(&series, id: 1, status: 200, start: 0, end: 1)
+    #expect(!series.mayBeStopped(byChordOn: (99, "curl -sS https://other.example.com")))
+}
+
+/// A series that has not run anything yet passes from anywhere: until the first run there is no
+/// `Stop` pill either -- the strip only draws one on the newest run -- so the chord is the only way
+/// to take back a watch that has not sent anything.
+@Test func aSeriesWithNoRunsYetMayBeStoppedFromAnywhere() {
+    let series = watchSeries(interval: 5, startedAt: 0)
+    #expect(series.mayBeStopped(byChordOn: (99, "curl -sS https://other.example.com")))
+}
+
+/// A series that has already ended has nothing to stop, wherever the keyboard is.
+@Test func aFinishedSeriesMayNotBeStopped() {
+    var series = watchSeries(interval: 5, command: "curl -sS https://example.com", startedAt: 0)
+    watchRun(&series, id: 1, status: 200, start: 0, end: 1)
+    series.stop(.stopped)
+    #expect(!series.mayBeStopped(byChordOn: (1, "curl -sS https://example.com")))
+    #expect(!series.mayBeStopped(byChordOn: nil))
+}

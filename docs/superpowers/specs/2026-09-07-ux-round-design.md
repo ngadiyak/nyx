@@ -44,9 +44,10 @@ request workbench's form, automatic zsh injection through `ZDOTDIR`, and the sum
 **Architecture, unchanged and binding** (`CLAUDE.md`): every decision below is a value or a pure
 function in `NyxCore`, unit-tested; `NyxApp` converts events and draws; `NyxRender` learns nothing
 about chrome; the build stays warning-free and `make bench` stays at or above 180 MB/s. Six waves,
-each landing on its own commits. Order (owner's ruling of 2026-09-10 — the lens and watch polish
-goes last, after every design and UX fix): block chrome → shell integration → settings and sheets →
-tab bar, palette, search, banners → remote strip and pairing → lenses and watch.
+each landing on its own commits. Order (owner's rulings of 2026-09-10: the lens and watch polish
+goes last; remote sessions are the product's most important feature and go right after the block
+chrome): block chrome → remote strip and pairing → shell integration → settings and sheets →
+tab bar, palette, search, banners → lenses and watch.
 
 **Eight plans, not six.** Waves 1 and 5 are each too large for one plan of ≤ 10 tasks, so each
 splits at a seam that leaves both halves shippable: **1a** the mark and the strip (the block drawn
@@ -63,7 +64,8 @@ the head of the spine; the strip's geometry and pills; the lens chip; the fold c
 summary losing its chevron; the sticky strip; `hitRowHeight` everywhere (§8.4); the pictures and
 the rung-6 hook. Every pointer route is correct without any of 1b.
 **Plan 1b (§2.8), six tasks:** `BlockCursor`; re-targeting and re-titling the eight block-scoped
-actions; `block_actions` ⌘⇧A and `view.menu`; the `BlockAction → TerminalAction?` chords in the
+actions; `block_actions` ⌘⇧A and `view.menu` (**amended 2026-09-10**, final review F1: no
+`view.menu` — see §2.8); the `BlockAction → TerminalAction?` chords in the
 menu (moved here from §6.5, because ⌘⇧A's menu is what has to teach them);
 `scroll_to_sticky_prompt`; the finish announcement (§8.1). It touches no pixel 1a draws, and 1a is
 what makes its target visible.
@@ -388,15 +390,30 @@ cursor clears. Nothing new is drawn at idle: a pane nobody has pressed ⌘↑ in
 **The titles stop saying "Last"** in the same commit, or the menu bar lies: `Copy Last Command
 Output` → **`Copy Command Output`**, `Copy Last Command as Markdown` → **`Copy Command as
 Markdown`**, `Save Last Command Output…` → **`Save Command Output…`**, `Edit Command Line…` →
-**`Edit This Command…`**. The other four keep their titles and change only their target, and
-`docs/configuration.md`'s scope sentences — including the documented divergence of ⌘. from the
-`Stop` button — are rewritten to "the block the keyboard is on".
+**`Edit This Command…`** (**amended 2026-09-10**, task-3 review I2: **`Edit and Run This
+Command…`** — this spelling would have been a second title for `BlockAction.editAndRun`'s own row,
+which one commit makes one implementation with it, and the ⋯ row's words win in both places). The
+other four keep their titles and change only their target, and `docs/configuration.md`'s scope
+sentences — including the documented divergence of ⌘. from the `Stop` button — are rewritten to
+"the block the keyboard is on".
 
 `block_actions` (**⌘⇧A**, free; Warp's chord) pops the block menu at the cursor's row, built through
 the same path as `morePressed` — `BlockHeader.actions` plus `menuHeader()`, so `hasPreviousRun` is
 filled the way the two mouse paths already fill it. That is the **one** keyboard route to
 everything the strip offers; no other new chord is added, and the five "which block" rules retire.
 The menu is also assigned to `view.menu` so VO-⇧-M finds it.
+
+**Amended 2026-09-10 (task-4 review, final review F1): the menu is _not_ assigned to `view.menu`,
+and this instruction is struck.** Probed in the built app: AppKit resolves a control-left-click
+through `menu(for:)`/`self.menu` *before* `mouseDown` is delivered, so a pane carrying the block
+menu popped that block's rows in place of the pane's own context menu — no Copy, no Paste, no
+split, no Clear, the wrong block whenever the cursor was not under the pointer, no selection
+started, and nothing reported to a program that had asked for mouse events (measured: with the menu
+set, `mouseDown` was never called, including under DECSET 1000). VO-⇧-M is served by
+`accessibilityPerformShowMenu()` alone: probed with `menu == nil`,
+`isAccessibilitySelectorAllowed` answers true for an override of that selector on its own, and
+building the menu on the press means it is the block `⌘⇧A` would act on rather than one a keypress
+cached before the viewport moved the cursor out from under it.
 
 *Disagreement:* the PM's model of a fixed, full-width, labelled Warp-style header row per block was
 considered and rejected — it costs a terminal row per block and re-flows the transcript, which
@@ -779,10 +796,12 @@ duplicates, so it cannot wait for Wave 5.)
 
 ---
 
-## 7. Wave 6 — remote strip, pairing, and the universal binary
+## 7. Wave 6 — remote strip and pairing (now second in the order)
 
-**Five tasks**, the last of which is not UX at all and rides this branch on the owner's ruling
-(`decisions.md`, 2026-09-07).
+**Four tasks** (the universal-binary task was struck by the owner on 2026-09-10: Intel builds are
+not being done for now; a Mac builds its own bundle with `make install`), preceded by an end-to-end
+QA of pairing and attach on two local instances so the plan fixes what breaks, not only what the
+pictures showed.
 
 1. **The strip's button becomes visible.** `RemoteStripView.update` never pins `appearance` and sets
    `contentTintColor`, which does not colour a *titled* button — the exact trap `BlockHeaderView`'s
@@ -801,12 +820,7 @@ duplicates, so it cannot wait for Wave 5.)
    and `The relay URL and token come from the nyx-server you run; Nyx cannot issue them.`
    Recent activity stops being a raw ISO-8601 dump and uses a relative date (`RelativeAge`, the
    value the palette's Requests rows already use).
-5. **`make release` and `make app` build a universal binary.** The owner could not install Nyx on
-   an Intel Mac: both build for the host architecture only, so a copied bundle is refused on
-   x86_64. Both gain `--arch arm64 --arch x86_64`, and the recipe asserts the result — `lipo -info
-   build/Nyx.app/Contents/MacOS/Nyx` naming both slices, `file` agreeing, the make step failing if
-   either does not. The code has no architecture-specific paths; `docs/testing.md` gains a line
-   under the build rung saying a release bundle is universal and how to check it.
+5. ~~Universal binary~~ — struck 2026-09-10 (owner): not for now.
 
 ---
 
@@ -835,6 +849,21 @@ appears (a11y 5.3). Plus `.layoutChanged` from `TabBarView.setTabs` and `PromptG
 announcing none is a11y 0.2. The rule, in Core as `BlockAnnouncement.text(for:) -> String?` and
 tested there: the **focused pane only**, and only when the command **ran ≥ 2 s or exited
 non-zero**. The sentence is `BlockHeader.summary` — the words the strip shows.
+
+**Amended 2026-09-10 (plan 1b's PM gate P1, final review F3): the sentence composes, it is not the
+bare summary.** `BlockAnnouncement.text` says `<command line> — <summary>` — `swift build -c
+release — exit 1 · 815ms` — because `exit 1 · 815ms` on its own names no command, and a VoiceOver
+user with a build in one pane, a test run in another and a `curl` in a third was told that
+something had failed and left to find out what. The command is `Terminal.commandLine(of:)` (the
+shell's own prompt sliced off at the `B` mark, so it is `swift build` and not `nik@nik-newmac ~ %
+swift build`), collapsed and cut to 60 characters by `CommandNotification.summarise` — the same
+limit the notification for a finished command has always used, because a spoken sentence is a
+glance. A shell that marks prompts but emits no `B` gets the wider subject rather than none:
+`commandLine` falls back to `commandText`, which keeps the prompt, so the sentence there is
+`nik@nik-newmac ~ % swift build — exit 1` — `B` is the shell saying where its prompt ends, and
+guessing at a `PS1` instead would cut real commands in half. A block with no text at all to name
+(a command row trimmed out of the scrollback) is still announced by its summary alone, with no
+separator hanging off the front. The rule about *when* is unchanged.
 
 ### 8.2 New `TerminalAction`s
 

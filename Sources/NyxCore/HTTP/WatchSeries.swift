@@ -214,6 +214,34 @@ public struct WatchSeries: Equatable {
         return false
     }
 
+    /// Whether `⌘.` may stop this series while the keyboard is on `cursorRequest` -- the request
+    /// block the cursor is on, with its command line spelled as `command` is (`Pane.watchLine`),
+    /// and nil for every other position.
+    ///
+    /// The scope is the **series**, not its newest run. Requiring the newest run read as a bug from
+    /// either side (PM P3): scrolling up one run to compare two answers -- the obvious thing to do
+    /// with a watch -- refused the chord, while a request belonging to no series at all accepted it,
+    /// because the pane's request target falls back to the last request in the pane.
+    ///
+    /// What belongs to the series is any of its runs **and the block it was armed from**, which is
+    /// the same request and is not in `runs`: `startWatch` opens a series with none, and the runs
+    /// are the blocks the series itself sent afterwards. That block is where the cursor is when
+    /// somebody presses `Run Every 5 s` and then changes their mind, so refusing there would be a
+    /// worse trap than the one this rule removes -- found by pressing the keys in the built app,
+    /// where `canStop` came back false on the block the watch had just been armed from.
+    ///
+    /// A request that is neither is somebody else's block: greying the row beats quietly killing a
+    /// watch elsewhere in the pane. No request under the keyboard at all is not a reason to refuse
+    /// -- there is nothing to mean anything else -- and a series with no runs yet passes from
+    /// anywhere, because until the first run there is no `Stop` pill either and the chord is the
+    /// only way to take it back.
+    public func mayBeStopped(byChordOn cursorRequest: (id: UInt32, command: String)?) -> Bool {
+        guard !isFinished else { return false }
+        guard let cursorRequest else { return true }
+        if runs.isEmpty || cursorRequest.command == command { return true }
+        return runs.contains { $0.id == cursorRequest.id }
+    }
+
     // MARK: - The clock
 
     /// Whether the pane should send the command now: the series is waiting, its deadline has

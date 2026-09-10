@@ -43,12 +43,12 @@ public extension TerminalAction {
         case .previousPrompt: return "Previous Prompt"
         case .nextPrompt: return "Next Prompt"
         case .selectCommandOutput: return "Select Command Output"
-        case .copyCommandOutput: return "Copy Last Command Output"
+        case .copyCommandOutput: return "Copy Command Output"
         case .find: return "Find..."
         case .findNext: return "Find Next"
         case .findPrevious: return "Find Previous"
         case .commandPalette: return "Command Palette"
-        case .editAndRunCommand: return "Edit Command Line…"
+        case .editAndRunCommand: return "Edit and Run This Command\u{2026}"
         case .pasteWithEditor: return "Paste and Edit…"
         case .renameTab: return "Rename Tab…"
         case .groupTab: return "Group Tab…"
@@ -56,8 +56,8 @@ public extension TerminalAction {
         case .toggleTabGroup: return "Collapse or Expand Group"
         case .foldCommand: return "Fold Command Output"
         case .foldAllLongOutput: return "Fold All Long Output"
-        case .copyBlockMarkdown: return "Copy Last Command as Markdown"
-        case .saveCommandOutput: return "Save Last Command Output\u{2026}"
+        case .copyBlockMarkdown: return "Copy Command as Markdown"
+        case .saveCommandOutput: return "Save Command Output\u{2026}"
         case .notifyWhenDone: return "Notify When the Running Command Finishes"
         case .saveScrollback: return "Save Scrollback\u{2026}"
         case .remoteSessions: return "Remote Sessions\u{2026}"
@@ -66,6 +66,8 @@ public extension TerminalAction {
         case .newRequest: return "New Request\u{2026}"
         case .toggleHTTPLens: return "Toggle Pretty Response"
         case .stopWatch: return "Stop Watching"
+        case .blockActions: return "Command Actions\u{2026}"
+        case .scrollToStickyPrompt: return "Go to the Pinned Command"
         }
     }
 
@@ -111,8 +113,9 @@ public enum ActionCatalog {
         ]),
         Section(title: "Go", groups: [
             Group([.commandPalette]),
-            Group([.previousPrompt, .nextPrompt]),
-            Group([.selectCommandOutput, .copyCommandOutput, .copyBlockMarkdown, .saveCommandOutput]),
+            Group([.previousPrompt, .nextPrompt, .scrollToStickyPrompt]),
+            Group([.blockActions, .selectCommandOutput, .copyCommandOutput, .copyBlockMarkdown,
+                   .saveCommandOutput]),
             Group([.editAndRunCommand]),
             Group([.foldCommand, .foldAllLongOutput]),
             Group([.notifyWhenDone]),

@@ -39,7 +39,14 @@ public struct CommandBlock: Equatable {
     /// Empty for a command still running that has not been going long enough to be worth a word --
     /// a status that appears the instant you press return is noise, and one that never appears is
     /// a terminal that looks stuck.
-    public func summary() -> String {
+    public func summary() -> String { CommandBlock.summary(of: region) }
+
+    /// The same sentence from a region alone, for the caller that has no block: the finish
+    /// announcement speaks for a command that may be a thousand rows off the screen, where no
+    /// `BlockHeader` exists to read `summary` off. Not a second copy of the wording -- the
+    /// instance method is this one -- because an announcement and a strip describing one command
+    /// two ways is the whole reason the words live in Core.
+    public static func summary(of region: CommandRegion) -> String {
         var parts: [String] = []
         if let status = region.exitStatus, status != 0 { parts.append("exit \(status)") }
         if let duration = region.duration, DurationText.isWorthShowing(duration) {
@@ -819,6 +826,27 @@ public extension CommandBlockChrome {
     /// What the strip actually *paints*: one row, whatever its frame is. A 20 pt opaque band on a
     /// 13 pt grid covers three rows of somebody's output (Addendum 2).
     static func stripGroundHeight(cellHeight: Double) -> Double { cellHeight }
+    /// Where a menu dropped from a block's own row starts, measured up from the bottom of an
+    /// unflipped pane: the *bottom* edge of that row, because a menu drops downwards from where it
+    /// is anchored (§2.8, `block_actions`).
+    ///
+    /// `slot` is the row the last frame drew the block's command line in -- through whatever folds
+    /// and lenses were on screen, which is why the caller looks it up rather than subtracting the
+    /// viewport top. `nil` means the block has no row on screen at all: its prompt scrolled off the
+    /// top while its output stayed, and the cursor can still be on it. Then the anchor is the top
+    /// of the pane, which is where the block is in the direction of, rather than a negative y off
+    /// the bottom of the window.
+    ///
+    /// Here rather than in the view because the arithmetic has to be checkable against the sticky
+    /// band: the band is painted *over* the first row, so an anchor one cell too high would hang a
+    /// block's menu off the band instead of off the block. `Terminal.stickyPrompt` only puts the
+    /// band up while the pinned command's own row is above the viewport, so the block under a slot
+    /// is never the block the band is naming, and this needs no term for it.
+    static func menuAnchorY(slot: Int?, viewHeight: Double, padding: Double,
+                            cellHeight: Double) -> Double {
+        guard let slot, cellHeight > 0 else { return viewHeight }
+        return viewHeight - padding - Double(slot + 1) * cellHeight
+    }
     /// An in-grid fold triangle's cell, widened to the same 20 pt the gutter uses, for the same
     /// reason: one cell is about 8 pt, which is not a target.
     static let foldColumnWidth: Double = 20
@@ -947,6 +975,32 @@ public enum BlockAction: Equatable {
         case .runAgain, .openInWorkbench, .toggleFold, .notifyWhenDone, .lensUnavailable: return true
         case .setLens(.raw): return true
         default: return false
+        }
+    }
+
+    /// The `TerminalAction` this row *is*, when there is one, so the menu can print its chord.
+    ///
+    /// Every item in the block menu used to be built with an empty `keyEquivalent`, so the one
+    /// place a user could learn that ⌘⇧↑ folds, ⌘E edits and ⌘. stops a watch was the menu bar --
+    /// where the rows are named for a block the user cannot see (a11y 6.10). Decided here rather
+    /// than in the three views that build this menu, which is three chances to disagree.
+    ///
+    /// The lens rows deliberately have none: ⌘⇧J toggles pretty against raw, so printing it beside
+    /// `Pretty JSON` would promise the wrong act half the time.
+    public var terminalAction: TerminalAction? {
+        switch self {
+        case .copyOutput: return .copyCommandOutput
+        case .copyMarkdown: return .copyBlockMarkdown
+        case .saveOutput: return .saveCommandOutput
+        case .editAndRun: return .editAndRunCommand
+        case .toggleFold: return .foldCommand
+        case .toggleFoldAll: return .foldAllLongOutput
+        case .toggleLens: return .toggleHTTPLens
+        case .stopWatch: return .stopWatch
+        case .notifyWhenDone: return .notifyWhenDone
+        case .copyCommand, .runAgain, .openInWorkbench, .copyAs, .saveAsButton, .saveToProject,
+             .setLens, .copyBody, .copyHeaders, .runEvery, .watch, .lensUnavailable:
+            return nil
         }
     }
 }
@@ -1221,11 +1275,24 @@ public extension CommandBlock {
 /// Which block the pointer is over, and where its chrome goes. Pure so the answer for "pointer on
 /// the row after the last block" or "chrome disallowed while a TUI runs" is a test, not a guess.
 public struct BlockHover: Equatable {
+    /// What raised this hover. The pointer and the keyboard light a block the same way -- the
+    /// cursor would be a trap otherwise -- but only one of them can be answered by moving a mouse,
+    /// so the pane has to know which it is looking at.
+    public enum Source: Equatable { case pointer, cursor }
+
     public let id: UInt32
     /// Visible rows to tint.
     public let rows: Range<Int>
     /// The visible row to attach the overlay to, nil when the command line is above the viewport.
     public let headerRow: Int?
+    public let source: Source
+
+    public init(id: UInt32, rows: Range<Int>, headerRow: Int?, source: Source = .pointer) {
+        self.id = id
+        self.rows = rows
+        self.headerRow = headerRow
+        self.source = source
+    }
 
     /// The same hover with its overlay attached elsewhere, or nowhere.
     ///
@@ -1233,7 +1300,7 @@ public struct BlockHover: Equatable {
     /// move it onto a wrapped continuation of the command line, and can refuse a row altogether,
     /// in which case there is no overlay to show and the tint alone marks the block.
     public func attachingHeader(to row: Int?) -> BlockHover {
-        BlockHover(id: id, rows: rows, headerRow: row)
+        BlockHover(id: id, rows: rows, headerRow: row, source: source)
     }
 
     public static func resolve(pointerRow: Int?, blocks: [CommandBlock], allowed: Bool) -> BlockHover? {
@@ -1241,7 +1308,36 @@ public struct BlockHover: Equatable {
               let block = blocks.first(where: { $0.visibleRows.contains(pointerRow) }),
               block.region.id != 0 else { return nil }
         return BlockHover(id: block.region.id, rows: block.visibleRows,
-                          headerRow: block.showsHeader ? block.visibleRows.lowerBound : nil)
+                          headerRow: block.showsHeader ? block.visibleRows.lowerBound : nil,
+                          source: .pointer)
+    }
+
+    /// The block the keyboard is on, hovered exactly as the pointer would hover it.
+    public static func resolve(cursor: BlockCursor, blocks: [CommandBlock],
+                               allowed: Bool) -> BlockHover? {
+        guard allowed, let id = cursor.commandID, id != 0,
+              let block = blocks.first(where: { $0.region.id == id }) else { return nil }
+        return BlockHover(id: id, rows: block.visibleRows,
+                          headerRow: block.showsHeader ? block.visibleRows.lowerBound : nil,
+                          source: .cursor)
+    }
+
+    /// Which of the two is drawn.
+    ///
+    /// The pointer wins **only when it has a block of its own**. It was "wins while it is inside
+    /// the pane", and inside the pane on no block -- resting two rows under the last command, or
+    /// anywhere on the blank screen of a short session -- returned nothing at all: brushing the
+    /// trackpad after ⌘↑ put out the only thing on screen saying where the keyboard was, and the
+    /// chord looked broken. There is no third state to draw, so "the pointer has no answer" and
+    /// "the pointer is outside the pane" are one case, and the cursor keeps the presentation.
+    ///
+    /// `cursorMovedLast` -- ⌘↑/⌘↓ was the last thing pressed, cleared by the next pointer move --
+    /// is what lets the cursor win over a pointer that *does* have a block: pressing the chord with
+    /// the pointer parked on another block has to move the strip to where the keyboard went.
+    public static func choose(pointer: BlockHover?, cursor: BlockHover?,
+                              cursorMovedLast: Bool) -> BlockHover? {
+        if let pointer, !cursorMovedLast { return pointer }
+        return cursor ?? pointer
     }
 }
 
@@ -1266,6 +1362,6 @@ public extension BlockHover {
                 break
             }
         }
-        return BlockHover(id: id, rows: slots, headerRow: headerSlot)
+        return BlockHover(id: id, rows: slots, headerRow: headerSlot, source: source)
     }
 }

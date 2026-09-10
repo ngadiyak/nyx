@@ -590,9 +590,13 @@ enum UISnapshot {
 
     private static func palettePanel(palette: Palette, config: Config, query: String = "") -> NSView {
         let table = KeyBindingTable(user: config.keybinds)
+        // `KeyBinding.displayName`, in Core, and not a spelling of its own: the two copies these
+        // pictures used to carry knew about modifiers and letters only, so a picture of the
+        // palette drew `⇧⌘` for `Fold Output` with the arrow missing -- the same gap the menu
+        // pictures had. Whatever Core decides ↑ ⇞ ⌦ ↩ look like is what these draw.
         var items: [PaletteItem] = ActionCatalog.allMenuActions.prefix(8).map { action in
             PaletteItem(title: action.title,
-                        detail: table.binding(for: action).map(chordText) ?? "",
+                        detail: table.binding(for: action).map(\.displayName) ?? "",
                         kind: .action(action))
         }
         items.append(PaletteItem(title: "dracula", detail: "Theme", kind: .theme("dracula")))
@@ -1150,7 +1154,7 @@ enum UISnapshot {
             // Four actions, not five: the panel shows ten rows, and the eleventh -- the offline
             // Mac, the row this picture exists to show greyed -- fell off the bottom.
             items = PaletteSource.items(actions: Array(ActionCatalog.allMenuActions.prefix(4)),
-                                        chord: { bindings.binding(for: $0).map(chordText) },
+                                        chord: { bindings.binding(for: $0).map(\.displayName) },
                                         themes: ["dracula"], tabTitles: ["nyx — zsh"],
                                         remote: catalogue.paletteItems(now: now, home: NSHomeDirectory()))
         } else {
@@ -1188,7 +1192,7 @@ enum UISnapshot {
                        at: now.addingTimeInterval(-90))
         let bindings = KeyBindingTable(user: [])
         let items = PaletteSource.items(actions: Array(ActionCatalog.allMenuActions.prefix(4)),
-                                        chord: { bindings.binding(for: $0).map(chordText) },
+                                        chord: { bindings.binding(for: $0).map(\.displayName) },
                                         themes: ["dracula"], tabTitles: ["nyx — zsh"],
                                         requests: history.paletteItems(now: now))
         let view = CommandPaletteView(palette: palette, items: items)
@@ -1397,16 +1401,6 @@ enum UISnapshot {
         bar.show(message: "This folder has a .nyx/project.conf that has changed since you approved it.",
                  changed: true)
         return opened(bar, width: 900, height: 32)
-    }
-
-    private static func chordText(_ binding: KeyBinding) -> String {
-        var out = ""
-        if binding.modifiers.contains(.ctrl) { out += "⌃" }
-        if binding.modifiers.contains(.alt) { out += "⌥" }
-        if binding.modifiers.contains(.shift) { out += "⇧" }
-        if binding.modifiers.contains(.cmd) { out += "⌘" }
-        if case .char(let c) = binding.key { out += String(c).uppercased() }
-        return out
     }
 
     /// One page of the lens and watch chrome in a theme: the `{ }` toggle off, on, and on a body

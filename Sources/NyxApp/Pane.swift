@@ -138,6 +138,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// own blocks and display rows -- so it follows the rows when they scroll and disappears when a
     /// TUI takes the screen.
     private(set) var hoveredBlock: BlockHover?
+    /// The block the keyboard is on. Moved by ⌘↑/⌘↓, re-anchored by the frame pass when the
+    /// viewport moved for another reason, and drawn exactly as a hovered block -- a cursor nobody
+    /// can see is a trap. `private(set)` because the rule is `BlockCursor`'s and nothing outside
+    /// this file may set it, but every block-scoped action and the QA hook read it.
+    private(set) var blockCursor = BlockCursor()
+    /// The viewport move ⌘↑/⌘↓ just made, which must not re-anchor the cursor it came from.
+    /// Consumed by the next frame.
+    private var blockCursorScrolledViewport = false
+    /// ⌘↑/⌘↓ was the last thing pressed, so the cursor's block is drawn even with the pointer
+    /// resting inside the pane. Cleared by the next pointer move.
+    private var blockCursorWinsOverPointer = false
     /// The headers built for the last frame, by visible row, so a click on a summary can be resolved
     /// and the overlay can be fed without another walk.
     private var headersOnScreen: [Int: BlockHeader] = [:]
@@ -285,6 +296,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Notices that a command ended, from nothing but the prompt marks; see `CommandWatcher`.
     private var commandWatcher = CommandWatcher()
     private var commandCheckScheduled = false
+    /// The last finish this pane has dealt with -- announced, or deliberately kept quiet about.
+    /// The announcement has two signals for one event (the watcher's and the bottom command's
+    /// predecessor), so without this a command that ran three seconds was spoken twice.
+    private var lastAnnouncedCommandID: UInt32?
+    /// Whether the finish check has ever run on this pane. Its *first* run is a look at history --
+    /// a restored transcript re-feeds the `133;D;<status>` marks, so the command above the first
+    /// prompt has a real exit status -- and that one is recorded rather than read out. Separate
+    /// from `lastAnnouncedCommandID` because a fresh pane's first check finds nothing to record at
+    /// all, and reading "have I looked yet" off the id swallowed the user's first failure. See
+    /// `announceFinish`.
+    private var hasCheckedForFinish = false
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     /// Clamped the same way the old hardcoded zoom was (6...72pt), independent of the config's own
@@ -351,7 +373,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         addSubview(stickyStrip)
         blockHeader.onAction = { [weak self] action, id in self?.perform(action, on: id) }
         blockHeader.onToggleFold = { [weak self] id, full in self?.toggleFold(ofCommand: id, full: full) }
-        blockHeader.onNeedsPreviousRun = { [weak self] id in self?.previousRun(of: id) != nil }
+        blockHeader.onActionsMenu = { [weak self] id in self?.blockMenu(for: id) }
         addSubview(blockHeader)
         workbenchHint.onPress = { [weak self] in self?.openWorkbenchFromHint() }
         addSubview(workbenchHint)
@@ -427,6 +449,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     override func makeBackingLayer() -> CALayer { CAMetalLayer() }
     override var acceptsFirstResponder: Bool { true }
+
+    /// Whether typing lands here: this pane is first responder *and* its window is the key one.
+    ///
+    /// Both halves, and asked in one place. The frame draws the cursor with it, and a finish is
+    /// announced only for it -- four panes in one window, three of them building, is four voices
+    /// -- and a second spelling of "focused" is how those two come to disagree.
+    private var isKeyboardFocused: Bool {
+        (window?.isKeyWindow ?? false) && window?.firstResponder === self
+    }
 
     // MARK: - Accessibility
     //
@@ -836,6 +867,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if dirty.takeAndClear() { render() } else { displayLink?.isPaused = true }
     }
 
+    /// One frame, on this call, for the two moments a frame cannot wait for the display link:
+    /// something is about to run a modal tracking loop (`NSMenu.popUp`), which does not drain the
+    /// link, so a `markDirty` before it is a frame the user sees only once the loop has ended.
+    private func renderNow() {
+        _ = dirty.takeAndClear()
+        render()
+    }
+
     /// The viewport mapping of the frame before this one. See `dirtyRows(of:top:)`.
     private var lastMapping: ViewportMapping?
 
@@ -896,7 +935,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// Whether anything in this pane could be shown through a lens: a finished request that has
     /// been read. What `⌘⇧J`'s menu item and palette row are enabled by.
-    var hasResponseToLens: Bool { lensTargetBlock() != nil }
+    var hasResponseToLens: Bool {
+        session.withTerminal { self.targetRequestBlockID(in: $0) != nil }
+    }
 
     /// The lens a block is being read through, for its header and its menu.
     func lens(of id: UInt32) -> ResponseLens? { lenses.lens(of: id) }
@@ -943,33 +984,29 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         markDirty()
     }
 
-    /// `⌘⇧J` and the `{ }` control: pretty ↔ raw, on the block under the pointer or the last
-    /// request in the pane. Returns false when there is no request to toggle, so the caller can
-    /// beep rather than pretending.
+    /// `⌘⇧J` and the lens chip: pretty ↔ raw, on the block the keyboard is on when that is a
+    /// request, else the last request in the pane. Returns false when there is no request to
+    /// toggle, so the caller can beep rather than pretending.
     @discardableResult
     func toggleLensOfCurrentBlock() -> Bool {
-        guard let id = lensTargetBlock() else { return false }
+        guard let id = session.withTerminal({ self.targetRequestBlockID(in: $0) }) else { return false }
+        return toggleLens(on: id)
+    }
+
+    /// The same flip, on a block the caller has already named.
+    ///
+    /// Split out from `toggleLensOfCurrentBlock` because that one now resolves the *block cursor*,
+    /// and `perform(_:on:)` -- which is handed an id by whichever control was pressed -- must act on
+    /// that id: a control pressed on one block flipping the lens of another is the divergence this
+    /// change exists to remove. Nothing produces `BlockAction.toggleLens` today (the menu offers the
+    /// lenses by name and the strip's chip carries the name too), so `perform`'s branch is reached
+    /// by no control yet; the switch over `BlockAction` is exhaustive, and this is what the branch
+    /// must do when one arrives.
+    @discardableResult
+    private func toggleLens(on id: UInt32) -> Bool {
         guard !lensIsTooLarge(id) else { return false }
         setLens(lenses.lens(of: id) == nil ? .pretty : nil, on: id)
         return true
-    }
-
-    /// The block a lens command applies to: the one under the pointer when it is a request, else
-    /// the last request in the pane. A keyboard shortcut with no pointer involved still has to have
-    /// an answer, and "the response you were just looking at" is the one people mean.
-    private func lensTargetBlock() -> UInt32? {
-        if let point = lastPointerPoint, let id = commandID(under: point),
-           requestCache.isRequest(id: id) {
-            return id
-        }
-        if let hovered = hoveredBlock?.id, requestCache.isRequest(id: hovered) { return hovered }
-        return session.withTerminal { t -> UInt32? in
-            t.promptRows.reversed().compactMap { row -> UInt32? in
-                guard let region = t.command(containingAbsoluteRow: row), region.id != 0,
-                      self.requestCache.isRequest(id: region.id) else { return nil }
-                return region.id
-            }.first
-        }
     }
 
     /// Builds a block's lens lines off the main thread and stores them when they are ready.
@@ -1247,29 +1284,43 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return true
     }
 
-    /// Whether `⌘.` has a series to stop here.
+    /// Whether `⌘.` has a series to stop here: an unfinished series in this pane, and the keyboard
+    /// on any run of it, on the block it was armed from, or on no request at all.
     ///
-    /// Only while the series' own newest run is the last request in the pane. `⌘.` is a chord
-    /// people press for lots of reasons, and one that silently killed a watch three screens up --
-    /// after they had gone on to run something else -- would be a stop they could not see.
-    /// A series that has not run anything yet passes: nothing can be later than nothing.
+    /// `WatchSeries.mayBeStopped(byChordOn:)` is the rule; what this adds is the two things only
+    /// the pane can answer -- which request block the cursor is on, and what that block's request
+    /// is. Note that it is the *cursor's* block and not `targetRequestBlockID`: that resolver falls
+    /// back to the last request in the pane, and the fallback is what made ⌘. accept on a request
+    /// belonging to no series (PM P3). Nothing under the keyboard is not a reason to refuse;
+    /// somebody else's request is.
     var canStopWatch: Bool {
-        guard let series = watch, !series.isFinished else { return false }
-        guard let newest = series.runs.last?.id else { return true }
-        return latestRequestBlock() == newest
+        guard let series = watch else { return false }
+        // The command line comes from the request cache rather than the grid: `isRequest` is only
+        // true for a block whose line the cache has parsed, and this is asked on every keystroke
+        // that validates a menu. `watchLine` is the same normalisation `startWatch` applied to the
+        // series' own command, so "the same request" is one spelling compared with itself.
+        let cursorRequest: (id: UInt32, command: String)? = {
+            guard let id = blockCursor.commandID, id != 0, requestCache.isRequest(id: id),
+                  let line = requestCache.commandLine(of: id),
+                  session.withTerminal({ $0.promptRow(ofCommand: id) != nil }) else { return nil }
+            return (id, Pane.watchLine(line))
+        }()
+        return series.mayBeStopped(byChordOn: cursorRequest)
     }
 
-    /// The last block in the pane whose command was a request. Also the fallback `lensTargetBlock`
-    /// uses when there is no pointer, and the same answer for the same reason: "the response you
-    /// were just looking at".
-    private func latestRequestBlock() -> UInt32? {
-        session.withTerminal { t -> UInt32? in
-            t.promptRows.reversed().compactMap { row -> UInt32? in
-                guard let region = t.command(containingAbsoluteRow: row), region.id != 0,
-                      self.requestCache.isRequest(id: region.id) else { return nil }
-                return region.id
-            }.first
+    /// The last block in the pane whose command was a request. Takes the terminal rather than
+    /// opening the session itself: every caller now asks it from inside a `withTerminal` block.
+    ///
+    /// Newest first, and it stops at the first hit: this is asked twice per menu validation
+    /// (`toggle_http_lens` and `⌘.`), and a `compactMap` over every prompt row to take one element
+    /// off the front of the result read every block in the pane to answer about the last one.
+    private func latestRequestBlock(in t: Terminal) -> UInt32? {
+        for row in t.promptRows.reversed() {
+            guard let region = t.command(containingAbsoluteRow: row), region.id != 0,
+                  requestCache.isRequest(id: region.id) else { continue }
+            return region.id
         }
+        return nil
     }
 
     /// The header for a block that is a series' newest run, or nil for every other block.
@@ -1696,7 +1747,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             dirty.set()
             return
         }
-        let focused = (window?.isKeyWindow ?? false) && window?.firstResponder === self
+        let focused = isKeyboardFocused
         let preedit = markedText.isEmpty ? nil : markedText
         // The mark at the head of each block's spine, per display slot: shape, colour and whether
         // it can be pressed, all decided by `CommandBlockChrome.gutterCap`. Built from the very
@@ -1975,6 +2026,28 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let blocks = chromeAllowed ? t.visibleBlocks(from: windowTop, through: lastRowOnScreen) : []
             self.displayBlockRows = Dictionary(blocks.map { ($0.region.id, $0.region.promptRow) },
                                                uniquingKeysWith: { first, _ in first })
+            // The viewport moved for a reason this cursor did not cause -- a scroll, new output, a
+            // fold -- so the cursor re-anchors. Guarded twice on purpose: `BlockCursor` is the rule
+            // and re-checks visibility itself, but `commandToFold()` walks the buffer and must not
+            // be called on a frame where the answer cannot change.
+            //
+            // The signature moves on *every* frame of a command printing output, so the cheap test
+            // is the one that has to stay cheap: `contains(where:)` over the frame's own blocks,
+            // which allocates nothing. The `[UInt32]` the Core rule takes is built only on the
+            // frame where the cursor's block has actually left the screen, which is once per scroll
+            // and never during ordinary output.
+            let viewportSignature = (t.viewportTopRow, t.totalRows)
+            if viewportSignature != self.lastViewportSignature {
+                self.lastViewportSignature = viewportSignature
+                if self.blockCursorScrolledViewport {
+                    self.blockCursorScrolledViewport = false
+                } else if let id = self.blockCursor.commandID,
+                          !blocks.contains(where: { $0.region.id == id }) {
+                    self.blockCursor = BlockCursor.afterViewportMove(self.blockCursor,
+                                                                     visible: blocks.map(\.region.id),
+                                                                     fallback: t.commandToFold()?.id)
+                }
+            }
             // Which block the pointer is on, decided here rather than in `mouseMoved`, against the
             // very blocks and display rows this frame is about to draw.
             //
@@ -1984,9 +2057,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // slots. Doing it per frame makes the hover follow the rows the way the hovered link
             // does (spec 4.2), and no scroll, fold, search reveal or autoscroll needs to remember
             // to invalidate it.
+            //
+            // The keyboard's block is resolved the same way, against the same blocks, and
+            // `BlockHover.choose` says which of the two is drawn -- so §2.8's "the cursor is
+            // visible or it is a trap" is one Core rule and not a second drawing path.
             let previousHover = self.hoveredBlock
-            self.hoveredBlock = self.resolveBlockHover(in: t, blocks: blocks, allowed: chromeAllowed,
-                                                       viewportTop: windowTop)
+            let pointerHover = self.resolveBlockHover(in: t, blocks: blocks, allowed: chromeAllowed,
+                                                      viewportTop: windowTop)
+            var cursorHover = BlockHover.resolve(cursor: self.blockCursor, blocks: blocks,
+                                                 allowed: chromeAllowed)
+            if !self.foldRowsOnScreen.isEmpty {
+                cursorHover = cursorHover?.placed(onDisplayRows: self.foldRowsOnScreen,
+                                                  viewportTop: windowTop)
+            }
+            self.hoveredBlock = BlockHover.choose(pointer: pointerHover, cursor: cursorHover,
+                                                  cursorMovedLast: self.blockCursorWinsOverPointer)
             // The three block colours, once per frame. `readable` picks between a colour and its
             // bright variant by contrast against the background -- a handful of Lab conversions --
             // and evaluating it per block, per frame, put that on the render path for nothing: the
@@ -2928,6 +3013,90 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         session.withTerminal { if selectionController.selectAll(in: $0) { markDirty() } }
     }
 
+    /// The header a block's menu is built from: the one the frame drew, plus the one answer that is
+    /// too expensive to have per frame.
+    ///
+    /// Reaches blocks the frame never built a header for -- one whose prompt row is scrolled off
+    /// the top still has every output row on screen, and the block cursor can be on it -- so the
+    /// request summary is read here as well as in `render`.
+    ///
+    /// `hasPreviousRun` means parsing every cached command line (`RequestSummaryCache.previousRun`),
+    /// which `render` leaves false: without it `Diff with Previous Run` was greyed on every route
+    /// that builds a menu from the frame's own header. It is asked for here, on the press, because
+    /// a press is not a frame -- and unconditionally, since every caller of this wants the rows.
+    func blockMenuHeader(for id: UInt32) -> BlockHeader? {
+        // Asked before the lock: finding the previous run of this request parses command lines out
+        // of the cache, and this is a menu press rather than a frame.
+        let previousRun = self.previousRun(of: id)
+        let header: BlockHeader? = session.withTerminal { t in
+            guard let row = t.promptRow(ofCommand: id),
+                  let region = t.command(containingAbsoluteRow: row) else { return nil }
+            let block = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
+            let httpSummary = self.requestSummary(for: block, in: t)
+            return block.header(now: t.now(), folding: self.folding,
+                                notifyArmed: self.armedNotifications.contains(id),
+                                anyFolds: !self.folding.isEmpty,
+                                hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow),
+                                httpSummary: httpSummary,
+                                isHTTP: self.requestCache.isRequest(id: id),
+                                lens: self.lenses.lens(of: id),
+                                lensTooLarge: self.lensIsTooLarge(id),
+                                bodyIsJSON: self.bodyIsJSON(id),
+                                hasPreviousRun: previousRun != nil,
+                                // A watched run has to offer Stop, not a second "Run Every 5 s":
+                                // this header is built apart from the frame's, and one without the
+                                // series is a menu that disagrees with the strip over one block.
+                                watch: self.watchHeader(forBlock: id),
+                                watchInterval: self.config.httpWatchInterval)
+        }
+        drainPendingRecord()
+        return header
+    }
+
+    /// One block's menu: `BlockHeader.actions` in order, a separator wherever `startsGroup`, the
+    /// title from `title(for:)` and the tick from `isChecked`. The ⋯ button, the right-click menu,
+    /// ⌘⇧A and the screen reader's *Show Menu* all pop *this*, so the four routes cannot offer
+    /// different things.
+    func blockMenu(for id: UInt32) -> NSMenu? {
+        guard let header = blockMenuHeader(for: id) else { return nil }
+        return Pane.blockMenu(for: header, target: self,
+                              action: #selector(blockActionFromMenu(_:)), bindings: bindings)
+    }
+
+    /// The rows, from a header alone. Static because `MenuSnapshot` has a header and no pane, and
+    /// retyping this loop for the pictures is how a picture drifts from the menu it is a picture of
+    /// -- it passes a nil target, which is an inert menu of the real rows.
+    ///
+    /// Auto-enabling is turned off, so `entry.enabled` is what a row's greying means on every route
+    /// that pops this menu as it stands. The `contextMenu` route moves these items into a menu that
+    /// leaves auto-enabling on, and `validateMenuItem` hands the same flag back there.
+    static func blockMenu(for header: BlockHeader, target: AnyObject?, action: Selector?,
+                          bindings: KeyBindingTable) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for (index, entry) in header.actions.enumerated() {
+            if index > 0 && entry.action.startsGroup { menu.addItem(.separator()) }
+            let item = NSMenuItem(title: header.title(for: entry.action), action: action,
+                                  keyEquivalent: "")
+            item.target = target
+            item.representedObject = BlockMenuEntry(action: entry.action, id: header.id)
+            item.isEnabled = entry.enabled
+            // The lens rows are a radio group and the notification row is a switch; both are one
+            // question to the header, so a third state cannot be invented here.
+            item.state = header.isChecked(entry.action) ? .on : .off
+            // The chord, where the row has one. `MenuShortcut` is the same converter the menu bar
+            // and the right-click menu use, and `binding(for:)` answers honestly when the user has
+            // rebound the chord to something else.
+            if let action = entry.action.terminalAction, let binding = bindings.binding(for: action),
+               let (key, mask) = MenuShortcut.keyEquivalent(for: binding) {
+                item.keyEquivalent = key
+                item.keyEquivalentModifierMask = mask
+            }
+            menu.addItem(item)
+        }
+        return menu
+    }
+
     /// The right-click menu, in two halves.
     ///
     /// The block group at the top comes from `BlockHeader.actions`, the same list the hover
@@ -2957,51 +3126,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // scrollback into something you can act on rather than only read: the prompt marks say
         // where each command began, so the whole block's actions -- not just rerun and edit -- are
         // answerable from a right-click.
-        if let point, let id = commandID(under: point) {
-            // Asked before the lock: finding the previous run of this request parses command lines
-            // out of the cache, and this is a menu press rather than a frame.
-            let previousRun = self.previousRun(of: id)
-            let header: BlockHeader? = session.withTerminal { t in
-                guard let row = t.promptRow(ofCommand: id),
-                      let region = t.command(containingAbsoluteRow: row) else { return nil }
-                let block = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
-                // Read here as well as in `render`, because a right-click reaches blocks the frame
-                // never built a header for: one whose prompt row is scrolled off the top still has
-                // every output row under the pointer, and its Request group has to be there.
-                let httpSummary = self.requestSummary(for: block, in: t)
-                return block.header(now: t.now(), folding: self.folding,
-                                    notifyArmed: self.armedNotifications.contains(id),
-                                    anyFolds: !self.folding.isEmpty,
-                                    hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow),
-                                    httpSummary: httpSummary,
-                                    isHTTP: self.requestCache.isRequest(id: id),
-                                    lens: self.lenses.lens(of: id),
-                                    lensTooLarge: self.lensIsTooLarge(id),
-                                    bodyIsJSON: self.bodyIsJSON(id),
-                                    hasPreviousRun: previousRun != nil,
-                                    // Right-clicking a watched run has to offer Stop, not a second
-                                    // "Run Every 5 s": this menu is built apart from the frame's,
-                                    // and a header without the series is a menu that disagrees
-                                    // with the strip over the same block.
-                                    watch: self.watchHeader(forBlock: id),
-                                    watchInterval: self.config.httpWatchInterval)
+        //
+        // The rows themselves are `blockMenu(for:)`, moved into this bigger menu: the ⋯ pill, this
+        // menu, ⌘⇧A and the screen reader's *Show Menu* are one builder, so no two of the four
+        // can offer different things or grey out differently.
+        if let point, let id = commandID(under: point), let block = blockMenu(for: id) {
+            for item in block.items {
+                block.removeItem(item)
+                menu.addItem(item)
             }
-            drainPendingRecord()
-            if let header {
-                for (index, entry) in header.actions.enumerated() {
-                    if index > 0 && entry.action.startsGroup { menu.addItem(.separator()) }
-                    let item = NSMenuItem(title: header.title(for: entry.action),
-                                          action: #selector(blockActionFromMenu(_:)), keyEquivalent: "")
-                    item.target = self
-                    item.representedObject = BlockMenuEntry(action: entry.action, id: id)
-                    item.isEnabled = entry.enabled
-                    // The lens rows are a radio group and the notification row is a switch; both
-                    // are one question to the header, so a third state cannot be invented here.
-                    item.state = header.isChecked(entry.action) ? .on : .off
-                    menu.addItem(item)
-                }
-                menu.addItem(.separator())
-            }
+            menu.addItem(.separator())
         }
         let groups: [[TerminalAction]] = [
             [.copy, .paste],
@@ -3080,6 +3214,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// blocks and display rows of the frame being drawn. See `resolveBlockHover`.
     private var lastPointerPoint: NSPoint?
 
+    /// `(viewportTopRow, totalRows)` as the last frame saw them. The cursor re-anchors when this
+    /// moves and it was not ⌘↑/⌘↓ that moved it. A tuple and not a string: it is compared on every
+    /// frame, and a frame must not allocate to find out that nothing happened.
+    private var lastViewportSignature = (-1, -1)
+
     /// Which block the pointer sits on -- for the tint and the overlay -- against one frame's
     /// blocks. `resolve` answers in viewport-relative absolute space; `placed` re-expresses that in
     /// the display slots actually on screen, which differ from absolute space only when a fold is
@@ -3123,6 +3262,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // one cell -- the cheap comparison below is about the link hit test, and the block hover
         // costs nothing until the next frame asks for it.
         lastPointerPoint = point
+        // A pointer move hands the presentation back to the pointer; ⌘↑/⌘↓ takes it again. Redrawn
+        // where it actually changes hands, because the cell test below returns early on a move
+        // inside one cell -- and the keyboard's block would stay lit until something else drew.
+        if blockCursorWinsOverPointer {
+            blockCursorWinsOverPointer = false
+            markDirty()
+        }
         // A mouse-move that stays inside one cell cannot change what is under the pointer, and
         // hit-testing is not cheap: it tokenizes the row through five regular expressions and may
         // `stat` a path. Mouse-move events arrive far faster than cells change.
@@ -3161,10 +3307,22 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // The pointer has left the pane; with no point to resolve against, the next frame finds no
         // block and takes the overlay and the tint down with it.
         lastPointerPoint = nil
+        // A pointer move hands the presentation back to the pointer; ⌘↑/⌘↓ takes it again. Leaving
+        // the pane is one of those moves.
+        blockCursorWinsOverPointer = false
         let hadBlock = hoveredBlock != nil
         let hadLink = hoveredLink != nil
         hoveredLink = nil
-        guard hadBlock || hadLink else { return }
+        // On an idle pane the display link is parked -- that is how this terminal holds 0% CPU
+        // doing nothing -- so anything that can change what is drawn has to ask for a frame here or
+        // it is not drawn at all. A block cursor is one of those things, and belt and braces on
+        // purpose: since `BlockHover.choose` stopped letting a pointer on no block extinguish the
+        // cursor, a cursor whose block is on screen is *already* the raised hover, so `hadBlock`
+        // covers it -- the clause bites only for a cursor whose block has scrolled away or whose
+        // chrome a TUI has suppressed, where the frame it asks for draws the same thing. It costs
+        // one frame on a pointer leaving such a pane, and it means the rule cannot be broken by a
+        // later change to `choose`.
+        guard hadBlock || hadLink || !blockCursor.isEmpty else { return }
         updateHoverCursor()
         markDirty()
     }
@@ -3589,19 +3747,198 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         session.withTerminal { $0.shellEmitsPromptMarks }
     }
 
-    /// Moves the viewport to the prompt above or below what is on screen, and returns whether it
-    /// moved -- the caller beeps when there is nowhere to go rather than doing nothing silently.
+    // MARK: - Which block an action acts on
+
+    /// The block a block-scoped action acts on: the one the keyboard is on, else the one
+    /// `commandToFold()` names -- the running command at the bottom, or the command at the top of
+    /// the screen when scrolled back. One rule with one documented fallback, where there were five.
+    private func targetBlockID(in t: Terminal) -> UInt32? {
+        BlockTarget.resolve(cursor: blockCursor,
+                            exists: { t.promptRow(ofCommand: $0) != nil },
+                            fallback: t.commandToFold()?.id)
+    }
+
+    /// The same block as a region, for the callers that need its rows rather than its id.
+    ///
+    /// The row `exists` found is carried out of the resolve rather than asked for a second time:
+    /// `promptRow(ofCommand:)` scans the visible rows and then the *whole buffer backwards* for a
+    /// block that is off the screen, and `hasBlockTarget` asks this from menu validation. The
+    /// fallback needs no lookup at all -- `commandToFold()` hands back a region.
+    private func targetBlock(in t: Terminal) -> CommandRegion? {
+        let fallback = t.commandToFold()
+        var cursorRow: Int?
+        let id = BlockTarget.resolve(cursor: blockCursor,
+                                     exists: {
+                                         cursorRow = t.promptRow(ofCommand: $0)
+                                         return cursorRow != nil
+                                     },
+                                     fallback: fallback?.id)
+        guard let id else { return nil }
+        guard id == blockCursor.commandID, let row = cursorRow else { return fallback }
+        return t.command(containingAbsoluteRow: row)
+    }
+
+    /// The block the two request actions act on: the cursor's, when the cursor is on a request.
+    /// Otherwise -- no cursor, or a cursor on a block that is not a request -- the last request in
+    /// the pane, which is the same answer for the same reason it always was: "the response you were
+    /// just looking at".
+    private func targetRequestBlockID(in t: Terminal) -> UInt32? {
+        BlockTarget.resolve(cursor: blockCursor,
+                            exists: { self.requestCache.isRequest(id: $0) && t.promptRow(ofCommand: $0) != nil },
+                            fallback: self.latestRequestBlock(in: t))
+    }
+
+    /// Whether any block-scoped action has something to act on. What the menu bar and the palette
+    /// gate the block rows on, so they are greyed rather than beeping.
+    var hasBlockTarget: Bool { session.withTerminal { self.targetBlock(in: $0) != nil } }
+
+    /// `copy_command_output`, `copy_block_markdown`, `save_command_output` and
+    /// `edit_and_run_command` are the same acts as the ⋯ menu rows of the same name, on the same
+    /// block. One implementation, so a chord and a row cannot drift apart -- `Copy Output` on a
+    /// lensed response copies what is on the screen either way, which four separate copies of this
+    /// code did not.
+    @discardableResult
+    func performOnBlockCursor(_ action: BlockAction) -> Bool {
+        guard let id = session.withTerminal({ self.targetBlockID(in: $0) }) else { return false }
+        adoptBlockCursor(id)
+        perform(action, on: id)
+        return true
+    }
+
+    /// The block an action just resolved becomes the block the keyboard is on, and takes the
+    /// presentation back from the pointer -- so the block that is acted on is the block that is
+    /// lit (PM P2). `BlockCursor.adopted` is the rule; this is the two lines of state it needs.
+    ///
+    /// Only at the act sites. Menu validation resolves the same block on every keystroke
+    /// (`hasBlockTarget`), and lighting one there would put a strip on a block nobody has asked
+    /// about yet.
+    private func adoptBlockCursor(_ resolved: UInt32?) {
+        let adopted = BlockCursor.adopted(blockCursor, resolved: resolved)
+        // The flag is set even when the cursor did not move: the point of it is that the pointer
+        // stops winning, and the pointer is exactly what made the acted-on block dark.
+        let changed = adopted != blockCursor || !blockCursorWinsOverPointer
+        blockCursor = adopted
+        blockCursorWinsOverPointer = true
+        if changed { markDirty() }
+    }
+
+    /// `block_actions`: the block menu, at the row of the block the keyboard is on.
+    ///
+    /// The one keyboard route to everything the strip offers -- Copy, Stop, the lens chip, the
+    /// dots, and the twenty-odd rows that never had one. Nothing is removed from the strip; this
+    /// is the route that did not exist, because `Pane.keyDown` sends a bare ⇥ to the PTY and no
+    /// key-view loop over a pane's chrome is possible (a11y 0.1).
+    @discardableResult
+    func showBlockActions() -> Bool {
+        guard let id = session.withTerminal({ self.targetBlockID(in: $0) }),
+              let menu = blockMenu(for: id) else { return false }
+        adoptBlockCursor(id)
+        // The frame *now*, not the one `markDirty` asks the display link for: `popUp` runs a modal
+        // tracking loop that does not drain the link, so the block the menu belongs to would take
+        // its tint the moment the menu closed -- a menu hanging over a dark block, which is the
+        // trap the adoption above exists to remove.
+        renderNow()
+        menu.popUp(positioning: nil, at: blockMenuAnchor(forCommand: id), in: self)
+        return true
+    }
+
+    /// Where the menu drops from: the leading edge of the block's own command row, so the menu
+    /// belongs to the block visibly as well as logically. A block whose command row is not on
+    /// screen anchors at the top of the pane rather than off-screen.
+    ///
+    /// The slot comes from the display the last frame built, not from `promptRow - viewportTop`:
+    /// a lens or a fold on screen means those are different numbers, and the menu would hang off
+    /// somebody else's command. The `y` itself is `CommandBlockChrome.menuAnchorY`, so what a test
+    /// can state about it -- the row's bottom edge, and the top of the pane for a row that is gone
+    /// -- is not three terms written out in a view.
+    private func blockMenuAnchor(forCommand id: UInt32) -> NSPoint {
+        let top = session.withTerminal { max(0, $0.viewportTopRow) }
+        let slot = displayBlockRows[id].flatMap { displaySlot(ofAbsoluteRow: $0, viewportTop: top) }
+        return NSPoint(x: padding,
+                       y: CommandBlockChrome.menuAnchorY(slot: slot,
+                                                         viewHeight: Double(bounds.height),
+                                                         padding: Double(padding),
+                                                         cellHeight: Double(cellSizePoints.height)))
+    }
+
+    /// VoiceOver's *Show Menu* (VO-⇧-M) on the pane: the block menu ⌘⇧A pops, on the block ⌘⇧A
+    /// would act on, built on the press (a11y 6.4).
+    ///
+    /// **`self.menu` is deliberately left nil**, and this override is how the menu is found
+    /// instead. Hanging it on the view was the obvious way, and it broke control-click: AppKit
+    /// resolves a control-left-click through `menu(for:)`/`self.menu` *before* `mouseDown` is
+    /// delivered, so a pane carrying a menu popped that block's rows instead of `contextMenu(at:)`
+    /// -- no Copy, no Paste, no Split, no Clear, the wrong block whenever the cursor was not under
+    /// the pointer, no selection started, and nothing reported to a program that had asked for
+    /// mouse events. Measured in the built app: with the menu set, `mouseDown` was never called.
+    ///
+    /// Nothing is lost by leaving it nil. `isAccessibilitySelectorAllowed` answers for an override
+    /// of this selector on its own, and building the menu on the press means it is the *current*
+    /// resolved target -- `targetBlockID`, the same block ⌘⇧A acts on -- rather than whatever a
+    /// keypress cached before the viewport moved the cursor under it.
+    override func accessibilityPerformShowMenu() -> Bool { showBlockActions() }
+
+    /// ⌘↑ / ⌘↓: one block back or forward, and the viewport brought to it.
+    ///
+    /// The block the chord lands on *is* the block cursor, so "where ⌘↑ took me" and "which block
+    /// ⌘⇧A, Copy Output and ⌘. will act on" are one answer. It reports false only when there is
+    /// nowhere to go and nothing moved -- the caller beeps rather than doing nothing silently.
+    ///
+    /// A cursor that is not on the screen in front of the reader is seeded from that screen first,
+    /// so a pane wheeled back two thousand rows still goes *up from where the reader is* rather
+    /// than to the newest block at the bottom -- which is where `previous_prompt` has always gone.
+    /// `displayBlockRows` is the last frame's own blocks, which is exactly "the screen the reader
+    /// is looking at"; `blockCursorIDs` walks the buffer, which is a keystroke's work and not a
+    /// frame's -- the trade `promptRows` documents about itself, and the reason both calls are
+    /// here rather than in `render`.
+    ///
+    /// ⌘↓ past the newest block goes to the prompt the user is typing at, with no cursor on
+    /// anything -- `next_prompt` has always ended up there, and clamping at the newest block turned
+    /// the forward chord into a beep one press short of the place the user types.
     @discardableResult
     func jumpToPrompt(forward: Bool) -> Bool {
-        let moved: Bool = session.withTerminal { t in
-            let from = t.viewportTopRow
-            guard let row = forward ? t.nextPrompt(after: from) : t.previousPrompt(before: from)
-            else { return false }
-            _ = t.scrollToAbsoluteRow(row)
-            return true
+        let onScreen = Array(displayBlockRows.keys)
+        let outcome: (moved: Bool, scrolled: Bool, cursor: BlockCursor) = session.withTerminal { t in
+            switch BlockCursor.press(self.blockCursor, forward: forward,
+                                     among: t.blockCursorIDs, visible: onScreen,
+                                     viewportBlock: t.commandToFold()?.id,
+                                     atBottom: t.viewportOffset == 0) {
+            case .go(let id):
+                // No prompt row for an id `blockCursorIDs` just handed out would be a bug in the
+                // buffer walk, not a press with nowhere to go, so it changes nothing and beeps.
+                guard let row = t.promptRow(ofCommand: id) else {
+                    return (false, false, self.blockCursor)
+                }
+                let next = BlockCursor(commandID: id)
+                let scrolled = t.scrollToAbsoluteRow(row)
+                return (scrolled || next != self.blockCursor, scrolled, next)
+            case .toBottom:
+                // `viewportOffset` is read rather than trusting `scrollViewportToBottom`, which
+                // reports nothing. The cursor clearing is a change even when the viewport does not
+                // move -- the block it was on stops being lit -- so this moved.
+                let scrolled = t.viewportOffset != 0
+                t.scrollViewportToBottom()
+                return (true, scrolled, BlockCursor())
+            case .refused:
+                // A refused press changes nothing, the cursor included: it used to assign whatever
+                // `moved` had answered, so ⌘↑ in a pane whose blocks had all been trimmed away
+                // silently cleared the cursor on its way to the beep.
+                return (false, false, self.blockCursor)
+            }
         }
-        if moved { markDirty() }
-        return moved
+        blockCursor = outcome.cursor
+        // Only when this press really moved the viewport. Set unconditionally, a refused press --
+        // ⌘↑ already at the oldest block -- would leave the flag standing until some *later*
+        // scroll changed the signature, and swallow that scroll's re-anchor instead.
+        if outcome.scrolled { blockCursorScrolledViewport = true }
+        // The chord takes the presentation back from a pointer resting in the pane whether or not
+        // it found anywhere to go, and *that* changes the picture on its own: ⌘↑ refused at the
+        // oldest block still has to re-light the cursor's block. So the redraw is not gated on
+        // `moved` alone, or the beep would be the only thing that happened.
+        let tookPresentation = !blockCursorWinsOverPointer
+        blockCursorWinsOverPointer = true
+        if outcome.moved || tookPresentation { markDirty() }
+        return outcome.moved
     }
 
     /// A fixed 20 pt column, whatever the padding is, and never hidden. It is the *target*, not the
@@ -3761,13 +4098,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return true
     }
 
-    /// Clicking the strip goes to the command it names: the point of pinning it is to be able to
-    /// get back to where the output started.
-    private func scrollToStickyPrompt() {
-        guard let row = stickyPromptRow else { return }
+    /// Whether the sticky strip is up, which is what `scroll_to_sticky_prompt` is enabled by.
+    var hasStickyPrompt: Bool { stickyPromptRow != nil }
+
+    /// The strip's click and `scroll_to_sticky_prompt`: go to the command it names. The point of
+    /// pinning it is to be able to get back to where the output started.
+    ///
+    /// False when no command is pinned, so the chord beeps instead of doing nothing silently --
+    /// the band's click cannot reach here without a band to click.
+    @discardableResult
+    func scrollToStickyPrompt() -> Bool {
+        guard let row = stickyPromptRow else { return false }
         session.withTerminal { t in _ = t.scrollToAbsoluteRow(row) }
         onFocusRequested?()
         markDirty()
+        return true
     }
 
     // MARK: - Folding
@@ -3921,18 +4266,18 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return absolute
     }
 
-    /// `fold_command`: collapses the last command's output -- or, scrolled back, the one at the top
-    /// of the screen -- and expands it again. `Terminal.commandToFold` is the rule.
+    /// `fold_command`: folds the block the keyboard is on, and unfolds it again.
     @discardableResult
     func toggleFoldOfCurrentCommand() -> Bool {
         let commandID: UInt32? = session.withTerminal { t in
-            // The same rule the chevron and the gutter mark use, so ⌘⇧↑ cannot fold a screenful
-            // of blank rows a command has not filled in yet.
-            guard let region = t.commandToFold(),
+            // The same predicate the gutter cap and the menu row use, so ⌘⇧↑ cannot fold a
+            // screenful of blank rows a command has not filled in yet.
+            guard let region = self.targetBlock(in: t),
                   t.commandHasOutput(atAbsoluteRow: region.promptRow) else { return nil }
             return region.id
         }
         guard let id = commandID, id != 0 else { return false }
+        adoptBlockCursor(id)
         toggleFold(ofCommand: id, full: NSEvent.modifierFlags.contains(.option))
         return true
     }
@@ -4002,8 +4347,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let bottom: (row: Int?, started: Bool, runningID: UInt32, previous: CommandRegion?) = session.withTerminal { t in
             guard t.totalRows > 0, let region = t.command(containingAbsoluteRow: t.totalRows - 1)
             else { return (nil, false, 0, nil) }
+            // The predecessor **unconditionally**, where automatic folding once asked for it only
+            // while the bottom command was running: it is also the announcement's second finish
+            // signal, and the finish it exists to catch -- `false` at the prompt -- leaves a bottom
+            // that has not started anything. One backwards step from the bottom row per coalesced
+            // check, which is the same walk `previousCommand` was already doing on every check a
+            // command was running.
             return (region.promptRow, region.outputStart != nil, t.runningCommand?.id ?? 0,
-                    region.outputStart != nil ? t.previousCommand(of: region) : nil)
+                    t.previousCommand(of: region))
         }
         // The moment a new command starts running is when the one before it is "done with", and
         // the only moment automatic folding is allowed to touch it.
@@ -4021,8 +4372,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // pane with no frames -- a background tab, an occluded or minimised window -- and it is
         // what keeps a watch advancing there. See `pollWatch`.
         pollWatch()
-        guard let finished = commandWatcher.observe(bottomPromptRow: bottom.row, outputStarted: bottom.started,
-                                                    runningID: bottom.runningID, now: now) else { return }
+        let observed = commandWatcher.observe(bottomPromptRow: bottom.row, outputStarted: bottom.started,
+                                              runningID: bottom.runningID, now: now)
+        // Before the notification rule, independent of it, and reached whether or not the watcher
+        // saw anything: a notification is for a window you are not looking at, an announcement is
+        // for the pane you are in -- and the finish an announcement most needs to make, a command
+        // that failed instantly, is one the watcher never sees.
+        announceFinish(observed: observed, predecessor: bottom.previous)
+        guard let finished = observed else { return }
         let armed = armedNotifications
         armedNotifications.remove(finished.id)
         guard CommandNotificationRule.shouldNotify(finished, armed: armed,
@@ -4037,54 +4394,69 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                                    exitStatus: described.status))
     }
 
-    /// Selects the output of the last command -- or, scrolled back, the one at the top of the
-    /// screen. The same rule ⌘⇧↑ folds by, so the two gestures cannot name different commands.
+    /// Says a finished command out loud, from either of the two signals a check has:
+    /// `CommandWatcher.observe`'s answer (a command this pane *saw* running) and the bottom
+    /// command's predecessor (the only trace an instant command leaves -- `false` at the prompt
+    /// begins and ends between two coalesced checks, so the watcher never reports it at all).
+    ///
+    /// `lastAnnouncedCommandID` is written for whatever `BlockAnnouncement.finish` returns, on
+    /// **both** signals and **whether or not** anything is spoken -- so a three-second build that
+    /// both signals name is spoken once, and a finish in a pane nobody was looking at is not
+    /// spoken half an hour later when that pane is focused.
+    ///
+    /// The words: `blockMenuHeader` when the block can still be described (it is what the strip
+    /// and the pinned line read, and for a request block its `httpSummary` replaces the duration),
+    /// and `CommandBlock.summary(of:)` from the region itself when it cannot -- a block whose rows
+    /// scrollback has trimmed still finished, and `""` there was an announcement that decided to
+    /// stay silent about a failure for a reason a user cannot see.
+    ///
+    /// **`blockMenuHeader` has a side effect**, and this is now one of the two places that pays
+    /// it: reading a `curl` block's response for its summary records that request in the request
+    /// history (`requestSummary` sets `recordAfterFrame`, and `drainPendingRecord` writes it). The
+    /// frame does the same thing the first time such a block is drawn, so the only new case is a
+    /// pane that is never drawn -- a background tab -- whose finished request now reaches the
+    /// history when it finishes rather than when the tab is next looked at. That is the better of
+    /// the two behaviours, and it is deliberate rather than incidental.
+    private func announceFinish(observed: FinishedCommand?, predecessor: CommandRegion?) {
+        // Consumed by the first *check*, whether or not it found a finish: a fresh pane's first
+        // check is its shell's first prompt, where there is nothing above to record, and keying
+        // "have I looked yet" on the recorded id instead swallowed the first `false` the user typed
+        // -- announcing from the second command onwards, which nobody would ever report.
+        let firstLook = !hasCheckedForFinish
+        hasCheckedForFinish = true
+        let observedRegion: CommandRegion? = observed.flatMap { finished in
+            session.withTerminal { $0.command(containingAbsoluteRow: finished.promptRow) }
+        }
+        guard let finish = BlockAnnouncement.finish(observed: observedRegion, predecessor: predecessor,
+                                                    lastHandled: lastAnnouncedCommandID,
+                                                    isFirstLook: firstLook) else { return }
+        lastAnnouncedCommandID = finish.region.id
+        guard finish.isNews else { return }
+        let region = finish.region
+        guard let spoken = BlockAnnouncement.text(
+            for: region,
+            command: session.withTerminal { $0.commandLine(of: region) },
+            summary: blockMenuHeader(for: region.id)?.summary ?? CommandBlock.summary(of: region),
+            paneIsFocused: isKeyboardFocused
+        ) else { return }
+        Announce.say(spoken)
+    }
+
+    /// `select_command_output`: the output of the block the keyboard is on -- the same block ⌘⇧↑
+    /// folds, and the same one ⌥-clicking its gutter mark selects.
     @discardableResult
     func selectCommandOutput() -> Bool {
-        let selection: Selection? = session.withTerminal { t in
-            guard let region = t.commandToFold() else { return nil }
-            return t.selectionForOutput(of: region)
+        let resolved: (id: UInt32, selection: Selection?)? = session.withTerminal { t in
+            guard let region = self.targetBlock(in: t) else { return nil }
+            return (region.id, t.selectionForOutput(of: region))
         }
-        guard let selection else { return false }
+        // Adopted whatever came of the selection: the block was resolved, and a block with no
+        // output to select is still the block this action was about -- lighting it is how the
+        // refusal says which one it means.
+        adoptBlockCursor(resolved?.id)
+        guard let selection = resolved?.selection else { return false }
         session.withTerminal { t in _ = selectionController.replace(with: selection, in: t) }
         markDirty()
-        return true
-    }
-
-    /// Copies the output of the last command that finished, without disturbing the selection --
-    /// the point is to grab it and paste it somewhere, not to change what is highlighted.
-    @discardableResult
-    func copyLastCommandOutput() -> Bool {
-        let text: String = session.withTerminal { t in
-            guard let region = t.lastFinishedCommand,
-                  let selection = t.selectionForOutput(of: region) else { return "" }
-            return t.text(in: selection)
-        }
-        guard !text.isEmpty else { return false }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        return true
-    }
-
-    /// `copy_block_markdown`: the last finished command and its output, fenced, for a chat or a ticket.
-    @discardableResult
-    func copyLastCommandAsMarkdown() -> Bool {
-        let markdown: String? = session.withTerminal { t in
-            guard let region = t.lastFinishedCommand else { return nil }
-            return BlockExport.markdown(command: t.commandLine(of: region), output: t.outputText(of: region))
-        }
-        guard let markdown else { return false }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(markdown, forType: .string)
-        return true
-    }
-
-    /// `save_command_output`: the last finished command's output to a file the user names.
-    @discardableResult
-    func saveLastCommandOutput() -> Bool {
-        let id: UInt32? = session.withTerminal { $0.lastFinishedCommand?.id }
-        guard let id else { return false }
-        saveOutput(ofCommand: id)
         return true
     }
 
@@ -4211,7 +4583,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             default: setLens(lens, on: id)
             }
         case .toggleLens:
-            if !toggleLensOfCurrentBlock() { NSSound.beep() }
+            if !toggleLens(on: id) { NSSound.beep() }
         case .copyBody:
             guard let text = responseText(of: id, headersOnly: false) else { NSSound.beep(); return }
             copyToPasteboard(text)
@@ -4407,6 +4779,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // Cursor home, erase the screen, erase the scrollback -- fed to our own parser rather than
         // written to the PTY, so it works while the shell is busy running something.
         session.withTerminal { $0.feed("\u{1b}[H\u{1b}[2J\u{1b}[3J") }
+        // Every id in the buffer names rows that are gone. A cursor kept across ⌘K would sit on a
+        // stranger's command, exactly as a kept watch header would.
+        blockCursor = BlockCursor()
         // `markDirty`, not `dirty.set()`. On an idle pane the display link is parked -- that is how
         // this terminal holds 0% CPU doing nothing -- and setting the flag without waking it means
         // the screen is cleared in the model and unchanged on screen until something else happens
@@ -4575,20 +4950,20 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         perform(entry.action, on: entry.id)
     }
 
-    /// `⌘E`: the last command that ran, in the editor. From the keyboard there is no pointer to
-    /// say which command was meant, and the last one is what "run that again, but…" means.
+    /// `⌘E`: the line being typed, else the block the keyboard is on, in the editor.
     @discardableResult
-    func editAndRunLastCommand() -> Bool {
-        // What is on the command line right now comes first. Pasting a long `curl` and then
-        // needing to change something in its body is the case this is for, and at that moment the
-        // command has not run yet -- looking only at history would offer the wrong thing.
+    func editAndRunCurrentCommand() -> Bool {
+        // What is on the command line right now comes first, and before the block cursor: pasting a
+        // long `curl` and then needing to change something in its body is the case this chord is
+        // for, and it is the case the `⌘E Workbench` pill advertises. At that moment the command
+        // has not run yet, so no block target -- cursor or fallback -- could name it.
         if let typed: String = session.withTerminal({ $0.currentInput }) {
             editCurrentInput(typed)
             return true
         }
-        let row: Int? = session.withTerminal { $0.lastFinishedCommand?.promptRow }
-        guard let row else { return false }
-        return editAndRunCommand(atAbsoluteRow: row)
+        // Through `perform(_:on:)`, so ⌘E at an empty prompt and the ⋯ menu's `Edit and Run` row
+        // are one implementation on one block.
+        return performOnBlockCursor(.editAndRun)
     }
 
     /// Edits the text already on the command line, then replaces it with the result.

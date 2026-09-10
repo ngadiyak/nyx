@@ -19,7 +19,7 @@
 - Warning-free build (library and tests); `make bench` ≥ 180 MB/s. **Nothing in this plan may add per-frame work to `Pane.render` beyond one `Array.contains` over the frame's own block ids**; `Terminal.commandToFold()` is called from the frame pass only on the frame where the cursor's block has just left the screen.
 - `BlockCursor` rules, verbatim (§2.8): clamps at both ends rather than wrapping; from a cleared cursor `.previous` takes the last element and `.next` the first; a block trimmed out of `among` by scrollback is gone, and the move starts from the nearest surviving id in the direction of travel; on a viewport move for another reason the cursor keeps its block while that block is still in `visible`, otherwise takes `fallback`, and clears when `fallback` is nil. **Controller ruling (2026-09-07), binding:** a cleared or off-screen cursor is seeded from the viewport before a ⌘↑/⌘↓ press — `commandToFold()`'s block — so a scrolled-back pane goes up from where the reader is rather than jumping to the newest block.
 - Presentation rule, verbatim (§2.8): the cursor's block is drawn exactly as a hovered one — row tint, gutter chevron, and the strip of §2.6 at the block's own width class. The pointer wins while it is inside the pane; the cursor's presentation returns when the pointer leaves or the next ⌘↑/⌘↓ arrives, and it is cleared when the cursor clears. **Nothing new is drawn at idle: a pane nobody has pressed ⌘↑ in has no cursor.**
-- Titles, verbatim: `Command Actions…` (`block_actions`, Go, **⌘⇧A**), `Go to the Pinned Command` (`scroll_to_sticky_prompt`, Go, no chord), `Copy Command Output`, `Copy Command as Markdown`, `Save Command Output…`, `Edit This Command…`. The ellipsis is `\u{2026}`, as everywhere else in `ActionCatalog`. `fold_command`, `select_command_output`, `toggle_http_lens` and `stop_watch` keep their titles and change only their target.
+- Titles, verbatim: `Command Actions…` (`block_actions`, Go, **⌘⇧A**), `Go to the Pinned Command` (`scroll_to_sticky_prompt`, Go, no chord), `Copy Command Output`, `Copy Command as Markdown`, `Save Command Output…`, `Edit and Run This Command…` (**amended 2026-09-10**, task-3 review I2: the spec's `Edit This Command…` would have been a second spelling of `BlockAction.editAndRun`'s own row, which the same commit makes one implementation with it -- the ⋯ row's words win in both places). The ellipsis is `\u{2026}`, as everywhere else in `ActionCatalog`. `fold_command`, `select_command_output`, `toggle_http_lens` and `stop_watch` keep their titles and change only their target.
 - Announcement rule, verbatim (§8.1): the focused pane only, and only when the command ran ≥ 2 s or exited non-zero; the sentence is `BlockHeader.summary`. Wording stays in Core.
 - Every new action goes the whole way (`.claude/skills/nyx-config-keys/SKILL.md`, "Adding an action"): `TerminalAction` case → `ActionCatalog.sections` → `KeyBinding.defaults` → `TabController.perform` **and** `canPerform` → `docs/configuration.md` bindings table → `ActionCatalogTests`/`KeyBindingTests`.
 - Commit trailers on every commit:
@@ -969,7 +969,14 @@ EOF
 
 ---
 
-### Task 4: `block_actions` (⌘⇧A), `view.menu`, and `scroll_to_sticky_prompt`
+### Task 4: `block_actions` (⌘⇧A), the screen reader's *Show Menu*, and `scroll_to_sticky_prompt`
+
+> **Amended 2026-09-10** (task-4 review, final review F1): **no `view.menu`.** AppKit resolves a
+> control-left-click through `menu(for:)`/`self.menu` before `mouseDown` is delivered, so hanging
+> the block menu on the pane hijacked every ⌃-click (probed in the built app: `mouseDown` was
+> never called). `accessibilityPerformShowMenu()` alone serves VO-⇧-M, and
+> `isAccessibilitySelectorAllowed` answers true for it with `menu == nil`. Wherever this task's
+> steps say `view.menu`, the menu is built on the press instead.
 
 **Files:**
 - Modify: `Sources/NyxCore/Config/KeyBinding.swift` — two `TerminalAction` cases, one default binding
@@ -1084,7 +1091,9 @@ Expected: compile failure — `type 'TerminalAction' has no member 'blockActions
 
     /// One block's menu: `BlockHeader.actions` in order, a separator wherever `startsGroup`, the
     /// title from `title(for:)` and the tick from `isChecked`. The ⋯ button, the right-click menu,
-    /// ⌘⇧A and `view.menu` all pop *this*, so the four routes cannot offer different things.
+    /// ⌘⇧A and the screen reader's *Show Menu* all pop *this*, so the four routes cannot offer
+    /// different things. (**Amended 2026-09-10**: the fourth route is
+    /// `accessibilityPerformShowMenu()`, not `view.menu` -- see the note under this task's heading.)
     func blockMenu(for id: UInt32) -> NSMenu? {
         guard let header = blockMenuHeader(for: id) else { return nil }
         let menu = NSMenu()

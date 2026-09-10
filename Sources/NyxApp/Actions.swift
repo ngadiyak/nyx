@@ -58,31 +58,27 @@ enum MenuShortcut {
         case .char(let scalar):
             return (String(scalar).lowercased(), mask)
         default:
-            guard let scalar = MenuShortcut.functionKeyScalar(binding.key) else { return nil }
+            guard let scalar = binding.key.menuKeyEquivalent else { return nil }
             return (String(Character(scalar)), mask)
         }
     }
 
-    private static func functionKeyScalar(_ key: Key) -> Unicode.Scalar? {
-        let code: Int
-        switch key {
-        case .up: code = NSUpArrowFunctionKey
-        case .down: code = NSDownArrowFunctionKey
-        case .left: code = NSLeftArrowFunctionKey
-        case .right: code = NSRightArrowFunctionKey
-        case .home: code = NSHomeFunctionKey
-        case .end: code = NSEndFunctionKey
-        case .pageUp: code = NSPageUpFunctionKey
-        case .pageDown: code = NSPageDownFunctionKey
-        case .delete: code = NSDeleteFunctionKey
-        case .insert: code = NSInsertFunctionKey
-        case .enter: return Unicode.Scalar(13)
-        case .tab: return Unicode.Scalar(9)
-        case .escape: return Unicode.Scalar(27)
-        case .backspace: return Unicode.Scalar(8)
-        case .f(let n): code = NSF1FunctionKey + n - 1
-        case .char: return nil
-        }
-        return Unicode.Scalar(code)
+    /// The `Key` a menu item's `keyEquivalent` came from, or nil when the character names no key --
+    /// which is every ordinary letter, and is what `.char` answers for.
+    ///
+    /// The inverse exists because a chord is sometimes *drawn* rather than handed to AppKit:
+    /// `MenuSnapshot` reconstructs a real `NSMenu` pixel by pixel, and the character in a key
+    /// equivalent for an arrow is one of AppKit's private-use function-key scalars, which the
+    /// system font has no glyph for. Going back to a `Key` lets `Key.displayName` -- the one place
+    /// that decides how ↑ ⇞ ⌦ ↩ are spelled, and what the command palette's chord column already
+    /// uses -- answer there too, instead of a third copy of the same table.
+    ///
+    /// Both directions are `Key.menuKeyEquivalent` in NyxCore, which is one list with a test on the
+    /// round trip -- this module has no test target, and a two-way table with no test on it is
+    /// precisely the copy that goes stale.
+    static func key(forKeyEquivalent keyEquivalent: String) -> Key? {
+        let scalars = Array(keyEquivalent.unicodeScalars)
+        guard scalars.count == 1, let scalar = scalars.first else { return nil }
+        return Key(menuKeyEquivalent: scalar)
     }
 }

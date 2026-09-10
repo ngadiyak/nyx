@@ -171,24 +171,29 @@ xterm, Ghostty and iTerm2 all report there.
 | `clear_screen` | ⌘K | Clears screen and scrollback (`ED 3`) |
 | `font_bigger` / `font_smaller` / `font_reset` | ⌘+ / ⌘- / ⌘0 | Zoom in also answers to ⌘= — the same key without shift — and to the keypad's `+` |
 | `open_config` / `reload_config` | ⌘, / ⌘⇧, | ⌘, opens the settings window |
-| `previous_prompt` / `next_prompt` | ⌘↑ / ⌘↓ | Needs shell integration |
-| `select_command_output` / `copy_command_output` | — | The output of the command under the cursor / the last command |
+| `previous_prompt` / `next_prompt` | ⌘↑ / ⌘↓ | Moves the block cursor one command back or forward and brings the viewport to it; the block it lands on is lit exactly as a hovered one. Scrolled back, ⌘↑ goes to the command filling the screen and ⌘↓ to the one after it. ⌘↓ past the newest command goes to the prompt you are typing at, with no block lit; a second ⌘↓ there beeps, as does ⌘↑ at the oldest command. Needs shell integration |
+| `select_command_output` / `copy_command_output` | — | The output of the block the keyboard is on — moved by ⌘↑/⌘↓, and the last command when nothing has moved it |
 | `find` / `find_next` / `find_previous` | ⌘F / ⌘G / ⌘⇧G | The bar has an "All tabs" scope toggle |
 | `command_palette` | ⌘⇧P | Actions, themes, tabs, quick actions |
-| `edit_and_run_command` | ⌘E | Opens the command under the cursor in the editor |
+| `block_actions` | ⌘⇧A | Opens the block menu — every action the hover strip's ⋯ offers — at the block's own row, on the block the keyboard is on; with nothing moved, on the command filling the screen (the running one at the bottom, or the one at the top when scrolled back). Greyed with no shell integration and in a pane where nothing has run |
+| `scroll_to_sticky_prompt` | — | Scrolls back to the command pinned at the top of the pane. Greyed unless a command is actually pinned there, which is only while you are reading output whose command line has scrolled off |
+| `edit_and_run_command` | ⌘E | Opens the line being typed — or, at an empty prompt, the command of the block the keyboard is on — in the editor |
 | `rename_tab` | ⌘⇧R | |
 | `group_tab` / `ungroup_tab` / `toggle_tab_group` | ⌘⌃G / — / — | |
-| `fold_command` / `fold_all_long_output` | ⌘⇧↑ / — | Folds the last command — the one running if one is — or the one at the top of the screen when scrolled back, keeping its last lines / fold every long one |
-| `copy_block_markdown` | — | The last command and its output as a fenced Markdown block |
-| `save_command_output` | — | Writes the last command's output to a file the user chooses |
+| `fold_command` / `fold_all_long_output` | ⌘⇧↑ / — | Folds the block the keyboard is on, keeping its last lines / folds every long one |
+| `copy_block_markdown` | — | That block and its output as a fenced Markdown block |
+| `save_command_output` | — | Writes that block's output to a file the user chooses |
 | `notify_when_done` | — | Arm a notification for the command running now, however short it turns out |
 | `save_scrollback` | — | Writes the transcript to a file the user chooses |
 | `new_request` | — | Opens the request workbench on a blank request: method, URL, parameters, headers, body, auth and options as a form |
 | `remote_sessions` | — | Opens the command palette's Remote section. Settings → Remote also gets you there |
 | `remote_pair` | — | Opens the pairing sheet, either side |
 | `remote_take_control` | — | On an observed remote tab, takes over as writer |
-| `toggle_http_lens` | ⌘⇧J | Flips the response under the pointer -- or the last one in the pane -- between `pretty` and `raw`. Greyed when the pane has no request to show |
-| `stop_watch` | ⌘. | Stops the watch running in this pane, while its newest run is still the last request in it. Greyed in the menu and absent from the palette when there is no such series; the block header's own **Stop** button has no such rule and always stops the series it belongs to. `⌘K` (clear the pane) also stops a running series and *forgets* it -- every run's block id names rows that are gone, so a kept header would sit on a stranger's command |
+| `toggle_http_lens` | ⌘⇧J | Flips the block the keyboard is on — or the last response in the pane — between `pretty` and `raw`. Greyed when the pane has no request to show |
+| `stop_watch` | ⌘. | Stops the watch running in this pane. Enabled while the block the keyboard is on is **any** run of that series, or the block the watch was armed from — scrolling up a run to compare two answers does not take the chord away — and also when the keyboard is on no request at all. A series that has not run anything yet enables it from anywhere: until the first run there is no **Stop** button either, so the chord is the only way to take one back. Greyed in the menu and absent from the palette when the pane has no unfinished series, and on a request block that belongs to some *other* series or to none, so a chord pressed for something else cannot kill a watch elsewhere in the pane. The strip's **Stop** button stops the series it belongs to, so the chord and the button now agree everywhere the button exists. `⌘K` (clear the pane) also stops a running series and *forgets* it — every run's block id names rows that are gone, so a kept header would sit on a stranger's command |
+
+⌘↑ / ⌘↓ move the block cursor — the block Nyx draws as hovered and every block action acts on;
+it clears with ⌘K and follows the screen when you scroll.
 
 The menu is generated from `ActionCatalog.sections`, so every action is discoverable there with
 its current chord, and the settings window's Keys page lists them all.

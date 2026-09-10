@@ -820,7 +820,20 @@ public enum SummaryTone: Equatable {
     /// request's `404 · 12 ms` was drawn at 3.25:1, *worse* than the body text around it, on the
     /// one line that exists to be noticed. Lifting towards the theme's own foreground keeps the
     /// hue as far as the floor allows and only moves a colour that could not be read.
-    public func color(in palette: Palette) -> RGB {
+    /// `on` is the ground the ink is actually painted on. Resolving against `palette.background`
+    /// and then drawing on the hovered block's tint is what the plan-1a pictures measured as
+    /// **4.17:1** for the neutral `8.8s` and **4.13:1** for `… 6 lines hidden` -- hovering a block
+    /// made its own status *less* legible, which is the shape of the defect §2.5 exists to remove
+    /// (design D1). Every other derived ink in the palette (`textOn`, `pillHairline`, `fadedMark`)
+    /// was already pushed against the ground it lands on; this was the one that was not.
+    ///
+    /// The three block-chrome call sites pass `palette.blockHoverBackground` **unconditionally**
+    /// rather than the ground of the frame in hand. The tint is the harder of the two grounds for
+    /// all 35 theme×tone pairs -- it moves `background` toward `accent`, which is the direction
+    /// these inks already sit in -- so one resolution clears both, and the fold placeholder (which
+    /// is drawn as *cells*, through the row cache) does not become a row input that changes with
+    /// hover while `RowKey` knows nothing about it.
+    public func color(in palette: Palette, on ground: RGB? = nil) -> RGB {
         let picked: RGB
         switch self {
         case .plain: picked = palette.noteForeground
@@ -828,7 +841,7 @@ public enum SummaryTone: Equatable {
         case .success: picked = palette.readable(2)
         case .failure: picked = palette.readable(1)
         }
-        return RGB.readable(picked, on: palette.background, towards: palette.foreground)
+        return RGB.readable(picked, on: ground ?? palette.background, towards: palette.foreground)
     }
 }
 

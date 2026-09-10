@@ -154,3 +154,35 @@ private let sheetGreyDark = RGB(50, 50, 50)        // windowBackgroundColor, dar
     #expect(RGB.contrast(forty, palette.background) >= 3)
     #expect(palette.fadedMark(solid) == forty)
 }
+
+/// D1: every tone ink was made readable against `palette.background` and then drawn on the row's
+/// **hover tint** -- the in-grid summary on a hovered block, the strip's own readout, and the fold
+/// placeholder's `… 6 lines hidden`. Measured from the plan-1a composites: the neutral `8.8s`
+/// reads 4.58:1 idle and **4.17:1** on the tint (`composite-strip-w3-folded-nyx-dark-dark`), and
+/// `… 6 lines hidden` **4.13:1** on the same row -- so hovering a block made its own status *less*
+/// legible, which is the shape of the defect §2.5 was written to remove.
+///
+/// The ground these three are resolved against is now the tint, unconditionally, rather than
+/// whichever ground the block happens to be on this frame. Two reasons, and the second is the
+/// stronger: the tint is the **harder** of the two grounds for every one of the 35 theme×tone pairs
+/// (it moves `background` toward `accent`, i.e. toward these inks), so one resolution clears both;
+/// and the placeholder is drawn as *cells* through the row cache, so an ink that changed with hover
+/// would be a per-row input the renderer reads and `RowKey` does not carry -- a stale row, not a
+/// colour bug.
+@Test func everyToneInkIsReadableOnTheRowsHoverTintAndOnThePlainBackground() {
+    for (name, palette) in Themes.builtin {
+        let tint = palette.blockHoverBackground
+        for (label, tone) in [("plain", SummaryTone.plain), ("running", .running),
+                              ("success", .success), ("redirect", .redirect), ("failure", .failure)] {
+            let ink = tone.color(in: palette, on: tint)
+            #expect(RGB.contrast(ink, tint) >= 4.5, "\(name) \(label) on tint")
+            // And still readable where the same ink is drawn on an unhovered row.
+            #expect(RGB.contrast(ink, palette.background) >= 4.5, "\(name) \(label) on background")
+        }
+        // The placeholder's third state -- a clean block's `… 6 lines hidden` -- is the lens grey,
+        // which had the same defect and takes the same ground.
+        let dim = LensPalette.dimColour(in: palette)
+        #expect(RGB.contrast(dim, tint) >= 4.5, "\(name) placeholder dim on tint")
+        #expect(RGB.contrast(dim, palette.background) >= 4.5, "\(name) placeholder dim on background")
+    }
+}

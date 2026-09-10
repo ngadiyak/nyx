@@ -62,18 +62,30 @@ public struct LensPalette: Equatable {
     /// reads as something the server printed. The ceiling is three quarters of the foreground's
     /// contrast, and the floor wins where a theme leaves no room between them -- an unreadable dim
     /// is the worse of the two failures.
+    ///
+    /// Both are measured against the **hover tint**, not against `palette.background`. Every row
+    /// this grey lands on -- a block's `… 6 lines hidden`, a lensed body's `▸ […] 40 items` -- is a
+    /// row of a block, and a block's rows are tinted the moment the pointer is on them, where the
+    /// design review measured the placeholder at **4.13:1** (D1). The tint is the harder of the two
+    /// grounds (it moves `background` toward `accent`), so one resolution reads on both, the grey
+    /// does not change under the pointer -- these are *cells*, through the row cache, and `RowKey`
+    /// carries no hover bit -- and the placeholder and the lens container stay the same grey, which
+    /// is the whole point of there being one of them.
+    ///
+    /// The *blend* still walks toward `palette.background`, so the answer stays the theme's own dim
+    /// grey rather than picking up the tint's hue.
     public static func dimColour(in palette: Palette) -> RGB {
-        let background = palette.background
+        let ground = palette.blockHoverBackground
         let floor = 4.5
-        let ceiling = max(floor, RGB.contrast(palette.foreground, background) * 0.75)
-        let lifted = RGB.readable(palette.colors[8], on: background, towards: palette.foreground,
+        let ceiling = max(floor, RGB.contrast(palette.foreground, ground) * 0.75)
+        let lifted = RGB.readable(palette.colors[8], on: ground, towards: palette.foreground,
                                   minimum: floor)
-        guard RGB.contrast(lifted, background) > ceiling else { return lifted }
+        guard RGB.contrast(lifted, ground) > ceiling else { return lifted }
         // Too strong: back towards the background, stopping at the first step under the ceiling
         // that is still over the floor.
         for step in 1...20 {
-            let candidate = RGB.blend(lifted, into: background, amount: Double(step) / 20)
-            let contrast = RGB.contrast(candidate, background)
+            let candidate = RGB.blend(lifted, into: palette.background, amount: Double(step) / 20)
+            let contrast = RGB.contrast(candidate, ground)
             if contrast <= ceiling { return contrast >= floor ? candidate : lifted }
         }
         return lifted

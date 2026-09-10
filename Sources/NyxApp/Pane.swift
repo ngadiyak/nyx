@@ -2137,7 +2137,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // theme's running colour is the one the spine already uses for the same state,
                 // so a glance down the screen says which command is still going. `tone` is the same
                 // ladder the hover strip and the sticky strip use, so a 404 is red in all three.
-                return (row: slot, text: text, color: header.tone.color(in: t.palette))
+                // Resolved against the row's own hover **tint**, not `palette.background`: the
+                // summary is drawn on the tint the moment the pointer arrives, where the neutral
+                // `8.8s` measured 4.17:1 (design D1). The tint is the harder ground, so one
+                // resolution reads on both and the colour does not change under the pointer.
+                return (row: slot, text: text,
+                        color: header.tone.color(in: t.palette, on: t.palette.blockHoverBackground))
             }
             // The overlay goes where it fits, which is not always the prompt row: a strip placed
             // from the prompt row alone and sized only from its own content painted over the end of

@@ -188,7 +188,12 @@ final class BlockHeaderView: NSView {
         // theme's running colour is the amber the spine already uses for the same state, and a
         // request's own colour comes down the same ladder: 2xx green, 3xx amber, 4xx/5xx red, so
         // the strip, the glyphs on the command row and the sticky strip cannot disagree.
-        readout.textColor = nsColor(plan.readoutTone.color(in: palette), alpha: 1)
+        // On the strip's own ground -- the row's hover tint (§2.3) -- and not on
+        // `palette.background`, which is the ground this ink used to be calibrated for and is never
+        // the one it lands on (design D1).
+        readout.textColor = nsColor(plan.readoutTone.color(in: palette,
+                                                           on: palette.blockHoverBackground),
+                                    alpha: 1)
         readout.isHidden = plan.readout.isEmpty
 
         dotsView.update(dots: plan.dots, palette: palette)
@@ -198,7 +203,9 @@ final class BlockHeaderView: NSView {
         overflow.font = font
         // The dots' own neutral tone, in the readout's font, so `+18` reads as a label rather than
         // as a thirty-first circle nobody can tell the colour of.
-        overflow.textColor = nsColor(SummaryTone.plain.color(in: palette), alpha: 1)
+        overflow.textColor = nsColor(SummaryTone.plain.color(in: palette,
+                                                             on: palette.blockHoverBackground),
+                                     alpha: 1)
         overflow.isHidden = plan.overflowDot == nil
         overflow.setAccessibilityLabel("\(plan.overflowDot.map { String($0.dropFirst()) } ?? "0") earlier runs")
 

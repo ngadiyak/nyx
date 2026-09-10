@@ -1196,7 +1196,11 @@ struct GridScene {
             guard !text.isEmpty else { continue }
             guard let placement = summaryHere,
                   let slot = slotOfRow[placement.row] else { continue }
-            summaries.append((row: slot, text: text, color: header.tone.color(in: palette)))
+            // The same ground `Pane` resolves against -- the row's hover tint (design D1) -- or
+            // the composites would show a colour the app never draws.
+            summaries.append((row: slot, text: text,
+                              color: header.tone.color(in: palette,
+                                                       on: palette.blockHoverBackground)))
             notes[slot] = nil
             if notes.indices.contains(promptSlot) { notes[promptSlot] = nil }
         }

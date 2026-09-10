@@ -1491,8 +1491,8 @@ extension TabController: ActionTarget {
         case .previousPrompt: if focusedPane?.jumpToPrompt(forward: false) != true { NSSound.beep() }
         case .nextPrompt: if focusedPane?.jumpToPrompt(forward: true) != true { NSSound.beep() }
         case .selectCommandOutput: if focusedPane?.selectCommandOutput() != true { NSSound.beep() }
-        case .copyCommandOutput: if focusedPane?.copyLastCommandOutput() != true { NSSound.beep() }
-        case .editAndRunCommand: if focusedPane?.editAndRunLastCommand() != true { NSSound.beep() }
+        case .copyCommandOutput: if focusedPane?.performOnBlockCursor(.copyOutput) != true { NSSound.beep() }
+        case .editAndRunCommand: if focusedPane?.editAndRunCurrentCommand() != true { NSSound.beep() }
         case .pasteWithEditor: if focusedPane?.pasteWithEditor() != true { NSSound.beep() }
 
         // The group and rename commands existed only on a tab's context menu, which is a mouse and
@@ -1515,8 +1515,8 @@ extension TabController: ActionTarget {
         case .commandPalette: toggleCommandPalette()
         case .foldCommand: if focusedPane?.toggleFoldOfCurrentCommand() != true { NSSound.beep() }
         case .foldAllLongOutput: if focusedPane?.foldAllLongOutput() != true { NSSound.beep() }
-        case .copyBlockMarkdown: if focusedPane?.copyLastCommandAsMarkdown() != true { NSSound.beep() }
-        case .saveCommandOutput: if focusedPane?.saveLastCommandOutput() != true { NSSound.beep() }
+        case .copyBlockMarkdown: if focusedPane?.performOnBlockCursor(.copyMarkdown) != true { NSSound.beep() }
+        case .saveCommandOutput: if focusedPane?.performOnBlockCursor(.saveOutput) != true { NSSound.beep() }
         case .notifyWhenDone: if focusedPane?.armNotificationForRunningCommand() != true { NSSound.beep() }
         case .saveScrollback: saveScrollback()
         case .newRequest: if focusedPane?.newRequest() != true { NSSound.beep() }
@@ -1552,16 +1552,17 @@ extension TabController: ActionTarget {
             // and the menu item is greyed out for exactly this reason.
             if focusedPane?.takeControl() != true { NSSound.beep() }
 
-        // The block under the pointer, else the last request in the pane: pretty ↔ raw. Beeps when
-        // the pane has no response to show -- the menu and the palette already grey it there, and a
-        // `keybind` line reaches `perform` directly.
+        // The block the keyboard is on when that is a request, else the last request in the pane:
+        // pretty ↔ raw. Beeps when the pane has no response to show -- the menu and the palette
+        // already grey it there, and a `keybind` line reaches `perform` directly.
         case .toggleHTTPLens:
             if focusedPane?.toggleLensOfCurrentBlock() != true { NSSound.beep() }
 
-        // Only while the series' own newest run is the last request in the pane: `⌘.` is a chord
+        // Only while the block the keyboard is on is the series' own newest run: `⌘.` is a chord
         // people press for many reasons, and one that silently killed a watch they had scrolled
-        // away from would be a stop they never saw. The block header's Stop button has no such
-        // rule -- pressing it names the series.
+        // away from would be a stop they never saw. With the cursor on that run the chord and the
+        // strip's `Stop` pill name the same series; the pill itself still always stops, because
+        // pressing it names the series.
         case .stopWatch:
             guard focusedPane?.canStopWatch == true, focusedPane?.stopWatch(.stopped) == true else {
                 NSSound.beep()
@@ -1603,10 +1604,13 @@ extension TabController: ActionTarget {
         case .findNext, .findPrevious:
             // Nothing to step through until ⌘F has been pressed and something typed.
             return focusedPane?.isSearching ?? false
-        case .previousPrompt, .nextPrompt, .selectCommandOutput, .copyCommandOutput,
-             .foldCommand, .foldAllLongOutput, .copyBlockMarkdown, .saveCommandOutput:
+        case .previousPrompt, .nextPrompt, .foldAllLongOutput:
             // A shell with no integration emits no marks, and these do nothing without them.
             return focusedPane?.hasPromptMarks ?? false
+        case .selectCommandOutput, .copyCommandOutput, .foldCommand, .copyBlockMarkdown,
+             .saveCommandOutput:
+            // Marks, and a block for the cursor to be on. Greyed rather than beeping.
+            return focusedPane?.hasBlockTarget ?? false
         case .notifyWhenDone:
             return focusedPane?.hasRunningCommand ?? false
         case .focusLeft, .focusRight, .focusUp, .focusDown,
@@ -1625,8 +1629,9 @@ extension TabController: ActionTarget {
             // the menu and absent from the palette rather than beeping at whoever chose it.
             return focusedPane?.hasResponseToLens == true
         case .stopWatch:
-            // A series to stop, on the block it is running in. Without one the row is greyed in
-            // the menu and absent from the palette rather than beeping at whoever chose it.
+            // A series to stop, whose newest run is the block the keyboard is on. Without one the
+            // row is greyed in the menu and absent from the palette rather than beeping at whoever
+            // chose it.
             return focusedPane?.canStopWatch == true
         // `newRequest` falls through to here and is right to: a blank request needs nothing to
         // exist but a pane to run it in.

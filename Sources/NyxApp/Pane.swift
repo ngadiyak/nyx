@@ -907,7 +907,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// Whether anything in this pane could be shown through a lens: a finished request that has
     /// been read. What `⌘⇧J`'s menu item and palette row are enabled by.
-    var hasResponseToLens: Bool { lensTargetBlock() != nil }
+    var hasResponseToLens: Bool {
+        session.withTerminal { self.targetRequestBlockID(in: $0) != nil }
+    }
 
     /// The lens a block is being read through, for its header and its menu.
     func lens(of id: UInt32) -> ResponseLens? { lenses.lens(of: id) }
@@ -954,33 +956,24 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         markDirty()
     }
 
-    /// `⌘⇧J` and the `{ }` control: pretty ↔ raw, on the block under the pointer or the last
-    /// request in the pane. Returns false when there is no request to toggle, so the caller can
-    /// beep rather than pretending.
+    /// `⌘⇧J` and the lens chip: pretty ↔ raw, on the block the keyboard is on when that is a
+    /// request, else the last request in the pane. Returns false when there is no request to
+    /// toggle, so the caller can beep rather than pretending.
     @discardableResult
     func toggleLensOfCurrentBlock() -> Bool {
-        guard let id = lensTargetBlock() else { return false }
+        guard let id = session.withTerminal({ self.targetRequestBlockID(in: $0) }) else { return false }
+        return toggleLens(on: id)
+    }
+
+    /// The same flip, on a block the caller has already named -- the ⋯ menu's `Toggle Pretty` row
+    /// and the strip's lens chip, which are pressed *on* a block. Split out from
+    /// `toggleLensOfCurrentBlock` because that one now resolves the block cursor: a chip pressed on
+    /// the block under the pointer must not flip the lens of a block three screens up.
+    @discardableResult
+    private func toggleLens(on id: UInt32) -> Bool {
         guard !lensIsTooLarge(id) else { return false }
         setLens(lenses.lens(of: id) == nil ? .pretty : nil, on: id)
         return true
-    }
-
-    /// The block a lens command applies to: the one under the pointer when it is a request, else
-    /// the last request in the pane. A keyboard shortcut with no pointer involved still has to have
-    /// an answer, and "the response you were just looking at" is the one people mean.
-    private func lensTargetBlock() -> UInt32? {
-        if let point = lastPointerPoint, let id = commandID(under: point),
-           requestCache.isRequest(id: id) {
-            return id
-        }
-        if let hovered = hoveredBlock?.id, requestCache.isRequest(id: hovered) { return hovered }
-        return session.withTerminal { t -> UInt32? in
-            t.promptRows.reversed().compactMap { row -> UInt32? in
-                guard let region = t.command(containingAbsoluteRow: row), region.id != 0,
-                      self.requestCache.isRequest(id: region.id) else { return nil }
-                return region.id
-            }.first
-        }
     }
 
     /// Builds a block's lens lines off the main thread and stores them when they are ready.
@@ -1258,29 +1251,26 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return true
     }
 
-    /// Whether `⌘.` has a series to stop here.
-    ///
-    /// Only while the series' own newest run is the last request in the pane. `⌘.` is a chord
-    /// people press for lots of reasons, and one that silently killed a watch three screens up --
-    /// after they had gone on to run something else -- would be a stop they could not see.
-    /// A series that has not run anything yet passes: nothing can be later than nothing.
+    /// Whether `⌘.` has a series to stop here: the block the keyboard is on must be the series'
+    /// newest run. With no cursor that is the old rule word for word -- the newest run is the last
+    /// request in the pane, so a watch scrolled away from cannot be killed by a chord pressed for
+    /// something else -- and with one, the chord and the strip's `Stop` pill finally name the same
+    /// series (a11y 6.9). A series that has not run anything yet passes: nothing can be later than
+    /// nothing.
     var canStopWatch: Bool {
         guard let series = watch, !series.isFinished else { return false }
         guard let newest = series.runs.last?.id else { return true }
-        return latestRequestBlock() == newest
+        return session.withTerminal { self.targetRequestBlockID(in: $0) } == newest
     }
 
-    /// The last block in the pane whose command was a request. Also the fallback `lensTargetBlock`
-    /// uses when there is no pointer, and the same answer for the same reason: "the response you
-    /// were just looking at".
-    private func latestRequestBlock() -> UInt32? {
-        session.withTerminal { t -> UInt32? in
-            t.promptRows.reversed().compactMap { row -> UInt32? in
-                guard let region = t.command(containingAbsoluteRow: row), region.id != 0,
-                      self.requestCache.isRequest(id: region.id) else { return nil }
-                return region.id
-            }.first
-        }
+    /// The last block in the pane whose command was a request. Takes the terminal rather than
+    /// opening the session itself: every caller now asks it from inside a `withTerminal` block.
+    private func latestRequestBlock(in t: Terminal) -> UInt32? {
+        t.promptRows.reversed().compactMap { row -> UInt32? in
+            guard let region = t.command(containingAbsoluteRow: row), region.id != 0,
+                  self.requestCache.isRequest(id: region.id) else { return nil }
+            return region.id
+        }.first
     }
 
     /// The header for a block that is a series' newest run, or nil for every other block.
@@ -3658,6 +3648,48 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         session.withTerminal { $0.shellEmitsPromptMarks }
     }
 
+    // MARK: - Which block an action acts on
+
+    /// The block a block-scoped action acts on: the one the keyboard is on, else the one
+    /// `commandToFold()` names -- the running command at the bottom, or the command at the top of
+    /// the screen when scrolled back. One rule with one documented fallback, where there were five.
+    private func targetBlockID(in t: Terminal) -> UInt32? {
+        BlockTarget.resolve(cursor: blockCursor,
+                            exists: { t.promptRow(ofCommand: $0) != nil },
+                            fallback: t.commandToFold()?.id)
+    }
+
+    /// The same block as a region, for the callers that need its rows rather than its id.
+    private func targetBlock(in t: Terminal) -> CommandRegion? {
+        guard let id = targetBlockID(in: t), let row = t.promptRow(ofCommand: id) else { return nil }
+        return t.command(containingAbsoluteRow: row)
+    }
+
+    /// The block the two request actions act on. The cursor's, when it is a request; otherwise the
+    /// last request in the pane, which is the same answer for the same reason it always was --
+    /// "the response you were just looking at".
+    private func targetRequestBlockID(in t: Terminal) -> UInt32? {
+        BlockTarget.resolve(cursor: blockCursor,
+                            exists: { self.requestCache.isRequest(id: $0) && t.promptRow(ofCommand: $0) != nil },
+                            fallback: self.latestRequestBlock(in: t))
+    }
+
+    /// Whether any block-scoped action has something to act on. What the menu bar and the palette
+    /// gate the block rows on, so they are greyed rather than beeping.
+    var hasBlockTarget: Bool { session.withTerminal { self.targetBlock(in: $0) != nil } }
+
+    /// `copy_command_output`, `copy_block_markdown`, `save_command_output` and
+    /// `edit_and_run_command` are the same acts as the ⋯ menu rows of the same name, on the same
+    /// block. One implementation, so a chord and a row cannot drift apart -- `Copy Output` on a
+    /// lensed response copies what is on the screen either way, which four separate copies of this
+    /// code did not.
+    @discardableResult
+    func performOnBlockCursor(_ action: BlockAction) -> Bool {
+        guard let id = session.withTerminal({ self.targetBlockID(in: $0) }) else { return false }
+        perform(action, on: id)
+        return true
+    }
+
     /// ⌘↑ / ⌘↓: one block back or forward, and the viewport brought to it.
     ///
     /// The block the chord lands on *is* the block cursor, so "where ⌘↑ took me" and "which block
@@ -4038,14 +4070,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return absolute
     }
 
-    /// `fold_command`: collapses the last command's output -- or, scrolled back, the one at the top
-    /// of the screen -- and expands it again. `Terminal.commandToFold` is the rule.
+    /// `fold_command`: folds the block the keyboard is on, and unfolds it again.
     @discardableResult
     func toggleFoldOfCurrentCommand() -> Bool {
         let commandID: UInt32? = session.withTerminal { t in
-            // The same rule the chevron and the gutter mark use, so ⌘⇧↑ cannot fold a screenful
-            // of blank rows a command has not filled in yet.
-            guard let region = t.commandToFold(),
+            // The same predicate the gutter cap and the menu row use, so ⌘⇧↑ cannot fold a
+            // screenful of blank rows a command has not filled in yet.
+            guard let region = self.targetBlock(in: t),
                   t.commandHasOutput(atAbsoluteRow: region.promptRow) else { return nil }
             return region.id
         }
@@ -4154,54 +4185,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                                    exitStatus: described.status))
     }
 
-    /// Selects the output of the last command -- or, scrolled back, the one at the top of the
-    /// screen. The same rule ⌘⇧↑ folds by, so the two gestures cannot name different commands.
+    /// `select_command_output`: the output of the block the keyboard is on -- the same block ⌘⇧↑
+    /// folds, and the same one ⌥-clicking its gutter mark selects.
     @discardableResult
     func selectCommandOutput() -> Bool {
         let selection: Selection? = session.withTerminal { t in
-            guard let region = t.commandToFold() else { return nil }
+            guard let region = self.targetBlock(in: t) else { return nil }
             return t.selectionForOutput(of: region)
         }
         guard let selection else { return false }
         session.withTerminal { t in _ = selectionController.replace(with: selection, in: t) }
         markDirty()
-        return true
-    }
-
-    /// Copies the output of the last command that finished, without disturbing the selection --
-    /// the point is to grab it and paste it somewhere, not to change what is highlighted.
-    @discardableResult
-    func copyLastCommandOutput() -> Bool {
-        let text: String = session.withTerminal { t in
-            guard let region = t.lastFinishedCommand,
-                  let selection = t.selectionForOutput(of: region) else { return "" }
-            return t.text(in: selection)
-        }
-        guard !text.isEmpty else { return false }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        return true
-    }
-
-    /// `copy_block_markdown`: the last finished command and its output, fenced, for a chat or a ticket.
-    @discardableResult
-    func copyLastCommandAsMarkdown() -> Bool {
-        let markdown: String? = session.withTerminal { t in
-            guard let region = t.lastFinishedCommand else { return nil }
-            return BlockExport.markdown(command: t.commandLine(of: region), output: t.outputText(of: region))
-        }
-        guard let markdown else { return false }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(markdown, forType: .string)
-        return true
-    }
-
-    /// `save_command_output`: the last finished command's output to a file the user names.
-    @discardableResult
-    func saveLastCommandOutput() -> Bool {
-        let id: UInt32? = session.withTerminal { $0.lastFinishedCommand?.id }
-        guard let id else { return false }
-        saveOutput(ofCommand: id)
         return true
     }
 
@@ -4328,7 +4322,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             default: setLens(lens, on: id)
             }
         case .toggleLens:
-            if !toggleLensOfCurrentBlock() { NSSound.beep() }
+            if !toggleLens(on: id) { NSSound.beep() }
         case .copyBody:
             guard let text = responseText(of: id, headersOnly: false) else { NSSound.beep(); return }
             copyToPasteboard(text)
@@ -4695,20 +4689,20 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         perform(entry.action, on: entry.id)
     }
 
-    /// `⌘E`: the last command that ran, in the editor. From the keyboard there is no pointer to
-    /// say which command was meant, and the last one is what "run that again, but…" means.
+    /// `⌘E`: the line being typed, else the block the keyboard is on, in the editor.
     @discardableResult
-    func editAndRunLastCommand() -> Bool {
-        // What is on the command line right now comes first. Pasting a long `curl` and then
-        // needing to change something in its body is the case this is for, and at that moment the
-        // command has not run yet -- looking only at history would offer the wrong thing.
+    func editAndRunCurrentCommand() -> Bool {
+        // What is on the command line right now comes first, and before the block cursor: pasting a
+        // long `curl` and then needing to change something in its body is the case this chord is
+        // for, and it is the case the `⌘E Workbench` pill advertises. At that moment the command
+        // has not run yet, so no block target -- cursor or fallback -- could name it.
         if let typed: String = session.withTerminal({ $0.currentInput }) {
             editCurrentInput(typed)
             return true
         }
-        let row: Int? = session.withTerminal { $0.lastFinishedCommand?.promptRow }
-        guard let row else { return false }
-        return editAndRunCommand(atAbsoluteRow: row)
+        // Through `perform(_:on:)`, so ⌘E at an empty prompt and the ⋯ menu's `Edit and Run` row
+        // are one implementation on one block.
+        return performOnBlockCursor(.editAndRun)
     }
 
     /// Edits the text already on the command line, then replaces it with the result.

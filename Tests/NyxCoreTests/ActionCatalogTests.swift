@@ -26,6 +26,22 @@ import Testing
     #expect(Set(titles).count == titles.count)
 }
 
+/// The menu bar must not say "Last" for an action that targets the block the keyboard is on: the
+/// user can put the cursor three blocks up, and a row promising the *last* command would be a
+/// menu that lies about what pressing it does.
+@Test func theBlockScopedTitlesNameTheBlockRatherThanTheLastOne() {
+    let scoped: [TerminalAction] = [.selectCommandOutput, .copyCommandOutput, .copyBlockMarkdown,
+                                    .saveCommandOutput, .editAndRunCommand, .foldCommand,
+                                    .toggleHTTPLens, .stopWatch]
+    for action in scoped {
+        #expect(!action.title.contains("Last"), "\(action.configName) still says Last")
+    }
+    #expect(TerminalAction.copyCommandOutput.title == "Copy Command Output")
+    #expect(TerminalAction.copyBlockMarkdown.title == "Copy Command as Markdown")
+    #expect(TerminalAction.saveCommandOutput.title == "Save Command Output\u{2026}")
+    #expect(TerminalAction.editAndRunCommand.title == "Edit This Command\u{2026}")
+}
+
 @Test func sectionsAreNamedAndNonEmpty() {
     for section in ActionCatalog.sections {
         #expect(!section.title.isEmpty)

@@ -163,16 +163,59 @@ private func session(_ script: [(command: String, output: [String], status: Int3
     #expect(again == .refused)
 }
 
-/// Scrolled back, ⌘↓ is not refused from a cleared cursor: the seeding ruling is about going *from
-/// what fills the screen*, and that is as true downwards as upwards. The press lands on the seed,
-/// the next one steps, and the last one clears to the bottom -- once.
-@Test func scrolledBackForwardSeedsFromTheScreenAndThenStepsDown() {
+/// Scrolled back, ⌘↓ is not refused from a cleared cursor -- but it must not go *backwards* either.
+///
+/// `commandToFold()` answers with the block at the **top** of the screen, whose prompt row is at or
+/// above the viewport top, so landing on the seed made the first ⌘↓ of a scrolled-back pane scroll
+/// *up*: the one chord whose whole job is "forward". So ⌘↓ seeds and then steps past the seed; ⌘↑
+/// still lands on it, which is what going up from what fills the screen means.
+@Test func scrolledBackForwardStepsPastTheBlockFillingTheScreen() {
     #expect(BlockCursor.press(BlockCursor(), forward: true, among: ids,
-                              visible: [20], viewportBlock: 20, atBottom: false) == .go(20))
+                              visible: [20], viewportBlock: 20, atBottom: false) == .go(30))
     #expect(BlockCursor.press(BlockCursor(commandID: 20), forward: true, among: ids,
                               visible: [20], viewportBlock: 20, atBottom: false) == .go(30))
     #expect(BlockCursor.press(BlockCursor(commandID: 40), forward: true, among: ids,
                               visible: [40], viewportBlock: 40, atBottom: false) == .toBottom)
+}
+
+/// ⌘↑ scrolled back still lands *on* the block filling the screen rather than stepping over it: the
+/// reader is in the middle of that output and the block above it is not what they asked for.
+@Test func scrolledBackBackwardsStillLandsOnTheBlockFillingTheScreen() {
+    #expect(BlockCursor.press(BlockCursor(), forward: false, among: ids,
+                              visible: [20], viewportBlock: 20, atBottom: false) == .go(20))
+}
+
+/// The seed being the newest block is how a scrolled-back ⌘↓ reaches the live prompt: there is no
+/// block after it, and stepping past the last one is the bottom.
+@Test func forwardPastTheSeedWithNothingAfterItGoesToTheBottom() {
+    #expect(BlockCursor.press(BlockCursor(), forward: true, among: ids,
+                              visible: [40], viewportBlock: 40, atBottom: false) == .toBottom)
+}
+
+/// A cursor left behind off screen is walked forwards, not back to the screen it fell off. It used
+/// to answer `go(20)` -- the block filling the screen -- which is behind the cursor's own block.
+@Test func forwardFromAnOffScreenCursorStepsPastTheScreensBlock() {
+    #expect(BlockCursor.press(BlockCursor(commandID: 40), forward: true, among: ids,
+                              visible: [10, 20], viewportBlock: 20, atBottom: false) == .go(30))
+}
+
+/// The same rule against a real buffer, which is where the bug was visible: the block the press
+/// lands on must start *below* the viewport top, or the viewport scrolls up on a forward press.
+@Test func aScrolledBackForwardPressTargetsARowBelowTheViewportTop() {
+    let t = session((1...4).map { (command: "echo \($0)", output: (1...40).map { "line \($0)" },
+                                  status: Int32(0)) })
+    t.scrollViewport(by: 120)
+    let top = t.viewportTopRow
+    let visible = t.visibleBlocks(from: top, through: top + t.rows - 1).map(\.region.id)
+    let answer = BlockCursor.press(BlockCursor(), forward: true, among: t.blockCursorIDs,
+                                   visible: visible, viewportBlock: t.commandToFold()?.id,
+                                   atBottom: t.viewportOffset == 0)
+    guard case .go(let id) = answer else {
+        #expect(Bool(false), "expected a block to go to, got \(answer)")
+        return
+    }
+    let row = t.promptRow(ofCommand: id)
+    #expect(row != nil && row! > top)
 }
 
 /// ⌘↑ at the oldest block answers with the block it is already on; the pane sees a press that moved
@@ -188,4 +231,25 @@ private func session(_ script: [(command: String, output: [String], status: Int3
                               viewportBlock: nil, atBottom: true) == .refused)
     #expect(BlockCursor.press(BlockCursor(), forward: true, among: [], visible: [],
                               viewportBlock: nil, atBottom: true) == .refused)
+}
+
+/// Both buffer walks are autoclosures, and the press a user *holds down* -- ⌘↓ at the live prompt --
+/// must not pay for either to be told there is nowhere to go. ⌘↑ onto a seed does not need the
+/// buffer's block list at all. A guard on the cheapness, which a signature cannot state.
+@Test func aPressThatNeedsNoBufferWalkDoesNotMakeOne() {
+    final class Counter { var walks = 0 }
+    let counter = Counter()
+    func blockIDs() -> [UInt32] { counter.walks += 1; return ids }
+    func viewportBlock() -> UInt32? { counter.walks += 1; return 20 }
+
+    let refused = BlockCursor.press(BlockCursor(), forward: true, among: blockIDs(),
+                                    visible: [20], viewportBlock: viewportBlock(), atBottom: true)
+    #expect(refused == .refused)
+    #expect(counter.walks == 0)
+
+    let up = BlockCursor.press(BlockCursor(), forward: false, among: blockIDs(),
+                               visible: [20], viewportBlock: viewportBlock(), atBottom: false)
+    #expect(up == .go(20))
+    // The seed only: `moved` is never reached, so the buffer's block list is never asked for.
+    #expect(counter.walks == 1)
 }

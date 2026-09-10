@@ -64,7 +64,8 @@ the head of the spine; the strip's geometry and pills; the lens chip; the fold c
 summary losing its chevron; the sticky strip; `hitRowHeight` everywhere (§8.4); the pictures and
 the rung-6 hook. Every pointer route is correct without any of 1b.
 **Plan 1b (§2.8), six tasks:** `BlockCursor`; re-targeting and re-titling the eight block-scoped
-actions; `block_actions` ⌘⇧A and `view.menu`; the `BlockAction → TerminalAction?` chords in the
+actions; `block_actions` ⌘⇧A and `view.menu` (**amended 2026-09-10**, final review F1: no
+`view.menu` — see §2.8); the `BlockAction → TerminalAction?` chords in the
 menu (moved here from §6.5, because ⌘⇧A's menu is what has to teach them);
 `scroll_to_sticky_prompt`; the finish announcement (§8.1). It touches no pixel 1a draws, and 1a is
 what makes its target visible.
@@ -389,15 +390,30 @@ cursor clears. Nothing new is drawn at idle: a pane nobody has pressed ⌘↑ in
 **The titles stop saying "Last"** in the same commit, or the menu bar lies: `Copy Last Command
 Output` → **`Copy Command Output`**, `Copy Last Command as Markdown` → **`Copy Command as
 Markdown`**, `Save Last Command Output…` → **`Save Command Output…`**, `Edit Command Line…` →
-**`Edit This Command…`**. The other four keep their titles and change only their target, and
-`docs/configuration.md`'s scope sentences — including the documented divergence of ⌘. from the
-`Stop` button — are rewritten to "the block the keyboard is on".
+**`Edit This Command…`** (**amended 2026-09-10**, task-3 review I2: **`Edit and Run This
+Command…`** — this spelling would have been a second title for `BlockAction.editAndRun`'s own row,
+which one commit makes one implementation with it, and the ⋯ row's words win in both places). The
+other four keep their titles and change only their target, and `docs/configuration.md`'s scope
+sentences — including the documented divergence of ⌘. from the `Stop` button — are rewritten to
+"the block the keyboard is on".
 
 `block_actions` (**⌘⇧A**, free; Warp's chord) pops the block menu at the cursor's row, built through
 the same path as `morePressed` — `BlockHeader.actions` plus `menuHeader()`, so `hasPreviousRun` is
 filled the way the two mouse paths already fill it. That is the **one** keyboard route to
 everything the strip offers; no other new chord is added, and the five "which block" rules retire.
 The menu is also assigned to `view.menu` so VO-⇧-M finds it.
+
+**Amended 2026-09-10 (task-4 review, final review F1): the menu is _not_ assigned to `view.menu`,
+and this instruction is struck.** Probed in the built app: AppKit resolves a control-left-click
+through `menu(for:)`/`self.menu` *before* `mouseDown` is delivered, so a pane carrying the block
+menu popped that block's rows in place of the pane's own context menu — no Copy, no Paste, no
+split, no Clear, the wrong block whenever the cursor was not under the pointer, no selection
+started, and nothing reported to a program that had asked for mouse events (measured: with the menu
+set, `mouseDown` was never called, including under DECSET 1000). VO-⇧-M is served by
+`accessibilityPerformShowMenu()` alone: probed with `menu == nil`,
+`isAccessibilitySelectorAllowed` answers true for an override of that selector on its own, and
+building the menu on the press means it is the block `⌘⇧A` would act on rather than one a keypress
+cached before the viewport moved the cursor out from under it.
 
 *Disagreement:* the PM's model of a fixed, full-width, labelled Warp-style header row per block was
 considered and rejected — it costs a terminal row per block and re-flows the transcript, which

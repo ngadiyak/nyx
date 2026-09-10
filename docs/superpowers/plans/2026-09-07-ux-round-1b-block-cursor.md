@@ -969,7 +969,14 @@ EOF
 
 ---
 
-### Task 4: `block_actions` (⌘⇧A), `view.menu`, and `scroll_to_sticky_prompt`
+### Task 4: `block_actions` (⌘⇧A), the screen reader's *Show Menu*, and `scroll_to_sticky_prompt`
+
+> **Amended 2026-09-10** (task-4 review, final review F1): **no `view.menu`.** AppKit resolves a
+> control-left-click through `menu(for:)`/`self.menu` before `mouseDown` is delivered, so hanging
+> the block menu on the pane hijacked every ⌃-click (probed in the built app: `mouseDown` was
+> never called). `accessibilityPerformShowMenu()` alone serves VO-⇧-M, and
+> `isAccessibilitySelectorAllowed` answers true for it with `menu == nil`. Wherever this task's
+> steps say `view.menu`, the menu is built on the press instead.
 
 **Files:**
 - Modify: `Sources/NyxCore/Config/KeyBinding.swift` — two `TerminalAction` cases, one default binding
@@ -1084,7 +1091,9 @@ Expected: compile failure — `type 'TerminalAction' has no member 'blockActions
 
     /// One block's menu: `BlockHeader.actions` in order, a separator wherever `startsGroup`, the
     /// title from `title(for:)` and the tick from `isChecked`. The ⋯ button, the right-click menu,
-    /// ⌘⇧A and `view.menu` all pop *this*, so the four routes cannot offer different things.
+    /// ⌘⇧A and the screen reader's *Show Menu* all pop *this*, so the four routes cannot offer
+    /// different things. (**Amended 2026-09-10**: the fourth route is
+    /// `accessibilityPerformShowMenu()`, not `view.menu` -- see the note under this task's heading.)
     func blockMenu(for id: UInt32) -> NSMenu? {
         guard let header = blockMenuHeader(for: id) else { return nil }
         let menu = NSMenu()

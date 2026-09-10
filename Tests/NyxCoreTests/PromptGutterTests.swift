@@ -361,3 +361,58 @@ private func session() -> Terminal {
     #expect(states[0])                       // slot 0 is the prompt of the folded command
     #expect(!states[1])                      // slot 1 is the placeholder itself
 }
+
+// MARK: - A command that printed nothing at all still ran
+
+// `cd`, `true` and `export` write not one byte, so the shell's `C` and the next prompt's `A` land
+// on the same row. `outputStartRow` refuses that row -- rightly: a region starting there would take
+// in the next prompt, and folding it would hide it -- and `commandDidStart` used to be
+// `outputStartRow != nil`, so those three commands read as *never started* and the gutter drew no
+// mark at all beside a block that had a hover strip. The mark is the block's identity, so the two
+// questions are now asked separately.
+
+@Test func aCommandThatPrintedNothingAtAllStillStarted() {
+    for command in ["cd ..", "true", "export PATH=$PATH"] {
+        let t = makeTerminal(cols: 40, rows: 8, scrollback: 100)
+        t.feed(mark("A") + "$ " + mark("B") + command + "\r\n" + mark("C") + mark("D", 0))
+        t.feed(mark("A") + "$ ")
+        #expect(t.commandDidStart(atAbsoluteRow: 0), "\(command) ran")
+        #expect(!t.commandHasOutput(atAbsoluteRow: 0), "\(command) printed nothing")
+        let states = t.commandStates(atAbsoluteRow: 0)
+        #expect(states.started, "\(command) started, per commandStates")
+        #expect(!states.hasOutput, "\(command) has no output, per commandStates")
+        // And it still has no output *region*: a fold that began on the successor's prompt row
+        // would hide the prompt.
+        #expect(t.outputStartRow(ofCommandAt: 0) == nil, "\(command) has no output region")
+        // The prompt below it is the one being typed at, and it has started nothing.
+        #expect(!t.commandDidStart(atAbsoluteRow: 1), "the idle prompt after \(command)")
+    }
+}
+
+/// `echo`, whose one output row is blank, has an output region of its own: unchanged by the seam
+/// above, and the case that says the fix did not simply make everything "started".
+@Test func aCommandThatPrintedOneBlankLineIsUnchanged() {
+    let t = makeTerminal(cols: 40, rows: 8, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "echo\r\n" + mark("C") + "\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    #expect(t.commandDidStart(atAbsoluteRow: 0))
+    #expect(!t.commandHasOutput(atAbsoluteRow: 0))
+    #expect(t.outputStartRow(ofCommandAt: 0) == 1)
+    #expect(!t.commandDidStart(atAbsoluteRow: 2))
+}
+
+/// The gutter's own answer, which is what F3 was about: a `cd` gets the faded, unpressable cap
+/// rather than nothing at all.
+@Test func aCommandThatPrintedNothingAtAllStillHasACap() throws {
+    let t = makeTerminal(cols: 40, rows: 8, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "cd ..\r\n" + mark("C") + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    let region = try #require(t.command(containingAbsoluteRow: 0))
+    let block = CommandBlock(region: region, visibleRows: 0..<1, showsHeader: true)
+    let header = block.header(now: 0, folding: OutputFolding(), notifyArmed: false,
+                              anyFolds: false, hasOutput: t.commandHasOutput(atAbsoluteRow: 0))
+    let cap = try #require(CommandBlockChrome.gutterCap(
+        header, hasStarted: t.commandDidStart(atAbsoluteRow: 0), hovered: false))
+    #expect(cap.shape == .faded)
+    #expect(!cap.isPressable)
+}

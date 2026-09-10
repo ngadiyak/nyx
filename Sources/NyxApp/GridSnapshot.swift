@@ -846,10 +846,10 @@ struct GridScene {
             // A command that printed *literally* nothing -- `cd`, `export`, `true` -- so its `C`
             // mark lands on the row its successor's prompt lands on. That is the deliberate
             // difference from `composite-gutter-states-*`, whose silent command printed one blank
-            // line and therefore has an output region: `PromptGutter.outputStartRow` answers `nil`
-            // for this one, so `commandDidStart` is false and the gutter draws no mark at all while
-            // the strip still draws `Actions ▾`. Both shapes are everyday; only one of them had a
-            // picture, and which one a person sees is not a detail the set gets to skip.
+            // line and therefore has an output region of its own: `PromptGutter.outputStartRow`
+            // answers `nil` for this one and `commandDidStart` answers *true*, which is the seam
+            // this picture found -- it used to draw no mark at all beside a block that had a hover
+            // strip. Both shapes are everyday; only one of them had a picture.
             id = append(line, output: [], status: 0, seconds: 0.4)
         }
         hovered = id

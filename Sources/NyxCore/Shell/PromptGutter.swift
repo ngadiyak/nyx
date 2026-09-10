@@ -231,15 +231,41 @@ public extension Terminal {
 
     /// Whether the shell has said this command started running -- its `C` mark arrived. True the
     /// instant `sleep 10` begins and false for the prompt you are typing at, which is the one bit
-    /// that decides whether the gutter draws a running ring.
+    /// that decides whether the gutter draws a mark at all.
+    ///
+    /// Its own walk rather than `outputStartRow(ofCommandAt:) != nil`, and the difference between
+    /// the two is the whole point. A command that printed *nothing at all* -- `cd`, `true`,
+    /// `export` -- leaves its `C` on the very row its successor's prompt lands on.
+    /// `outputStartRow` refuses that row, rightly: a region beginning there would take in the next
+    /// prompt, so `outputText` would return it and a fold would hide it. But the command *ran*, and
+    /// the gutter's mark is the block's identity now -- a block that has a hover strip and no mark
+    /// is the pane saying two different things about the same command.
+    ///
+    /// So on a row carrying both marks, the `outputStart` is read first: the `C` is this command's,
+    /// the `A` is the next one's.
     func commandDidStart(atAbsoluteRow row: Int) -> Bool {
-        outputStartRow(ofCommandAt: row) != nil
+        guard let line = absoluteRow(row),
+              PromptMarks(rawValue: line.promptMark).contains(.promptStart) else { return false }
+        var next = row + 1
+        while next < totalRows {
+            let marks = promptMarks(atAbsoluteRow: next)
+            if marks.contains(.outputStart) { return true }
+            if marks.contains(.promptStart) { return false }
+            next += 1
+        }
+        return false
     }
 
     /// Both flags for one row in a single walk. The gutter needs them together on every frame, and
     /// asking separately walks to the output start twice.
     func commandStates(atAbsoluteRow row: Int) -> (started: Bool, hasOutput: Bool) {
-        guard let start = outputStartRow(ofCommandAt: row) else { return (false, false) }
+        // An output region implies it started; no region does *not* imply it did not (see
+        // `commandDidStart`), so that case falls through to the second walk. It costs one or two
+        // rows -- the walk stops at the shared `C`/`A` row -- and only for a command with nothing
+        // on its output rows.
+        guard let start = outputStartRow(ofCommandAt: row) else {
+            return (commandDidStart(atAbsoluteRow: row), false)
+        }
         return (true, hasContent(fromOutputRow: start))
     }
 

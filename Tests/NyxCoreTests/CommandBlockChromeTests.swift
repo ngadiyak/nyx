@@ -594,3 +594,36 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     #expect(CommandBlockChrome.hitRow(atY: 40, cellHeight: 0, padding: 8, hitHeight: 16, rows: [2]) == nil)
     #expect(CommandBlockChrome.hitRow(atY: 40, cellHeight: 13, padding: 8, hitHeight: 16, rows: []) == nil)
 }
+
+// MARK: - §8.4 and Addendum 2: the floor, in one place
+
+/// §8.4, in one place: at `line-height = 0.8` every one-row target is 13 pt, and every one of them
+/// goes through the same clamp. A config value cannot take the floor away.
+@Test func everyOneRowTargetClearsSixteenPointsAtTheSmallestRow() {
+    let cell = 13.0                 // 13 pt is a 16 pt font at `line-height = 0.8`
+    #expect(CommandBlockChrome.hitRowHeight(cellHeight: cell) == 16)
+    #expect(CommandBlockChrome.foldTriangleHit(cellHeight: cell).height == 16)
+    #expect(CommandBlockChrome.foldTriangleHit(cellHeight: cell).width == 20)
+    #expect(CommandBlockChrome.stripFrameHeight(cellHeight: cell) == 20)
+    #expect(PromptGutter.hitWidth == 20)
+    // …and the *drawn* things are not clamped, or the marks go lumpy and two blocks' marks collide
+    // (the ruling in §2.2 against `findings-design` §3.2).
+    #expect(CommandBlockChrome.stripGroundHeight(cellHeight: cell) == 13)
+}
+
+/// Addendum 2: a 20 pt opaque band on a 13 pt grid covers three rows of somebody's output. The
+/// frame may be 20 pt -- `hitTest` rejects anything outside it -- but what it *paints* is one row.
+@Test func theStripPaintsOneRowHoweverTallItsFrameIs() {
+    for cell in [13.0, 16, 17, 24] {
+        #expect(CommandBlockChrome.stripGroundHeight(cellHeight: cell) == cell, "\(cell)")
+        #expect(CommandBlockChrome.stripFrameHeight(cellHeight: cell) >= 20, "\(cell)")
+    }
+}
+
+/// `padding = 0` is a shipped setting. The gutter's target does not depend on the padding at all,
+/// and the mark moves onto the first text column's leading edge rather than off the window.
+@Test func zeroPaddingKeepsBothTheTargetAndTheMark() {
+    #expect(PromptGutter.hitWidth == 20)
+    #expect(CommandBlockChrome.spineLeadingInset(padding: 0) == 0)
+    #expect(CommandBlockChrome.spineWidth == 3)
+}

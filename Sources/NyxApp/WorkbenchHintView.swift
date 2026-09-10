@@ -48,9 +48,10 @@ final class WorkbenchHintView: NSView {
                                             constant: WorkbenchHintView.horizontalInset),
             button.trailingAnchor.constraint(equalTo: trailingAnchor,
                                              constant: -WorkbenchHintView.horizontalInset),
-            // Centred rather than pinned: the pill is exactly one cell row tall, which is shorter
-            // than a small button's fitting height, and two required edge constraints on a view
-            // shorter than its content break one every frame.
+            // Centred rather than pinned: the pill is one row tall at `CommandBlockChrome`'s hit
+            // floor, which at a small font is still shorter than a small button's fitting height,
+            // and two required edge constraints on a view shorter than its content break one every
+            // frame.
             button.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }

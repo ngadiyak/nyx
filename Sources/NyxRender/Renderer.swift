@@ -204,6 +204,15 @@ public final class Renderer {
         return .presented
     }
 
+    /// **`padding` is in device pixels, not points.** `Pane` passes `padding * contentsScale`, and
+    /// everything in here is measured in the texture's own pixels: `fonts.metrics` comes from a
+    /// face built at `pointSize * scale`, so `padding + column * m.width` is pixels end to end.
+    ///
+    /// It is documented on the method because the one number that arrives in *points* -- anything
+    /// `NyxCore` hands out, which is `CommandBlockChrome.spineWidth` and `spineLeadingInset` -- has
+    /// to be multiplied by `fonts.scale` before it can be mixed with this one, and used raw it drew
+    /// a half-width spine at half the inset on every Retina Mac. If a Core point number is ever
+    /// added to this file again, that conversion is the thing to copy.
     public func render(_ frame: RenderFrame, to texture: MTLTexture, commandBuffer: MTLCommandBuffer, padding: Int) {
         buildInstances(frame, padding: padding)
         let bytes = max(instances.count * MemoryLayout<Instance>.stride, 64)

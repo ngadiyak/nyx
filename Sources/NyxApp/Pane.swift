@@ -1704,8 +1704,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // disagree about what a command did -- and so the gutter steps aside with the rest of the
         // chrome when a full-screen program owns the display.
         var gutterCaps: [Int: CommandBlockChrome.GutterCap] = [:]
-        // What each mark says in its tooltip and to VoiceOver. Built here, where the header is.
-        var gutterLabels: [Int: String] = [:]
+        // What each mark *would* say in its tooltip and to VoiceOver, as the four facts the
+        // sentence is made of rather than the sentence: this loop runs under the PTY lock on every
+        // frame, and `GutterMarkLabel.Key` is four stored properties where the string it produces
+        // was four interpolations per command on screen. The gutter view formats them when the set
+        // changes, which is when a command started, finished, or was folded.
+        var gutterLabels: [Int: GutterMarkLabel.Key] = [:]
         var notes: [String?] = []
         var spines: [(rows: Range<Int>, color: RGB)] = []
         var summaries: [(row: Int, text: String, color: RGB)] = []
@@ -2063,7 +2067,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                         hasStarted: t.commandDidStart(atAbsoluteRow: block.region.promptRow),
                         hovered: self.hoveredBlock?.id == block.region.id) {
                     gutterCaps[promptSlot] = cap
-                    gutterLabels[promptSlot] = GutterMarkLabel.text(
+                    gutterLabels[promptSlot] = GutterMarkLabel.Key(
                         mark: block.failed ? .failed : (block.isRunning ? .running : .succeeded),
                         folded: header.folded, hasOutput: header.hasOutput, line: promptSlot + 1)
                 }
@@ -2283,12 +2287,18 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if let hint {
             let size = workbenchHint.intrinsicContentSize
             let origin = overlayOrigin(forHeaderRow: hint.slot)
+            // The pill is a control on a row, and a row is 13 pt at `line-height 0.8` (§8.4): the
+            // last one-row target in a pane that was still exactly one cell tall. It takes the same
+            // floor every other one does and is centred on its row, so it overhangs by up to 1.5 pt
+            // rather than being a 13 pt button.
+            let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cellSizePoints.height)))
             // Right-aligned on the row the placement chose. Nothing to invalidate when it appears
             // or goes: the pill is a subview, so AppKit resolves both the click and the cursor
             // through it while it is up (`hitTest` returns nil when it is hidden) -- the pane's own
             // cursor rects, which are the pointing hands over links, are unaffected either way.
-            workbenchHint.frame = NSRect(x: origin.x - size.width, y: origin.y,
-                                         width: size.width, height: cellSizePoints.height)
+            workbenchHint.frame = NSRect(x: origin.x - size.width,
+                                         y: origin.y + (cellSizePoints.height - height) / 2,
+                                         width: size.width, height: height)
         }
         // Only when the block under the pointer actually changed: rebuilding cursor rects asks
         // AppKit to re-run `resetCursorRects` for the view, which is not free per frame.
@@ -3703,12 +3713,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     // is a click, a menu action, and the arithmetic that turns a point into a visible row.
 
     /// The visible row a point falls on, or nil for a point in the padding.
+    ///
+    /// `PromptGutter.row` rather than the same division written out here: this is the *text* rule --
+    /// one row is one cell tall and the rows do not overlap -- and `hitRow` is the *target* rule,
+    /// with a floor under it. Keeping both in Core is what makes the difference between them
+    /// something a test can state (`aFoldTargetIsHitThroughoutItsSixteenPointBand`) rather than a
+    /// discrepancy between a view handler and a Core function.
     private func visibleRow(at point: NSPoint) -> Int? {
-        let cell = cellSizePoints
-        guard cell.height > 0 else { return nil }
-        let y = Double(bounds.height - point.y)
-        let row = Int(((y - Double(padding)) / Double(cell.height)).rounded(.down))
-        return row >= 0 && row < rows ? row : nil
+        PromptGutter.row(atY: Double(bounds.height - point.y),
+                         cellHeight: Double(cellSizePoints.height),
+                         padding: Double(padding), rows: rows)
     }
 
     /// Which lens line a view point is on, and where along it, or nil when the point is on

@@ -276,10 +276,14 @@ enum UISnapshot {
                                          1: .init(shape: .bar, tone: .failure, isPressable: true),
                                          2: .init(shape: .hollow, tone: .running, isPressable: true),
                                          3: .init(shape: .faded, tone: .success, isPressable: false)],
-                                  labels: [0: "Command on line 1 succeeded.",
-                                           1: "Command on line 2 failed.",
-                                           2: "Command on line 3 is still running.",
-                                           3: "Command on line 4 succeeded."],
+                                  // The facts, not the sentences: the view formats them, so a
+                                  // picture cannot be taken against wording nobody ships. The
+                                  // fourth mark is the silent command -- no output, so no fold
+                                  // offer, which is why its cap is the unpressable one.
+                                  labels: [0: .init(mark: .succeeded, folded: false, hasOutput: true, line: 1),
+                                           1: .init(mark: .failed, folded: false, hasOutput: true, line: 2),
+                                           2: .init(mark: .running, folded: false, hasOutput: true, line: 3),
+                                           3: .init(mark: .succeeded, folded: false, hasOutput: false, line: 4)],
                                   palette: themePalette, cellHeight: cell, padding: 8, topPadding: 0)
                 gutter.layoutSubtreeIfNeeded()
                 write(gutter, named: "gutter-marks-\(suffix)", into: directory,

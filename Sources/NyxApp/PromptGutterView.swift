@@ -24,8 +24,10 @@ final class PromptGutterView: NSView {
     /// The cap per marked display slot. Every decision about shape, colour and pressability was
     /// made by `CommandBlockChrome.gutterCap` in the pane; nothing here re-derives one.
     private var caps: [Int: CommandBlockChrome.GutterCap] = [:]
-    /// What each mark says in its tooltip and to VoiceOver, from `GutterMarkLabel.text` -- built in
-    /// the pane, where the header is.
+    /// What each mark says in its tooltip and to VoiceOver. The pane hands over
+    /// `GutterMarkLabel.Key`s -- the facts, decided where the header is -- and the sentences are
+    /// formatted here, once per change, rather than sixty times a second under the PTY lock.
+    private var keys: [Int: GutterMarkLabel.Key] = [:]
     private var labels: [Int: String] = [:]
     private var palette = Palette.xtermDefault()
     private var cellHeight: CGFloat = 1
@@ -75,9 +77,9 @@ final class PromptGutterView: NSView {
     /// padding count too: after ⌘+ with the same commands on the same rows, the hands stayed the
     /// old size.
     @discardableResult
-    func update(caps: [Int: CommandBlockChrome.GutterCap], labels: [Int: String],
+    func update(caps: [Int: CommandBlockChrome.GutterCap], labels: [Int: GutterMarkLabel.Key],
                 palette: Palette, cellHeight: CGFloat, padding: CGFloat, topPadding: CGFloat) -> Bool {
-        let changed = caps != self.caps || labels != self.labels || palette != self.palette
+        let changed = caps != self.caps || labels != self.keys || palette != self.palette
             || cellHeight != self.cellHeight || padding != self.panePadding
             || topPadding != self.topPadding
         guard changed else { return false }
@@ -85,7 +87,11 @@ final class PromptGutterView: NSView {
         let geometryMoved = cellHeight != self.cellHeight || topPadding != self.topPadding
             || padding != self.panePadding
         self.caps = caps
-        self.labels = labels
+        // Past the guard, so the sentences are built when the marks change and not per frame.
+        if labels != self.keys {
+            self.keys = labels
+            self.labels = labels.mapValues { GutterMarkLabel.text($0) }
+        }
         self.palette = palette
         self.cellHeight = cellHeight
         self.panePadding = padding
@@ -96,7 +102,7 @@ final class PromptGutterView: NSView {
         // describe a different command.
         removeAllToolTips()
         for (row, _) in caps {
-            addToolTip(rect(of: row), owner: (labels[row] ?? "") as NSString, userData: nil)
+            addToolTip(rect(of: row), owner: (self.labels[row] ?? "") as NSString, userData: nil)
         }
         return pressableRows() != previous || geometryMoved
     }
@@ -128,6 +134,12 @@ final class PromptGutterView: NSView {
         let width = CGFloat(CommandBlockChrome.spineWidth)
         for (row, cap) in caps {
             let y = topPadding + CGFloat(row) * cellHeight
+            // Only the marks the invalidated rect actually covers. A pane can carry a screenful of
+            // them, AppKit asks for a partial rect whenever something small over the gutter is
+            // composited, and drawing all of them for a band two rows tall is the kind of per-frame
+            // work that only shows up as a warm fan.
+            guard dirtyRect.intersects(NSRect(x: markX, y: y, width: max(width, 8),
+                                              height: cellHeight)) else { continue }
             let colour = nsColor(cap.tone.color(in: palette), alpha: cap.shape == .faded ? 0.4 : 1)
             switch cap.shape {
             case .solid, .faded:

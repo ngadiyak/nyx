@@ -219,6 +219,22 @@ private func session() -> Terminal {
         == "Command on line 2 is still running. Fold its output. Option-click selects its output.")
 }
 
+/// The pane hands the gutter view the four facts rather than the sentence, so that the sentence is
+/// built once per change instead of once per frame under the PTY lock. The two overloads must not
+/// drift: a tooltip and the VoiceOver label are the same string, and only one of them has a test if
+/// the `Key` route can say something different.
+@Test func theKeyAndTheArgumentsProduceTheSameSentence() {
+    for mark in [GutterMark.succeeded, .failed, .running] {
+        for folded in [false, true] {
+            for hasOutput in [true, false] {
+                let key = GutterMarkLabel.Key(mark: mark, folded: folded, hasOutput: hasOutput, line: 7)
+                #expect(GutterMarkLabel.text(key)
+                    == GutterMarkLabel.text(mark: mark, folded: folded, hasOutput: hasOutput, line: 7))
+            }
+        }
+    }
+}
+
 /// `cd ..`, `export FOO=1`, `true`: the dot is a record of what happened, and there is nothing to
 /// fold and nothing to select, so it promises neither. It used to offer both and then beep.
 @Test func aMarkOnACommandThatPrintedNothingPromisesNothing() {

@@ -95,10 +95,13 @@ enum StateSnapshot {
                                          1: .init(shape: .chevronRight, tone: .failure, isPressable: true),
                                          2: .init(shape: .hollow, tone: .running, isPressable: true),
                                          3: .init(shape: .solid, tone: .success, isPressable: true)],
-                                  labels: [0: "Command on line 1 succeeded. Fold its output. Option-click selects its output.",
-                                           1: "Command on line 2 failed. Unfold its output. Option-click selects its output.",
-                                           2: "Command on line 3 is still running.",
-                                           3: "Command on line 4 succeeded. Fold its output. Option-click selects its output."],
+                                  // The facts, not the sentences -- `GutterMarkLabel` writes the
+                                  // wording, here as in the pane, so no picture is taken against a
+                                  // string that has drifted from the one a reader hears.
+                                  labels: [0: .init(mark: .succeeded, folded: false, hasOutput: true, line: 1),
+                                           1: .init(mark: .failed, folded: true, hasOutput: true, line: 2),
+                                           2: .init(mark: .running, folded: false, hasOutput: false, line: 3),
+                                           3: .init(mark: .succeeded, folded: false, hasOutput: true, line: 4)],
                                   palette: themePalette, cellHeight: cell, padding: 8, topPadding: 0)
                 gutter.layoutSubtreeIfNeeded()
                 UISnapshot.write(gutter, named: "gutter-marks-hovered-\(suffix)", into: directory,

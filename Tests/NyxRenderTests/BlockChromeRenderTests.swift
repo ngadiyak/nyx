@@ -225,3 +225,57 @@ private let spineColor = RGB(0, 255, 0)
     #expect(success.green > 20)
     #expect(success.red == 0)
 }
+
+/// The Retina audit (Task 7): every *other* chrome number in `buildChrome` is in device pixels end
+/// to end, and this is what says so.
+///
+/// `render(_:to:commandBuffer:padding:)` is handed its padding in pixels, and `fonts.metrics` comes
+/// from a face built at `pointSize * scale`, so `padding + column * m.width` needs no conversion.
+/// Only a Core *point* number does -- the spine's two, which had to be scaled -- and the way that
+/// defect showed itself was everything landing at half its size on a 2× display. So: the tint's
+/// bottom edge, a right-aligned summary, a right-aligned note and the block cursor, all at scale 2,
+/// each measured against the pixel cell. A point number smuggled into any of them halves one of
+/// these distances and fails here; at scale 1, where every other case in this file runs, it cannot
+/// be seen at all.
+@Test func everyOtherChromeNumberIsInPixelsOnARetinaDisplay() throws {
+    let (fonts, w, px) = try render(cols: 8, rows: 3, padding: 8, scale: 2,
+                                    summaries: [(row: 0, text: "8.8s", color: RGB(0, 255, 0))],
+                                    notes: [nil, nil, "1.2s"],
+                                    highlighted: 0..<2,
+                                    cursor: Cursor(x: 0, y: 2))
+    let m = fonts.metrics
+    let pad = 16                                        // 8 pt at two pixels to the point
+    let black = Pixel(r: 0, g: 0, b: 0)
+    // The tint is `rows.count * m.height` tall, in pixels: it ends at the bottom of row 1 and row 2
+    // is untouched. Half of it would have stopped inside row 0.
+    #expect(px(w / 2, pad + m.height * 2 - 1) != black)
+    #expect(px(w / 2, pad + m.height * 2 + 1) == black)
+    // The summary is right-aligned in *columns*, so its last glyph is in the last pixel cell.
+    var summaryInk = 0
+    for x in (w - pad - m.width)..<(w - pad) {
+        for y in pad..<(pad + m.height) where px(x, y).g > 100 { summaryInk += 1 }
+    }
+    #expect(summaryInk > 4)
+    // A note is placed at `cols - count` columns in and never over the text: nothing left of that
+    // column, ink to the right of it.
+    let noteRow = pad + m.height * 2
+    var beforeNote = 0, inNote = 0
+    for x in pad..<(pad + m.width * 4) { for y in noteRow..<(noteRow + m.height) where px(x, y) != black { beforeNote += 1 } }
+    for x in (pad + m.width * 4)..<(w - pad) {
+        for y in noteRow..<(noteRow + m.height) where px(x, y) != black { inNote += 1 }
+    }
+    #expect(inNote > 4)
+    // The block cursor is one pixel cell wide, at the pixel padding: column 0 of row 2, and column
+    // 1 is not painted with it.
+    let mid = noteRow + m.height / 2
+    #expect(px(pad + m.width - 1, mid) == Pixel(r: 0, g: 0, b: 255))
+    #expect(px(pad + m.width + 1, mid) != Pixel(r: 0, g: 0, b: 255))
+    // The cursor is the only thing painted in column 0, so `beforeNote` counts it rather than
+    // stray note ink: what matters is that the columns between the cursor and the note are clear.
+    var betweenCursorAndNote = 0
+    for x in (pad + m.width)..<(pad + m.width * 4) {
+        for y in noteRow..<(noteRow + m.height) where px(x, y) != black { betweenCursorAndNote += 1 }
+    }
+    #expect(betweenCursorAndNote == 0)
+    #expect(beforeNote > 0)
+}

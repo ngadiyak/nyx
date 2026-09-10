@@ -106,8 +106,11 @@ enum GridSnapshot {
         // defaults -- so nothing said what a 12 pt row does to a 20 pt pill, or where the mark and
         // the spine land when the padding they used to live in is gone.
         let dark = Themes.builtin["nyx-dark"] ?? Palette.xtermDefault()
-        for (label, change) in [("line-height-08", { (c: inout Config) in c.lineHeight = 0.8 }),
-                                ("padding-0", { (c: inout Config) in c.padding = 0 }),
+        // `block-lineheight-08` and `block-padding-0` are §8.5's own spellings, which the plan's
+        // verification step names as the files to read: a prettier label here renames the set and
+        // the reader looks for pictures that are not there.
+        for (label, change) in [("block-lineheight-08", { (c: inout Config) in c.lineHeight = 0.8 }),
+                                ("block-padding-0", { (c: inout Config) in c.padding = 0 }),
                                 // A face that is not the system's. Every picture of the chrome had
                                 // been taken at `fontFamily = "system"`, where the band's own font
                                 // and the grid's happen to be the same face; at any other family
@@ -122,8 +125,12 @@ enum GridSnapshot {
             // `hitRowHeight` exists for: at a 13 pt row the band is 16 pt and overhangs the rows it
             // does not blank, and `padding = 0` is where its left edge sits two columns into the
             // grid. Both are settings a person can choose, and neither had a picture of this band.
+            // The lensed response is in the set because a lens container row's fold triangle is
+            // one of §8.4's one-row targets, and it is drawn as a glyph *in the grid*: the floor
+            // under its hit box cannot make the triangle itself any easier to see at a 13 pt row,
+            // so whether it is still findable there is a question only a picture answers.
             for (name, kind) in [("strip", Case.hoverStrip(.w3, .finished)), ("gutter", Case.gutter),
-                                 ("sticky", Case.sticky)] {
+                                 ("sticky", Case.sticky), ("lens", Case.lens(.pretty))] {
                 write(canvas: canvas, palette: dark, appearance: .darkAqua, case: kind,
                       into: directory, named: "composite-\(label)-\(name)-nyx-dark-dark")
             }
@@ -649,7 +656,7 @@ struct GridScene {
     struct Built {
         var frame: RenderFrame
         var gutterCaps: [Int: CommandBlockChrome.GutterCap]
-        var gutterLabels: [Int: String]
+        var gutterLabels: [Int: GutterMarkLabel.Key]
         var strip: (slot: Int, plan: CommandBlockChrome.StripPlan, header: BlockHeader)?
         var sticky: (text: String, summary: String, tone: SummaryTone)?
         var lensField: (slot: Int, caption: String, text: String, message: String?, offersJq: Bool)?
@@ -945,7 +952,7 @@ struct GridScene {
         var lensFieldSlot: Int?
         // The caps, from the same headers the summaries come from -- `Pane.render`'s order exactly.
         var gutterCaps: [Int: CommandBlockChrome.GutterCap] = [:]
-        var gutterLabels: [Int: String] = [:]
+        var gutterLabels: [Int: GutterMarkLabel.Key] = [:]
 
         for block in blocks {
             guard block.showsHeader, let promptSlot = slotOfRow[block.region.promptRow] else { continue }
@@ -973,7 +980,7 @@ struct GridScene {
                     hasStarted: terminal.commandDidStart(atAbsoluteRow: block.region.promptRow),
                     hovered: hovered == block.region.id) {
                 gutterCaps[promptSlot] = cap
-                gutterLabels[promptSlot] = GutterMarkLabel.text(
+                gutterLabels[promptSlot] = GutterMarkLabel.Key(
                     mark: block.failed ? .failed : (block.isRunning ? .running : .succeeded),
                     folded: header.folded, hasOutput: header.hasOutput, line: promptSlot + 1)
             }

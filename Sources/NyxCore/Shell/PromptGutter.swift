@@ -18,6 +18,31 @@ public enum GutterMark: Equatable {
 /// worse than an unlabelled one, and there is no AppKit test target here, so the wording is decided
 /// in Core and asserted.
 public enum GutterMarkLabel {
+    /// The four facts a mark's sentence is made of, as a value.
+    ///
+    /// `Pane.render` builds one of these per mark inside `withTerminal`, sixty times a second; the
+    /// gutter view turns them into strings only when the set actually changed. Formatting them
+    /// under the PTY lock instead meant four string interpolations per command on screen per frame,
+    /// holding the lock the parser wants, to produce sentences that are identical to last frame's
+    /// unless a command started, finished or was folded.
+    public struct Key: Equatable {
+        public let mark: GutterMark
+        public let folded: Bool
+        public let hasOutput: Bool
+        public let line: Int
+
+        public init(mark: GutterMark, folded: Bool, hasOutput: Bool, line: Int) {
+            self.mark = mark
+            self.folded = folded
+            self.hasOutput = hasOutput
+            self.line = line
+        }
+    }
+
+    public static func text(_ key: Key) -> String {
+        text(mark: key.mark, folded: key.folded, hasOutput: key.hasOutput, line: key.line)
+    }
+
     public static func text(mark: GutterMark, folded: Bool, hasOutput: Bool, line: Int) -> String {
         let outcome: String
         switch mark {
@@ -66,6 +91,12 @@ public enum PromptGutter {
 
     /// The visible row a point falls on, measured from the top of the pane including its padding.
     /// nil for a point in the padding above the first row or below the last.
+    ///
+    /// The *text* rule, and `Pane.visibleRow(at:)` is its caller: rows are one cell tall and do not
+    /// overlap, so a point belongs to exactly one of them. A *target* on a row is the other rule --
+    /// `CommandBlockChrome.hitRow`, with `hitRowHeight`'s floor under it and overlapping bands to
+    /// resolve. Everything that turns a click into a control goes through that one; everything that
+    /// turns a click into a caret or a selection comes here.
     public static func row(atY y: Double, cellHeight: Double, padding: Double, rows: Int) -> Int? {
         guard cellHeight > 0, rows > 0 else { return nil }
         let row = Int(((y - padding) / cellHeight).rounded(.down))

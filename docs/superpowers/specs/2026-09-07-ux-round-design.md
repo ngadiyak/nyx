@@ -858,9 +858,12 @@ something had failed and left to find out what. The command is `Terminal.command
 shell's own prompt sliced off at the `B` mark, so it is `swift build` and not `nik@nik-newmac ~ %
 swift build`), collapsed and cut to 60 characters by `CommandNotification.summarise` — the same
 limit the notification for a finished command has always used, because a spoken sentence is a
-glance. A block with no command line to name (no `B` mark, or a command row trimmed out of the
-scrollback) is still announced by its summary alone, with no separator hanging off the front.
-The rule about *when* is unchanged.
+glance. A shell that marks prompts but emits no `B` gets the wider subject rather than none:
+`commandLine` falls back to `commandText`, which keeps the prompt, so the sentence there is
+`nik@nik-newmac ~ % swift build — exit 1` — `B` is the shell saying where its prompt ends, and
+guessing at a `PS1` instead would cut real commands in half. A block with no text at all to name
+(a command row trimmed out of the scrollback) is still announced by its summary alone, with no
+separator hanging off the front. The rule about *when* is unchanged.
 
 ### 8.2 New `TerminalAction`s
 

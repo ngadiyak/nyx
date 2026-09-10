@@ -81,7 +81,7 @@ private func region(status: Int32?, seconds: Double?, id: UInt32 = 1) -> Command
 @Test func anInstantFailureNobodySawRunningIsAnnouncedFromThePredecessor() {
     let finish = BlockAnnouncement.finish(observed: nil,
                                           predecessor: region(status: 1, seconds: 0.02, id: 7),
-                                          lastHandled: 5)
+                                          lastHandled: 5, isFirstLook: false)
     #expect(finish?.region.id == 7)
     #expect(finish?.isNews == true)
 }
@@ -91,28 +91,50 @@ private func region(status: Int32?, seconds: Double?, id: UInt32 = 1) -> Command
 /// three-second build is spoken once, not twice.
 @Test func aCommandAlreadyDealtWithIsNotAnnouncedAgain() {
     let observed = region(status: 0, seconds: 3, id: 9)
-    #expect(BlockAnnouncement.finish(observed: observed, predecessor: observed, lastHandled: nil)?
+    #expect(BlockAnnouncement.finish(observed: observed, predecessor: observed, lastHandled: nil, isFirstLook: false)?
             .region.id == 9)
-    #expect(BlockAnnouncement.finish(observed: observed, predecessor: observed, lastHandled: 9) == nil)
+    #expect(BlockAnnouncement.finish(observed: observed, predecessor: observed, lastHandled: 9, isFirstLook: false) == nil)
     // And the predecessor alone, on the next check half a second later, is the same command.
-    #expect(BlockAnnouncement.finish(observed: nil, predecessor: observed, lastHandled: 9) == nil)
+    #expect(BlockAnnouncement.finish(observed: nil, predecessor: observed, lastHandled: 9, isFirstLook: false) == nil)
 }
 
-/// A pane's **first** look is not news. The command above the prompt has already finished: a
-/// restored session's last build, or a snapshot fed into a pane before its shell ever started.
-/// Speaking it would be a terminal telling you about something that happened yesterday -- so the
-/// first predecessor is *recorded* (`isNews` false) and the check after it has a baseline.
+/// A pane's **first look** is not news. The command above the prompt then has already finished: a
+/// restored session's last build, or a snapshot fed into a pane before its shell ever started
+/// (`Transcript.forRestoring` puts the `133;D;<status>` marks back, so those regions carry real
+/// exit statuses). Speaking it would be a terminal telling you about yesterday -- so the first
+/// predecessor is *recorded* (`isNews` false) and the check after it has a baseline.
 ///
 /// A command this pane watched run is news whatever else is true, first look or not: `observed`
 /// exists only because the watcher saw it start here.
 @Test func theFirstLookAtAPaneRecordsItsHistoryWithoutSpeakingIt() {
     let restored = region(status: 1, seconds: 12, id: 4)
-    let first = BlockAnnouncement.finish(observed: nil, predecessor: restored, lastHandled: nil)
+    let first = BlockAnnouncement.finish(observed: nil, predecessor: restored,
+                                         lastHandled: nil, isFirstLook: true)
     #expect(first?.region.id == 4)
     #expect(first?.isNews == false)
     let watched = BlockAnnouncement.finish(observed: region(status: 1, seconds: 12, id: 4),
-                                           predecessor: restored, lastHandled: nil)
+                                           predecessor: restored, lastHandled: nil, isFirstLook: true)
     #expect(watched?.isNews == true)
+}
+
+/// **"Has not looked yet" is not "has recorded nothing yet"**, and keying the rule on the recorded
+/// id swallowed the first failure a user ever typed in a fresh pane. A fresh pane's first look is
+/// its shell's first prompt: there is no predecessor at all there, so nothing is recorded -- and
+/// the `false` typed a moment later then arrived with an empty baseline and was silently filed as
+/// history. It is the second command onwards that a user would have found working, which is worse
+/// than a feature that never fires.
+///
+/// So the caller says which look this is, and the first *check* consumes it whether or not it
+/// found anything.
+@Test func aFreshPanesFirstFailureIsNewsBecauseTheFirstLookWasTheEmptyPrompt() {
+    // The first look, at the shell's first prompt: nothing above it, nothing recorded.
+    #expect(BlockAnnouncement.finish(observed: nil, predecessor: nil,
+                                     lastHandled: nil, isFirstLook: true) == nil)
+    // The user types `false`. Still nothing recorded, but the pane has looked before.
+    let typo = BlockAnnouncement.finish(observed: nil, predecessor: region(status: 1, seconds: 0.02, id: 1),
+                                        lastHandled: nil, isFirstLook: false)
+    #expect(typo?.region.id == 1)
+    #expect(typo?.isNews == true)
 }
 
 /// **A decision, not an accident:** with several prompts between two checks -- a script that runs
@@ -121,7 +143,7 @@ private func region(status: Int32?, seconds: Double?, id: UInt32 = 1) -> Command
 /// time anybody could be told, and three sentences spoken over each other is worse than one.
 @Test func onlyTheNewestFinishIsAnnouncedWhenSeveralHappenedBetweenTwoChecks() {
     let newest = region(status: 1, seconds: 0.1, id: 12)
-    let finish = BlockAnnouncement.finish(observed: nil, predecessor: newest, lastHandled: 6)
+    let finish = BlockAnnouncement.finish(observed: nil, predecessor: newest, lastHandled: 6, isFirstLook: false)
     #expect(finish?.region.id == 12)
     #expect(finish?.isNews == true)
 }
@@ -130,13 +152,13 @@ private func region(status: Int32?, seconds: Double?, id: UInt32 = 1) -> Command
 /// started is running: it has no status and no duration, and there is nothing to say about it yet.
 @Test func aPredecessorThatHasNotEndedIsNotAFinish() {
     #expect(BlockAnnouncement.finish(observed: nil, predecessor: region(status: nil, seconds: nil, id: 3),
-                                     lastHandled: 1) == nil)
-    #expect(BlockAnnouncement.finish(observed: nil, predecessor: nil, lastHandled: 1) == nil)
+                                     lastHandled: 1, isFirstLook: false) == nil)
+    #expect(BlockAnnouncement.finish(observed: nil, predecessor: nil, lastHandled: 1, isFirstLook: false) == nil)
 }
 
 /// Block id 0 is "no command": a region whose prompt row carries no id at all. Recording it would
 /// make the *next* real finish look like one already dealt with.
 @Test func aRegionWithNoIDIsNotAFinish() {
     #expect(BlockAnnouncement.finish(observed: nil, predecessor: region(status: 1, seconds: 1, id: 0),
-                                     lastHandled: 1) == nil)
+                                     lastHandled: 1, isFirstLook: false) == nil)
 }

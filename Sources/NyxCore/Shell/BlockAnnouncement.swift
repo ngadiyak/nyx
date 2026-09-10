@@ -47,19 +47,29 @@ public enum BlockAnnouncement {
     /// anyone could be told about them, and three sentences spoken over each other is worse than
     /// one. That is a decision, not an omission.
     ///
-    /// A pane's **first** look is never news: the command above the prompt then is a restored
-    /// session's last build or a snapshot fed in before the shell started, and announcing it is a
-    /// terminal telling you about yesterday. It is recorded, and the check after it has a baseline.
+    /// `isFirstLook` is the caller's **first check on this pane**, and a first look is never news:
+    /// the command above the prompt then is a restored session's last build or a snapshot fed in
+    /// before the shell started -- `Transcript.forRestoring` puts the `133;D;<status>` marks back,
+    /// so those regions carry real exit statuses -- and announcing one is a terminal telling you
+    /// about yesterday. It is recorded, and the check after it has a baseline.
+    ///
+    /// **It is a flag and not `lastHandled == nil` on purpose.** "Has not looked yet" and "has
+    /// recorded nothing yet" are different, and keying on the recorded id swallowed the first
+    /// failure a user ever typed in a fresh pane: that pane's first look is its shell's first
+    /// prompt, where there is no predecessor at all and nothing is recorded, so the `false` typed a
+    /// moment later arrived with an empty baseline and was filed as history. Working from the
+    /// second command onwards is worse than never working, because nobody would report it.
+    ///
     /// A command in `observed` is news even on a first look, because the watcher only has it if it
     /// started here.
     public static func finish(observed: CommandRegion?, predecessor: CommandRegion?,
-                              lastHandled: UInt32?) -> Finish? {
+                              lastHandled: UInt32?, isFirstLook: Bool) -> Finish? {
         if let observed, ended(observed), observed.id != 0, observed.id != lastHandled {
             return Finish(region: observed, isNews: true)
         }
         guard let predecessor, ended(predecessor), predecessor.id != 0,
               predecessor.id != lastHandled else { return nil }
-        return Finish(region: predecessor, isNews: lastHandled != nil)
+        return Finish(region: predecessor, isNews: !isFirstLook)
     }
 
     /// A command with an ending. The prompt you are typing at, and the command running at it, have
@@ -77,6 +87,14 @@ public enum BlockAnnouncement {
     /// `CommandNotification.summarise` the notification uses, because a spoken sentence is a glance
     /// and a wrapped three-line `curl` is not.
     ///
+    /// **A shell that emits `A`/`C`/`D` but no `B`** gets the wider answer, not an empty one:
+    /// `commandLine` falls back to `commandText`, which keeps the prompt, so the subject there is
+    /// `nik@nik-newmac ~ % swift build` cut to 60 characters. Deliberately not stripped -- `B` is
+    /// the shell telling us where its prompt ends, and guessing at a `PS1` would cut real commands
+    /// in half -- and the command is still in the sentence, which is the point. Sixty characters of
+    /// prompt and no command is the bad case; a shell with no `B` also has no `inputStartColumn`
+    /// anywhere, so it is a whole-integration problem rather than this rule's.
+    ///
     /// `command` and `summary` are autoclosures because both are work the caller does off the
     /// frame -- a backwards walk for the prompt row, a string built out of the grid, a parse of the
     /// block's request -- and this is asked on the coalesced check after *every* command, most of
@@ -90,8 +108,8 @@ public enum BlockAnnouncement {
         guard region.failed || (region.duration ?? 0) >= minimumDuration else { return nil }
         let words = summary()
         guard !words.isEmpty else { return nil }
-        // A shell that emits no `B`, or a block whose command row has been trimmed away, has a
-        // status and no command line. The summary is still the news; a bare "— exit 2" is not.
+        // A block whose command row has been trimmed out of the scrollback has a status and no
+        // text at all. The summary is still the news; a bare "— exit 2" is not.
         let subject = CommandNotification.summarise(command())
         guard !subject.isEmpty else { return words }
         return "\(subject) \u{2014} \(words)"

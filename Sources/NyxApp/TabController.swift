@@ -1558,11 +1558,11 @@ extension TabController: ActionTarget {
         case .toggleHTTPLens:
             if focusedPane?.toggleLensOfCurrentBlock() != true { NSSound.beep() }
 
-        // Only while the block the keyboard is on is the series' own newest run: `⌘.` is a chord
-        // people press for many reasons, and one that silently killed a watch they had scrolled
-        // away from would be a stop they never saw. With the cursor on that run the chord and the
-        // strip's `Stop` pill name the same series; the pill itself still always stops, because
-        // pressing it names the series.
+        // Scoped to the series, not to its newest run: any run of it, the block it was armed from,
+        // or no request under the keyboard at all. `⌘.` is a chord people press for many reasons,
+        // and one that silently killed a watch belonging to some *other* request would be a stop
+        // they never saw -- which is the only case it refuses. The strip's `Stop` pill always
+        // stops the series it belongs to, so the two agree everywhere the pill exists.
         case .stopWatch:
             guard focusedPane?.canStopWatch == true, focusedPane?.stopWatch(.stopped) == true else {
                 NSSound.beep()
@@ -1641,9 +1641,10 @@ extension TabController: ActionTarget {
             // the menu and absent from the palette rather than beeping at whoever chose it.
             return focusedPane?.hasResponseToLens == true
         case .stopWatch:
-            // A series to stop, whose newest run is the block the keyboard is on. Without one the
-            // row is greyed in the menu and absent from the palette rather than beeping at whoever
-            // chose it.
+            // An unfinished series in this pane that the block the keyboard is on belongs to -- any
+            // of its runs, or the block it was armed from -- and any position that is not somebody
+            // else's request. Without one the row is greyed in the menu and absent from the palette
+            // rather than beeping at whoever chose it.
             return focusedPane?.canStopWatch == true
         case .blockActions:
             // The cursor has to resolve to a block. Greyed on a shell with no integration and on a

@@ -298,10 +298,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private var commandCheckScheduled = false
     /// The last finish this pane has dealt with -- announced, or deliberately kept quiet about.
     /// The announcement has two signals for one event (the watcher's and the bottom command's
-    /// predecessor), so without this a command that ran three seconds was spoken twice; and nil
-    /// means "this pane has not looked yet", which is what keeps a restored session's last build
-    /// from being read out at launch. See `announceFinish`.
+    /// predecessor), so without this a command that ran three seconds was spoken twice.
     private var lastAnnouncedCommandID: UInt32?
+    /// Whether the finish check has ever run on this pane. Its *first* run is a look at history --
+    /// a restored transcript re-feeds the `133;D;<status>` marks, so the command above the first
+    /// prompt has a real exit status -- and that one is recorded rather than read out. Separate
+    /// from `lastAnnouncedCommandID` because a fresh pane's first check finds nothing to record at
+    /// all, and reading "have I looked yet" off the id swallowed the user's first failure. See
+    /// `announceFinish`.
+    private var hasCheckedForFinish = false
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     /// Clamped the same way the old hardcoded zoom was (6...72pt), independent of the config's own
@@ -4413,11 +4418,18 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// history when it finishes rather than when the tab is next looked at. That is the better of
     /// the two behaviours, and it is deliberate rather than incidental.
     private func announceFinish(observed: FinishedCommand?, predecessor: CommandRegion?) {
+        // Consumed by the first *check*, whether or not it found a finish: a fresh pane's first
+        // check is its shell's first prompt, where there is nothing above to record, and keying
+        // "have I looked yet" on the recorded id instead swallowed the first `false` the user typed
+        // -- announcing from the second command onwards, which nobody would ever report.
+        let firstLook = !hasCheckedForFinish
+        hasCheckedForFinish = true
         let observedRegion: CommandRegion? = observed.flatMap { finished in
             session.withTerminal { $0.command(containingAbsoluteRow: finished.promptRow) }
         }
         guard let finish = BlockAnnouncement.finish(observed: observedRegion, predecessor: predecessor,
-                                                    lastHandled: lastAnnouncedCommandID) else { return }
+                                                    lastHandled: lastAnnouncedCommandID,
+                                                    isFirstLook: firstLook) else { return }
         lastAnnouncedCommandID = finish.region.id
         guard finish.isNews else { return }
         let region = finish.region

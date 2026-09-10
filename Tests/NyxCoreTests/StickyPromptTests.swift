@@ -117,21 +117,29 @@ private func session() -> Terminal {
                                    summary: "0.1s") == "$ ls")
 }
 
-/// The one case the suffix comes back: a pane too narrow for the command and the note both. The
-/// note is drawn at the right edge whatever happens, and a band whose text is cut to nothing would
-/// otherwise leave the status nowhere in the text at all.
-@Test func aBandTooNarrowForBothKeepsTheStatusInTheText() {
+/// **P4.** A band too narrow for the command and the note both cuts the **command**. The suffix
+/// never comes back while there is a note, because the note is drawn at the right edge whatever
+/// happens: appending it as well read `↑ $ make te…  exit 2      exit 2 · 8.8s` -- the status twice
+/// on one row, and the command mangled to make room for the duplicate.
+@Test func aBandTooNarrowForBothCutsTheCommandAndNotTheStatus() {
     // "$ make test" is 11 columns and "exit 2 · 8.8s" is 13: 24 of 20 columns, so they do not fit.
+    // Six columns are left for the command, five of them its own and one an ellipsis.
     let cut = StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: 20,
                                      summary: "exit 2 \u{b7} 8.8s")
-    #expect(cut == "$ make test  exit 2")
-    // Exactly one column of gap is enough (3 + 6 + 1 = 10), and one column short is not.
+    #expect(cut == "$ mak\u{2026}")
+    #expect(!cut.contains("exit"))
+    // Exactly one column of gap is enough (3 + 6 + 1 = 10), and the command is whole.
     #expect(StickyPromptLabel.text(command: "$ a", exitStatus: 3, columns: 10,
                                    summary: "exit 3") == "$ a")
-    // One column short, so the suffix comes back -- and with it the cut that keeps the status and
-    // spends what is left on the command, which is what a 10-column band has always done.
+    // One column short: the command loses its last character, and still no second `exit 3`.
     #expect(StickyPromptLabel.text(command: "$ ab", exitStatus: 3, columns: 10,
-                                   summary: "exit 3") == "$\u{2026}  exit 3")
+                                   summary: "exit 3") == "$ \u{2026}")
+    // And in the extreme -- a note as wide as the band -- the text is an ellipsis or nothing at
+    // all, rather than a status the note is already carrying.
+    #expect(StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: 14,
+                                   summary: "exit 2 \u{b7} 8.8s") == "")
+    #expect(StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: 15,
+                                   summary: "exit 2 \u{b7} 8.8s") == "\u{2026}")
 }
 
 /// The band draws in `monospacedSystemFont`, whose advance is not the pane's cell: the cell is

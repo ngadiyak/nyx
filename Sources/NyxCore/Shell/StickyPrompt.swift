@@ -71,23 +71,31 @@ public enum StickyPromptLabel {
     /// *unless* `summary` is already saying it at the other end of the same row.
     ///
     /// `summary` is the note the band draws right-aligned (`BlockHeader.summary`: `exit 2 · 8.8s`,
-    /// `200 · 142 ms · 1.2 KB · json`). When it is there and there is room for both with a column
-    /// between them, the text is the command and nothing else: `↑ $ make test  exit 2 … exit 2 ·
-    /// 8.8s` said the status twice on one row, and the spoken sentence said it twice too. The
-    /// suffix comes back only when the two do not fit, because the note is drawn at the right edge
-    /// whatever happens and the text is what gets cut.
+    /// `200 · 142 ms · 1.2 KB · json`). **When there is a note, the text never carries the status,
+    /// however little room is left** -- it is the *command* that gets cut. The note is drawn at the
+    /// right edge whatever happens, so a band that appended the suffix as well read
+    /// `↑ $ make te…  exit 2      exit 2 · 8.8s`: the status twice on one row, the command mangled
+    /// to make room for the duplicate, and the spoken sentence saying it twice too (PM P4). The
+    /// first take of this rule kept the suffix "only when the two do not fit", which is exactly the
+    /// narrow band where the duplication is most expensive.
     ///
     /// Defaulted to `""` so a caller with no note -- a test, or any future band without one -- gets
     /// the old, self-sufficient text rather than silently losing the status.
     public static func text(command: String, exitStatus: Int32?, columns: Int,
                             summary: String = "") -> String {
-        let status = (exitStatus ?? 0) != 0 ? "  exit \(exitStatus!)" : ""
         let body = collapsed(command)
         guard columns > 0 else { return "" }
-        if !summary.isEmpty, body.count + summary.count + 1 <= columns { return body }
+        guard summary.isEmpty else {
+            // A column of gap between the two, so they never touch. Cut to fit, never appended to.
+            let room = max(0, columns - summary.count - 1)
+            guard body.count > room else { return body }
+            guard room > 1 else { return room == 1 ? "\u{2026}" : "" }
+            return String(body.prefix(room - 1)) + "\u{2026}"
+        }
+        let status = (exitStatus ?? 0) != 0 ? "  exit \(exitStatus!)" : ""
         let room = max(0, columns - status.count)
-        // The status is worth more than the tail of a long command line: it is the thing the user
-        // scrolled back to find out.
+        // With no note, the status is worth more than the tail of a long command line: it is the
+        // thing the user scrolled back to find out.
         guard body.count > room else { return body + status }
         guard room > 1 else { return String(status.suffix(columns)) }
         return String(body.prefix(room - 1)) + "\u{2026}" + status

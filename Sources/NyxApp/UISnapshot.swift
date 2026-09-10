@@ -336,9 +336,9 @@ enum UISnapshot {
                               into: directory, background: themePalette.background)
                     }
                 }
-                for (name, failed, summary, tone) in stickyPromptStates() {
+                for (name, failed, summary, tone, columns) in stickyPromptStates() {
                     write(stickyPrompt(palette: themePalette, failed: failed, summary: summary,
-                                       tone: tone, appearance: appearance),
+                                       tone: tone, columns: columns, appearance: appearance),
                           named: "sticky-prompt-\(name)-\(suffix)", into: directory,
                           background: themePalette.background)
                 }
@@ -1187,7 +1187,7 @@ enum UISnapshot {
     }
 
     private static func stickyPrompt(palette: Palette, failed: Bool, summary: String = "",
-                                     tone: SummaryTone? = nil,
+                                     tone: SummaryTone? = nil, columns: Int = 100,
                                      appearance: NSAppearance.Name = .darkAqua) -> NSView {
         // 22 pt cells, so the frame's `hitRowHeight` floor does not bite: what these pictures are
         // of is the band's *states*, and `composite-block-lineheight-08-sticky-*` is the picture of
@@ -1206,7 +1206,7 @@ enum UISnapshot {
         // text when there is not (`sticky-prompt-failed-*` is the second case).
         let text = StickyPromptLabel.text(
             command: failed ? "$ make test" : "$ ./deploy.sh --env production --wait",
-            exitStatus: failed ? 2 : 0, columns: 100, summary: summary)
+            exitStatus: failed ? 2 : 0, columns: columns, summary: summary)
         view.update(text: text, summary: summary, tone: tone ?? (failed ? .failure : .plain),
                     palette: palette, font: font, padding: 8,
                     cellWidth: ("M" as NSString).size(withAttributes: [.font: font]).width,
@@ -1215,15 +1215,27 @@ enum UISnapshot {
         return view
     }
 
-    /// The four things the pinned strip can be: a command still going, one that failed, one whose
-    /// status and duration are both worth a word, and a `curl` whose *response* is what the note
-    /// describes. The last is why `tone` is not derived from `failed`: a 404 exits 0.
-    private static func stickyPromptStates() -> [(String, Bool, String, SummaryTone?)] {
+    /// What the pinned strip can be: a command still going, one whose status is in its own *text*
+    /// because it has no note, one whose status and duration are both worth a word, a `curl` whose
+    /// *response* is what the note describes -- which is why `tone` is not derived from `failed`, a
+    /// 404 exits 0 -- and a band too narrow for its command and its note both.
+    ///
+    /// `status-in-text` was called `failed`, and the name pictured a state **no failed command can
+    /// be in** (PM P5): a failure always has a summary, `exit N` at the very least, so a failed
+    /// block's band always has a note. What the case really shows is the other branch of
+    /// `StickyPromptLabel.text` -- no note, so the text carries `  exit 2` itself, because colour
+    /// alone says nothing to a reader who cannot see it.
+    ///
+    /// `narrow` is P4's fix in a picture: 20 columns for an 11-column command and a 13-column note,
+    /// so the command is cut to `$ mak…` and the status appears **once**, in the note. The band used
+    /// to append the suffix as well and read `$ make te…  exit 2      exit 2 · 8.8s`.
+    private static func stickyPromptStates() -> [(String, Bool, String, SummaryTone?, Int)] {
         [
-            ("running", false, "", nil),
-            ("failed", true, "", nil),
-            ("summary", true, "exit 2 \u{b7} 8.8s", nil),
-            ("http", false, "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json", .success),
+            ("running", false, "", nil, 100),
+            ("status-in-text", true, "", nil, 100),
+            ("summary", true, "exit 2 \u{b7} 8.8s", nil, 100),
+            ("http", false, "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json", .success, 100),
+            ("narrow", true, "exit 2 \u{b7} 8.8s", nil, 20),
         ]
     }
 

@@ -78,6 +78,43 @@ public struct BlockCursor: Equatable {
         return BlockCursor(commandID: fallback)
     }
 
+    /// What one ⌘↑/⌘↓ press does. The whole press, so the sequence a user presses is testable.
+    public enum Press: Equatable {
+        /// Put the cursor on this block and bring the viewport to it.
+        case go(UInt32)
+        /// Clear the cursor and take the viewport to the live prompt at the bottom.
+        case toBottom
+        /// Nowhere to go. The caller beeps and changes nothing.
+        case refused
+    }
+
+    /// One press, from the lists it needs: `among` is the buffer's blocks
+    /// (`Terminal.blockCursorIDs`), `visible` the frame's own ids, `viewportBlock`
+    /// `commandToFold()`'s answer, `atBottom` whether the viewport is already at the live prompt.
+    ///
+    /// Three answers, because a press has three honest outcomes and the pane must not decide which
+    /// -- ⌘↓ off the newest block is not "nowhere to go", and ⌘↓ at the prompt is not "somewhere to
+    /// go". Held as one function so the *sequence* a user presses is a thing a test can press.
+    public static func press(_ current: Self, forward: Bool, among ids: [UInt32],
+                             visible: [UInt32], viewportBlock: UInt32?,
+                             atBottom: Bool) -> Press {
+        // ⌘↓ with no cursor and the viewport already at the live prompt: you are there. Without
+        // this the press was seeded from what fills the screen -- the newest block, at the bottom --
+        // and ⌘↓ *toggled* between the newest block and the prompt for as long as it was held. The
+        // seeding ruling is about starting from the screen the reader is on, which is a rule for a
+        // press that has somewhere to go; at the bottom, forwards, there is nowhere. Scrolled back
+        // (`atBottom` false) ⌘↓ seeds exactly as ⌘↑ does.
+        if forward, current.isEmpty, atBottom { return .refused }
+        let next = seed(current, visible: visible, viewportBlock: viewportBlock)
+            ?? moved(current, by: forward ? .next : .previous, among: ids)
+        if let id = next.commandID { return .go(id) }
+        // A forward step that cleared a cursor which *had* a block is `moved` saying "past the
+        // newest one", which is the live prompt. A backward step that cleared it means there were
+        // no blocks at all.
+        if forward, !current.isEmpty { return .toBottom }
+        return .refused
+    }
+
     /// Where a ⌘↑/⌘↓ press starts from.
     ///
     /// A cursor that is cleared, or on a block that is not on the screen the reader is looking at,

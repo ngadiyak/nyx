@@ -142,3 +142,50 @@ private func session(_ script: [(command: String, output: [String], status: Int3
     #expect(BlockCursor.seed(BlockCursor(), visible: [20, 30], viewportBlock: 0) == nil)
     #expect(BlockCursor.seed(BlockCursor(commandID: 99), visible: [20], viewportBlock: 0) == nil)
 }
+
+// MARK: - One press, end to end
+
+/// The sequence at the bottom of a session, which is where a user spends the day.
+///
+/// ⌘↓ used to *toggle*: the press off the newest block cleared the cursor and went to the prompt,
+/// and the next press was seeded straight back onto the newest block by the same rule that makes
+/// ⌘↑ go up from what fills the screen. From the prompt there is nothing further forward, so the
+/// second press is refused and the pane beeps.
+@Test func atTheBottomUpTakesTheNewestBlockAndForwardReachesThePromptExactlyOnce() {
+    let up = BlockCursor.press(BlockCursor(), forward: false, among: ids,
+                               visible: ids, viewportBlock: 40, atBottom: true)
+    #expect(up == .go(40))
+    let down = BlockCursor.press(BlockCursor(commandID: 40), forward: true, among: ids,
+                                 visible: ids, viewportBlock: 40, atBottom: true)
+    #expect(down == .toBottom)
+    let again = BlockCursor.press(BlockCursor(), forward: true, among: ids,
+                                  visible: ids, viewportBlock: 40, atBottom: true)
+    #expect(again == .refused)
+}
+
+/// Scrolled back, ⌘↓ is not refused from a cleared cursor: the seeding ruling is about going *from
+/// what fills the screen*, and that is as true downwards as upwards. The press lands on the seed,
+/// the next one steps, and the last one clears to the bottom -- once.
+@Test func scrolledBackForwardSeedsFromTheScreenAndThenStepsDown() {
+    #expect(BlockCursor.press(BlockCursor(), forward: true, among: ids,
+                              visible: [20], viewportBlock: 20, atBottom: false) == .go(20))
+    #expect(BlockCursor.press(BlockCursor(commandID: 20), forward: true, among: ids,
+                              visible: [20], viewportBlock: 20, atBottom: false) == .go(30))
+    #expect(BlockCursor.press(BlockCursor(commandID: 40), forward: true, among: ids,
+                              visible: [40], viewportBlock: 40, atBottom: false) == .toBottom)
+}
+
+/// ⌘↑ at the oldest block answers with the block it is already on; the pane sees a press that moved
+/// nothing and beeps. Refusing here instead would be the same beep by a longer route, and `.go`
+/// keeps "which block is the cursor on" the answer of one rule.
+@Test func backwardsAtTheOldestBlockAnswersWithThatBlock() {
+    #expect(BlockCursor.press(BlockCursor(commandID: 10), forward: false, among: ids,
+                              visible: ids, viewportBlock: 10, atBottom: true) == .go(10))
+}
+
+@Test func aPaneWithNoBlocksRefusesBothChords() {
+    #expect(BlockCursor.press(BlockCursor(), forward: false, among: [], visible: [],
+                              viewportBlock: nil, atBottom: true) == .refused)
+    #expect(BlockCursor.press(BlockCursor(), forward: true, among: [], visible: [],
+                              viewportBlock: nil, atBottom: true) == .refused)
+}

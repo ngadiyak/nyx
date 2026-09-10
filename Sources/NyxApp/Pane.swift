@@ -3679,25 +3679,32 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func jumpToPrompt(forward: Bool) -> Bool {
         let onScreen = Array(displayBlockRows.keys)
         let outcome: (moved: Bool, scrolled: Bool, cursor: BlockCursor) = session.withTerminal { t in
-            let ids = t.blockCursorIDs
-            let next = BlockCursor.seed(self.blockCursor, visible: onScreen,
-                                        viewportBlock: t.commandToFold()?.id)
-                ?? BlockCursor.moved(self.blockCursor, by: forward ? .next : .previous, among: ids)
-            // A forward step that cleared a cursor which had a block is `BlockCursor` saying "past
-            // the newest one": the live prompt. Before the `guard` below, which reads a cleared
-            // cursor as "nowhere to go" -- true for ⌘↑ at the oldest block, and the opposite of the
-            // truth here. `viewportOffset` is read rather than trusting `scrollViewportToBottom`,
-            // which reports nothing.
-            if forward, next.isEmpty, !self.blockCursor.isEmpty {
+            switch BlockCursor.press(self.blockCursor, forward: forward,
+                                     among: t.blockCursorIDs, visible: onScreen,
+                                     viewportBlock: t.commandToFold()?.id,
+                                     atBottom: t.viewportOffset == 0) {
+            case .go(let id):
+                // No prompt row for an id `blockCursorIDs` just handed out would be a bug in the
+                // buffer walk, not a press with nowhere to go, so it changes nothing and beeps.
+                guard let row = t.promptRow(ofCommand: id) else {
+                    return (false, false, self.blockCursor)
+                }
+                let next = BlockCursor(commandID: id)
+                let scrolled = t.scrollToAbsoluteRow(row)
+                return (scrolled || next != self.blockCursor, scrolled, next)
+            case .toBottom:
+                // `viewportOffset` is read rather than trusting `scrollViewportToBottom`, which
+                // reports nothing. The cursor clearing is a change even when the viewport does not
+                // move -- the block it was on stops being lit -- so this moved.
                 let scrolled = t.viewportOffset != 0
                 t.scrollViewportToBottom()
-                return (true, scrolled, next)
+                return (true, scrolled, BlockCursor())
+            case .refused:
+                // A refused press changes nothing, the cursor included: it used to assign whatever
+                // `moved` had answered, so ⌘↑ in a pane whose blocks had all been trimmed away
+                // silently cleared the cursor on its way to the beep.
+                return (false, false, self.blockCursor)
             }
-            guard let id = next.commandID, let row = t.promptRow(ofCommand: id) else {
-                return (false, false, next)
-            }
-            let scrolled = t.scrollToAbsoluteRow(row)
-            return (scrolled || next != self.blockCursor, scrolled, next)
         }
         blockCursor = outcome.cursor
         // Only when this press really moved the viewport. Set unconditionally, a refused press --

@@ -408,16 +408,22 @@ public extension CommandBlockChrome {
     ///
     /// `rightEdge` is where the strip's last column is, exclusive; the pane's own edge unless the
     /// caller is placing a pills-only strip in the gap an in-grid summary leaves.
+    /// `overlapping` is the caller saying this rung has already earned the command's tail: the last
+    /// two rungs of `stripPlacement`, where nothing fits beside the command and the alternative is
+    /// a hovered block with no controls on it at all. A W0 row is overlapping whatever the caller
+    /// says, because the only content W0 ever produces is the lone `Stop` and stopping a runaway
+    /// watch must always be one click.
     static func stripPlan(_ content: StripContent, widthClass: WidthClass,
                           lastUsedColumn: Int, cols: Int, stripColumns: Int,
-                          rightEdge: Int? = nil) -> StripPlan? {
+                          overlapping: Bool = false, rightEdge: Int? = nil) -> StripPlan? {
         let edge = rightEdge ?? cols
         guard stripColumns > 0, stripColumns <= edge, edge <= cols else { return nil }
         let first = edge - stripColumns
-        // The only content W0 ever produces is the lone Stop, and stopping a runaway watch must
-        // always be one click: it is drawn over the command's tail on an opaque pill.
-        let overlaps = widthClass == .w0
-        guard overlaps || first > lastUsedColumn else { return nil }
+        let granted = overlapping || widthClass == .w0
+        guard granted || first > lastUsedColumn else { return nil }
+        // And truthfully: a rung that was *granted* the tail but happens to land clear of the last
+        // glyph is not on top of anything, so it does not get the opaque art that says it is.
+        let overlaps = granted && first <= lastUsedColumn
         // `first` is already `>= 0`: the guard above requires `stripColumns <= edge`.
         return StripPlan(content: content, firstColumn: first, trailingColumn: edge,
                          overlapsCommand: overlaps)
@@ -477,7 +483,14 @@ public extension CommandBlockChrome {
         // the pointer arrives, controls simply appear in the gap. Refusing the row instead is what
         // left a running watch with no `Stop` anywhere across a wide middle band of command-line
         // lengths, and §2.6 says `Stop` and `Actions` are present at *every* width.
-        for row in commandRows.reversed() {
+        //
+        // **Only on a row whose in-grid summary is really there.** A readout of `""` is only safe
+        // because the sentence is on the same row in the grid; where it is not, this rung took the
+        // fact off the screen and left the controls, which is the inversion the whole wave exists to
+        // remove -- `composite-strip-w1-watch-running` came out as `[Stop] [⋯]` with no readout at
+        // all while §2.6's own W1 cell reads `run 12 [Stop] [⋯]` (design D2). Such a row falls to
+        // the overlap rung below, which keeps both.
+        for row in commandRows.reversed() where summaryIsOn(row, summary: summary, cols: cols) {
             let free = freeColumns(cols: cols, lastUsedColumn: row.lastUsedColumn)
             let edge = rightEdge(cols: cols, row: row, summary: summary)
             for (width, rung) in rungs(header, freeColumns: free) {
@@ -492,27 +505,75 @@ public extension CommandBlockChrome {
                 return StripPlacement(row: row.absoluteRow, plan: plan)
             }
         }
-        // And when even two pills will not fit beside the sentence: the one control with a running
-        // side effect, over the command's tail on an opaque pill. This is §2.3's W0 exception
-        // granted at any width, and only ever to `Stop` -- `pills(_:at: .w0)` is empty for
-        // everything else, so nothing but a running watch can reach here and no finished block
-        // ever spends a column of somebody's command on a control it could do without.
+        // And when nothing fits *beside* the command, the strip sits **on the command's tail**, on
+        // an opaque ground, which reads as a control on top of text rather than as text colliding
+        // with text (§2.3). The narrowest rung there is and no more: this rung is paid for in
+        // columns of somebody's own command line, so it takes the two pills §2.6 never drops and
+        // nothing else.
+        //
+        // What it carries depends on where the sentence is, and both halves were rulings on the
+        // first picture set:
+        //
+        // - **The sentence is in the grid on this row** -- the pills alone, ending where the
+        //   sentence begins. Until the PM's P1 this rung was granted to `Stop` and to nothing else,
+        //   so a hovered block whose leftover gap was 1-5 columns (a failed block at 14-18 free of
+        //   84, one in sixteen of them; every HTTP block at 29-33) drew **no controls at all**. A
+        //   lone `⋯` is the route to every action on the block and earns the same exception.
+        // - **The sentence is not** -- the pills *and* the narrowest readout, because at this rung
+        //   the strip is the only place the fact can be (design D2). §2.6's floor is "the status or
+        //   exit code alone, never dropped while a strip is drawn at all", and its W1 cells say
+        //   `run 12 [Stop] [⋯]` in as many words.
+        //
+        // A W0 row reaches here carrying only what `pills(_:at: .w0)` allows -- `[Stop]` while a
+        // watch runs, nothing otherwise -- because `rungs` offers a W0 row no fallback: there the
+        // one thing that may cost a column of somebody's command is the control with a running side
+        // effect, which is §2.6's W0 row exactly.
+        for row in commandRows.reversed() {
+            let free = freeColumns(cols: cols, lastUsedColumn: row.lastUsedColumn)
+            let hasSentence = summaryIsOn(row, summary: summary, cols: cols)
+            guard let (width, narrowest) = rungs(header, freeColumns: free).last else { continue }
+            let content = hasSentence
+                ? StripContent(readout: "", readoutTone: narrowest.readoutTone, dots: [],
+                               overflowDot: nil, pills: narrowest.pills)
+                : narrowest
+            guard let plan = stripPlan(content, widthClass: width,
+                                       lastUsedColumn: row.lastUsedColumn, cols: cols,
+                                       stripColumns: measure(content),
+                                       overlapping: true,
+                                       // Against the summary's first column, not the pane's edge:
+                                       // it is the *command's* tail this rung may sit on. Placed at
+                                       // the edge it covered the tail of `run 12 · 200 · 100 ms ·
+                                       // every 5 s` instead, which is the one thing §2.5 forbids --
+                                       // the first take of the pictures read `run 12 · 200 · 100 ms
+                                       // · ev` with a `Stop` on top.
+                                       rightEdge: rightEdge(cols: cols, row: row,
+                                                            summary: summary)) else { continue }
+            return StripPlacement(row: row.absoluteRow, plan: plan)
+        }
+        // The narrowest thing the table has: `Stop` alone, for a pane too narrow even for the rung
+        // above. Nothing else can reach it -- `pills(_:at: .w0)` is empty for every state but a
+        // running watch.
         for row in commandRows.reversed() {
             guard let content = stripContent(header, at: .w0),
                   let plan = stripPlan(content, widthClass: .w0,
                                        lastUsedColumn: row.lastUsedColumn, cols: cols,
-                                       stripColumns: measure(content),
-                                       // Against the summary's first column here too, for the same
-                                       // reason: it is the *command's* tail this pill is allowed to
-                                       // sit on. Placed at the pane's edge it covered the tail of
-                                       // `run 12 · 200 · 100 ms · every 5 s` instead, which is the
-                                       // one thing §2.5 forbids -- the first take of the pictures
-                                       // read `run 12 · 200 · 100 ms · ev` with a Stop on top.
+                                       stripColumns: measure(content), overlapping: true,
                                        rightEdge: rightEdge(cols: cols, row: row,
                                                             summary: summary)) else { continue }
             return StripPlacement(row: row.absoluteRow, plan: plan)
         }
         return nil
+    }
+
+    /// Whether the in-grid summary really is on this row -- placed, and with room for the whole
+    /// sentence. The two rungs below the class ladder both turn on it: one may drop the readout
+    /// *because* the grid is carrying it, and the other must keep the readout because the grid is
+    /// not.
+    private static func summaryIsOn(_ row: (absoluteRow: Int, lastUsedColumn: Int),
+                                    summary: PlacedSummary?, cols: Int) -> Bool {
+        guard let summary, summary.row == row.absoluteRow, !summary.text.isEmpty else { return false }
+        return summaryColumns(textCount: summary.text.count, cols: cols,
+                              lastUsedColumn: row.lastUsedColumn) != nil
     }
 
     /// Where a strip's last column is, exclusive, on this row: the in-grid summary's first column

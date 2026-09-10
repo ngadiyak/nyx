@@ -62,6 +62,15 @@ enum GridSnapshot {
                 write(canvas: canvas, palette: palette, appearance: appearance,
                       case: .suppressedTUI, into: directory,
                       named: "composite-strip-suppressed-tui-\(suffix)")
+                // The overlap rung: a tail position where nothing fits beside the command, so the
+                // strip is drawn on the command's tail and the in-grid sentence stays put. Before
+                // P1 both of these widths drew no control at all.
+                for (state, free) in [(GridScene.StripState.failed, 16),
+                                      (GridScene.StripState.http, 31)] {
+                    write(canvas: canvas, palette: palette, appearance: appearance,
+                          case: .hoverStripTail(state, freeColumns: free), into: directory,
+                          named: "composite-strip-tail-\(state.rawValue)-\(free)-\(suffix)")
+                }
                 // The timeline's own width and its `+N` cap: three run counts, because one cell of
                 // the state matrix cannot say what thirty circles do to a strip's width.
                 for runs in [4, 30, 48] {
@@ -177,6 +186,13 @@ enum GridSnapshot {
         /// this chrome can hold, and measuring it alone says nothing about whether a pane has room
         /// for it -- which is what these pictures are for.
         case hoverStripWatching(runs: Int)
+        /// One of §2.6's states at a tail position where **nothing fits beside the command**, so the
+        /// strip sits on the command's own tail: the overlap rung P1 ruled in. `freeColumns` is the
+        /// gap after the last glyph, chosen inside the band the picture is of -- 16 for a failed
+        /// block, where `exit 1 · 8.8s` in the grid leaves 3 columns and a lone `⋯` needs 6, and 31
+        /// for an HTTP one, which is the window P6 asked about. Both drew *nothing at all* before
+        /// this wave: hovered, tinted, chevroned and with no control on the row.
+        case hoverStripTail(GridScene.StripState, freeColumns: Int)
         /// Scrolled deep into a long build, so the command that produced it is pinned at the top.
         case sticky
         /// The four gutter marks beside the rows they belong to, nothing else up.
@@ -215,6 +231,9 @@ enum GridSnapshot {
             // under. A picture of a TUI with no pointer anywhere near it proves nothing.
             scene.show(.finished, at: .w3)
             scene.enterTUI()
+        case .hoverStripTail(let state, let free):
+            scene.show(state, at: CommandBlockChrome.widthClass(freeColumns: free),
+                       freeColumns: free)
         case .hoverStripWatching(let runs):
             scene.watch = GridScene.watchHeader(runs: runs)
             scene.showRequestBlock()
@@ -812,11 +831,14 @@ struct GridScene {
     /// and nine of every ten command rows in the wrong width class. Appending the one block the
     /// picture is of keeps everything behind it real: the fold, the wrapped rows, the wide cells and
     /// the failed `make lint` are all still above it.
-    mutating func show(_ state: StripState, at width: CommandBlockChrome.WidthClass) {
+    /// `freeColumns` overrides the band's own number, for the pictures of a *tail position* rather
+    /// than of a class: `composite-strip-tail-…` picks a gap where nothing fits beside the command.
+    mutating func show(_ state: StripState, at width: CommandBlockChrome.WidthClass,
+                       freeColumns: Int? = nil) {
         // The same arithmetic the fixture's own per-class commands use, prompt included: the class
         // is read from the free columns after the last glyph, and the shell's `$ ` is two of them.
-        let line = GridScene.commandLine(
-            ofLength: max(8, canvas.cols - GridScene.pictureFreeColumns(state, at: width) - 2))
+        let free = freeColumns ?? GridScene.pictureFreeColumns(state, at: width)
+        let line = GridScene.commandLine(ofLength: max(8, canvas.cols - free - 2))
         let response = ["HTTP/2 200", "content-type: application/json; charset=utf-8", "",
                         "{\"page\":1,\"total\":3,\"users\":[\u{2026}]}"]
         let id: UInt32

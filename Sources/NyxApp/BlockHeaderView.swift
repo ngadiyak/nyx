@@ -54,6 +54,10 @@ final class BlockHeaderView: NSView {
     /// leftwards from there and only then the two-cell gradient, so nothing is ever set on a ground
     /// that is still fading up; the fade stops need that x, and only `layout()` knows it.
     private var contentLeft: CGFloat = 0
+    /// Whether the ground is one solid band rather than 8 pt of solid and a two-cell fade: true
+    /// only for a strip drawn *on* the command's tail that carries a readout, where a fade would
+    /// leave the first characters of that readout over the command's own glyphs.
+    private var solidGround = false
     private var header: BlockHeader?
     private var plan: CommandBlockChrome.StripPlan?
     private var palette = Palette.xtermDefault()
@@ -217,9 +221,17 @@ final class BlockHeaderView: NSView {
         // same opaque colour the renderer paints across the hovered rows -- so the band matches the
         // row it sits on instead of floating above it.
         //
-        // A plan that overlaps the command paints no ground at all: the opaque pill is the ground,
-        // and a band there would rub out the tail of the command the pill is sitting on.
-        fadeLayer.isHidden = plan.overlapsCommand
+        // A plan that overlaps the command paints no ground where the **pills are the whole
+        // strip**: the opaque pill is the ground, and a band beside it would rub out more of the
+        // command than the control needs.
+        //
+        // Where such a plan carries a readout as well -- design D2's rung, the one place the strip
+        // is the only copy of the fact -- that readout needs a surface: the band is painted solid,
+        // with no gradient, which is §2.3's "a control on top of text rather than text colliding
+        // with text" applied to a label instead of a pill. `placeFadeStops` reads `solidGround`.
+        let barePills = plan.readout.isEmpty && plan.dots.isEmpty && plan.overflowDot == nil
+        fadeLayer.isHidden = plan.overlapsCommand && barePills
+        solidGround = plan.overlapsCommand && !barePills
         let ground = nsColor(palette.blockHoverBackground, alpha: 1).cgColor
         fadeLayer.colors = [nsColor(palette.blockHoverBackground, alpha: 0).cgColor, ground, ground]
         placeFadeStops()
@@ -310,6 +322,7 @@ final class BlockHeaderView: NSView {
     /// exists to keep *off* the text.
     private func placeFadeStops() {
         guard bounds.width > 0 else { return }
+        guard !solidGround else { fadeLayer.locations = [0, 0, 1]; return }
         let solid = max(0, min(bounds.width, contentLeft - BlockHeaderView.edgeInset))
         let start = max(0, solid - fadeInset)
         fadeLayer.locations = [NSNumber(value: Double(start / bounds.width)),

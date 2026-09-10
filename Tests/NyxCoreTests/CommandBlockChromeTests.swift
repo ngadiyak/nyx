@@ -477,14 +477,13 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     // A rung that fits keeps its own class's placement: the strip sits after the last glyph rather
     // than on it, because there was room for it there.
     #expect(placement?.plan.overlapsCommand == false)
-    // With no rung fitting at all, the ladder does now reach W0 from a roomier row -- but only for
-    // `Stop`, and only after the pills-only rung has been tried too. §2.6 says `Stop` is present at
-    // every width, and a watch nobody can stop is the one failure on this strip with a running side
-    // effect. Asserted in full by `theLastRungIsStopOverTheCommandsTailAtAnyWidth`.
+    // With no rung fitting at all the ladder reaches the overlap rung, which carries the two pills
+    // §2.6 never drops -- `Stop` while a watch runs and `Actions` collapsed to the glyph -- on the
+    // command's own tail. Asserted in full by `theLastRungIsOverTheCommandsTailAtAnyWidth`.
     let noRoomAtAll = CommandBlockChrome.stripPlacement(
         watching, commandRows: [(absoluteRow: 4, lastUsedColumn: 30)], cols: 80, summary: nil,
         measure: { _ in 60 })
-    #expect(noRoomAtAll?.plan.pills == [.stop])
+    #expect(noRoomAtAll?.plan.pills == [.stop, .actions(.glyph)])
     #expect(noRoomAtAll?.plan.overlapsCommand == true)
 }
 
@@ -539,8 +538,10 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     let placement = try #require(CommandBlockChrome.stripPlacement(
         h, commandRows: [(absoluteRow: 4, lastUsedColumn: 44)], cols: 84,
         summary: (row: 4, text: sentence), measure: columns))
-    #expect(placement.plan.pills == [.stop])
+    #expect(placement.plan.pills == [.stop, .actions(.glyph)])
     #expect(placement.plan.overlapsCommand)
+    // The readout is dropped *because* the grid is carrying the sentence on this very row; the
+    // rung that fires where it is not keeps it (design D2, `aWatchedBlockAtW1KeepsItsReadout`).
     #expect(placement.plan.readout == "")
     // The sentence is not spoken for, so the in-grid summary stays on the row.
     #expect(!CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
@@ -723,10 +724,15 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
                                                   summary: (row: summaryRow.row, text: "8.8s")))
 }
 
-/// With no summary on the row there is nothing to make room for, so the pills-only rung runs to the
-/// pane's own edge -- and it is still the rung that saves the strip: at 16 free columns a watched
-/// row cannot carry `run 12` beside `Stop` and `⋯`, but it can carry the two pills.
-@Test func thePillsOnlyRungRunsToThePaneEdgeWhenNoSummaryIsOnTheRow() throws {
+/// With **no** summary on the row, dropping the readout would put the fact nowhere at all: the
+/// pills-only rung is only safe because the grid is carrying the sentence beside it, and a row that
+/// is not carrying it falls through to the overlap rung, which keeps the narrowest readout *and*
+/// both pills and pays for them in columns of the command's own tail.
+///
+/// This is design D2. At 16 free columns `run 12 [Stop] [⋯]` measures 19, so three columns of the
+/// command line go under an opaque ground -- the trade §2.6's W1 cell asks for in as many words
+/// (`run 12 [Stop] [⋯]`), and the one the pictures showed as `[Stop] [⋯]` with no readout at all.
+@Test func aWatchedRowWithNoSummaryKeepsItsReadoutOverTheCommandsTail() throws {
     let sentence = "run 12 · 200 · 100 ms · every 5 s"
     let watching = header(summary: sentence, isHTTP: true,
                           watch: WatchHeader(text: sentence, dots: [.running], showsStop: true,
@@ -738,16 +744,22 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
                                                 cols: cols) == nil)
     let placement = try #require(CommandBlockChrome.stripPlacement(
         watching, commandRows: rows, cols: cols, summary: nil, measure: columns))
-    #expect(placement.plan.readout == "")
+    #expect(placement.plan.readout == "run 12")
     #expect(placement.plan.pills == [.stop, .actions(.glyph)])
     #expect(placement.plan.trailingColumn == cols)
-    #expect(!placement.plan.overlapsCommand)
+    #expect(placement.plan.overlapsCommand)
+    #expect(placement.plan.firstColumn <= rows[0].lastUsedColumn)
 }
 
-/// The last rung: not even two pills fit, so `Stop` alone goes over the command's tail on an opaque
-/// pill. The W0 exception, at any width -- and only ever for `Stop`, because `pills(_:at: .w0)` is
-/// empty for everything else, so nothing but a running watch can reach this.
-@Test func theLastRungIsStopOverTheCommandsTailAtAnyWidth() throws {
+/// The last rung: nothing fits beside the command, so the strip goes over the command's tail on an
+/// opaque ground, carrying the two pills §2.6 never drops and the narrowest readout.
+///
+/// §2.3 granted the tail to `Stop` and to nothing else, and the PM's P1 measured what that cost: a
+/// hovered block whose leftover gap is smaller than a lone `⋯` drew **no controls at all** -- a
+/// failed block at 14-18 free columns of 84, one in sixteen of them. A lone `⋯` is the route to
+/// every action on the block, so it earns the same exception. A W0 row still gets nothing but
+/// `Stop`, because `rungs` offers a W0 row no fallback at all.
+@Test func theLastRungIsOverTheCommandsTailAtAnyWidth() throws {
     let sentence = "run 12 · 200 · 100 ms · every 5 s"
     let watching = header(summary: sentence, isHTTP: true,
                           watch: WatchHeader(text: sentence, dots: [.success, .running],
@@ -755,12 +767,20 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     let rows = [(absoluteRow: 4, lastUsedColumn: 30)]     // 49 free: a W3 row
     let placement = try #require(CommandBlockChrome.stripPlacement(
         watching, commandRows: rows, cols: 80, summary: nil, measure: { _ in 60 }))
-    #expect(placement.plan.pills == [.stop])
+    #expect(placement.plan.pills == [.stop, .actions(.glyph)])
     #expect(placement.plan.overlapsCommand)
-    // A finished block in the same spot gets nothing at all: there is no control here worth a
-    // column of somebody's command.
-    #expect(CommandBlockChrome.stripPlacement(header(summary: "8.8s"), commandRows: rows, cols: 80,
-                                              summary: nil, measure: { _ in 60 }) == nil)
+    // A finished block in the same spot gets its `⋯`, and only its `⋯`: the block still has a menu
+    // of eight things to do to it, and the alternative measured in the pictures is a hovered block
+    // with nothing on it (P1).
+    let finished = try #require(CommandBlockChrome.stripPlacement(
+        header(summary: "8.8s"), commandRows: rows, cols: 80, summary: nil, measure: { _ in 60 }))
+    #expect(finished.plan.pills == [.actions(.glyph)])
+    #expect(finished.plan.overlapsCommand)
+    // A W0 row is the one place the table really does draw nothing: `pills(_:at: .w0)` is empty for
+    // every state but a running watch, and `rungs` gives a W0 row no wider rung to fall back to.
+    #expect(CommandBlockChrome.stripPlacement(header(summary: "8.8s"),
+                                              commandRows: [(absoluteRow: 4, lastUsedColumn: 75)],
+                                              cols: 80, summary: nil, measure: { _ in 60 }) == nil)
 }
 
 /// The last rung may sit on the *command's* tail and never on the sentence's. Placed at the pane's
@@ -781,7 +801,7 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     let placement = try #require(CommandBlockChrome.stripPlacement(
         watching, commandRows: rows, cols: cols, summary: (row: summary.row, text: sentence),
         measure: columns))
-    #expect(placement.plan.pills == [.stop])
+    #expect(placement.plan.pills == [.stop, .actions(.glyph)])
     #expect(placement.plan.overlapsCommand)
     // It ends where the sentence begins, so no column of the sentence is covered…
     #expect(placement.plan.trailingColumn == summary.columns.lowerBound)
@@ -789,4 +809,136 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     #expect(placement.plan.firstColumn <= 43)
     #expect(!CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
                                                   summary: (row: summary.row, text: sentence)))
+}
+
+// MARK: - D2/P1/P6: a hovered block always has a control, and never loses the fact
+
+/// **P1.** Every tail position, every state: a hovered block that is wide enough for a strip at all
+/// gets one, with at least one pill on it.
+///
+/// The PM measured the hole from the pictures: once the in-grid summary fits, §2.5 forces the strip
+/// to repeat the sentence word for word, and the gap the sentence leaves (free − summary) is 1-5
+/// columns -- smaller than a lone `⋯` at 40 pt. A failed block at 14-18 free columns of 84 got
+/// `nil`: hovered, tinted, chevroned, and with nothing to press. One failed block in sixteen.
+///
+/// W0 is the deliberate hole and stays one: §2.6's W0 column is "no strip, the gutter cap alone",
+/// and the only pill that may ever cost a column of somebody's command there is `Stop`.
+@Test func everyTailPositionWideEnoughForAStripGetsOne() {
+    let cols = 84
+    let cases: [(String, BlockHeader)] = [
+        ("finished", header(summary: "2.4s")),
+        ("failed", header(summary: "exit 1 · 8.8s", state: .failed(status: 1))),
+        ("running", header(summary: "12s", state: .running(elapsed: 12))),
+        ("folded", header(summary: "8.8s", folded: true)),
+        ("no output", header(summary: "", hasOutput: false)),
+        ("http", header(summary: "", http: HTTPSummary(text: "200 · 142 ms · 1.2 KB · json",
+                                                       tone: .success), isHTTP: true, json: true)),
+        ("watched running", header(summary: "", isHTTP: true,
+                                   watch: WatchHeader(text: "run 12 · 200 · 100 ms · every 5 s",
+                                                      dots: [.success, .running], showsStop: true,
+                                                      tone: .success))),
+        ("watched finished", header(summary: "", isHTTP: true,
+                                    watch: WatchHeader(text: "11 runs · p50 140 ms · 2 failures",
+                                                       dots: [.success, .failure], showsStop: false,
+                                                       tone: .failure))),
+    ]
+    for (name, h) in cases {
+        for last in -1..<cols {
+            let free = CommandBlockChrome.freeColumns(cols: cols, lastUsedColumn: last)
+            guard free >= 8 else { continue }
+            let rows = [(absoluteRow: 4, lastUsedColumn: last)]
+            let summary = h.summary.isEmpty ? nil : CommandBlockChrome.summaryPlacement(
+                commandRows: rows, textCount: h.summary.count, cols: cols)
+            let placement = CommandBlockChrome.stripPlacement(
+                h, commandRows: rows, cols: cols,
+                summary: summary.map { (row: $0.row, text: h.summary) }, measure: columns)
+            #expect(placement != nil, "\(name) at free=\(free) drew no strip")
+            #expect(placement?.plan.pills.isEmpty == false, "\(name) at free=\(free) drew no pills")
+            // And whatever rung it landed on, the sentence is still on the screen: either the strip
+            // repeats it, or the strip carries its own readout, or the in-grid summary was left
+            // alone (design D2 -- the three are exhaustive, and the strip never has none of them).
+            guard let plan = placement?.plan, !h.summary.isEmpty else { continue }
+            let keptInGrid = !CommandBlockChrome.suppressesSummary(
+                plan, stripRow: placement!.row,
+                summary: summary.map { (row: $0.row, text: h.summary) })
+            #expect(!plan.readout.isEmpty || keptInGrid, "\(name) at free=\(free) lost the fact")
+        }
+    }
+}
+
+/// **D2.** A watched block at W1 keeps its readout. §2.6's W1 cells are `run 12 [Stop] [⋯]` and
+/// `11 runs [⋯]`; the pictures rendered `[Stop] [⋯]` and `[⋯]` with no readout at all, which is
+/// exactly the inversion the wave exists to remove -- a control outliving the fact.
+///
+/// The watch sentence is 32-33 columns, so a W1 row (8-17 free) can never have the in-grid summary
+/// on it: the readout is the only place the run number can be, and §2.6's floor is "the status or
+/// exit code alone, never dropped while a strip is drawn at all".
+@Test func aWatchedBlockAtW1KeepsItsReadout() throws {
+    let running = header(summary: "", isHTTP: true,
+                         watch: WatchHeader(text: "run 12 · 200 · 100 ms · every 5 s",
+                                            dots: [.success, .running], showsStop: true,
+                                            tone: .success))
+    let finished = header(summary: "", isHTTP: true,
+                          watch: WatchHeader(text: "11 runs · p50 140 ms · 2 failures",
+                                             dots: [.success, .failure], showsStop: false,
+                                             tone: .failure))
+    let cols = 84
+    for free in 8...17 {
+        let rows = [(absoluteRow: 4, lastUsedColumn: cols - free - 1)]
+        // The sentence does not fit on this row, so nothing but the strip can carry it.
+        #expect(CommandBlockChrome.summaryPlacement(commandRows: rows,
+                                                    textCount: running.summary.count,
+                                                    cols: cols) == nil)
+        let live = try #require(CommandBlockChrome.stripPlacement(running, commandRows: rows,
+                                                                  cols: cols, summary: nil,
+                                                                  measure: columns),
+                                "running, free=\(free)")
+        #expect(live.plan.readout == "run 12", "running, free=\(free)")
+        #expect(live.plan.pills == [.stop, .actions(.glyph)], "running, free=\(free)")
+        let done = try #require(CommandBlockChrome.stripPlacement(finished, commandRows: rows,
+                                                                  cols: cols, summary: nil,
+                                                                  measure: columns),
+                                "finished, free=\(free)")
+        #expect(done.plan.readout == "11 runs", "finished, free=\(free)")
+        #expect(done.plan.pills == [.actions(.glyph)], "finished, free=\(free)")
+    }
+}
+
+/// **P6.** The window where the lens chip blinks out, decided and pinned: free 29-33 on an
+/// 84-column pane, where `200 · 142 ms · 1.2 KB · json` has just started fitting in the grid.
+///
+/// The sentence wins and the chip does not come back. The gap the sentence leaves is 1-5 columns;
+/// the chip plus a glyph pill is thirteen, and putting *those* on the command's tail would cost
+/// thirteen columns of somebody's command line for a control that **says** something rather than
+/// doing it -- §2.3 grants the tail only to a control with a running side effect, and the lone `⋯`
+/// is granted it because it is the route to every action including the lens rows themselves.
+@Test func theLensChipGivesWayToTheSentenceInTheWindowWhereBothCannotFit() throws {
+    let sentence = "200 · 142 ms · 1.2 KB · json"
+    let h = header(summary: "", http: HTTPSummary(text: sentence, tone: .success),
+                   isHTTP: true, json: true)
+    let cols = 84
+    for free in 29...33 {
+        let rows = [(absoluteRow: 4, lastUsedColumn: cols - free - 1)]
+        let summary = try #require(CommandBlockChrome.summaryPlacement(
+            commandRows: rows, textCount: sentence.count, cols: cols), "free=\(free)")
+        let placement = try #require(CommandBlockChrome.stripPlacement(
+            h, commandRows: rows, cols: cols, summary: (row: summary.row, text: sentence),
+            measure: columns), "free=\(free)")
+        #expect(placement.plan.pills == [.actions(.glyph)], "free=\(free)")
+        #expect(placement.plan.readout == "", "free=\(free)")
+        #expect(placement.plan.overlapsCommand, "free=\(free)")
+        // Ending where the sentence begins, so the whole of it stays readable in the grid.
+        #expect(placement.plan.trailingColumn == summary.columns.lowerBound, "free=\(free)")
+        #expect(!CommandBlockChrome.suppressesSummary(
+            placement.plan, stripRow: placement.row,
+            summary: (row: summary.row, text: sentence)), "free=\(free)")
+    }
+    // One column wider and the chip is back beside the glyph, in the gap, with no overlap at all.
+    let roomy = [(absoluteRow: 4, lastUsedColumn: cols - 45 - 1)]
+    let placement = try #require(CommandBlockChrome.stripPlacement(
+        h, commandRows: roomy, cols: cols,
+        summary: CommandBlockChrome.summaryPlacement(commandRows: roomy, textCount: sentence.count,
+                                                     cols: cols).map { (row: $0.row, text: sentence) },
+        measure: columns))
+    #expect(placement.plan.pills.contains(.lens(name: "Raw", on: false)))
 }

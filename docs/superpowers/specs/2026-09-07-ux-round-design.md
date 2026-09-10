@@ -88,12 +88,12 @@ public enum CommandBlockChrome {
         public let overflowDot: String?       // "+N" when the 12-dot cap bites
         public let pills: [Pill]              // leading → trailing, already dropped to fit
         public let firstColumn: Int           // never inside a word
-        public let overlapsCommand: Bool      // true only for the lone `Stop` of §2.6's W0 row
+        public let overlapsCommand: Bool      // the strip's last rung, at any width — see §2.3
     }
     public enum Pill: Equatable {
         case fold(FoldLabel)                  // .fold ("Fold") / .unfold ("Unfold") — always a word;
                                               // the bare `▾` pill is deleted (§2.4)
-        case copy(enabled: Bool)
+        case copy
         case lens(name: String, on: Bool)     // ResponseLens.chipTitle: Raw/Pretty/Headers/Body/Filter/Find/Diff
         case stop
         case actions(Actions)                 // .labelled ("Actions ▾") / .glyph ("⋯")
@@ -298,7 +298,12 @@ a person actually gets is a rung or two below W3, and the chip was the first thi
 appeared in *no* composite of the whole set. The **dots now outlive `Copy`** for the same kind of
 reason — a timeline is the series' whole shape and there is a second route to the pasteboard, so a
 watched block carries no `Copy` at any width. Measured, §2.6's W3 cells need far more than the
-band's 34 free columns: 58 for the HTTP row and **76 of an 84-column pane** for the watch rows.
+band's 34 free columns: 58 for the HTTP row and **67 of an 84-column pane** for the watch rows —
+thirty-three of them the sentence, thirteen the eleven dots and the rest `[Stop] [Actions ▾]`, all
+measured through the view's own `width(of:font:)`. (`GridSnapshot.pictureFreeColumns` leaves the
+watch pictures **76**, which is the cell's 67 plus slack: the fixture is choosing a command length,
+and a length that lands the row exactly on the cell's own width has nothing left over if a pill's
+label ever measures a point wider. The cell is 67; 76 is the picture's margin.)
 
 *Readout, longest first:* the full sentence → drop the interval (`every 5 s`) and the percentiles →
 drop the timing and size (`142 ms`, `1.2 KB`, `json`) → drop the run count → **the status or exit
@@ -949,13 +954,15 @@ a picture and, where it has an AppKit edge, driven in the built app.** Per wave:
 
 **Plan 1a — the mark and the strip.** Core: `CommandBlockChrome.widthClass` at the four boundaries
 (33/34, 17/18, 7/8); `stripPlan` for **every cell of §2.6's table**, asserting both ladders and
-that `Stop`, `Actions` and the status are never dropped; `firstColumn` never inside a word,
-including with a trailing wide cell (D19); `overlapsCommand` true only for the W0 watch;
+that `Stop`, `Actions` and the status are never dropped, with the one measured exception named
+(`theStopInvariantHoldsExceptInAPaneNoCurlFitsIn`); `firstColumn` never inside a word,
+including with a trailing wide cell (D19); `overlapsCommand` for the last rung at any width, and
+non-empty pills at every tail position wide enough for a strip;
 `spineLeadingInset` at `padding` 0, 3, 8 and 64; `GutterCap` for the four states × hovered ×
 folded; `hitRowHeight` at `line-height 0.8`; `StickyPromptLabel` for a finished command.
 App: the §8.5 plan-1a snapshots, read at 1:1 and at 3× for the pills. Rung 6: a temporary
-`NYX_SMOKE_QA=blockchrome` hook that, in the built app, hovers each width class through
-`Pane.hitTest`, presses each pill, presses the gutter cap at nine points, presses the left padding
+`NYX_SMOKE_QA` hook that, in the built app, hovers each width class through
+`Pane.hitTest`, presses each pill, presses the gutter cap, presses the left padding
 (which must now do **nothing**), and prints which action fired — the same shape as the G1 probe
 that found the 16 pt frame; removed before the commit.
 

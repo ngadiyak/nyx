@@ -952,11 +952,15 @@ struct GridScene {
     /// - `http` and `lensed` need **58** free columns for `200 · 142 ms · 1.2 KB · json` beside
     ///   `[Raw ▾] [Fold] [Copy] [Actions ▾]`. At 46 the chip and `Actions` fit and `Fold` and `Copy`
     ///   do not.
-    /// - the two watch rows need **76** -- of eighty-four. Eleven dots on a 10 pt pitch are thirteen
-    ///   columns, and the sentence is thirty-three; at 62 everything but the timeline fits. That
-    ///   leaves six columns of command, which is why the picture's `curl` is cut to `curl -sS`: the
-    ///   W3 watch cell is only reachable at all on a very short command line, and the picture is the
-    ///   honest way to say so.
+    /// - the two watch rows: the cell itself measures **67** -- eleven dots on a 10 pt pitch are
+    ///   thirteen columns, the sentence is thirty-three, and `[Stop] [Actions ▾]` is the rest -- and
+    ///   the picture leaves **76**, which is the cell plus slack. The fixture is choosing a command
+    ///   *length*, and one that lands the row exactly on the cell's own width has nothing left over
+    ///   if a pill's label ever measures a point wider; a row one column short steps down a rung and
+    ///   the timeline leaves the picture, which is what F4 had just put in it. So: **67 is the cell,
+    ///   76 is this picture's margin.** Either way it leaves six columns of command, which is why
+    ///   the picture's `curl` is cut to `curl -sS`: the W3 watch cell is only reachable at all on a
+    ///   very short command line, and the picture is the honest way to say so.
     ///
     ///   The twelve-dot cap does **not** move this number, and the design review's "~40 columns at
     ///   12 dots" does not survive being measured: this fixture is an *eleven*-run series, which was

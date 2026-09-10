@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-07-ux-round-design.md` — §7 is this plan, including its **Addendum (2026-09-10, from the end-to-end QA)**, which is binding; §8.1 (the strip is an Announce site), §8.4 (`hitRowHeight`), §8.5's plan-6 pictures and §10's "Wave 6" paragraph are its edges. Wave-4 items **1** and **3** (§5.1, §5.3) are pulled forward into it by the controller's ruling. The reasoning is `.superpowers/sdd/2026-09-07-ux-round/qa-remote.md` (4 BROKEN, 16 DEGRADED) and, for the wire, `docs/superpowers/plans/2026-09-05-remote-sessions-server.md` (the protocol's authoritative table) and `docs/superpowers/specs/2026-09-05-remote-sessions-design.md` §12 (deliberately open — this plan closes five of its bullets).
 
-**Assumes plans 1a and 1b have landed** (`main` @ `4950075`): `CommandBlockChrome.hitRowHeight(cellHeight:)`, `PromptGutter.hitWidth`, `Announce.say(_:)` in `NyxApp`, and the sticky strip's `stickyStripRow` yielding to the remote strip all exist. Nothing in this plan changes any of them.
+**Assumes plans 1a and 1b have landed** (`main` @ `4950075`): `CommandBlockChrome.hitRowHeight(cellHeight:)`, `PromptGutter.hitWidth`, `Announce.say(_:)` in `NyxApp`, and the sticky strip's `stickyStripRow` yielding to the remote strip all exist. Nothing in this plan changes the first three. **`Pane.stickyStripRow` (`Pane.swift:4018`) is the one exception**: Task 7 Step 5 replaces it, because at `line-height 0.8` two `hitRowHeight` bands one 13 pt row apart would overlap, so the pinned band has to step down by whole rows rather than by one. `GridSnapshot`'s own slot arithmetic (`GridSnapshot.swift:1304-1309`) is untouched — it hardcodes slot 0 and documents that no composite carries a remote strip.
 
 ## Global Constraints
 
@@ -262,13 +262,29 @@ func TestARemovedPeerIsToldItIsNoLongerPaired(t *testing.T) {
 	if p.Devices[0].Online {
 		t.Fatalf("an unpaired peer must not read as reachable: %+v", p.Devices[0])
 	}
-	_ = b
 	// And a re-pairing clears it, or the row would stay dead through the next pairing.
 	h.HandleText(id(2), msg(protocol.Envelope{T: "paired", DeviceIDs: []string{id(1)}}))
 	h.HandleText(id(1), msg(protocol.Envelope{T: "paired", DeviceIDs: []string{id(2)}}))
 	p = a.find("presence")
 	if p == nil || p.Devices[0].NotPaired || !p.Devices[0].Online {
 		t.Fatalf("a re-paired peer is still marked unpaired: %+v", p)
+	}
+
+	// Now the case that is probably the *common* one: you unpair from the Mac in front of you, and
+	// the other one is asleep. `offlineLocked` has already deleted beta from h.devices, so the flag
+	// has nowhere to live but beta's tombstone -- and if it does not live there, beta wakes up and
+	// is told alpha is "offline with no name", which is B2's sentence with the fix in place.
+	h.Offline(id(2), b)
+	h.HandleText(id(1), msg(protocol.Envelope{T: "paired", DeviceIDs: []string{}}))
+	woken := &fake{}
+	h.Online(id(2), "beta", woken)
+	h.HandleText(id(2), msg(protocol.Envelope{T: "paired", DeviceIDs: []string{id(1)}}))
+	back := woken.find("presence")
+	if back == nil || len(back.Devices) != 1 || back.Devices[0].DeviceID != id(1) {
+		t.Fatalf("a woken Mac got no presence at all: %+v", back)
+	}
+	if !back.Devices[0].NotPaired {
+		t.Fatalf("a Mac unpaired while it slept woke to \"offline\", not \"unpaired\": %+v", back.Devices[0])
 	}
 }
 
@@ -316,7 +332,7 @@ func TestAForwardedRoleCarriesTheHostsSize(t *testing.T) {
 - [ ] **Step 6: Run them and watch them fail**
 
 Run: `cd ~/projects/nyx-server && PATH=/opt/homebrew/bin:$PATH go test ./relay/ -run 'RemovedPeer|NeverPaired|ForwardedRole' 2>&1 | tail -20`
-Expected: the first fails (`alpha was never told` — nothing is sent to a peer that is no longer mutual) and the third fails (`the size was stripped`); the second passes and must keep passing.
+Expected: **a compile failure first** — `protocol.Presence` has no `NotPaired` until Step 7, so the `relay` package does not build and no test runs. Add the field alone (Step 7's first block) and run again: the first test fails (`alpha was never told` — nothing is sent to a peer that is no longer mutual) and the third fails (`the size was stripped`); the second passes and must keep passing.
 
 - [ ] **Step 7: The field, the flag and the forward.** `protocol/message.go`:
 
@@ -426,7 +442,21 @@ func (h *Hub) presenceFor(id string) protocol.Envelope {
 				continue
 			}
 			pd, ok := h.devices[peer]
-			if !ok || !pd.paired[from] {
+			if !ok {
+				// The peer is asleep -- and that is the *common* case, since the Mac you unpair
+				// from is usually the one in front of you. `offlineLocked` has already deleted it
+				// from h.devices, so without this the flag is recorded nowhere at all and the
+				// sleeping Mac wakes up to be told its peer is "offline with no name", which is
+				// B2's sentence, unfixed. The tombstone is where it goes; `unpairedBy` is a map,
+				// so this mutates the stored tombstone in place rather than a copy of it, and
+				// `Online` reads it back when the Mac reconnects.
+				if t, found := h.tombstones[peer]; found &&
+					h.clock().Sub(t.at) <= tombstoneTTL && t.paired[from] {
+					t.unpairedBy[from] = true
+				}
+				continue
+			}
+			if !pd.paired[from] {
 				continue
 			}
 			pd.unpairedBy[from] = true
@@ -830,6 +860,12 @@ public enum TranscriptBuffer: Equatable {
     /// marker the host printed once. RIS resets the screen, the modes and the pen; `ED 3` discards
     /// the scrollback, which RIS deliberately keeps. Both are sequences the mirror already
     /// implements, so the replacement costs no new code path on the receiving side.
+    ///
+    /// RIS also replaces the terminal's `modes` wholesale (`Terminal.swift:670`), so a re-snapshot
+    /// discards the host modes the live stream had accumulated in the mirror -- mouse reporting,
+    /// bracketed paste, the cursor shape -- until the host's program sets them again. That is the
+    /// right trade against a mirror with a hole in it, and it is why a re-snapshot is the exception
+    /// rather than what every reconnect does; before this plan it was what every reconnect did.
     public static let reset = "\u{1b}c\u{1b}[3J"
 ```
 
@@ -867,7 +903,7 @@ EOF
 ### Task 3: The host — a reconnect resumes, an alt screen crosses the attach, and the mirror follows the host's size
 
 **Files:**
-- Modify: `Sources/NyxRemote/RemoteHost.swift` — `Attachment.suspendedAt`/`missedOutput`, `suspend`/`sweep`, `attach`'s resume branch and its snapshot, `deliver`, `linkDidReconnect`, `deviceRemoved`, the size announcement
+- Modify: `Sources/NyxRemote/RemoteHost.swift` — `Attachment.suspendedAt`/`heldAtSequence`, `suspend`/`sweep`, `attach`'s resume branch and its snapshot, `deliver`, `presence`, `linkDidReconnect`, `deviceRemoved`, the size announcement
 - Modify: `Sources/NyxRemote/RemoteClient.swift` — `handleRole` takes the size
 - Modify: `Sources/NyxCore/Remote/RemoteMessage.swift` — `RemotePresence.notPaired` and `role(…, cols:rows:)`, mirroring Task 1's two wire fields
 - Modify: `Sources/NyxRemote/RelayConnection.swift` — the class comment that described the 90 s close as the contract
@@ -877,6 +913,18 @@ EOF
 **Interfaces:**
 - Consumes (Task 2): `RemoteSnapshot.compose(primary:alternate:cursor:)`, `RemoteSnapshot.reset`, `Terminal.transcript(rows:options:buffer:)`, `Terminal.rowCount(of:)`, `TranscriptBuffer`. (Task 1): a forwarded `role` keeps `cols`/`rows`.
 - Consumes (already in the tree): `WriterArbiter`, `E2ESession`, `RemoteClock`, `TerminalSession.withTerminalAndOutputCount`.
+- **Considered and rejected: a `since` on `attach`.** The exact version of the resume test would be
+  the client telling the host how much it has actually received. It cannot, as the code stands, and
+  the three reasons are worth writing down because the idea will occur to the next reader:
+  `E2ESession.lastAcceptedCounter` is `private` with no accessor (`E2ESession.swift:55`); it counts
+  **frames**, while `registration.sequence` counts **chunks**, and `chunked(_:sealedBy:)` splits one
+  chunk into as many 16 KiB frames as it needs (`RemoteHost.swift:393-404`); and a fresh
+  `E2ESession` is built on **both** sides for every attach (`RemoteClient.Attachment.begin()` sets
+  `e2e = nil`, `:209-210`), so the counter restarts at zero per attachment -- which the QA confirmed
+  on the wire. Making it exact would mean the client counting decrypted bytes across attachments,
+  resetting at `snapshot_end`, and a new wire field carried in all four places: real work, in the
+  one place where an off-by-one is a hole nobody can see. It is in the ledger; `heldAtSequence` is
+  what this plan ships, with its one residual window named in `attach`.
 - Produces:
 
 ```swift
@@ -991,6 +1039,61 @@ public extension RemoteMessage {
     #expect(text.hasPrefix(RemoteSnapshot.reset))
     // And the hole is closed: what printed while it was away is in the new snapshot.
     #expect(text.contains("got:go"))
+}
+
+/// The window C1 was about, and the reason `presence(online)` is not a branch. A relay re-registers
+/// a client only when the host answers its `attach` (`relay/hub.go:446-469`), so between "the
+/// client is back online" and "the client has re-attached" every chunk this host sends is dropped
+/// by the relay and counted in `dropped_binary`. If a presence had cleared the hold, this re-attach
+/// would look like a clean resume and the client's mirror would be permanently short -- silently,
+/// which is the same class of defect as B1 itself.
+@Test func outputPrintedAfterTheHostHearsTheClientIsBackStillForcesAReSnapshot() throws {
+    let f = try HostFixture(script: "read x; printf \"got:$x\\n\"; sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(try f.attach(peer) != nil)
+
+    let devices = { (online: Bool) in
+        RemoteMessage(t: "presence",
+                      devices: [RemotePresence(deviceID: peer.deviceID, name: "laptop", online: online)])
+    }
+    f.host.handle(devices(false))
+    f.host.flush()
+    f.host.handle(devices(true))          // the socket is back; the attach has not arrived
+    f.host.flush()
+    f.session.send(Array("go\n".utf8))
+    #expect(waitForShell(f, containing: "got:go"))
+    f.host.flush()
+
+    f.link.reset()
+    peer.rotateEphemeral()
+    #expect(try f.attach(peer) != nil)
+    let text = f.text(peer, f.link.frames)
+    #expect(text.hasPrefix(RemoteSnapshot.reset))
+    #expect(text.contains("got:go"))
+}
+
+/// The second face of the same bug. `acceptAttach` exists in `RemoteClientTests` precisely so "a
+/// test can re-deliver the identical message the way a relay can", and a host that answered a
+/// duplicated `attach` with an empty screen would be handing a client that asked for the session an
+/// empty terminal. Only an attachment that was *held* can resume.
+@Test func aSecondAttachFromADeviceThatNeverDroppedGetsTheWholeSnapshot() throws {
+    let f = try HostFixture(script: "printf 'alpha\\n'; sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(waitForShell(f, containing: "alpha"))
+    #expect(try f.attach(peer) != nil)
+
+    f.link.reset()
+    peer.rotateEphemeral()
+    #expect(try f.attach(peer)?.role == "writer")       // the role it already had
+    let text = f.text(peer, f.link.frames)
+    #expect(text.hasPrefix(RemoteSnapshot.reset))       // the mirror already holds one
+    #expect(text.contains("alpha"))
 }
 
 /// The device is gone for good -- unpaired, not merely asleep -- so there is nothing to come back
@@ -1257,10 +1360,18 @@ public struct RemotePresence: Codable, Equatable {
         /// cost the writer its token, the client a second snapshot and the log two lines -- every
         /// ninety-one seconds, because that is how often the relay used to close a quiet socket.
         var suspendedAt: Date?
-        /// Output was delivered while it was away, so its mirror has a hole in it and the resume
-        /// has to be a fresh snapshot. The host buffers nothing: there is nothing to replay from,
-        /// and a bounded buffer per client is a second copy of the scrollback.
-        var missedOutput = false
+        /// `registration.sequence` at the moment it was held: the chunk number the client's mirror
+        /// is known to be complete up to.
+        ///
+        /// A sequence rather than a "did it miss anything" boolean, because a boolean can only be
+        /// set by code that runs, and the windows in which output reaches nobody are exactly the
+        /// windows in which nothing on this side is watching. `deliver` bumps `sequence` for every
+        /// chunk whether or not anybody is attached, so `sequence == heldAtSequence` at re-attach
+        /// time means, verifiably, that not one chunk was produced while this attachment was away.
+        /// Anything else is a re-snapshot, and the cost of being wrong in that direction is one
+        /// snapshot rather than a hole nobody can see (`E2ESession.open` checks that counters
+        /// increase and cannot see a gap).
+        var heldAtSequence: UInt64?
     }
 ```
 
@@ -1289,6 +1400,11 @@ public struct RemotePresence: Codable, Equatable {
     /// attachments are **held** for `reattachWindow`, because a closed socket is not a closed tab
     /// -- the client is already re-attaching -- and dropping them is what made every reconnect a
     /// new attachment.
+    ///
+    /// Reachable through `presence` and kept public for the one caller that is not the relay: a
+    /// test that drives a departure without a wire message. The app's own reason for calling it
+    /// directly is gone -- `RemoteCoordinator.removePairing` now calls `deviceRemoved`, which is a
+    /// different answer to a different question.
     public func deviceWentOffline(_ deviceID: String) {
         queue.async { [weak self] in
             self?.suspend(deviceID)
@@ -1317,6 +1433,9 @@ public struct RemotePresence: Codable, Equatable {
         var held = false
         for key in order where registrations[key]?.attachments[deviceID] != nil {
             registrations[key]?.attachments[deviceID]?.suspendedAt = now
+            // Per registration, because `sequence` is: a device attached to two of this Mac's
+            // sessions is held on both, and each one remembers its own session's chunk number.
+            registrations[key]?.attachments[deviceID]?.heldAtSequence = registrations[key]?.sequence
             held = true
         }
         guard held else { return }
@@ -1349,39 +1468,41 @@ public struct RemotePresence: Codable, Equatable {
 ```swift
     /// The relay's word about the devices this host is paired with.
     ///
-    /// Three answers, not two. Offline is a socket that closed -- hold. `not_paired` is the peer
-    /// saying it has removed this Mac, which is settled and immediate. Online clears a hold for a
-    /// device whose socket is back but whose `attach` has not arrived yet, so the sweep does not
-    /// fire under a client that is mid-handshake.
+    /// Two answers, not three. Offline is a socket that closed -- hold. `not_paired` is the peer
+    /// saying it has removed this Mac, which is settled and immediate.
+    ///
+    /// **Online is deliberately not an answer.** A hold is released by the `attach` that replaces
+    /// the `Attachment`, and by nothing else. Clearing it on a presence would open a window --
+    /// from the broadcast until the client's `attach` actually lands, which is a relay round trip
+    /// plus the client's own re-attach backoff -- in which `deliver` believes it has a live
+    /// attachment, seals every chunk, and sends them to a relay that has not re-registered this
+    /// client yet (`relay/hub.go:446-469` adds it back only when the host answers `attached`), so
+    /// they are counted in `dropped_binary` and lost. The re-attach would then look like a clean
+    /// resume and the mirror would be silently short. The sweep does not need this branch either:
+    /// it guards on `suspendedAt` identity, and a re-attach replaces the whole `Attachment`.
     private func presence(_ m: RemoteMessage) {
         for device in m.devices ?? [] {
             if device.notPaired {
                 dropAttachments(of: device.deviceID)
             } else if !device.online {
                 suspend(device.deviceID)
-            } else {
-                for key in order where registrations[key]?.attachments[device.deviceID] != nil {
-                    registrations[key]?.attachments[device.deviceID]?.suspendedAt = nil
-                }
             }
         }
     }
 ```
 
-  `deliver` stops sealing for a held attachment and remembers only that there is a hole:
+  `deliver` stops sealing for a held attachment -- and needs to remember nothing, because the chunk
+  number it has just spent is the record:
 
 ```swift
         for deviceID in registration.attachments.keys.sorted() {
             guard let attachment = registration.attachments[deviceID],
                   attachment.startSequence <= sequence else { continue }
             // A held attachment has no socket: the relay dropped it when the device's own socket
-            // went, so sealing and sending would be ~85 KB per client per cycle into nothing. What
-            // it needs to remember is only *that* it missed something, which is what makes the
-            // re-attach a fresh snapshot rather than a resume.
-            guard attachment.suspendedAt == nil else {
-                registration.attachments[deviceID]?.missedOutput = true
-                continue
-            }
+            // went, so sealing and sending would be ~85 KB per client per cycle into nothing.
+            // Nothing is recorded here -- `registration.sequence` was already incremented above,
+            // which is what `heldAtSequence` is compared against at the re-attach.
+            guard attachment.suspendedAt == nil else { continue }
             guard let frames = chunked(bytes, sealedBy: attachment.e2e) else {
                 broken.append(deviceID)
                 continue
@@ -1424,12 +1545,28 @@ public struct RemotePresence: Codable, Equatable {
         } else {
             role = registration.arbiter.attached(from)
         }
-        // A resume: the attachment was held through the client's socket closing and nothing was
-        // printed while it was away, so its mirror is still exactly this host's screen. It gets
-        // `attached` and `snapshot_end` with nothing between them -- no ~85 KB re-encrypted, no
-        // second copy of the transcript appended to the first, no writer/observer flap, no line in
-        // the log. This is the whole client-side half of B1.
-        let resuming = existing?.missedOutput == false
+        // A resume, and only under both halves of the proof: the attachment was actually **held**
+        // (a socket that closed, not a second `attach` from a device that never went), and not one
+        // chunk was produced while it was away. Then its mirror is still exactly this host's
+        // screen, and it gets `attached` and `snapshot_end` with nothing between them -- no ~85 KB
+        // re-encrypted, no second copy of the transcript appended to the first, no writer/observer
+        // flap, no line in the log. This is the whole client-side half of B1.
+        //
+        // `existing != nil` alone is **not** enough, and was the first draft of this line: a
+        // duplicated or replayed `attach` from a device that never dropped would have been answered
+        // with an empty screen where it used to get the snapshot.
+        //
+        // One residual window, named because a reader must not believe there is none: a chunk
+        // delivered in the milliseconds between the client's socket closing and this host being
+        // told (`offlineLocked` removes the client from `h.attached` and broadcasts presence under
+        // one lock, so it is a relay-to-host trip, tens of milliseconds) is sealed, sent, dropped
+        // by the relay, and *counted* -- so it lands below `heldAtSequence` and the resume believes
+        // the mirror is whole. Closing it needs the client to say how much it actually received,
+        // which is a wire field and a byte-accounting handshake on both sides; it is in the ledger,
+        // and the cost of the residual is a hole of at most one chunk after a socket drop that the
+        // fixed relay makes rare.
+        let resuming = existing?.suspendedAt != nil
+            && existing?.heldAtSequence == registration.sequence
 ```
 
   and the snapshot becomes buffer-aware:
@@ -1462,7 +1599,7 @@ public struct RemotePresence: Codable, Equatable {
                     terminal.cols, terminal.rows, count)
         }
         registration.attachments[from] = Attachment(deviceID: from, e2e: e2e, startSequence: fed,
-                                                    suspendedAt: nil, missedOutput: false)
+                                                    suspendedAt: nil, heldAtSequence: nil)
         // The size `attached` has just been told, so the announcement in `publishSessions` does not
         // repeat it on the next publish.
         registration.announcedSize = GridSize(cols: cols, rows: rows)
@@ -1698,7 +1835,10 @@ public extension RemoteCatalogue {
         public var name: String
         public var online: Bool
         /// This device is connected and has removed the pairing with this Mac.
-        public var notPaired: Bool
+        /// **Defaulted to `false`**, which is what keeps `applyCatalogue`'s and `setPaired`'s
+        /// existing `Device(id:name:online:sessions:)` calls (`RemoteCatalogue.swift:48`, `:68`)
+        /// compiling untouched.
+        public var notPaired: Bool = false
         public var sessions: [RemoteSessionInfo]
     }
     /// Drops one device's rows without touching `pairedIDs`.
@@ -2076,8 +2216,8 @@ Expected: compile failures on `forget(deviceID:)` and `notPaired` on `RemoteCata
             // *mutually* paired peers, so the removed side is the one side that is never told.
             // Task 1 makes the relay say it; this is what a Mac hears from a relay that cannot, and
             // from a host that unpaired it while this Mac's socket was down.
-            if message.code == "not_paired", let host = message.to {
-                catalogue.forget(deviceID: host)
+            if message.code == "not_paired", let hostID = message.to {
+                catalogue.forget(deviceID: hostID)
                 onChange?()
             }
             if message.sessionID == nil, pairing != nil {
@@ -2131,12 +2271,13 @@ EOF
 ### Task 5: The palette and the log — rows you can read and press, and a log with names in it
 
 **Files:**
-- Modify: `Sources/NyxCore/Remote/RemoteCatalogue.swift` — `detail`'s order, `shortCommand`, the relay-status row's kind, `isRelayStatusRow`
+- Modify: `Sources/NyxCore/Remote/RemoteCatalogue.swift` — `detail`'s order, `shortCommand`, the relay-status row's kind
 - Modify: `Sources/NyxCore/Palette/CommandPalette.swift` — `moveSelection` and `rank` skip rows that cannot act
 - Modify: `Sources/NyxCore/Remote/AuditLine.swift` — `AuditLine.display(_:now:)`
 - Modify: `Sources/NyxApp/TabController.swift` — `showRemoteSessions` opens the Remote rows, not the whole palette with a query
 - Modify: `Sources/NyxApp/RemoteCoordinator.swift` — `namesOfRemovedDevices` reaches `appendAudit`
-- Test: `Tests/NyxCoreTests/RemoteCatalogueTests.swift`, `Tests/NyxCoreTests/CommandPaletteTests.swift`, `Tests/NyxCoreTests/AuditLineTests.swift` (new)
+- Modify: `Sources/NyxApp/SettingsWindowController.swift` — `setActivityText` (`:429-432`) renders through `AuditLine.display`
+- Test: `Tests/NyxCoreTests/RemoteCatalogueTests.swift`, `Tests/NyxCoreTests/CommandPaletteTests.swift`, `Tests/NyxCoreTests/AuditLineTests.swift` (**extended** — it exists, 35 lines, six tests pinning `AuditLine.text`'s six formats, which `everyEventTextRoundTripsThroughDisplay` below depends on)
 
 **Interfaces:**
 - Consumes (Task 4): `RemoteCatalogue.Device.notPaired` and its palette row, which this task's ordering and selection rules also apply to.
@@ -2150,8 +2291,6 @@ public extension AuditLine {
     static func display(_ line: String, now: Date) -> String
 }
 public extension RemoteCatalogue {
-    /// Whether this row is the relay-status row -- the one Remote row that is not a session.
-    static func isRelayStatusRow(_ item: PaletteItem) -> Bool
     /// A last command, cut to something a row can hold.
     static func shortCommand(_ command: String, limit: Int = 40) -> String
 }
@@ -2204,17 +2343,18 @@ public extension CommandPalette {
     #expect(rows[0].detail == "Settings…")
     #expect(rows[0].isEnabled)
     #expect(rows[0].kind == .action(.openConfig))
-    #expect(RemoteCatalogue.isRelayStatusRow(rows[0]))
     // Still findable by the words a person would type about it.
     #expect(rows[0].searchText.contains("remote"))
 }
 
-@Test func aSessionRowIsNotTheStatusRow() {
+/// And every other Remote row stays what it was: a session to attach to, or a placeholder that
+/// cannot act. Only the status row is a verb about the settings page.
+@Test func aSessionRowIsStillASessionRow() {
     var c = RemoteCatalogue()
     c.setPaired(["d1": "iMac"])
     c.applyPresence([RemotePresence(deviceID: "d1", name: "iMac", online: true)])
     c.applyCatalogue(deviceID: "d1", sessions: [session()])
-    #expect(!RemoteCatalogue.isRelayStatusRow(c.paletteItems(now: now)[0]))
+    #expect(c.paletteItems(now: now)[0].kind == .remoteSession(deviceID: "d1", sessionID: "s1"))
 }
 ```
 
@@ -2270,13 +2410,12 @@ public extension CommandPalette {
 }
 ```
 
-  and a new `Tests/NyxCoreTests/AuditLineTests.swift`:
+  and appended to the **existing** `Tests/NyxCoreTests/AuditLineTests.swift` — it already holds six
+  tests for `AuditLine.text`'s six formats, and `everyEventTextRoundTripsThroughDisplay` below is
+  only meaningful while they are there. Its imports are already these two; `private let now` does
+  not collide with its `private let date`:
 
 ```swift
-import Foundation
-import Testing
-@testable import NyxCore
-
 private let now = ISO8601DateFormatter().date(from: "2026-09-10T18:20:00Z")!
 
 /// §7.4 and D15: the Remote page's "Recent activity" was the file, verbatim --
@@ -2323,7 +2462,29 @@ Expected: `cannot find 'AuditLine.display'`, `no member 'shortCommand'`, and —
 `aDisabledRowIsNeverTheSelection` failing at `p.selection == 1`, because `rank()` sets it to 0 and
 knows nothing about `isEnabled`.
 
-- [ ] **Step 3: The row, the order and the cut.** In `RemoteCatalogue`:
+- [ ] **Step 3: The row, the order, the cut, and the line the page reads.** In `AuditLine`, the one
+      function the Remote page renders the log through:
+
+```swift
+    /// One line of `audit.log` as the Remote page shows it: the same words, with the ISO-8601
+    /// timestamp replaced by a relative age.
+    ///
+    /// The file's format is `tail -f`'s and stays that way -- a sortable absolute stamp is right for
+    /// a log somebody greps, and wrong for a box six lines tall on a settings page, where
+    /// `2026-09-01T10:00:00Z  paired  Nik's MacBook Pro` is nine characters of information in
+    /// thirty-one. Only the head is touched; everything after it is preserved byte for byte,
+    /// including the two spaces `text(_:at:)` writes, so the two halves cannot drift into two
+    /// formats. A line whose head is not a timestamp -- a file somebody has edited, an empty line --
+    /// passes through untouched, because a page that swallowed the line it did not recognise would
+    /// be hiding the one line worth reading.
+    public static func display(_ line: String, now: Date) -> String {
+        guard let head = line.split(separator: " ", maxSplits: 1).first,
+              let at = ISO8601DateFormatter().date(from: String(head)) else { return line }
+        return RelativeAge.text(from: at, to: now) + line.dropFirst(head.count)
+    }
+```
+
+  and in `RemoteCatalogue`:
 
 ```swift
     /// A last command, cut to something a row can hold.
@@ -2369,15 +2530,6 @@ knows nothing about `isEnabled`.
                                      searchText: "\(status) remote relay settings",
                                      kind: .action(.openConfig)))
         }
-```
-
-```swift
-    /// Whether this row is the relay-status row -- the one Remote row that is not a session, and
-    /// the one whose act is to open the page rather than to attach to anything. Here rather than in
-    /// the app so the two cannot disagree about which row that is.
-    public static func isRelayStatusRow(_ item: PaletteItem) -> Bool {
-        item.kind == .action(.openConfig) && item.detail == "Settings…"
-    }
 ```
 
 - [ ] **Step 4: The selection is a row that can act.** In `CommandPalette`:
@@ -2431,9 +2583,14 @@ knows nothing about `isEnabled`.
     }
 ```
 
-  `TabController.run(_:)` already beeps on `!item.isEnabled` and leaves the panel open, and
-  `CommandPaletteView` already draws `selection`'s row highlighted — so a disabled row now cannot be
-  drawn highlighted either, which is the picture D4 complained about (`command-palette-remote.png`).
+  The beep still happens and now comes from one line earlier:
+  `CommandPaletteView.swift:309` is `if let item = model.selected { onRun?(item) } else { NSSound.beep() }`,
+  and `selected` is nil for a disabled row, so `TabController.run(_:)`'s own
+  `guard item.isEnabled` is never reached. The behaviour is what the tests promise — a beep, the
+  panel still open — but the guard in `run` is now belt to that braces rather than the thing doing
+  it, and should say so in a comment rather than being deleted. `CommandPaletteView` draws
+  `selection`'s row highlighted, so a disabled row can no longer be the highlighted one either,
+  which is the picture D4 complained about (`command-palette-remote.png`).
 
 - [ ] **Step 5: The menu route opens sessions, not the palette again.** In `TabController`:
 
@@ -2457,8 +2614,11 @@ knows nothing about `isEnabled`.
     }
 ```
 
-  (`chordFor` is whatever `toggleCommandPalette` already passes as `chord:` — the same
-  `bindings.binding(for:)` closure; read that call and reuse it rather than writing a second one.)
+  There is no `chordFor`: the chord comes from the same table `toggleCommandPalette` builds
+  (`TabController.swift:866`), so the line is
+  `PaletteItem.action(.remotePair, chord: KeyBindingTable(user: config.keybinds).binding(for: .remotePair)?.displayName)`
+  — written out, or hoisted into the small helper both call sites then share. Read `:866` and match
+  it; a second spelling of "which chord is this action on" is how two answers appear.
 
 - [ ] **Step 6: The page reads the log, and Remove keeps the name.** In `SettingsWindowController.setActivityText`:
 
@@ -2799,7 +2959,7 @@ Expected: `cannot find 'ConfigGrammar.scalarKeys'`; once it exists,
   The diagnostics come only from `applying(text, …)` — the synthesised default text is the product's
   own and must produce none, which is what `theDefaultFileTextParsesBackToTheDefaults` asserts.
 
-  In `ConfigWriter`, one helper and four call sites:
+  In `ConfigWriter`, one helper and **five** call sites (`:25`, `:29`, `:33` in `setting`; `:61`, `:77` in `settingList`):
 
 ```swift
     /// Joins lines back into file text, ending with exactly one newline.
@@ -2822,11 +2982,16 @@ Expected: `cannot find 'ConfigGrammar.scalarKeys'`; once it exists,
   `ConfigStore.write`/`writeList` keeps doing its job — the first write after this lands rewrites
   the file's last byte and reloads once, which is correct and invisible.
 
-  **The existing `ConfigWriterTests` need one mechanical pass.** Most of its assertions use
-  `contains` or index into `split(separator: "\n")` from the front and are unaffected; the two exact
-  comparisons (`:223` and `:240`) gain a `\n`, and any test that counts lines from the *end* gains
-  one empty element. Change the expectations, never the rule, and if a test looks like it was
-  asserting the *absence* of a trailing newline, that test was the bug.
+  **The existing `ConfigWriterTests` need one mechanical pass, and it is four assertions, not two.**
+  Forty-eight of its fifty-two use `contains`, `hasPrefix` or `split(separator:)` from the front and
+  are genuinely unaffected. These four are not:
+
+  - `:223` and `:241` (the `let out` is `:240`) — exact comparisons that gain a `\n`;
+  - `:41` `#expect(out.hasSuffix("padding = 16"))` and
+    `:88` `#expect(write("font-size", "18", into: "font-size=13") == "font-size=18")` — both assert
+    the *absence* of a trailing newline, which is the bug, so both change to expect one.
+
+  Change the expectations, never the rule.
 
 - [ ] **Step 4: Run the config tests**
 
@@ -2860,8 +3025,14 @@ Expected: PASS. If `theDefaultFileTextParsesBackToTheDefaults` now fails for one
   `sendsActionOnEndEditing=false`), and:
 
 ```swift
-    /// End-editing as well as the action: `sendsActionOnEndEditing` covers a field the user tabs
-    /// out of, and this covers the paths AppKit routes through the delegate instead.
+    /// The same event as `sendsActionOnEndEditing`, deliberately kept alongside it: the two are
+    /// belt and braces on the one thing this whole task is about, and AppKit's flag is a property
+    /// somebody can turn off without noticing that a delegate method depended on it. The cost is
+    /// one redundant `controlChanged` per edit, and `ConfigStore.write`'s
+    /// `guard updated != existing else { return true }` (`ConfigStore.swift:75`) makes the second
+    /// one a file read and nothing else -- no write, so no reload, so no loop. (There is no
+    /// write→reload→write loop either way: `controlChanged` guards on `isRefreshing` (`:838`), and
+    /// `refresh()` sets values programmatically, which fires no action at all.)
     func controlTextDidEndEditing(_ notification: Notification) {
         guard let field = notification.object as? NSControl else { return }
         controlChanged(field)
@@ -2891,6 +3062,19 @@ Expected: PASS. If `theDefaultFileTextParsesBackToTheDefaults` now fails for one
         NotificationCenter.default.addObserver(self, selector: #selector(windowIsClosing(_:)),
                                               name: NSWindow.willCloseNotification, object: window)
 ```
+
+  with the matching removal, because this controller is not always the application's long-lived one:
+
+```swift
+    deinit { NotificationCenter.default.removeObserver(self) }
+```
+
+  `UISnapshot.writeSettings` (`UISnapshot.swift:889`) and `StateSnapshot` (`:464`) each build a
+  short-lived `SettingsWindowController` over a real `ConfigStore()`, so the close hook now runs in
+  the offscreen snapshot path against the user's own config file. It is safe: nothing in that path
+  is ever first responder, so `makeFirstResponder(window)` ends no edit and fires no action, and
+  `ConfigStore.write` is never reached. The `deinit` is what stops a released controller's observer
+  from being called on a window that outlives it.
 
   and `commitEdits()` also called at the top of `pairAsHost(_:)` and `pairAsClient(_:)`, because a
   token typed and then Paired without Return is the same lost value one step earlier — the pairing
@@ -3056,6 +3240,7 @@ public extension AttachState {
     var geometryNote: String? { get }        // computed, longest form, nil under the threshold
     var geometryNoteOptions: [String] { get } // longest first: full, medium, `Host is 132×40`
     static func geometryNote(host: GridSize, pane: GridSize) -> String?   // unchanged signature
+    static func geometryNoteOptions(host: GridSize, pane: GridSize) -> [String]
     static let noteColumnSlack = 4
     static let noteRowSlack = 3
 }
@@ -3064,7 +3249,7 @@ public enum RemoteAnnouncement {
 }
 ```
 
-- [ ] **Step 1: Write the failing Core tests.** In `Tests/NyxCoreTests/AttachStateTests.swift`, replace the **three** tests that set `geometryNote` directly (`:281`, `:290`, `:301` — they set a stored field that becomes computed) and the **two** that assert today's one-cell threshold (`:255-272`), and add the ladder:
+- [ ] **Step 1: Write the failing Core tests.** In `Tests/NyxCoreTests/AttachStateTests.swift`, exactly **three** tests change: the ones that set `geometryNote` directly (`:281`, `:290`, `:301`), because that stored field becomes computed. `aHostScreenBiggerThanThePaneSaysSoOnTheStrip` (`:254-266`) and `aPaneBigEnoughForTheHostGetsNoNote` (`:270-275`) **stay exactly as they are** — every one of their five assertions uses Δ36 columns, Δ10/Δ36 rows, Δ120 columns, or an equal-or-larger pane, so all of them still hold at the new four-column/three-row threshold, and they are the only coverage that the note's *wording* is right. Add the ladder:
 
 ```swift
 /// §12 called the threshold a product decision and it was one row: a host one row taller than the
@@ -3109,7 +3294,9 @@ public enum RemoteAnnouncement {
     #expect(observing.stripButton == "Take control")
 }
 
-@Test func aPaneBigEnoughForTheHostGetsNoNote() {
+/// The same answer through the stored sizes rather than the static function -- a different route to
+/// `aPaneBigEnoughForTheHostGetsNoNote` (`:270`), which stays where it is and keeps its name.
+@Test func aPaneBigEnoughForTheHostGetsNoNoteOnTheStrip() {
     var writer = state(phase: .live, role: .writer)
     writer.hostSize = GridSize(cols: 80, rows: 24)
     writer.paneSize = GridSize(cols: 80, rows: 24)
@@ -3312,18 +3499,50 @@ public enum RemoteAnnouncement {
   And the leaf-or-container answer, replacing the two overrides at the foot of the file:
 
 ```swift
-    /// The button carries the label and the press; the view around it is a container. It used to
-    /// answer *both* -- an element, role `AXGroup`, vending one child -- which is a control a screen
-    /// reader can reach twice and describe differently each time. `WorkbenchHintView` answers the
-    /// same question the same way.
-    override func isAccessibilityElement() -> Bool { false }
+    /// Leaf or container, per state -- never both, and never neither.
+    ///
+    /// It used to answer *both*: an element, role `AXGroup`, vending one child, which is a control a
+    /// screen reader can reach twice and describe differently each time. Answering "container,
+    /// always" is the other mistake and is worse: three of the eleven strip states have no button
+    /// (`attaching`, `reconnecting`, and the live writer carrying only a geometry note), so a view
+    /// that is never an element would take "Attaching…", "Reconnecting…" and the geometry note out
+    /// of the accessibility tree altogether -- and those are the only three sentences on this strip
+    /// that are not also written on a button.
+    ///
+    /// So: a leaf carrying the whole sentence when there is nothing to press, a container vending
+    /// the button when there is. `WorkbenchHintView` (`:160-165`) is a fair precedent for the
+    /// second half only, because it always has a button.
+    override func isAccessibilityElement() -> Bool { !isHidden && button.isHidden }
 
     override func accessibilityChildren() -> [Any]? {
         isHidden || button.isHidden ? [] : [button]
     }
 ```
 
-  `setAccessibilityRole(.group)` and `setAccessibilityLabel("Remote session: \(text)")` stay: the label is the whole sentence, which is what a group wants.
+  `setAccessibilityRole(.group)` and `setAccessibilityLabel("Remote session: \(text)")` stay, and now they are read: they describe the leaf, in the three states where the leaf is what there is.
+
+  **Which state gets which is decidable in Core**, so it is asserted at rung 2 rather than waited on for a VoiceOver run that §10 has waived. Append to `Tests/NyxCoreTests/AttachStateTests.swift`:
+
+```swift
+/// The a11y rule the strip draws from, stated where a test can reach it: the strip is a leaf
+/// exactly when there is nothing on it to press. Three of the eleven pictured states are leaves --
+/// and they carry the only three sentences on the strip that are not also a button's title.
+@Test func theStripIsALeafExactlyWhenItHasNoButton() {
+    #expect(state(phase: .attaching, role: .observer).stripButton == nil)
+    #expect(state(phase: .snapshot, role: .observer).stripButton == nil)
+    #expect(state(phase: .reconnecting, role: .writer).stripButton == nil)
+    var noteOnly = state(phase: .live, role: .writer)
+    noteOnly.hostSize = GridSize(cols: 132, rows: 40)
+    noteOnly.paneSize = GridSize(cols: 96, rows: 30)
+    #expect(noteOnly.stripButton == nil)
+    #expect(noteOnly.stripText != nil)                 // a strip with words and no button
+    // And the eight that have one, which is the set the `cmp` gate in Step 7 is about.
+    #expect(state(phase: .live, role: .observer).stripButton == "Take control")
+    #expect(state(phase: .ended("iMac"), role: .writer).stripButton == "Close")
+    #expect(state(phase: .failed("Host is offline"), role: .observer).stripButton == "Close")
+    #expect(suspendedState().stripButton == "Close")
+}
+```
 
 - [ ] **Step 5: The band is a row-height target, and the pane hands over sizes and announcements.** In `Pane.swift`:
 
@@ -3392,7 +3611,21 @@ public enum RemoteAnnouncement {
             let blankRow = self.stickyStripRow
 ```
 
-- [ ] **Step 6: The pictures.** In `UISnapshot.remoteStripStates()`, build `clipped` and `suspendedClipped` from sizes rather than a sentence (`clipped.hostSize = GridSize(cols: 160, rows: 74); clipped.paneSize = GridSize(cols: 96, rows: 30)`), and widen the run:
+- [ ] **Step 6: The pictures.** In `UISnapshot.remoteStripStates()`, build `clipped` and `suspendedClipped` from sizes rather than a sentence — **the same numbers the pictures have today** (`UISnapshot.swift:1069-1071`), so the only thing that changes about `remote-strip-clipped-*` is how it is constructed:
+
+```swift
+        var clipped = state(.live, .writer)
+        clipped.hostSize = GridSize(cols: 132, rows: 40)
+        clipped.paneSize = GridSize(cols: 96, rows: 30)
+        ...
+        // Both clauses at once, which is the case the strip has to choose between when it is narrow.
+        var suspendedClipped = suspended
+        suspendedClipped.hostSize = clipped.hostSize
+        suspendedClipped.paneSize = clipped.paneSize
+```
+
+  (`suspendedClipped` copied `clipped.geometryNote` before, `UISnapshot.swift:1089`; it copies the
+  two sizes now, which is the same picture by a different route.) Then widen the run:
 
 ```swift
         for (paletteName, themePalette) in chromePalettes(default: palette) {
@@ -3591,7 +3824,7 @@ Expected: the first two fail (`.opening` still says "Pairing… / Requesting a c
         progress.setAccessibilityLabel("Waiting for the relay")
 ```
 
-  (`variableStack` becomes `NSStackView(views: [codeLabel, progress, codeField, codeErrorLabel, fingerprintLabel])`.)
+  (`variableStack` becomes `NSStackView(views: [codeLabel, progress, codeField, codeHintLabel, codeErrorLabel, fingerprintLabel])` — the hint sits directly under the field and above the error, so a rejected code's message is the line nearest the field. `codeHintLabel` is declared beside `codeErrorLabel` in Step 4's second block.)
 
   In `update(state:)`, after the body label:
 
@@ -3666,7 +3899,7 @@ private final class PairingContentView: NSView {
         codeHintLabel.alignment = .center
 ```
 
-  (`codeHintLabel` is a new `NSTextField(labelWithString:)` in the variable stack under `codeField`, hidden whenever `codeField` is.)
+  (`codeHintLabel` is a new `private let codeHintLabel = NSTextField(labelWithString: "")`, arranged in `variableStack` between `codeField` and `codeErrorLabel` as above, and hidden in every branch of `update(state:)` that hides `codeField` — the same four places `codeField.isHidden` is set.)
 
 - [ ] **Step 5: The Remote page says which Mac presses which.** In `SettingsWindowController.remotePage()`, under `pairButtons`:
 
@@ -3965,8 +4198,17 @@ public enum RemotePageCopy {
   plus the empty relay, which `shouldRun` does not look at), so **the one thing to check here is
   that a config with a token and no relay URL disables the buttons.** It does not today: `shouldRun`
   is true, the buttons are live, and `pairAsHost` opens a sheet against a relay address that is the
-  empty string. Make `remotePairControls`' enablement `!gate.blocksPairing`, which is the same
-  answer in every other case and the right one in that one.
+  empty string. `gate` is local to `refreshRemoteStatus`, so `refreshRemoteEnabled`
+  (`SettingsWindowController.swift:369-372`) recomputes it rather than reading a field:
+
+```swift
+        let gate = RemotePageStatus.text(mode: config.remote, relay: config.remoteRelay,
+                                         token: config.remoteRelayToken)
+        for control in remotePairControls { control.isEnabled = !gate.blocksPairing }
+```
+
+  replacing the two `RemoteCoordinatorPolicy.shouldRun` lines there. It is the same answer in every
+  case `shouldRun` covers and the right one in the case it does not.
 
 - [ ] **Step 6: Announce the sentence when it appears.** §8.1 lists the settings window's
       diagnostics label as an announcement site, and this sentence is the one a person is looking for
@@ -4082,11 +4324,11 @@ for f in remote-strip-*-dark.png; do
   cmp -s "$f" "${f%-dark.png}-light.png" && echo "IDENTICAL $f" || echo "DIFFERS   $f"
 done | sort | uniq -c
 ```
-Expected: the count is the QA's 811 **plus** the four new narrow strip pictures (D9c: `clipped` and
-`suspended-clipped`, two palettes × two appearances — check the number against
-`chromePalettes(default:)`'s actual length rather than assuming two); **every** `remote-strip-*`
-pair `IDENTICAL`, including all eight button-bearing states that differed at the QA; and
-`NYX_SNAPSHOT=1` green.
+Expected: **819** — the QA's 811 plus the eight new narrow strip pictures (D9c: two states ×
+`chromePalettes(default:)`, which returns exactly two (`UISnapshot.swift:1278-1281`) × two
+appearances). If the count is not 819, one of those loops is not running; check that before reading
+anything else. **Every** `remote-strip-*` pair `IDENTICAL`, including all eight button-bearing
+states that differed at the QA; and `NYX_SNAPSHOT=1` green.
 
 Then **look at**, one at a time, and say in the report what each shows:
 `remote-strip-observer-nyx-light-dark.png` (the worst case the QA measured at 1.46:1),
@@ -4159,11 +4401,29 @@ Repeat checks 1, 5 and 6 with `remote-relay = wss://nyx.agentforge.cc/v1/ws` and
 with a shell substitution and never echoed.** This is the run Task 1's deploy exists for, and check
 1 over ten minutes is the one that proves the container really is the new build.
 
-Then, and only then, the compatibility half: point one instance at the live relay and roll the
-container back for five minutes if the owner is willing (`docker compose up -d` on the previous
-image) — or, if not, simply note it, because the client's degradation is already proved by the two
-Core tests Task 3 and Task 4 wrote for an absent `not_paired` and an absent `cols`/`rows`. **Do not
-roll the owner's relay back without asking.** The deploy was pre-approved; a rollback was not.
+Then the compatibility half, which runs the **old relay locally** — **the deployed relay is never
+rolled back, and nothing in this step touches `nyx.agentforge.cc`** (controller ruling; the deploy
+was pre-approved, a rollback was not):
+
+```bash
+cd ~/projects/nyx-server
+git worktree add /private/tmp/claude-501/*/scratchpad/relay-prefix <the commit before Task 1's>
+cd /private/tmp/claude-501/*/scratchpad/relay-prefix
+PATH=/opt/homebrew/bin:$PATH go build -o bin/nyx-relay ./cmd/nyx-relay
+./bin/nyx-relay -listen 127.0.0.1:8788 -token dev-token &
+```
+
+One throwaway instance pointed at `ws://127.0.0.1:8788/v1/ws`, paired against *that* relay, and two
+things recorded: unpairing from the other side leaves `not_paired` **absent**, so the palette row
+reads `offline` and the tab reaches `AttachFailure.unpaired` only when it presses the row and the
+relay answers `error not_paired` (Task 4 Step 6's belt) — not a crash, not a blank row; and a
+forwarded `role` arrives with no `cols`/`rows`, so `handleRole(role, cols: nil, rows: nil)` leaves
+the mirror's size exactly as it was rather than resizing it to zero. Kill the relay and
+`git worktree remove` the checkout when it is done.
+
+That is the whole degradation claim, exercised. The two Core tests Task 3 and Task 4 wrote for an
+absent `not_paired` and an absent `cols`/`rows` prove the same thing at rung 2; this is the rung-6
+version, and it is cheap because the old relay is one `go build` away in a worktree.
 
 - [ ] **Step 6: The two instances the QA left behind**
 
@@ -4216,6 +4476,7 @@ written to.
 | **D15's `Device name` placeholder, the *app-wide* half** — the lens field's `.users[0].name` and the quick-action editor's `Caffeine`/`caffeinate -d`. | Spec §5.1 item 8 owns the rule and plan 4 owns those two fields; this plan fixes only the field on its own page, with `e.g.`. Two plans writing the same rule twice is how the two spellings appear. |
 | **§12's "a pairing confirmed at the five-minute boundary can leave the other side failed"** | The QA did not reproduce it (it did not sit out five minutes at the deadline) and neither will this plan: it is a `PairingFlow` expiry race that wants a driven clock in `PairingFlowTests`, not a run. One test, in the round's close. |
 | **§12's "the palette's Remote rows are a snapshot of the catalogue as it opened"** | Deliberate, and documented as such in `AppDelegate.remoteChanged`: re-ranking the list under the user's cursor moves the row they are about to press. Left as it is. |
+| **An exact resume handshake** — the client telling the host, on `attach`, how much of the stream it actually received, so the host can resume on proof rather than on "no chunk was produced while it was held". | It closes the one residual window `attach` names: a chunk delivered in the tens of milliseconds between the client's socket closing and this host being told is sealed, sent, dropped by the relay, and counted, so the resume believes the mirror is whole. Not here because the client cannot answer the question as the code stands — `E2ESession.lastAcceptedCounter` is private, counts frames rather than chunks, and restarts per attachment — so it means a new wire field in four places plus byte accounting on both sides, reset at `snapshot_end`, in the one place an off-by-one is a hole nobody can see. Worth doing if a hole is ever observed; `heldAtSequence` makes that observable, since a resume now happens only when the host can show that nothing was produced. |
 | **A client-side ping** | Not needed and not wanted: the relay pings every 30 s and `URLSessionWebSocketTask` answers those itself, which is exactly what Task 1's liveness check reads. A second ping in the other direction would duplicate the relay's timer and add a second way for a healthy connection to be declared dead — which is what `RelayConnection`'s own comment already says, and it is right about that half. |
 
 ---
@@ -4304,6 +4565,15 @@ schedules, and a client that needs a relay field to work at all breaks on the da
 restarted. (1) An attachment held through a socket drop is held for **sixty seconds** — the same
 number the client gives itself in `RemoteClient.Attachment.reattachWindow`, because the two are one
 race seen from its two ends and a host that gave up first would end a tab that was still asking.
+(1a) A resume is gated on **two** facts, not one: the attachment was actually held
+(`suspendedAt != nil`), and not one chunk was produced while it was away
+(`heldAtSequence == registration.sequence`). `existing != nil` alone would have answered a
+duplicated `attach` from a device that never dropped with an empty screen, and a boolean set by
+`deliver` would have missed every window in which output reaches nobody *because nothing on this
+side is watching* — which is precisely the two windows that exist. `presence(online)` is therefore
+not a branch at all: a hold is released by the `attach` that replaces the `Attachment`, and by
+nothing else. One residual window survives and is named in the code rather than left for a reader to
+assume away; the exact handshake that would close it is in the ledger.
 (2) A resume writes **no** audit line, in either direction, because nothing was written when the
 socket went: one `attached` per attachment, and the detach at the sweep. (3) The **primary** buffer
 is always what a snapshot starts from, even when the host is not on the alt screen, so there is one

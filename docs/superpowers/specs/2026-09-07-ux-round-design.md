@@ -798,7 +798,7 @@ duplicates, so it cannot wait for Wave 5.)
 
 ## 7. Wave 6 — remote strip and pairing (now second in the order)
 
-**Four tasks** (the universal-binary task was struck by the owner on 2026-09-10: Intel builds are
+**Four polish items** (the universal-binary task was struck by the owner on 2026-09-10: Intel builds are
 not being done for now; a Mac builds its own bundle with `make install`), preceded by an end-to-end
 QA of pairing and attach on two local instances so the plan fixes what breaks, not only what the
 pictures showed.

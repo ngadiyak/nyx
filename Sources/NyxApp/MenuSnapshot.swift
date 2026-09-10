@@ -43,6 +43,10 @@ enum MenuSnapshot {
             write(menu: contextMenu(over: nil, config: config),
                   caption: "right-click over plain output", appearance: appearance,
                   named: "menu-context-plain-\(name)", into: directory)
+            write(menu: contextMenu(over: nil, config: config,
+                                    link: .url("https://api.example.com/page/2")),
+                  caption: "right-click on a link \u{2014} the pointer's own row, first",
+                  appearance: appearance, named: "menu-context-link-\(name)", into: directory)
             write(menu: editMenu(config: config),
                   caption: "the Edit menu: the items a text field needs, and Nyx's own",
                   appearance: appearance, named: "menu-edit-\(name)", into: directory)
@@ -137,9 +141,18 @@ enum MenuSnapshot {
     /// The right-click menu: the block group when the pointer is on a command, then the four
     /// `TerminalAction` groups. The titles and the chords are `TerminalAction.title` and
     /// `KeyBindingTable`, both NyxCore; the grouping mirrors `Pane.contextMenu`.
-    private static func contextMenu(over header: BlockHeader?, config: Config) -> NSMenu {
+    private static func contextMenu(over header: BlockHeader?, config: Config,
+                                    link: LinkTarget? = nil) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        // `LinkMenu.entries` and `Entry.title`, both NyxCore, in the order `Pane.contextMenu` adds
+        // them: above the block group, because a link is the most specific thing under the pointer.
+        if !LinkMenu.entries(for: link).isEmpty {
+            for entry in LinkMenu.entries(for: link) {
+                menu.addItem(NSMenuItem(title: entry.title, action: nil, keyEquivalent: ""))
+            }
+            menu.addItem(.separator())
+        }
         if let header {
             let block = self.menu(for: header)
             for item in block.items {

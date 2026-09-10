@@ -1848,9 +1848,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                         rows: t.rows, cols: t.cols)
                 current = SearchHighlights.visibleRange(of: self.searchSession.current, viewportTop: top,
                                                         rows: t.rows, cols: t.cols)
-                hovered = SearchHighlights.visibleRange(onAbsoluteRow: self.hoveredLink?.row ?? 0,
-                                                        columns: self.hoveredLink?.columns,
-                                                        viewportTop: top, rows: t.rows, cols: t.cols)
+                // Every row the link is on, not one: a URL that crossed the margin is one link on
+                // two rows, and underlining half of it is hover that lies about the other half.
+                hovered = self.hoveredLink?.visibleRanges(viewportTop: top, rows: t.rows,
+                                                          cols: t.cols)
+                    ?? Array(repeating: nil, count: t.rows)
             } else {
                 // A folded viewport is not a contiguous run of absolute rows, so everything indexed
                 // by visible row has to be placed through the display rows rather than by
@@ -1917,9 +1919,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                         columns: self.searchSession.current?.columns,
                                                         displayRows: display, cols: t.cols)
                     + Array(repeating: nil, count: max(0, t.rows - display.count))
-                hovered = SearchHighlights.visibleRange(onAbsoluteRow: self.hoveredLink?.row ?? 0,
-                                                        columns: self.hoveredLink?.columns,
-                                                        displayRows: display, cols: t.cols)
+                hovered = (self.hoveredLink?.visibleRanges(displayRows: display, cols: t.cols)
+                    ?? Array(repeating: nil, count: display.count))
                     + Array(repeating: nil, count: max(0, t.rows - display.count))
             }
             // Read here rather than on a timer: one cheap pass over the visible rows, and it is
@@ -2934,6 +2935,20 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// the block group's own `isEnabled` back through unchanged.
     private func contextMenu(at point: NSPoint? = nil) -> NSMenu {
         let menu = NSMenu()
+        // The link under the pointer, first: it is the most specific thing there, and it is the
+        // only place the app admits that a link can be opened at all. Nothing said ⌘ -- no item,
+        // no tooltip, nothing in the docs -- so the only way to find out was to hover, see the
+        // underline and guess a modifier. A person right-clicks; this row is what they find.
+        if let point, let hit = linkHit(under: point), let target = linkTarget(for: hit.token) {
+            for entry in LinkMenu.entries(for: target) {
+                let item = NSMenuItem(title: entry.title,
+                                      action: #selector(linkActionFromMenu(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = LinkMenuEntry(entry: entry, target: target)
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
+        }
         // The command under the pointer, when there is one. This is the entry that turns the
         // scrollback into something you can act on rather than only read: the prompt marks say
         // where each command began, so the whole block's actions -- not just rerun and edit -- are
@@ -3043,8 +3058,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     // at all, and what opening it means, is `LinkResolver` in NyxCore.
 
     /// The link under the pointer, in absolute coordinates so it stays on its text while the buffer
-    /// scrolls underneath. nil when the pointer is over ordinary text.
-    private var hoveredLink: (row: Int, columns: Range<Int>)?
+    /// scrolls underneath -- or on the lens line it belongs to, which has no absolute row. nil when
+    /// the pointer is over ordinary text.
+    private var hoveredLink: LinkSite?
     /// The buffer the hovered link was found in; a `clear` moves its row out from under it.
     private var hoveredLinkGeneration: UInt64 = 0
     /// The cell the pointer was last over, so a mouse-move inside one cell does no work at all --
@@ -3111,7 +3127,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // them, which deduped every lens line in a column down to one hit test.
         let cell: (row: Int, col: Int) = session.withTerminal { t in
             guard let p = self.characterPosition(topLeft(point), in: t) else {
-                return (Int.min, self.visibleRow(at: point) ?? -1)
+                // The slot *and* the cell along it. An absolute row is never negative, so the
+                // negated slot cannot collide with one. Keyed by the slot alone -- which it was --
+                // every point on a lens line deduped down to one hit test, so a link on one was
+                // found only if the pointer's first move onto that row landed on the link.
+                return (-1 - (self.visibleRow(at: point) ?? 0), self.lensColumn(at: point))
             }
             return (p.row, p.col)
         }
@@ -3121,12 +3141,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // else did; the next frame is where that is decided.
         markDirty()
 
-        let hit = token(under: point)
+        let hit = linkHit(under: point)
         // Resolved *outside* the session lock: a path needs the pane's working directory, and
         // finding that takes the same lock, which is not recursive.
-        var found: (row: Int, columns: Range<Int>)?
-        if let hit, linkTarget(for: hit.token) != nil { found = (hit.row, hit.token.columns) }
-        guard found?.row != hoveredLink?.row || found?.columns != hoveredLink?.columns else { return }
+        var found: LinkSite?
+        if let hit, linkTarget(for: hit.token) != nil { found = hit.site }
+        guard found != hoveredLink else { return }
         hoveredLink = found
         updateHoverCursor()
         markDirty()
@@ -3176,20 +3196,30 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// truthful -- it used to be offered on a chevron that was the only clickable thing on a row of
     /// unclickable text beside it (§2.4).
     private func updateHoverCursor() {
-        let cell = cellSizePoints
         var rects: [NSRect] = []
-        if let link = hoveredLink {
+        var linkRects: [NSRect] = []
+        switch hoveredLink {
+        case .rows(let spans):
             // Through the display, not `row - viewportTop`: with a fold or a lens on screen those
             // are different numbers, and the hand would have been placed on whichever slot the
-            // replacement pulled into that index.
+            // replacement pulled into that index. Every span gets one, so both halves of a wrapped
+            // link answer to the pointer.
             let top = session.withTerminal { max(0, $0.viewportTopRow) }
-            if let row = displaySlot(ofAbsoluteRow: link.row, viewportTop: top) {
-                let width = CGFloat(link.columns.count) * cell.width
-                rects.append(NSRect(x: padding + CGFloat(link.columns.lowerBound) * cell.width,
-                                    y: bounds.height - padding - CGFloat(row + 1) * cell.height,
-                                    width: width, height: cell.height))
+            for span in spans {
+                guard let row = displaySlot(ofAbsoluteRow: span.row, viewportTop: top) else { continue }
+                linkRects.append(cellRect(onVisibleRow: row, columns: span.columns))
             }
+        case .lens(let id, let line, let columns):
+            // A lens line has no absolute row; find its slot in the display the last frame built.
+            for (slot, row) in foldRowsOnScreen.enumerated() {
+                guard case .lens(id, line) = row else { continue }
+                linkRects.append(cellRect(onVisibleRow: slot, columns: columns))
+                break
+            }
+        case .none:
+            break
         }
+        rects += linkRects
         // A lens container line's marker is the control; the rest of the line is text, and a reader
         // dragging across it is selecting. The box is the gutter's own 20 pt by `hitRowHeight`
         // (§2.4) -- one cell is about 8 pt and one row 13 pt at `line-height 0.8`, neither a target.
@@ -3209,7 +3239,22 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             }
         }
         hoveredRect = rects
+        // The underline and the hand say "this is a link"; only the tooltip can say *how* to open
+        // one, and nothing in the app said ⌘ (§ the QA report's discoverability finding). It is a
+        // tooltip rect and not `self.toolTip`, so it appears over the link and nowhere else.
+        removeAllToolTips()
+        for rect in linkRects {
+            _ = addToolTip(rect, owner: LinkMenu.hoverHint as NSString, userData: nil)
+        }
         window?.invalidateCursorRects(for: self)
+    }
+
+    /// The box of a run of cells on a visible row, in view coordinates.
+    private func cellRect(onVisibleRow visible: Int, columns: Range<Int>) -> NSRect {
+        let cell = cellSizePoints
+        return NSRect(x: padding + CGFloat(columns.lowerBound) * cell.width,
+                      y: bounds.height - padding - CGFloat(visible + 1) * cell.height,
+                      width: CGFloat(columns.count) * cell.width, height: cell.height)
     }
 
     override func resetCursorRects() {
@@ -3252,15 +3297,33 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         window?.invalidateCursorRects(for: self)
     }
 
-    /// The token under a view point, if any. One row is read, and the lock is released before the
-    /// answer is looked at.
-    private func token(under point: NSPoint) -> (row: Int, token: TextToken)? {
-        session.withTerminal { t in
-            guard let position = self.characterPosition(topLeft(point), in: t) else { return nil }
-            guard let token = t.token(atAbsoluteRow: position.row, column: position.col,
-                                      separators: config.wordSeparators) else { return nil }
-            return (position.row, token)
+    /// The link under a view point, if any: what it is, and every row it is drawn on.
+    ///
+    /// A lens line first, because a lens slot has no absolute row and `characterPosition` answers
+    /// nil for it -- which used to end the question, and is why a pretty-printed response full of
+    /// URLs had none you could click. Then the buffer, through `Terminal.linkHit`, which joins a
+    /// soft-wrapped line and reads an OSC 8 run.
+    private func linkHit(under point: NSPoint) -> (site: LinkSite, token: TextToken)? {
+        if let lens = lensLine(at: point), let buffer = lensBuffers[lens.id] {
+            let column = lensColumn(at: point)
+            guard let token = buffer.token(atColumn: column, line: lens.line,
+                                           separators: config.wordSeparators) else { return nil }
+            return (.lens(id: lens.id, line: lens.line, columns: token.columns), token)
         }
+        return session.withTerminal { t in
+            guard let position = self.characterPosition(topLeft(point), in: t) else { return nil }
+            guard let hit = t.linkHit(atAbsoluteRow: position.row, column: position.col,
+                                      separators: config.wordSeparators) else { return nil }
+            return (.rows(hit.spans), hit.token)
+        }
+    }
+
+    /// Which cell of a lens line a point is on. `lensLine(at:)` answers in Characters, which is
+    /// what a selection and a fold work in; a link's hit area is drawn in cells.
+    private func lensColumn(at point: NSPoint) -> Int {
+        let width = Double(cellSizePoints.width)
+        guard width > 0 else { return 0 }
+        return max(0, Int(((Double(point.x) - Double(padding)) / width).rounded(.down)))
     }
 
     private func linkTarget(for token: TextToken) -> LinkTarget? {
@@ -3273,10 +3336,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// ⌘-click. Returns false when there was nothing to open, so the click can go on to mean what
     /// it usually means.
     private func openLink(at event: NSEvent) -> Bool {
-        guard let hit = token(under: convert(event.locationInWindow, from: nil)) else { return false }
-        switch linkTarget(for: hit.token) {
-        case .none:
-            return false
+        guard let hit = linkHit(under: convert(event.locationInWindow, from: nil)),
+              let target = linkTarget(for: hit.token) else { return false }
+        return open(target)
+    }
+
+    /// Opens a resolved link. Returns false when it could not be opened, so a ⌘-click can go on to
+    /// mean what it usually means and a menu press can beep instead of pretending.
+    private func open(_ target: LinkTarget) -> Bool {
+        switch target {
         case .url(let text):
             guard let url = URL(string: text) else { return false }
             return NSWorkspace.shared.open(url)
@@ -4462,6 +4530,29 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let action: BlockAction
         let id: UInt32
         init(action: BlockAction, id: UInt32) { self.action = action; self.id = id }
+    }
+
+    /// One entry of the context menu's link group: which of the two, on which resolved target.
+    ///
+    /// The target and not the point it came from: the menu can be up for a while, and the buffer
+    /// under it scrolls. What was resolved when the menu opened is what the row promises.
+    private final class LinkMenuEntry: NSObject {
+        let entry: LinkMenu.Entry
+        let target: LinkTarget
+        init(entry: LinkMenu.Entry, target: LinkTarget) { self.entry = entry; self.target = target }
+    }
+
+    @objc private func linkActionFromMenu(_ sender: NSMenuItem) {
+        guard let entry = sender.representedObject as? LinkMenuEntry else { return }
+        switch entry.entry {
+        case .open:
+            // A beep rather than silence: the row said the link could be opened, so a refusal by
+            // the system has to be audible.
+            if !open(entry.target) { NSSound.beep() }
+        case .copy:
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(LinkMenu.copyText(for: entry.target), forType: .string)
+        }
     }
 
     /// The id of the command whose region covers a point, or nil where there is none -- above the

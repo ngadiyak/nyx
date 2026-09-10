@@ -35,6 +35,54 @@ public struct LinkHit: Equatable {
     }
 }
 
+/// Where the link under the pointer is drawn: on buffer rows -- more than one when a soft wrap
+/// split it -- or on one lens line, which has no absolute row of its own.
+///
+/// A value rather than a pair of optionals on the view, so "which screen rows does this underline"
+/// is one function with tests instead of two expressions written twice on the render path.
+public enum LinkSite: Equatable {
+    case rows([RowSpan])
+    case lens(id: UInt32, line: Int, columns: Range<Int>)
+
+    /// The underline, one range per screen row, for a viewport with nothing folded or lensed in it.
+    public func visibleRanges(viewportTop: Int, rows: Int, cols: Int) -> [Range<Int>?] {
+        var result = [Range<Int>?](repeating: nil, count: max(0, rows))
+        guard rows > 0, cols > 0, case .rows(let spans) = self else { return result }
+        for span in spans {
+            let row = span.row - viewportTop
+            guard row >= 0, row < rows, let clamped = SearchHighlights.clamped(span.columns, cols: cols)
+            else { continue }
+            result[row] = clamped
+        }
+        return result
+    }
+
+    /// The same, for a viewport with folds or lens lines on screen. A lens line is found by the
+    /// block and the line it belongs to: it has no absolute row to look up, which is the whole
+    /// reason a link on one had to be hit-tested separately.
+    public func visibleRanges(displayRows: [DisplayRow], cols: Int) -> [Range<Int>?] {
+        var result = [Range<Int>?](repeating: nil, count: displayRows.count)
+        guard !displayRows.isEmpty, cols > 0 else { return result }
+        switch self {
+        case .rows(let spans):
+            let index = DisplayRows.indexByAbsoluteRow(displayRows)
+            for span in spans {
+                guard let row = index[span.row],
+                      let clamped = SearchHighlights.clamped(span.columns, cols: cols) else { continue }
+                result[row] = clamped
+            }
+        case .lens(let id, let line, let columns):
+            guard let clamped = SearchHighlights.clamped(columns, cols: cols) else { return result }
+            for (slot, row) in displayRows.enumerated() {
+                guard case .lens(let rowID, let rowLine) = row, rowID == id, rowLine == line else { continue }
+                result[slot] = clamped
+                break
+            }
+        }
+        return result
+    }
+}
+
 public extension Terminal {
     /// The link at a position, or nil when there is nothing openable there.
     ///

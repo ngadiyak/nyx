@@ -59,6 +59,15 @@ so that template and this page are the two places a new key must be added.
 
 Booleans accept `true`/`false`, `yes`/`no`, `1`/`0`, `on`/`off`.
 
+**Links open on ⌘-click** — the convention iTerm2 and Ghostty both use. A plain click still means
+selection, hovering underlines what would open and turns the pointer into a hand, and the tooltip
+there says `⌘-click to open`; right-clicking a link offers **Open Link** and **Copy Link**. What
+counts as a link: an `http`/`https`/`mailto`/`ssh`/`sftp`/`ftp`/`irc` URL, an OSC 8 hyperlink (the
+URI the program named, not the label it shows), an e-mail address, and a path that *exists* on disk
+— with the `:line:column` a compiler printed after it, handed to `open-file-command`. A URL that
+wrapped at the right margin opens as one URL, and a URL inside a lens row is clickable like any
+other.
+
 Remote sessions need both `remote = on` and a non-empty `remote-relay-token`: without the token the
 relay closes the socket before the handshake, so connecting would be a guaranteed failure reported
 as an outage. Changing any of the five keys rebuilds the connection and ends every open remote tab

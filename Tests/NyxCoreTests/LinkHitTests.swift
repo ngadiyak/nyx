@@ -184,3 +184,44 @@ private func lensBuffer(_ lines: [String]) -> LensBuffer {
 @Test func theHoverHintNamesTheModifier() {
     #expect(LinkMenu.hoverHint == "\u{2318}-click to open")
 }
+
+// MARK: - Where the underline goes
+
+/// The renderer is handed one range per screen row. A wrapped link has to underline both of its
+/// halves -- hover that promises on one row and not the other is hover that lies about one of them
+/// -- and a lens line has to be found by the block and line it belongs to, because it has no
+/// absolute row to look up.
+@Test func aWrappedLinkUnderlinesEveryRowItIsOn() {
+    let site = LinkSite.rows([RowSpan(row: 10, columns: 62..<80), RowSpan(row: 11, columns: 0..<18)])
+    let ranges = site.visibleRanges(viewportTop: 8, rows: 5, cols: 80)
+    #expect(ranges == [nil, nil, 62..<80, 0..<18, nil])
+}
+
+@Test func aLinkScrolledOffTheTopUnderlinesNothing() {
+    let site = LinkSite.rows([RowSpan(row: 1, columns: 0..<5)])
+    #expect(site.visibleRanges(viewportTop: 8, rows: 3, cols: 80) == [nil, nil, nil])
+}
+
+@Test func aColumnPastTheRightEdgeIsClamped() {
+    let site = LinkSite.rows([RowSpan(row: 0, columns: 70..<120)])
+    #expect(site.visibleRanges(viewportTop: 0, rows: 1, cols: 80) == [70..<80])
+}
+
+@Test func aWrappedLinkGoesThroughTheDisplayRowsWhenAFoldIsOnScreen() {
+    let display: [DisplayRow] = [.row(10), .fold(commandID: 3, hiddenRows: 40, status: .succeeded),
+                                 .row(51), .row(52)]
+    let site = LinkSite.rows([RowSpan(row: 51, columns: 4..<9), RowSpan(row: 52, columns: 0..<3)])
+    #expect(site.visibleRanges(displayRows: display, cols: 40) == [nil, nil, 4..<9, 0..<3])
+}
+
+@Test func aLensLinkIsFoundByItsBlockAndLine() {
+    let display: [DisplayRow] = [.row(10), .lens(commandID: 4, line: 0), .lens(commandID: 4, line: 1),
+                                 .lens(commandID: 5, line: 1)]
+    let site = LinkSite.lens(id: 4, line: 1, columns: 11..<41)
+    #expect(site.visibleRanges(displayRows: display, cols: 60) == [nil, nil, 11..<41, nil])
+    // A viewport with no lens on it draws nothing: the block scrolled away, and the underline goes
+    // with it rather than onto whatever took the slot.
+    #expect(LinkSite.lens(id: 9, line: 1, columns: 0..<4)
+        .visibleRanges(displayRows: display, cols: 60) == [nil, nil, nil, nil])
+    #expect(site.visibleRanges(viewportTop: 0, rows: 2, cols: 60) == [nil, nil])
+}

@@ -556,9 +556,13 @@ extension GridCanvas {
                     font: .monospacedSystemFont(ofSize: CGFloat(config.fontSize), weight: .regular),
                     groundHeight: CGFloat(CommandBlockChrome.stripGroundHeight(cellHeight: Double(cell.height))))
         let top = bounds.height - padding - CGFloat(placed.slot + 1) * cell.height
+        // `trailingColumn`, not `cols`: a pills-only strip stops at the in-grid summary's first
+        // column, and a frame run to the pane's edge would right-align the pills on top of the
+        // sentence that rung exists to keep. Exactly `Pane.blockHeaderChanged`'s arithmetic.
+        let trailing = placed.plan.trailingColumn < 0 ? cols : placed.plan.trailingColumn
         view.frame = NSRect(x: padding + CGFloat(placed.plan.firstColumn) * cell.width,
                             y: top - (height - cell.height) / 2,
-                            width: CGFloat(cols - placed.plan.firstColumn) * cell.width,
+                            width: CGFloat(trailing - placed.plan.firstColumn) * cell.width,
                             height: height)
         view.layoutSubtreeIfNeeded()
         return view

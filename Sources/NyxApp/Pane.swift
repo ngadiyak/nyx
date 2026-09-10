@@ -3251,11 +3251,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let top = bounds.height - padding - CGFloat(row + 1) * cell.height
         blockHeader.update(header: header, plan: plan, palette: palette, font: font,
                            groundHeight: CGFloat(CommandBlockChrome.stripGroundHeight(cellHeight: Double(cell.height))))
-        // The strip begins at the column Core chose -- after the command's last glyph -- and runs to
-        // the pane's right edge, so what is right-aligned inside it lands on the last column.
+        // The strip occupies exactly the columns Core chose. Usually that is "after the command's
+        // last glyph, out to the pane's right edge", so what is right-aligned inside it lands on the
+        // last column; a pills-only strip ends at the in-grid summary's first column instead, which
+        // is `trailingColumn`, because that rung exists to keep the sentence it would otherwise be
+        // drawn on top of.
+        let trailing = plan.trailingColumn < 0 ? cols : plan.trailingColumn
         blockHeader.frame = NSRect(x: padding + CGFloat(plan.firstColumn) * cell.width,
                                    y: top - (height - cell.height) / 2,
-                                   width: CGFloat(cols - plan.firstColumn) * cell.width,
+                                   width: CGFloat(trailing - plan.firstColumn) * cell.width,
                                    height: height)
         window?.invalidateCursorRects(for: self)
     }

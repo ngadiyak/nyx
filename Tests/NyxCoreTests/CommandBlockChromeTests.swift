@@ -462,13 +462,18 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     #expect(tried == [3, 2])
     #expect(placement?.plan.pills == [.stop, .actions(.labelled)])
     #expect(placement?.plan.firstColumn == 68)
-    // Stepping down never reaches W0 from a roomier row: the lone Stop over the command's tail is
-    // the W0 row's own exception, not a fallback every crowded block gets.
+    // A rung that fits keeps its own class's placement: the strip sits after the last glyph rather
+    // than on it, because there was room for it there.
     #expect(placement?.plan.overlapsCommand == false)
+    // With no rung fitting at all, the ladder does now reach W0 from a roomier row -- but only for
+    // `Stop`, and only after the pills-only rung has been tried too. §2.6 says `Stop` is present at
+    // every width, and a watch nobody can stop is the one failure on this strip with a running side
+    // effect. Asserted in full by `theLastRungIsStopOverTheCommandsTailAtAnyWidth`.
     let noRoomAtAll = CommandBlockChrome.stripPlacement(
         watching, commandRows: [(absoluteRow: 4, lastUsedColumn: 30)], cols: 80, summary: nil,
         measure: { _ in 60 })
-    #expect(noRoomAtAll == nil)
+    #expect(noRoomAtAll?.plan.pills == [.stop])
+    #expect(noRoomAtAll?.plan.overlapsCommand == true)
 }
 
 
@@ -506,19 +511,28 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     #expect(free.plan.pills == [.lens(name: "Raw", on: false), .actions(.labelled)])
 }
 
-/// The 30-run watch row: the sentence plus even the narrowest pills is wider than the row, so there
-/// is **no strip** and `run 31 · 200 · 170 ms · every 5 s` stays exactly where it was. Hovering a
-/// block may cost the pills; it may never cost a fact.
-@Test func aStripThatCannotCarryTheSentenceIsNotDrawn() {
+/// The 30-run watch row: the sentence plus even the narrowest pills is wider than the row, and
+/// wider still than the gap the sentence leaves, so the strip is the last rung -- `Stop` alone over
+/// the command's tail -- and `run 31 · 200 · 170 ms · every 5 s` stays exactly where it was.
+///
+/// Hovering a block may cost the pills; it may never cost a fact, and it may never cost the `Stop`
+/// either. Before the F1 ruling this row got no strip at all, and a running watch on a command line
+/// of this length could not be stopped with the mouse from anywhere.
+@Test func aStripThatCannotCarryTheSentenceKeepsBothTheSentenceAndTheStop() throws {
     let sentence = "run 31 · 200 · 170 ms · every 5 s"
     let h = header(summary: "", http: HTTPSummary(text: "200 · 170 ms", tone: .success),
                    isHTTP: true, json: true,
                    watch: WatchHeader(text: sentence, dots: Array(repeating: .success, count: 30),
                                       showsStop: true, tone: .success))
-    let placement = CommandBlockChrome.stripPlacement(
+    let placement = try #require(CommandBlockChrome.stripPlacement(
         h, commandRows: [(absoluteRow: 4, lastUsedColumn: 44)], cols: 84,
-        summary: (row: 4, text: sentence), measure: columns)
-    #expect(placement == nil)
+        summary: (row: 4, text: sentence), measure: columns))
+    #expect(placement.plan.pills == [.stop])
+    #expect(placement.plan.overlapsCommand)
+    #expect(placement.plan.readout == "")
+    // The sentence is not spoken for, so the in-grid summary stays on the row.
+    #expect(!CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
+                                                  summary: (row: 4, text: sentence)))
     // Without the sentence to protect -- the summary went on another row -- the ladder shortens as
     // before, and `Stop` survives.
     let elsewhere = CommandBlockChrome.stripPlacement(
@@ -626,4 +640,141 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     #expect(PromptGutter.hitWidth == 20)
     #expect(CommandBlockChrome.spineLeadingInset(padding: 0) == 0)
     #expect(CommandBlockChrome.spineWidth == 3)
+}
+
+// MARK: - F1: a watch is always stoppable, and a strip that cannot carry the sentence carries pills
+
+/// The invariant, and the sentence §2.6 writes it in: "`Stop` and `Actions` are present at every
+/// width", because a watch you cannot stop from the strip is the one control here with a running
+/// side effect.
+///
+/// It was not true. Refusing a row whose sentence-plus-pills does not fit left a running watch with
+/// no strip at all across a wide middle band of command-line lengths -- measured in the built app at
+/// 24 and 12 free columns, and in the composites at 40 and 12. So the placement gained the two rungs
+/// this ruling names: pills alone in the gap the in-grid summary leaves, and then `Stop` alone over
+/// the command's tail, which is the W0 exception granted at any width for the one pill that has to
+/// be one click away.
+@Test func aRunningWatchAlwaysHasAStopPillAtEveryWidth() throws {
+    let sentence = "run 12 · 200 · 100 ms · every 5 s"
+    let watching = header(summary: sentence, isHTTP: true,
+                          watch: WatchHeader(text: sentence, dots: [.success, .running],
+                                             showsStop: true, tone: .success))
+    let cols = 84
+    // Comfortably inside each band (W3 ≥ 34, W2 18-33, W1 8-17, W0 < 8), never on a boundary.
+    for free in [40, 24, 12, 4] {
+        let rows = [(absoluteRow: 4, lastUsedColumn: cols - free - 1)]
+        let summary = CommandBlockChrome.summaryPlacement(commandRows: rows,
+                                                          textCount: sentence.count, cols: cols)
+        let placement = try #require(CommandBlockChrome.stripPlacement(
+            watching, commandRows: rows, cols: cols,
+            summary: summary.map { (row: $0.row, text: sentence) },
+            measure: columns), "free=\(free)")
+        #expect(placement.plan.pills.contains(.stop),
+                "free=\(free) drew \(placement.plan.pills)")
+        // And whatever rung it landed on, the sentence is still somewhere: either the strip carries
+        // it word for word, or the in-grid summary was left alone.
+        #expect(placement.plan.readout == sentence
+                || !CommandBlockChrome.suppressesSummary(
+                    placement.plan, stripRow: placement.row,
+                    summary: summary.map { (row: $0.row, text: sentence) }),
+                "free=\(free) removed the sentence")
+    }
+}
+
+/// The middle rung: the sentence plus the pills does not fit, so the strip carries the **pills
+/// alone** and the in-grid summary stays exactly where it was. Nothing on the row moves when the
+/// pointer arrives; controls simply appear in the gap between the command and the sentence.
+///
+/// Right-aligned against the *summary's* first column rather than the pane's edge, which is what
+/// `trailingColumn` is for -- a pills-only strip drawn to the pane's edge would sit on the sentence
+/// it exists to preserve.
+@Test func aStripThatCannotCarryTheSentenceCarriesThePillsAlone() throws {
+    let h = header(summary: "8.8s")
+    let cols = 84
+    let rows = [(absoluteRow: 4, lastUsedColumn: 60)]
+    let summaryRow = try #require(CommandBlockChrome.summaryPlacement(commandRows: rows,
+                                                                      textCount: 4, cols: cols))
+    // The sentence and the pills together are wider than the row's 23 free columns; the pills
+    // alone are not.
+    let placement = try #require(CommandBlockChrome.stripPlacement(
+        h, commandRows: rows, cols: cols, summary: (row: summaryRow.row, text: "8.8s"),
+        measure: { $0.readout.isEmpty ? 15 : 30 }))
+    #expect(placement.plan.readout == "")
+    #expect(placement.plan.pills == [.copy(enabled: true), .actions(.labelled)])
+    // The strip ends where the summary begins, and begins clear of the command's last glyph.
+    #expect(placement.plan.trailingColumn == summaryRow.columns.lowerBound)
+    #expect(placement.plan.firstColumn == summaryRow.columns.lowerBound - 15)
+    #expect(placement.plan.firstColumn > 60)
+    #expect(!placement.plan.overlapsCommand)
+    // And it does not speak for the summary, so the sentence is not removed by hovering (§2.5).
+    #expect(!CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
+                                                  summary: (row: summaryRow.row, text: "8.8s")))
+}
+
+/// With no summary on the row there is nothing to make room for, so the pills-only rung runs to the
+/// pane's own edge -- and it is still the rung that saves the strip: at 16 free columns a watched
+/// row cannot carry `run 12` beside `Stop` and `⋯`, but it can carry the two pills.
+@Test func thePillsOnlyRungRunsToThePaneEdgeWhenNoSummaryIsOnTheRow() throws {
+    let sentence = "run 12 · 200 · 100 ms · every 5 s"
+    let watching = header(summary: sentence, isHTTP: true,
+                          watch: WatchHeader(text: sentence, dots: [.running], showsStop: true,
+                                             tone: .success))
+    let cols = 84
+    let rows = [(absoluteRow: 4, lastUsedColumn: cols - 16 - 1)]
+    // The sentence needs 33 columns and this row has 16, so the summary went to another row.
+    #expect(CommandBlockChrome.summaryPlacement(commandRows: rows, textCount: sentence.count,
+                                                cols: cols) == nil)
+    let placement = try #require(CommandBlockChrome.stripPlacement(
+        watching, commandRows: rows, cols: cols, summary: nil, measure: columns))
+    #expect(placement.plan.readout == "")
+    #expect(placement.plan.pills == [.stop, .actions(.glyph)])
+    #expect(placement.plan.trailingColumn == cols)
+    #expect(!placement.plan.overlapsCommand)
+}
+
+/// The last rung: not even two pills fit, so `Stop` alone goes over the command's tail on an opaque
+/// pill. The W0 exception, at any width -- and only ever for `Stop`, because `pills(_:at: .w0)` is
+/// empty for everything else, so nothing but a running watch can reach this.
+@Test func theLastRungIsStopOverTheCommandsTailAtAnyWidth() throws {
+    let sentence = "run 12 · 200 · 100 ms · every 5 s"
+    let watching = header(summary: sentence, isHTTP: true,
+                          watch: WatchHeader(text: sentence, dots: [.success, .running],
+                                             showsStop: true, tone: .success))
+    let rows = [(absoluteRow: 4, lastUsedColumn: 30)]     // 49 free: a W3 row
+    let placement = try #require(CommandBlockChrome.stripPlacement(
+        watching, commandRows: rows, cols: 80, summary: nil, measure: { _ in 60 }))
+    #expect(placement.plan.pills == [.stop])
+    #expect(placement.plan.overlapsCommand)
+    // A finished block in the same spot gets nothing at all: there is no control here worth a
+    // column of somebody's command.
+    #expect(CommandBlockChrome.stripPlacement(header(summary: "8.8s"), commandRows: rows, cols: 80,
+                                              summary: nil, measure: { _ in 60 }) == nil)
+}
+
+/// The last rung may sit on the *command's* tail and never on the sentence's. Placed at the pane's
+/// own edge instead, the opaque `Stop` covered the end of the in-grid summary it was leaving in
+/// place -- `run 12 · 200 · 100 ms · every 5 s` came out reading `run 12 · 200 · 100 ms · ev` with a
+/// pill on top of it, which is precisely the fact-removal §2.5 exists to forbid, and the first take
+/// of `composite-strip-w3-watch-running` is where it showed up.
+@Test func theOverlappingStopSitsOnTheCommandAndNotOnTheSummary() throws {
+    let sentence = "run 12 · 200 · 100 ms · every 5 s"
+    let watching = header(summary: sentence, isHTTP: true,
+                          watch: WatchHeader(text: sentence, dots: [.success, .running],
+                                             showsStop: true, tone: .success))
+    let cols = 84
+    let rows = [(absoluteRow: 4, lastUsedColumn: 43)]          // 40 free: a W3 row
+    let summary = try #require(CommandBlockChrome.summaryPlacement(commandRows: rows,
+                                                                   textCount: sentence.count,
+                                                                   cols: cols))
+    let placement = try #require(CommandBlockChrome.stripPlacement(
+        watching, commandRows: rows, cols: cols, summary: (row: summary.row, text: sentence),
+        measure: columns))
+    #expect(placement.plan.pills == [.stop])
+    #expect(placement.plan.overlapsCommand)
+    // It ends where the sentence begins, so no column of the sentence is covered…
+    #expect(placement.plan.trailingColumn == summary.columns.lowerBound)
+    // …and it does begin inside the command's own text, which is what it is allowed to overlap.
+    #expect(placement.plan.firstColumn <= 43)
+    #expect(!CommandBlockChrome.suppressesSummary(placement.plan, stripRow: placement.row,
+                                                  summary: (row: summary.row, text: sentence)))
 }

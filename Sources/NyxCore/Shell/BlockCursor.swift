@@ -20,6 +20,10 @@ public struct BlockCursor: Equatable {
 
     /// One step, among the blocks the pane has, oldest first.
     ///
+    /// `ids` is `Terminal.blockCursorIDs` -- the *buffer's* blocks, which is a walk and therefore a
+    /// keystroke's work. Never the frame's `visibleBlocks(...)`: ⌘↑ has to be able to leave the
+    /// screen, and among twenty visible ids it would stop at the top of the viewport instead.
+    ///
     /// Clamps rather than wraps: ⌘↑ held down at the top of a session must stop there, not appear
     /// a thousand rows away at the bottom. From a cleared cursor the first ⌘↑ takes the newest
     /// block and the first ⌘↓ the oldest, which is where each of those gestures already looks.
@@ -44,10 +48,15 @@ public struct BlockCursor: Equatable {
 
     /// The viewport moved for a reason other than ⌘↑/⌘↓ -- a scroll, new output, a fold.
     ///
-    /// `fallback` is `Terminal.commandToFold()`'s answer. The cursor keeps its block while that
-    /// block is still on screen, otherwise takes the fallback, and clears when there is no
-    /// fallback either. A *cleared* cursor stays cleared: the cursor is drawn, and a pane that
-    /// grew one on a scroll would light a block nobody asked about.
+    /// `visible` is the *frame's* own ids -- `visibleBlocks(...).map(\.region.id)`, the blocks this
+    /// frame is about to draw -- and never `blockCursorIDs`, whose buffer walk would say every block
+    /// in the session is on screen and re-anchor nothing, ever. `fallback` is
+    /// `Terminal.commandToFold()`'s answer, which is the same frame's viewport and may name a block
+    /// that is not in `visible` at all.
+    ///
+    /// The cursor keeps its block while that block is still on screen, otherwise takes the fallback,
+    /// and clears when there is no fallback either. A *cleared* cursor stays cleared: the cursor is
+    /// drawn, and a pane that grew one on a scroll would light a block nobody asked about.
     public static func afterViewportMove(_ current: Self, visible: [UInt32], fallback: UInt32?) -> Self {
         guard let id = current.commandID else { return current }
         if visible.contains(id) { return current }
@@ -57,11 +66,19 @@ public struct BlockCursor: Equatable {
     /// Where a ⌘↑/⌘↓ press starts from.
     ///
     /// A cursor that is cleared, or on a block that is not on the screen the reader is looking at,
-    /// is seeded from that screen: `viewportBlock` is `commandToFold()`'s answer -- the block at
-    /// the top of a scrolled-back viewport, the newest one at the bottom of the session. Without
-    /// it, ⌘↑ in a pane wheeled back two thousand rows would take the newest block and throw the
-    /// viewport to the bottom, where `previous_prompt` has always gone to the prompt above what
-    /// the reader can see.
+    /// is seeded from that screen: `visible` is the *frame's* own ids, as in `afterViewportMove`,
+    /// and `viewportBlock` is `commandToFold()`'s answer -- the block at the top of a scrolled-back
+    /// viewport, the newest one at the bottom of the session. Without it, ⌘↑ in a pane wheeled back
+    /// two thousand rows would take the newest block and throw the viewport to the bottom, where
+    /// `previous_prompt` has always gone to the prompt above what the reader can see.
+    ///
+    /// **The seed need not be a member of the `among` list the caller then steps through.**
+    /// `commandToFold()` answers with the command whose *prompt row* is on screen, which for a
+    /// command that printed nothing is the region the next prompt shares -- so a seed can name a
+    /// block `blockCursorIDs` excludes. That is why the press lands on the seed instead of stepping
+    /// from it: `moved` from an id it cannot find falls back to the nearest survivor in the
+    /// direction of travel, which is the right answer for the *second* press and the wrong one for
+    /// the first. A seed of 0 is no seed at all -- 0 is "no command" everywhere here.
     ///
     /// The press then **lands on the seed** rather than stepping past it -- the same thing `moved`
     /// does with an id scrollback has trimmed, for the same reason: the block filling the screen is
@@ -99,14 +116,15 @@ public extension Terminal {
     /// no Copy and nothing to fold -- the first thing anyone pressing ⌘↑ would see.
     ///
     /// Walks the buffer, so it belongs on a keystroke and not in a frame; `promptRows` says the
-    /// same about itself. One `CommandRegionMemo` keeps it linear in the rows rather than
-    /// quadratic in the block lengths.
+    /// same about itself. One resolution per block: `promptRows` gives one row per region, so each
+    /// row asked here belongs to a different command and a `CommandRegionMemo` between them could
+    /// never hit -- it would carry a cache that is written once and read never, and claim a saving
+    /// in a doc comment that the next reader would believe.
     var blockCursorIDs: [UInt32] {
         guard shellEmitsPromptMarks else { return [] }
-        let memo = CommandRegionMemo()
         var ids: [UInt32] = []
         for row in promptRows {
-            guard let region = region(containing: row, memo: memo), region.id != 0,
+            guard let region = command(containingAbsoluteRow: row), region.id != 0,
                   region.outputStart != nil || region.exitStatus != nil else { continue }
             ids.append(region.id)
         }

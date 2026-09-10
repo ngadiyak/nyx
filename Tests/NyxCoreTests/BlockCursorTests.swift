@@ -123,3 +123,13 @@ private func session(_ script: [(command: String, output: [String], status: Int3
     t.feed("hello\r\nworld\r\n")
     #expect(t.blockCursorIDs.isEmpty)
 }
+
+/// Block id 0 is "no command" everywhere in this codebase -- `command(containingAbsoluteRow:)`
+/// answers a region with id 0 for rows above the first prompt -- so `commandToFold()` can hand back
+/// a seed that names nothing. Seeding on it would put the cursor on a block that cannot be found
+/// again, and every reader downstream (`BlockHover.resolve`, `BlockTarget.resolve`) would answer nil
+/// while the cursor claimed to be somewhere.
+@Test func aViewportBlockOfZeroIsNotASeed() {
+    #expect(BlockCursor.seed(BlockCursor(), visible: [20, 30], viewportBlock: 0) == nil)
+    #expect(BlockCursor.seed(BlockCursor(commandID: 99), visible: [20], viewportBlock: 0) == nil)
+}

@@ -1989,22 +1989,23 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // The viewport moved for a reason this cursor did not cause -- a scroll, new output, a
             // fold -- so the cursor re-anchors. Guarded twice on purpose: `BlockCursor` is the rule
             // and re-checks visibility itself, but `commandToFold()` walks the buffer and must not
-            // be called on a frame where the answer cannot change. In steady state this is one
-            // `contains` over the frame's own ids.
+            // be called on a frame where the answer cannot change.
+            //
+            // The signature moves on *every* frame of a command printing output, so the cheap test
+            // is the one that has to stay cheap: `contains(where:)` over the frame's own blocks,
+            // which allocates nothing. The `[UInt32]` the Core rule takes is built only on the
+            // frame where the cursor's block has actually left the screen, which is once per scroll
+            // and never during ordinary output.
             let viewportSignature = (t.viewportTopRow, t.totalRows)
             if viewportSignature != self.lastViewportSignature {
                 self.lastViewportSignature = viewportSignature
                 if self.blockCursorScrolledViewport {
                     self.blockCursorScrolledViewport = false
-                } else if let id = self.blockCursor.commandID {
-                    // Built here and not above: on a frame where the viewport did not move -- which
-                    // is almost every frame -- this allocates nothing at all.
-                    let visibleIDs = blocks.map(\.region.id)
-                    if !visibleIDs.contains(id) {
-                        self.blockCursor = BlockCursor.afterViewportMove(self.blockCursor,
-                                                                         visible: visibleIDs,
-                                                                         fallback: t.commandToFold()?.id)
-                    }
+                } else if let id = self.blockCursor.commandID,
+                          !blocks.contains(where: { $0.region.id == id }) {
+                    self.blockCursor = BlockCursor.afterViewportMove(self.blockCursor,
+                                                                     visible: blocks.map(\.region.id),
+                                                                     fallback: t.commandToFold()?.id)
                 }
             }
             // Which block the pointer is on, decided here rather than in `mouseMoved`, against the
@@ -2030,7 +2031,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                                   viewportTop: windowTop)
             }
             self.hoveredBlock = BlockHover.choose(pointer: pointerHover, cursor: cursorHover,
-                                                  pointerInside: self.pointerIsInsidePane,
                                                   cursorMovedLast: self.blockCursorWinsOverPointer)
             // The three block colours, once per frame. `readable` picks between a colour and its
             // bright variant by contrast against the background -- a handful of Lab conversions --
@@ -3130,13 +3130,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// frame, and a frame must not allocate to find out that nothing happened.
     private var lastViewportSignature = (-1, -1)
 
-    /// Whether the pointer is in this pane at all, which is what decides between the pointer's
-    /// hover and the keyboard's.
-    private var pointerIsInsidePane: Bool {
-        guard let point = lastPointerPoint else { return false }
-        return bounds.contains(point)
-    }
-
     /// Which block the pointer sits on -- for the tint and the overlay -- against one frame's
     /// blocks. `resolve` answers in viewport-relative absolute space; `placed` re-expresses that in
     /// the display slots actually on screen, which differ from absolute space only when a fold is
@@ -3226,13 +3219,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // block and takes the overlay and the tint down with it.
         lastPointerPoint = nil
         // A pointer move hands the presentation back to the pointer; ⌘↑/⌘↓ takes it again. Leaving
-        // the pane is one of those moves, and with no point to resolve against the cursor wins on
-        // the next frame either way -- this only keeps the flag meaning what it says.
+        // the pane is one of those moves.
         blockCursorWinsOverPointer = false
         let hadBlock = hoveredBlock != nil
         let hadLink = hoveredLink != nil
         hoveredLink = nil
-        guard hadBlock || hadLink else { return }
+        // On an idle pane the display link is parked -- that is how this terminal holds 0% CPU
+        // doing nothing -- so anything that can change what is drawn has to ask for a frame here or
+        // it is not drawn at all. A block cursor is one of those things, and belt and braces on
+        // purpose: since `BlockHover.choose` stopped letting a pointer on no block extinguish the
+        // cursor, a cursor whose block is on screen is *already* the raised hover, so `hadBlock`
+        // covers it -- the clause bites only for a cursor whose block has scrolled away or whose
+        // chrome a TUI has suppressed, where the frame it asks for draws the same thing. It costs
+        // one frame on a pointer leaving such a pane, and it means the rule cannot be broken by a
+        // later change to `choose`.
+        guard hadBlock || hadLink || !blockCursor.isEmpty else { return }
         updateHoverCursor()
         markDirty()
     }
@@ -3670,6 +3671,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// is looking at"; `blockCursorIDs` walks the buffer, which is a keystroke's work and not a
     /// frame's -- the trade `promptRows` documents about itself, and the reason both calls are
     /// here rather than in `render`.
+    ///
+    /// ⌘↓ past the newest block goes to the prompt the user is typing at, with no cursor on
+    /// anything -- `next_prompt` has always ended up there, and clamping at the newest block turned
+    /// the forward chord into a beep one press short of the place the user types.
     @discardableResult
     func jumpToPrompt(forward: Bool) -> Bool {
         let onScreen = Array(displayBlockRows.keys)
@@ -3678,6 +3683,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let next = BlockCursor.seed(self.blockCursor, visible: onScreen,
                                         viewportBlock: t.commandToFold()?.id)
                 ?? BlockCursor.moved(self.blockCursor, by: forward ? .next : .previous, among: ids)
+            // A forward step that cleared a cursor which had a block is `BlockCursor` saying "past
+            // the newest one": the live prompt. Before the `guard` below, which reads a cleared
+            // cursor as "nowhere to go" -- true for ⌘↑ at the oldest block, and the opposite of the
+            // truth here. `viewportOffset` is read rather than trusting `scrollViewportToBottom`,
+            // which reports nothing.
+            if forward, next.isEmpty, !self.blockCursor.isEmpty {
+                let scrolled = t.viewportOffset != 0
+                t.scrollViewportToBottom()
+                return (true, scrolled, next)
+            }
             guard let id = next.commandID, let row = t.promptRow(ofCommand: id) else {
                 return (false, false, next)
             }

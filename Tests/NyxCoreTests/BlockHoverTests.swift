@@ -96,30 +96,36 @@ private func blocks() -> [CommandBlock] {
     #expect(BlockHover.resolve(cursor: BlockCursor(commandID: 2), blocks: blocks(), allowed: false) == nil)
 }
 
-@Test func thePointerWinsWhileItIsInsideThePane() {
+@Test func thePointerWinsWhileItIsOnABlockOfItsOwn() {
     let pointer = BlockHover.resolve(pointerRow: 1, blocks: blocks(), allowed: true)
     let cursor = BlockHover.resolve(cursor: BlockCursor(commandID: 2), blocks: blocks(), allowed: true)
-    let chosen = BlockHover.choose(pointer: pointer, cursor: cursor,
-                                   pointerInside: true, cursorMovedLast: false)
+    let chosen = BlockHover.choose(pointer: pointer, cursor: cursor, cursorMovedLast: false)
     #expect(chosen?.id == 1)
     #expect(chosen?.source == .pointer)
 }
 
-/// Inside the pane but on no block at all: the pointer still wins, so the cursor's strip does not
-/// appear under a pointer resting two rows below the last block.
-@Test func aPointerInsideThePaneOnNoBlockShowsNothing() {
+/// Inside the pane but on no block at all -- resting two rows below the last block, or on the blank
+/// screen under a short session -- is not the pointer winning: it is the pointer having no answer.
+/// The cursor's block stays raised, because otherwise brushing the trackpad after ⌘↑ put out the
+/// only thing on screen saying where the keyboard was.
+@Test func aPointerOnNoBlockLeavesTheCursorsBlockRaised() {
     let cursor = BlockHover.resolve(cursor: BlockCursor(commandID: 2), blocks: blocks(), allowed: true)
-    #expect(BlockHover.choose(pointer: nil, cursor: cursor,
-                              pointerInside: true, cursorMovedLast: false) == nil)
+    let chosen = BlockHover.choose(pointer: nil, cursor: cursor, cursorMovedLast: false)
+    #expect(chosen?.id == 2)
+    #expect(chosen?.source == .cursor)
+}
+
+/// With neither a pointer on a block nor a cursor there is nothing to raise: a pane nobody has
+/// pressed ⌘↑ in draws no block chrome at idle.
+@Test func aPointerOnNoBlockWithNoCursorRaisesNothing() {
+    #expect(BlockHover.choose(pointer: nil, cursor: nil, cursorMovedLast: false) == nil)
 }
 
 @Test func theCursorReturnsWhenThePointerLeavesOrTheChordArrives() {
     let pointer = BlockHover.resolve(pointerRow: 1, blocks: blocks(), allowed: true)
     let cursor = BlockHover.resolve(cursor: BlockCursor(commandID: 2), blocks: blocks(), allowed: true)
-    #expect(BlockHover.choose(pointer: pointer, cursor: cursor,
-                              pointerInside: false, cursorMovedLast: false)?.id == 2)
-    #expect(BlockHover.choose(pointer: pointer, cursor: cursor,
-                              pointerInside: true, cursorMovedLast: true)?.id == 2)
+    #expect(BlockHover.choose(pointer: nil, cursor: cursor, cursorMovedLast: false)?.id == 2)
+    #expect(BlockHover.choose(pointer: pointer, cursor: cursor, cursorMovedLast: true)?.id == 2)
 }
 
 @Test func placingAHoverOnDisplayRowsKeepsItsSource() {

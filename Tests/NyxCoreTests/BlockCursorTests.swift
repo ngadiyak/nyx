@@ -9,11 +9,18 @@ private let ids: [UInt32] = [10, 20, 30, 40]
     #expect(BlockCursor.moved(start, by: .next, among: ids).commandID == 40)
 }
 
-/// Clamps rather than wraps: ⌘↑ at the oldest block must not jump to the newest, which is the
-/// other end of a thousand rows of scrollback.
-@Test func movingClampsAtBothEnds() {
+/// Clamps rather than wraps at the *old* end: ⌘↑ at the oldest block must not jump to the newest,
+/// which is the other end of a thousand rows of scrollback.
+@Test func movingBackwardsClampsAtTheOldestBlock() {
     #expect(BlockCursor.moved(BlockCursor(commandID: 10), by: .previous, among: ids).commandID == 10)
-    #expect(BlockCursor.moved(BlockCursor(commandID: 40), by: .next, among: ids).commandID == 40)
+}
+
+/// Past the newest block there *is* somewhere to go: the prompt the user is typing at. `⌘↓` at the
+/// newest block cleared to nothing and the pane beeped, where `next_prompt` had always ended up at
+/// the live prompt -- so the newest block is not a wall, and the cursor clears rather than clamping.
+/// A cleared cursor is exactly "no block", which is what the bottom of the session is.
+@Test func movingForwardPastTheNewestBlockClearsTheCursor() {
+    #expect(BlockCursor.moved(BlockCursor(commandID: 40), by: .next, among: ids).isEmpty)
 }
 
 @Test func fromAClearedCursorPreviousTakesTheNewestAndNextTheOldest() {
@@ -30,9 +37,11 @@ private let ids: [UInt32] = [10, 20, 30, 40]
     #expect(BlockCursor.moved(gone, by: .next, among: ids).commandID == 30)
 }
 
-@Test func aTrimmedBlockPastTheEndsClampsToTheEnds() {
+/// An id below every survivor clamps to the oldest; an id above every survivor is past the newest
+/// block, and takes the same answer a step off the newest block does -- the live prompt.
+@Test func anIdOutsideTheSurvivorsTakesTheEndInItsDirection() {
     #expect(BlockCursor.moved(BlockCursor(commandID: 5), by: .previous, among: ids).commandID == 10)
-    #expect(BlockCursor.moved(BlockCursor(commandID: 99), by: .next, among: ids).commandID == 40)
+    #expect(BlockCursor.moved(BlockCursor(commandID: 99), by: .next, among: ids).isEmpty)
 }
 
 @Test func movingInAPaneWithNoBlocksClearsTheCursor() {

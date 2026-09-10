@@ -171,7 +171,7 @@ xterm, Ghostty and iTerm2 all report there.
 | `clear_screen` | ⌘K | Clears screen and scrollback (`ED 3`) |
 | `font_bigger` / `font_smaller` / `font_reset` | ⌘+ / ⌘- / ⌘0 | Zoom in also answers to ⌘= — the same key without shift — and to the keypad's `+` |
 | `open_config` / `reload_config` | ⌘, / ⌘⇧, | ⌘, opens the settings window |
-| `previous_prompt` / `next_prompt` | ⌘↑ / ⌘↓ | Needs shell integration |
+| `previous_prompt` / `next_prompt` | ⌘↑ / ⌘↓ | Moves the block cursor one command back or forward and brings the viewport to it; the block it lands on is lit exactly as a hovered one. ⌘↓ past the newest command goes to the prompt you are typing at, with no block lit. ⌘↑ at the oldest command beeps. Needs shell integration |
 | `select_command_output` / `copy_command_output` | — | The output of the command under the cursor / the last command |
 | `find` / `find_next` / `find_previous` | ⌘F / ⌘G / ⌘⇧G | The bar has an "All tabs" scope toggle |
 | `command_palette` | ⌘⇧P | Actions, themes, tabs, quick actions |

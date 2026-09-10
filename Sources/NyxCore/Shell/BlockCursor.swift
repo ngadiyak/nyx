@@ -24,25 +24,40 @@ public struct BlockCursor: Equatable {
     /// keystroke's work. Never the frame's `visibleBlocks(...)`: ⌘↑ has to be able to leave the
     /// screen, and among twenty visible ids it would stop at the top of the viewport instead.
     ///
-    /// Clamps rather than wraps: ⌘↑ held down at the top of a session must stop there, not appear
-    /// a thousand rows away at the bottom. From a cleared cursor the first ⌘↑ takes the newest
-    /// block and the first ⌘↓ the oldest, which is where each of those gestures already looks.
+    /// Clamps rather than wraps at the *old* end: ⌘↑ held down at the top of a session must stop
+    /// there, not appear a thousand rows away at the bottom. From a cleared cursor the first ⌘↑
+    /// takes the newest block and the first ⌘↓ the oldest, which is where each of those gestures
+    /// already looks.
+    ///
+    /// **Past the newest block the cursor clears**, and does not clamp. There is somewhere to go
+    /// past the newest block -- the prompt the user is typing at, which is not a block and so is
+    /// exactly "no block" -- and `next_prompt` always went there. Clamping made ⌘↓ at the newest
+    /// block report "nothing moved", which the pane turns into a beep: the one chord whose whole
+    /// job is "forward" refused to reach the place the user is typing in. The caller reads a
+    /// cleared answer from a cursor that had a block as "go to the bottom".
     ///
     /// A cursor whose block has been trimmed out of the scrollback re-anchors on the nearest
     /// survivor *in the direction of travel* rather than stepping from an id that no longer names
-    /// anything: stepping from a hole skips whichever block now sits there.
+    /// anything: stepping from a hole skips whichever block now sits there. An id above every
+    /// survivor is already past the newest block, so it takes the same answer a step off the newest
+    /// block does.
     public static func moved(_ current: Self, by direction: Direction, among ids: [UInt32]) -> Self {
         guard let first = ids.first, let last = ids.last else { return BlockCursor() }
         guard let id = current.commandID else {
             return BlockCursor(commandID: direction == .previous ? last : first)
         }
         if let index = ids.firstIndex(of: id) {
-            let step = direction == .previous ? index - 1 : index + 1
-            return BlockCursor(commandID: ids[min(max(step, 0), ids.count - 1)])
+            switch direction {
+            case .previous: return BlockCursor(commandID: ids[max(index - 1, 0)])
+            case .next: return index + 1 < ids.count ? BlockCursor(commandID: ids[index + 1])
+                                                     : BlockCursor()
+            }
         }
         switch direction {
         case .previous: return BlockCursor(commandID: ids.last(where: { $0 < id }) ?? first)
-        case .next: return BlockCursor(commandID: ids.first(where: { $0 > id }) ?? last)
+        case .next:
+            guard let following = ids.first(where: { $0 > id }) else { return BlockCursor() }
+            return BlockCursor(commandID: following)
         }
     }
 

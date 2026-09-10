@@ -247,6 +247,7 @@ enum GridSnapshot {
             // taken out of the scene entirely.
             scene.show(.finished, at: widthClass)
             scene.keyboardCursor = BlockCursor(commandID: scene.hovered)
+            scene.cursorMovedLast = true
             scene.hovered = nil
         case .suppressedTUI:
             // The pointer parked on a block, and *then* a full-screen program takes the display:
@@ -719,6 +720,12 @@ struct GridScene {
     /// The block the keyboard is on. A picture of the cursor sets this and leaves `hovered` nil:
     /// the strip has to come up with no pointer in the scene at all.
     var keyboardCursor = BlockCursor()
+    /// `Pane.blockCursorWinsOverPointer`, one for one: ⌘↑/⌘↓ was the last thing pressed. Stored
+    /// rather than derived from `keyboardCursor`, which is what it was: the pane's flag is a
+    /// *history* -- set by the chord, cleared by the next pointer move -- and deriving it from
+    /// "there is a cursor" made the one state where the two disagree, a pointer resting on another
+    /// block after the chord, impossible to picture at all.
+    var cursorMovedLast = false
     var showsLensField = false
     var htmlBody = false
     /// A watch on the request block, so the timeline is placed by `stripPlacement` against a real
@@ -1170,7 +1177,9 @@ struct GridScene {
                                    : []
         // `hovered` stops being read directly anywhere below: it is the *pointer's* input to
         // `choose` and nothing else, and `raised` is the answer. Three places read it, and a
-        // picture with only one of them switched over is a picture of a bug.
+        // picture with only one of them switched over is a picture of a bug. Both of `choose`'s
+        // other inputs are the scene's own stored state, set by the case, so nothing here is
+        // derived differently from the way `Pane.render` derives it.
         let raised = BlockHover.choose(
             pointer: hovered.flatMap { id in
                 blocks.first { $0.region.id == id }
@@ -1178,8 +1187,7 @@ struct GridScene {
                                       headerRow: $0.showsHeader ? $0.visibleRows.lowerBound : nil) }
             },
             cursor: BlockHover.resolve(cursor: keyboardCursor, blocks: blocks, allowed: chromeAllowed),
-            pointerInside: hovered != nil,
-            cursorMovedLast: !keyboardCursor.isEmpty)?.id
+            cursorMovedLast: cursorMovedLast)?.id
 
         let failedColor = palette.readable(1)
         let runningColor = palette.readable(3)

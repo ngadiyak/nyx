@@ -1268,14 +1268,22 @@ public struct BlockHover: Equatable {
                           source: .cursor)
     }
 
-    /// Which of the two is drawn. The pointer wins while it is inside the pane; the cursor's
-    /// presentation returns when the pointer leaves, and takes precedence for as long as ⌘↑/⌘↓ was
-    /// the last thing pressed -- otherwise a pointer resting anywhere in the pane would make the
-    /// chord look broken.
+    /// Which of the two is drawn.
+    ///
+    /// The pointer wins **only when it has a block of its own**. It was "wins while it is inside
+    /// the pane", and inside the pane on no block -- resting two rows under the last command, or
+    /// anywhere on the blank screen of a short session -- returned nothing at all: brushing the
+    /// trackpad after ⌘↑ put out the only thing on screen saying where the keyboard was, and the
+    /// chord looked broken. There is no third state to draw, so "the pointer has no answer" and
+    /// "the pointer is outside the pane" are one case, and the cursor keeps the presentation.
+    ///
+    /// `cursorMovedLast` -- ⌘↑/⌘↓ was the last thing pressed, cleared by the next pointer move --
+    /// is what lets the cursor win over a pointer that *does* have a block: pressing the chord with
+    /// the pointer parked on another block has to move the strip to where the keyboard went.
     public static func choose(pointer: BlockHover?, cursor: BlockHover?,
-                              pointerInside: Bool, cursorMovedLast: Bool) -> BlockHover? {
-        if let cursor, cursorMovedLast || !pointerInside { return cursor }
-        return pointer
+                              cursorMovedLast: Bool) -> BlockHover? {
+        if let pointer, !cursorMovedLast { return pointer }
+        return cursor ?? pointer
     }
 }
 

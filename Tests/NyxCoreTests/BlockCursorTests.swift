@@ -133,11 +133,14 @@ private func session(_ script: [(command: String, output: [String], status: Int3
     #expect(t.blockCursorIDs.isEmpty)
 }
 
-/// Block id 0 is "no command" everywhere in this codebase -- `command(containingAbsoluteRow:)`
-/// answers a region with id 0 for rows above the first prompt -- so `commandToFold()` can hand back
-/// a seed that names nothing. Seeding on it would put the cursor on a block that cannot be found
-/// again, and every reader downstream (`BlockHover.resolve`, `BlockTarget.resolve`) would answer nil
-/// while the cursor claimed to be somewhere.
+/// Block id 0 is "no command" everywhere in this codebase, and a region can carry it:
+/// `command(containingAbsoluteRow:)` ends with `absoluteRow(start)?.commandID ?? 0`, so a region
+/// whose prompt row the scrollback has trimmed -- or whose marks arrived without an id -- has an id
+/// of 0, and `commandToFold()` can hand back a seed that names nothing. (A row *above* the first
+/// prompt is not that case: there is no region there at all, and nothing to seed from either way.)
+/// Seeding on 0 would put the cursor on a block that cannot be found again, and every reader
+/// downstream (`BlockHover.resolve`, `BlockTarget.resolve`) would answer nil while the cursor
+/// claimed to be somewhere.
 @Test func aViewportBlockOfZeroIsNotASeed() {
     #expect(BlockCursor.seed(BlockCursor(), visible: [20, 30], viewportBlock: 0) == nil)
     #expect(BlockCursor.seed(BlockCursor(commandID: 99), visible: [20], viewportBlock: 0) == nil)
@@ -252,4 +255,36 @@ private func session(_ script: [(command: String, output: [String], status: Int3
     #expect(up == .go(20))
     // The seed only: `moved` is never reached, so the buffer's block list is never asked for.
     #expect(counter.walks == 1)
+}
+
+// MARK: - The block an action acted on becomes the block the keyboard is on
+
+/// The lit block and the acted-on block could differ, and that is a trap either way round (PM P2).
+///
+/// Press ⌘↑ and the cursor lights block B. Nudge the pointer over block A -- the pointer wins while
+/// it is inside the pane -- and the strip moves to A while every block action still targets B: ⌘⇧A
+/// popped a menu of B's rows on a block drawn dark, and `Copy Command Output` copied B while A was
+/// the one the user could see was raised. With no cursor at all it was worse: ⌘⇧A popped
+/// twenty-nine rows belonging to `commandToFold()`'s block with nothing marking it anywhere.
+///
+/// So a block-scoped action *adopts* the block it resolved before acting on it. The acted-on block
+/// is then the lit one, whatever the pointer is doing, and the next ⌘↑ steps from where the last
+/// action landed rather than from where the keyboard was two actions ago.
+@Test func anActionAdoptsTheBlockItResolvedAsTheCursor() {
+    #expect(BlockCursor.adopted(BlockCursor(commandID: 20), resolved: 30).commandID == 30)
+    #expect(BlockCursor.adopted(BlockCursor(), resolved: 30).commandID == 30)
+    #expect(BlockCursor.adopted(BlockCursor(commandID: 30), resolved: 30).commandID == 30)
+}
+
+/// An action that resolved nothing changes nothing. It is about to beep, and clearing the cursor on
+/// the way would take the light off the block the user can see and was asking about.
+@Test func anActionThatResolvedNoBlockLeavesTheCursorAlone() {
+    #expect(BlockCursor.adopted(BlockCursor(commandID: 20), resolved: nil).commandID == 20)
+    #expect(BlockCursor.adopted(BlockCursor(), resolved: nil).isEmpty)
+}
+
+/// Block id 0 is "no command", as in `seed`: adopting it would light nothing and put the cursor
+/// somewhere `BlockTarget.resolve` then answers nil for.
+@Test func adoptingAnIDOfZeroIsNotAnAdoption() {
+    #expect(BlockCursor.adopted(BlockCursor(commandID: 20), resolved: 0).commandID == 20)
 }

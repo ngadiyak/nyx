@@ -862,6 +862,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         if dirty.takeAndClear() { render() } else { displayLink?.isPaused = true }
     }
 
+    /// One frame, on this call, for the two moments a frame cannot wait for the display link:
+    /// something is about to run a modal tracking loop (`NSMenu.popUp`), which does not drain the
+    /// link, so a `markDirty` before it is a frame the user sees only once the loop has ended.
+    private func renderNow() {
+        _ = dirty.takeAndClear()
+        render()
+    }
+
     /// The viewport mapping of the frame before this one. See `dirtyRows(of:top:)`.
     private var lastMapping: ViewportMapping?
 
@@ -3780,8 +3788,26 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     @discardableResult
     func performOnBlockCursor(_ action: BlockAction) -> Bool {
         guard let id = session.withTerminal({ self.targetBlockID(in: $0) }) else { return false }
+        adoptBlockCursor(id)
         perform(action, on: id)
         return true
+    }
+
+    /// The block an action just resolved becomes the block the keyboard is on, and takes the
+    /// presentation back from the pointer -- so the block that is acted on is the block that is
+    /// lit (PM P2). `BlockCursor.adopted` is the rule; this is the two lines of state it needs.
+    ///
+    /// Only at the act sites. Menu validation resolves the same block on every keystroke
+    /// (`hasBlockTarget`), and lighting one there would put a strip on a block nobody has asked
+    /// about yet.
+    private func adoptBlockCursor(_ resolved: UInt32?) {
+        let adopted = BlockCursor.adopted(blockCursor, resolved: resolved)
+        // The flag is set even when the cursor did not move: the point of it is that the pointer
+        // stops winning, and the pointer is exactly what made the acted-on block dark.
+        let changed = adopted != blockCursor || !blockCursorWinsOverPointer
+        blockCursor = adopted
+        blockCursorWinsOverPointer = true
+        if changed { markDirty() }
     }
 
     /// `block_actions`: the block menu, at the row of the block the keyboard is on.
@@ -3794,6 +3820,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     func showBlockActions() -> Bool {
         guard let id = session.withTerminal({ self.targetBlockID(in: $0) }),
               let menu = blockMenu(for: id) else { return false }
+        adoptBlockCursor(id)
+        // The frame *now*, not the one `markDirty` asks the display link for: `popUp` runs a modal
+        // tracking loop that does not drain the link, so the block the menu belongs to would take
+        // its tint the moment the menu closed -- a menu hanging over a dark block, which is the
+        // trap the adoption above exists to remove.
+        renderNow()
         menu.popUp(positioning: nil, at: blockMenuAnchor(forCommand: id), in: self)
         return true
     }
@@ -4233,6 +4265,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             return region.id
         }
         guard let id = commandID, id != 0 else { return false }
+        adoptBlockCursor(id)
         toggleFold(ofCommand: id, full: NSEvent.modifierFlags.contains(.option))
         return true
     }
@@ -4394,11 +4427,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// folds, and the same one ⌥-clicking its gutter mark selects.
     @discardableResult
     func selectCommandOutput() -> Bool {
-        let selection: Selection? = session.withTerminal { t in
+        let resolved: (id: UInt32, selection: Selection?)? = session.withTerminal { t in
             guard let region = self.targetBlock(in: t) else { return nil }
-            return t.selectionForOutput(of: region)
+            return (region.id, t.selectionForOutput(of: region))
         }
-        guard let selection else { return false }
+        // Adopted whatever came of the selection: the block was resolved, and a block with no
+        // output to select is still the block this action was about -- lighting it is how the
+        // refusal says which one it means.
+        adoptBlockCursor(resolved?.id)
+        guard let selection = resolved?.selection else { return false }
         session.withTerminal { t in _ = selectionController.replace(with: selection, in: t) }
         markDirty()
         return true

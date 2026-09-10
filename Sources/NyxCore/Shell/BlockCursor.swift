@@ -78,6 +78,27 @@ public struct BlockCursor: Equatable {
         return BlockCursor(commandID: fallback)
     }
 
+    /// The cursor after a block-scoped action resolved the block it is about to act on.
+    ///
+    /// The lit block and the acted-on block could differ, and that was a trap either way round
+    /// (PM P2). ⌘↑ lights block B; a pointer nudge over block A moves the strip to A, because the
+    /// pointer wins while it is inside the pane; and ⌘⇧A then popped B's menu over a block drawn
+    /// dark while A was the one visibly raised. With no cursor at all, ⌘⇧A popped twenty-nine rows
+    /// belonging to `commandToFold()`'s block with nothing marking it anywhere on the screen.
+    ///
+    /// So the action adopts what it resolved, *before* acting: the acted-on block is the lit one,
+    /// the pointer stops winning until it moves again, and the next ⌘↑ steps from where the last
+    /// action landed. `resolved` is `BlockTarget.resolve`'s answer, which is the cursor's own block
+    /// whenever there is one -- so on the ordinary path this changes nothing at all.
+    ///
+    /// nil resolves nothing and changes nothing: the caller is about to beep, and taking the light
+    /// off the block the user was asking about is not what a refusal means. 0 is "no command"
+    /// everywhere here, as in `seed`.
+    public static func adopted(_ current: Self, resolved: UInt32?) -> Self {
+        guard let resolved, resolved != 0 else { return current }
+        return BlockCursor(commandID: resolved)
+    }
+
     /// What one ⌘↑/⌘↓ press does. The whole press, so the sequence a user presses is testable.
     public enum Press: Equatable {
         /// Put the cursor on this block and bring the viewport to it.
@@ -152,7 +173,13 @@ public struct BlockCursor: Equatable {
     /// block `blockCursorIDs` excludes. That is why the press lands on the seed instead of stepping
     /// from it: `moved` from an id it cannot find falls back to the nearest survivor in the
     /// direction of travel, which is the right answer for the *second* press and the wrong one for
-    /// the first. A seed of 0 is no seed at all -- 0 is "no command" everywhere here.
+    /// the first.
+    ///
+    /// **A seed of 0 is no seed at all** -- 0 is "no command" everywhere here. It comes from a
+    /// region whose prompt row carries no command id (`command(containingAbsoluteRow:)` ends with
+    /// `absoluteRow(start)?.commandID ?? 0`): a row the scrollback has trimmed under a region that
+    /// still names it, or marks fed without one. It is *not* what a row above the first prompt
+    /// answers -- there the region itself is nil, and there is nothing to seed from either way.
     ///
     /// The press then **lands on the seed** rather than stepping past it -- the same thing `moved`
     /// does with an id scrollback has trimmed, for the same reason: the block filling the screen is

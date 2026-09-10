@@ -504,8 +504,14 @@ public final class Renderer {
         if let rows = f.highlightedRows, !rows.isEmpty {
             let top = Float(padding + max(0, rows.lowerBound) * m.height)
             let height = Float(min(rows.count, f.rows - max(0, rows.lowerBound)) * m.height)
-            let width = Float(f.cols * m.width)
-            let tint = rect(Float(padding), top, width, height, colors.blockHover)
+            // **From the window's own edge**, both paddings included, not from `padding` to
+            // `padding + cols × width`. The gutter's hover chevron is drawn in the left padding
+            // (`CommandBlockChrome.hoverChevronRect`), and a tint that began at column 0's ink ran
+            // its own edge down the middle of that triangle -- a vertical seam through the control
+            // the row grew to offer (D6). A row highlight that stops short of the window edge also
+            // reads as a band laid over the rows rather than as the rows themselves being lit.
+            let width = Float(f.cols * m.width + padding * 2)
+            let tint = rect(0, top, width, height, colors.blockHover)
             instances.insert(tint, at: 0)
         }
 

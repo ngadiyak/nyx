@@ -128,6 +128,20 @@ final class PromptGutterView: NSView {
                                markedRows: Array(caps.keys))
     }
 
+    /// A rect from Core, snapped to whole device pixels.
+    ///
+    /// The spine's own x and width are whole points (4 and 3 at the shipping padding), but `y` is
+    /// `topPadding + row × cellHeight` and a cell height is rarely a whole number: unsnapped, the
+    /// cap rendered soft -- 86 % coverage at the device pixels either side of the mark -- beside a
+    /// spine that rendered hard, which is half of what the design review read as "a bead on a
+    /// stick" (D5). `alignAllEdgesNearest` keeps the height as close to the row's as the grid
+    /// allows, which matters more than an exact height: two marks that each rounded *inwards* would
+    /// leave a hairline between them.
+    private func snapped(_ rect: (x: Double, y: Double, width: Double, height: Double)) -> NSRect {
+        backingAlignedRect(NSRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height),
+                           options: [.alignAllEdgesOutward])
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard cellHeight > 0 else { return }
@@ -140,44 +154,55 @@ final class PromptGutterView: NSView {
             // gutter is uncovered or composited, where drawing a screenful of caps to repaint two
             // rows is work nobody asked for.
             //
-            // At least 8 pt in both directions, and centred on the row rather than hung from its
-            // top: a hover chevron is an 8 pt path centred in the row, so at a row shorter than
-            // 8 pt (`line-height` can go that low) it reaches past both edges of the row itself,
-            // and a guard box the height of the row would skip a chevron the rect really covers.
-            let box = max(CGFloat(8), cellHeight)
-            guard dirtyRect.intersects(NSRect(x: markX, y: y - (box - cellHeight) / 2,
-                                              width: max(width, 8), height: box)) else { continue }
+            // At least the chevron's own size in both directions, and centred on the row rather
+            // than hung from its top: the chevron is a 6 pt path centred in the row, so at a row
+            // shorter than that (`line-height` can go that low) it reaches past both edges of the
+            // row itself, and a guard box the height of the row would skip a chevron the rect
+            // really covers. Started 6 pt to the left too, because the chevron is right-aligned to
+            // the mark's trailing edge and reaches back into the padding (D6).
+            let guardSize = max(CGFloat(CommandBlockChrome.hoverChevronSize), cellHeight)
+            guard dirtyRect.intersects(
+                NSRect(x: max(0, markX - CGFloat(CommandBlockChrome.hoverChevronSize)),
+                       y: y - (guardSize - cellHeight) / 2,
+                       width: width + CGFloat(CommandBlockChrome.hoverChevronSize),
+                       height: guardSize)) else { continue }
             // The faded mark's colour is resolved in Core rather than drawn as an alpha here: 40 %
             // of the solid mark measured 2.61:1 on nyx-dark and 1.78:1 on nyx-light against the
             // 3:1 floor a shape that is the only cue has to clear, and every one of the seven
             // built-ins needed raising. `Palette.fadedMark` keeps the 40 % wherever it reads.
             let solid = cap.tone.color(in: palette)
             let colour = nsColor(cap.shape == .faded ? palette.fadedMark(solid) : solid, alpha: 1)
+            // One rect for every shape, from Core, snapped to the pixel grid: the cap *is* the
+            // head of the spine, so it is the spine's rect and the shapes differ only in ink (D5).
+            let box = snapped(CommandBlockChrome.markRect(row: row, cellHeight: Double(cellHeight),
+                                                          topPadding: Double(topPadding),
+                                                          padding: Double(panePadding)))
             switch cap.shape {
-            case .solid, .faded:
-                // Inset top and bottom, so a cap reads as one command's mark and a run of them
-                // reads as several -- the bar below is the shape that joins up.
-                let box = NSRect(x: markX, y: y + 2, width: width, height: max(1, cellHeight - 4))
+            case .solid, .faded, .bar:
+                // Square ends and the whole row, so a block's own rows join up and a *failure* is
+                // no more continuous than a success -- it carries more ink because its colour runs
+                // down every row of the block, not because its head is a different shape
+                // (design §3.2, over a11y 6.2's half mark).
                 colour.setFill()
-                NSBezierPath(roundedRect: box, xRadius: width / 2, yRadius: width / 2).fill()
-            case .bar:
-                // The full row: a failure carries more ink than a success, because a failure is
-                // what has to be findable while scrolling (design §3.2, over a11y 6.2's half mark).
-                colour.setFill()
-                NSBezierPath(rect: NSRect(x: markX, y: y, width: width, height: cellHeight)).fill()
+                NSBezierPath(rect: box).fill()
             case .hollow:
-                let box = NSRect(x: markX, y: y + 2, width: width, height: max(1, cellHeight - 4))
+                // The same rect, stroked: still running. A tall outline against three tall filled
+                // shapes is a shape difference a reader can see, where a 1 pt interior in a
+                // 13 pt capsule was not.
                 colour.setStroke()
-                let ring = NSBezierPath(roundedRect: box.insetBy(dx: 0.5, dy: 0.5),
-                                        xRadius: width / 2, yRadius: width / 2)
+                let ring = NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5))
                 ring.lineWidth = 1
                 ring.stroke()
             case .chevronDown, .chevronRight:
-                // The only new mark this wave draws, and only under the pointer: an 8 pt path, in
-                // the block's own colour, in place of the cap. Nothing is added at idle.
+                // The only new mark this wave draws, and only under the pointer: a 6 pt path in the
+                // block's own colour, right-aligned to the mark's own trailing edge and extended
+                // only leftward into the padding, so it never touches column 0's ink (D6, P2).
                 colour.setFill()
                 chevron(pointingDown: cap.shape == .chevronDown,
-                        in: NSRect(x: markX, y: y + (cellHeight - 8) / 2, width: 8, height: 8)).fill()
+                        in: snapped(CommandBlockChrome.hoverChevronRect(
+                            row: row, cellHeight: Double(cellHeight),
+                            topPadding: Double(topPadding),
+                            padding: Double(panePadding)))).fill()
             }
         }
     }

@@ -942,3 +942,69 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
         measure: columns))
     #expect(placement.plan.pills.contains(.lens(name: "Raw", on: false)))
 }
+
+// MARK: - D5/D6/P2: the cap is the head of the spine, and the chevron stays in the padding
+
+/// **D5.** One rect for every mark shape, and it is the spine's own: same x, same 3 pt, the whole
+/// row. The cap was `y + 2` tall by `cellHeight - 4` with a 1.5 pt corner radius, which the design
+/// review measured at 10× as a soft capsule on a half-pixel boundary over a crisp stick, with a
+/// break above *and* below every head -- and `.bar` had neither inset nor radius, so a **failed**
+/// block's spine was continuous and a succeeded one's was not.
+@Test func everyMarkShapeIsTheSpinesOwnRect() {
+    let cell = 17.0
+    let rect = CommandBlockChrome.markRect(row: 3, cellHeight: cell, topPadding: 8, padding: 8)
+    #expect(rect.x == CommandBlockChrome.spineLeadingInset(padding: 8))
+    #expect(rect.width == CommandBlockChrome.spineWidth)
+    // The mark's **bottom** is the row's bottom, so the cap meets the first row of its own spine
+    // exactly and a block reads as one continuous 3 pt column from its head to its last row.
+    #expect(rect.y + rect.height == 8 + 4 * cell)
+    // The one surviving inset is at the top, and it is what holds one block apart from the next:
+    // a command's last output row and the next command's prompt row are adjacent, so dropping it
+    // outright would run two successive successes into one unbroken line.
+    #expect(rect.y == 8 + 3 * cell + CommandBlockChrome.markTopInset)
+    #expect(rect.height == cell - CommandBlockChrome.markTopInset)
+    // A row shorter than the inset still gets a mark rather than an inverted rect.
+    let tiny = CommandBlockChrome.markRect(row: 0, cellHeight: 1.5, topPadding: 0, padding: 8)
+    #expect(tiny.height > 0)
+}
+
+/// **D6, P2.** The chevron never reaches column 0's ink. It is 6 pt, right-aligned to the mark's own
+/// trailing edge, and extended only leftward into the padding -- so its right edge is at or before
+/// `padding` for every padding the mark itself is inside of.
+///
+/// At 8 pt across `markX` it spanned 4-12 pt while column 0 begins at `padding` = 8, so its right
+/// vertex sat inside the `$`'s bowl and the tint's edge cut the triangle in half.
+@Test func theHoverChevronStaysInsideThePadding() {
+    let cell = 17.0
+    for padding in [0.0, 1, 2, 3, 4, 6, 8, 12, 20] {
+        let box = CommandBlockChrome.hoverChevronRect(row: 2, cellHeight: cell, topPadding: 0,
+                                                      padding: padding)
+        #expect(box.x >= 0, "padding \(padding)")
+        #expect(box.width == box.height, "padding \(padding)")
+        // Never past the mark's own trailing edge…
+        let mark = CommandBlockChrome.markRect(row: 2, cellHeight: cell, topPadding: 0,
+                                               padding: padding)
+        #expect(box.x + box.width <= mark.x + mark.width + 0.001, "padding \(padding)")
+        // …and therefore never over column 0's ink, wherever the padding leaves the mark room for
+        // itself. Below 3 pt the mark is already drawing over column 0 (Addendum 2's trade), and
+        // between 3 and 6 the chevron **shrinks** to what the padding holds rather than reaching
+        // further across the first glyph: at `padding = 4` it is 4 pt, at 3 it is the mark's own
+        // 3 pt column. Only from 6 pt up is it the full 6.
+        if padding >= CommandBlockChrome.spineWidth {
+            #expect(box.x + box.width <= padding + 0.001, "padding \(padding)")
+        }
+        if padding >= CommandBlockChrome.hoverChevronSize {
+            #expect(box.width == CommandBlockChrome.hoverChevronSize, "padding \(padding)")
+        } else {
+            #expect(box.width == max(CommandBlockChrome.spineWidth, min(padding, 6)),
+                    "padding \(padding)")
+        }
+        // Centred on the row, so it is the head of the mark and not a bead beside it.
+        #expect(box.y + box.height / 2 == 2.5 * cell, "padding \(padding)")
+    }
+    // The shipping padding, spelled out: 1 pt to 7 pt, inside eight points of padding.
+    let shipping = CommandBlockChrome.hoverChevronRect(row: 0, cellHeight: cell, topPadding: 0,
+                                                       padding: 8)
+    #expect(shipping.x == 1)
+    #expect(shipping.width == 6)
+}

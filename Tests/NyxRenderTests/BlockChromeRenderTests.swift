@@ -111,6 +111,29 @@ private let spineColor = RGB(0, 255, 0)
     #expect(plain == Pixel(r: 0, g: 0, b: 0))
 }
 
+/// **D6.** The tint reaches the window's own edges, both paddings included.
+///
+/// It used to run from `padding` to `padding + cols × width`, so its left edge landed exactly where
+/// column 0's ink begins -- and the gutter's hover chevron is drawn in the *padding*, so the tint's
+/// own edge ran down the middle of the triangle and left a vertical seam through the control the
+/// hovered row had grown to offer.
+@Test func theTintReachesTheWindowsEdgesSoItCannotCutTheGutterChevron() throws {
+    let padding = 8
+    let (fonts, w, px) = try render(padding: padding, highlighted: 0..<1)
+    let tint = blockPalette().blockHoverBackground
+    let expected = Pixel(r: tint.r, g: tint.g, b: tint.b)
+    let y = padding + fonts.metrics.height / 2
+    // The leftmost pixel of the window, where the chevron's own leading edge is…
+    #expect(px(0, y) == expected)
+    // …every pixel of the left padding, which is where the whole chevron lives…
+    #expect(px(padding - 1, y) == expected)
+    // …and the right padding too, so the band is the row and not a strip laid over it.
+    #expect(px(w - 1, y) == expected)
+    // An unhovered row keeps the plain background in the same places.
+    let plainY = padding + fonts.metrics.height * 2 + fonts.metrics.height / 2
+    #expect(px(0, plainY) == Pixel(r: 0, g: 0, b: 0))
+}
+
 /// A selection (or a search hit, or a coloured cell, or the block cursor) is a background instance
 /// on top of the tint, not under it: it must stay visible on a hovered row, and only the cells with
 /// nothing else painted on them show the tint through.

@@ -690,6 +690,70 @@ public extension CommandBlockChrome {
     /// off the window (Addendum 2).
     static func spineLeadingInset(padding: Double) -> Double { min(4, max(0, padding - 3)) }
 
+    /// The mark's rect on one row, in points from the pane's top-left: `(x, y, width, height)`.
+    ///
+    /// **The same rect for every shape.** `.solid`, `.faded`, `.hollow` and `.bar` differ in *ink*
+    /// -- filled, faded, stroked -- and never in geometry, so the cap really is the head of the
+    /// spine (§2.2). It used to be `NSRect(x: markX, y: y + 2, height: cellHeight - 4)` with a
+    /// 1.5 pt corner radius, and the design review measured the result at 10×: the spine ran at
+    /// full strength across device pixels 8-13 with hard edges while the cap ran 9-12 with 86 % at
+    /// 8 and 13 and 10 % at 7 and 14 -- a soft capsule on a half-pixel boundary sitting on a crisp
+    /// stick, with a visible break above *and* below every head. "A green line with beads on it",
+    /// which is the defect §2.2 names in its own first paragraph, at 3 pt instead of 1 (D5).
+    ///
+    /// `.bar` had neither inset nor radius, so a *failed* block's spine was continuous and a
+    /// succeeded one's was not: two states differing in continuity for a reason that is not about
+    /// state. They are one rect now.
+    ///
+    /// The one inset that survives is at the **top**, and it is what separates one block from the
+    /// next rather than a block from its own spine. The design review offered both forms -- "keep a
+    /// top inset, or better, inset the block's last spine row's bottom" -- and the top is the one
+    /// that needs no second opinion: the mark's bottom is the row's bottom, so it meets the first
+    /// spine row exactly, while two adjacent blocks (a command's last output row and the next
+    /// command's prompt row) are held apart by the lower block's own cap. Dropping it outright
+    /// would run two successive successes into one unbroken green line, which is the *other* half
+    /// of what §2.2 means by "a green line with beads on it".
+    ///
+    /// A tuple of `Double`s rather than a `CGRect`: `NyxCore` has no CoreGraphics type in it. The
+    /// caller snaps it to the device pixel grid -- `y` is `topPadding + row × cellHeight` and a
+    /// cell height is rarely a whole number of points.
+    static let markTopInset: Double = 2
+    static func markRect(row: Int, cellHeight: Double, topPadding: Double,
+                         padding: Double) -> (x: Double, y: Double, width: Double, height: Double) {
+        let inset = min(markTopInset, max(0, cellHeight - 1))
+        return (x: spineLeadingInset(padding: padding),
+                y: topPadding + Double(row) * cellHeight + inset,
+                width: spineWidth, height: cellHeight - inset)
+    }
+
+    /// The hover chevron's box: 6 pt, square, right-aligned to the **mark's own trailing edge** and
+    /// extended only leftward into the padding.
+    ///
+    /// 8 pt at `x: markX` put it across 4-12 pt while column 0's ink begins at 8.5, so its right
+    /// vertex sat inside the `$`'s bowl -- and the hover tint's own left edge, then at `x = padding`,
+    /// ran down the middle of the triangle and left a vertical seam through the control (D6, P2).
+    /// Right-aligning it to `markX + spineWidth` keeps it inside the padding at any padding of 3 pt
+    /// or more, and narrows it to the mark's own 3 pt column below that rather than reaching across
+    /// the first glyph: at `padding = 0` the mark is already drawing over column 0's leading 3 pt
+    /// (Addendum 2's stated trade) and the chevron does no worse.
+    ///
+    /// Centred on the row, so at a `line-height` short enough it overhangs the rows either side --
+    /// which is what the *drawn* mark is allowed to do (§2.2) and what the gutter's draw guard box
+    /// already accounts for.
+    static func hoverChevronRect(row: Int, cellHeight: Double, topPadding: Double,
+                                 padding: Double) -> (x: Double, y: Double, width: Double,
+                                                      height: Double) {
+        let mark = spineLeadingInset(padding: padding)
+        let right = min(mark + spineWidth, max(padding, spineWidth))
+        let size = min(hoverChevronSize, right)
+        return (x: max(0, right - size),
+                y: topPadding + (Double(row) + 0.5) * cellHeight - size / 2,
+                width: size, height: size)
+    }
+    /// 6 pt, not the 8 the first take drew: 8 pt right-aligned inside 8 pt of padding leaves no room
+    /// for the mark itself, and 8 pt at the mark's leading edge is what landed on the `$`.
+    static let hoverChevronSize: Double = 6
+
     /// Which of a block's placed rows the *spine* is drawn on: everything below the row the cap
     /// owns. `placed` is the block's rows as display slots, `headOnScreen` is
     /// `CommandBlock.showsHeader`.

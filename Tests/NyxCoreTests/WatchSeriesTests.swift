@@ -374,11 +374,17 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
     series.runStarted(id: 1, at: 0)
     series.runFinished(id: 1, status: 200, exitStatus: 0, timeTotal: 0.1, body: "", at: 1)
     #expect(series.headerText == "run 1 · 200 · 100 ms · every 5 s")
-    let header = series.header(dots: 30)
+    let header = series.header()
     #expect(header.hiddenRuns == 0)
 }
 
-/// The timeline stops being silent about its cap: thirty dots and a `+N` in front of them.
+/// The timeline stops being silent about its cap: the dots it shows and a `+N` in front of them.
+///
+/// The cap is **twelve**, not the spec's thirty. Thirty dots on a 10 pt pitch is 300 pt -- 41 % of a
+/// 730 pt window, thirty-four columns -- so the W3 watch cell measured 76 of an 84-column pane, and
+/// a class whose content needs 76 of 84 is a special case rather than a class. The design review
+/// ruled the drawn timeline down to twelve with `+N` for the rest; the full series belongs to the ⋯
+/// menu or the watch panel, not to a 20 pt strip. W3's own threshold does not move.
 @Test func theTimelineSaysHowManyRunsItIsNotShowing() {
     var series = WatchSeries(plan: WatchPlan(interval: 1, stop: .never), command: "curl x",
                              startedAt: 0)
@@ -387,7 +393,24 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
         series.runFinished(id: id, status: 200, exitStatus: 0, timeTotal: 0.1, body: "",
                            at: Double(id) + 0.1)
     }
-    let header = series.header(dots: 30)
-    #expect(header.dots.count == 30)
-    #expect(header.hiddenRuns == 18)
+    // The default is the cap: nothing has to ask for twelve, and nothing that draws the strip may
+    // ask for more.
+    let header = series.header()
+    #expect(header.dots.count == 12)
+    #expect(header.hiddenRuns == 36)
+    // Fewer on request, and the count follows.
+    let fewer = series.header(dots: 4)
+    #expect(fewer.dots.count == 4)
+    #expect(fewer.hiddenRuns == 44)
+    // Under the cap there is nothing hidden and nothing claimed.
+    var young = WatchSeries(plan: WatchPlan(interval: 1, stop: .never), command: "curl x",
+                            startedAt: 0)
+    for id in UInt32(1)...4 {
+        young.runStarted(id: id, at: Double(id))
+        young.runFinished(id: id, status: 200, exitStatus: 0, timeTotal: 0.1, body: "",
+                          at: Double(id) + 0.1)
+    }
+    let small = young.header()
+    #expect(small.dots.count == 4)
+    #expect(small.hiddenRuns == 0)
 }

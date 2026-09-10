@@ -482,11 +482,26 @@ public struct WatchHeader: Equatable {
 public extension WatchSeries {
     /// The header for this series' newest run.
     ///
-    /// Thirty dots is the spec's number and about ten seconds of a one-second watch: enough that
-    /// the shape of a flapping endpoint is visible, few enough that the strip still fits on a
-    /// command line. The caller may ask for fewer; nothing may ask for more without the strip
-    /// growing past the row it is drawn on.
-    func header(dots n: Int = 30) -> WatchHeader {
+    /// **Twelve** dots, and `+N` for everything older.
+    ///
+    /// Thirty was the spec's number (§2.3) and it did not survive its own pictures. Thirty dots on a
+    /// 10 pt pitch is **300 pt** -- 41 % of a 730 pt window, thirty-four columns -- and the design
+    /// review's ruling names three reasons the strip cannot pay that: nobody reads a timeline
+    /// dot-by-dot; the extra dots carry no information even when drawn, because amber and red are
+    /// not separable by eye at 8 pt (finding 9, next wave); and §2.6's amendment made the dots
+    /// outlive `Copy`, which only pays off if they are cheap enough for the rest of the ladder to
+    /// survive them -- at thirty they were the reason it did not. The measured consequence was a W3
+    /// watch cell needing **76 of an 84-column pane**, and a width class whose content needs 76 of
+    /// 84 is not a class, it is a special case.
+    ///
+    /// At twelve the cell needs about forty columns, inside the ≥ 34 the class *promises*, and the
+    /// W3 threshold does not move (the ruling is explicit: do not raise it). Twelve is still a
+    /// minute of a five-second watch and still shows the shape of a flapping endpoint; the runs
+    /// past it are counted in `hiddenRuns` and drawn as `+N`, so the cap says how much it is hiding
+    /// rather than truncating in silence.
+    ///
+    /// The caller may ask for fewer. Asking for more grows the strip past the row it is drawn on.
+    func header(dots n: Int = 12) -> WatchHeader {
         // `n <= 0` is "no timeline", not "a cap the reader should be told about" -- `timeline`
         // already answers `[]` for it, and a `hiddenRuns` of every run ever made would claim a
         // cap that was never applied.

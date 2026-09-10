@@ -28,8 +28,8 @@ final class BlockHeaderView: NSView {
     /// The watch series' timeline, oldest run first. Its own view because it is the one thing on
     /// this strip that is neither a label nor a control: see `WatchDotsView`.
     private let dotsView = WatchDotsView(frame: .zero)
-    /// `+18`: the runs the thirty-dot cap is not showing. A label in the readout's font rather than
-    /// a thirty-first dot, so the cap says how much it is hiding instead of silently dropping it.
+    /// `+36`: the runs the twelve-dot cap is not showing. A label in the readout's font rather than
+    /// a thirteenth dot, so the cap says how much it is hiding instead of silently dropping it.
     private let overflow = NSTextField(labelWithString: "")
     private let readout = NSTextField(labelWithString: "")
     /// Pooled: the plan changes on any frame, and building four views per frame at 60 Hz to draw
@@ -206,7 +206,7 @@ final class BlockHeaderView: NSView {
         overflow.stringValue = plan.overflowDot ?? ""
         overflow.font = font
         // The dots' own neutral tone, in the readout's font, so `+18` reads as a label rather than
-        // as a thirty-first circle nobody can tell the colour of.
+        // as a thirteenth circle nobody can tell the colour of.
         overflow.textColor = nsColor(SummaryTone.plain.color(in: palette,
                                                              on: palette.blockHoverBackground),
                                      alpha: 1)

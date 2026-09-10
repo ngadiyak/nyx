@@ -12,7 +12,7 @@ import NyxCore
 /// the app uses. It was a hollow amber ring, which shares a hue with `redirect` and, at 6 pt,
 /// smudged into the filled dots beside it instead of standing apart from them.
 final class WatchDotsView: NSView {
-    /// 7 pt on a 10 pt pitch (§2.3). The old 6 pt on an 8 pt pitch put thirty circles in 238 pt
+    /// 7 pt on a 10 pt pitch (§2.3). The old 6 pt on an 8 pt pitch put the whole timeline in 238 pt
     /// and read as dirt.
     static let diameter: CGFloat = 7
     static let pitch: CGFloat = 10
@@ -69,7 +69,7 @@ final class WatchDotsView: NSView {
     override func accessibilityLabel() -> String? { "Recent runs" }
 
     /// The dots as words, because VoiceOver cannot read a colour: "3 ok, 1 failed, 1 running".
-    /// Counted rather than listed -- thirty spoken colours is not a summary of anything.
+    /// Counted rather than listed -- a dozen spoken colours is not a summary of anything.
     static func spoken(_ dots: [WatchSeries.Dot]) -> String {
         guard !dots.isEmpty else { return "no runs yet" }
         var parts: [String] = []

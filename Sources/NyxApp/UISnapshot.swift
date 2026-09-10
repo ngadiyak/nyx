@@ -1016,7 +1016,7 @@ enum UISnapshot {
     /// A watch of `runs` finished requests, still going or stopped.
     ///
     /// Never two runs: the timeline is the thing being looked at and a strip of two dots says
-    /// nothing about how thirty will read. Every fourth run is a 503 and every seventh a 301, so
+    /// nothing about how a full one will read. Every fourth run is a 503 and every seventh a 301, so
     /// all of the dot kinds are in every picture however long the series is.
     private static func watchSeries(runs: Int, running: Bool) -> WatchSeries {
         var series = WatchSeries(plan: WatchPlan(interval: 5, stop: .never), command: "curl x",
@@ -1313,9 +1313,10 @@ enum UISnapshot {
         // The watched block's header. Two questions: whether the dots read as a timeline (and
         // whether the filled accent "running" one is legible against the rest) and whether the
         // whole strip -- timeline, sentence, Stop, Actions -- is still a width a command line can
-        // find room for. Eleven runs, then exactly thirty, then more than thirty: the timeline is
-        // capped at thirty, and the picture at the cap and the picture past it are what say the cap
-        // holds, the strip stops growing, and `+18` says how much it is hiding.
+        // find room for. Four runs, then exactly twelve, then far past it: the timeline is capped at
+        // **twelve** (`WatchSeries.header(dots:)`, the design review's 76-of-84 ruling), and the
+        // picture at the cap and the picture past it are what say the cap holds, the strip stops
+        // growing, and `+36` says how much it is hiding.
         func watched(_ id: UInt32, _ series: WatchSeries) -> BlockHeader {
             BlockHeader(id: id, state: .finished, folded: false, hasOutput: true, anyFolds: false,
                         notifyArmed: false, summary: "",
@@ -1325,8 +1326,9 @@ enum UISnapshot {
         states += [
             ("watch-running", watched(18, watchSeries(runs: 11, running: true)), .w3),
             ("watch-finished", watched(19, watchSeries(runs: 11, running: false)), .w3),
-            ("watch-30-dots", watched(20, watchSeries(runs: 30, running: false)), .w3),
-            ("watch-past-30-dots", watched(21, watchSeries(runs: 48, running: false)), .w3),
+            ("watch-4-dots", watched(26, watchSeries(runs: 4, running: false)), .w3),
+            ("watch-12-dots", watched(20, watchSeries(runs: 12, running: false)), .w3),
+            ("watch-past-12-dots", watched(21, watchSeries(runs: 48, running: false)), .w3),
             // Stop goes nowhere: it is on every width, because a watch you cannot stop from the
             // strip is the one control here with a running side effect.
             ("watch-running-w2", watched(22, watchSeries(runs: 11, running: true)), .w2),

@@ -407,13 +407,14 @@ public extension CommandBlockChrome {
     static func stripContent(_ header: BlockHeader, at width: WidthClass) -> StripContent? {
         let list = pills(header, at: width)
         guard !list.isEmpty else { return nil }
-        // Thirty circles is the widest thing on the strip and the least of what it says, so the
-        // timeline goes at the first squeeze -- the sentence beside it still carries the run number
-        // and the last status.
+        // The timeline is the widest thing on the strip and the least of what it says, so it goes
+        // at the first squeeze -- the sentence beside it still carries the run number and the last
+        // status. Twelve dots on a 10 pt pitch is sixteen columns; thirty was thirty-four, which is
+        // the whole of W3's own promise (`WatchSeries.header(dots:)`).
         let dots = width == .w3 ? (header.watch?.dots ?? []) : []
         let hidden = width == .w3 ? (header.watch?.hiddenRuns ?? 0) : 0
-        // `+N` *replaces* the leading dot rather than joining it: thirty circles and a `+18` beside
-        // them would be thirty-one marks in the space the spec draws thirty.
+        // `+N` *replaces* the leading dot rather than joining it: twelve circles and a `+36`
+        // beside them would be thirteen marks in the space the cap allows twelve.
         let visibleDots = hidden > 0 ? Array(dots.dropFirst()) : dots
         return StripContent(readout: readout(header, at: width), readoutTone: header.tone,
                             dots: visibleDots, overflowDot: hidden > 0 ? "+\(hidden)" : nil, pills: list)

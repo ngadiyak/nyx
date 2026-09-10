@@ -72,8 +72,9 @@ enum GridSnapshot {
                           named: "composite-strip-tail-\(state.rawValue)-\(free)-\(suffix)")
                 }
                 // The timeline's own width and its `+N` cap: three run counts, because one cell of
-                // the state matrix cannot say what thirty circles do to a strip's width.
-                for runs in [4, 30, 48] {
+                // the state matrix cannot say what a full timeline does to a strip's width. Four,
+                // then exactly the twelve-dot cap, then far past it.
+                for runs in [4, 12, 48] {
                     write(canvas: canvas, palette: palette, appearance: appearance,
                           case: .hoverStripWatching(runs: runs), into: directory,
                           named: "composite-strip-watch-\(runs)-runs-\(suffix)")
@@ -951,6 +952,14 @@ struct GridScene {
     ///   leaves six columns of command, which is why the picture's `curl` is cut to `curl -sS`: the
     ///   W3 watch cell is only reachable at all on a very short command line, and the picture is the
     ///   honest way to say so.
+    ///
+    ///   The twelve-dot cap does **not** move this number, and the design review's "~40 columns at
+    ///   12 dots" does not survive being measured: this fixture is an *eleven*-run series, which was
+    ///   already under the old cap of thirty, so its cell is 67 columns either way (measured through
+    ///   the view's own `width(of:font:)`). The cap bites where a series is long -- 48 runs measures
+    ///   94 columns at thirty dots and **71** at twelve -- so what it buys is a strip that stops
+    ///   growing, not a narrower W3 cell. The sentence is the cost here: thirty-three of the
+    ///   sixty-seven.
     static func pictureFreeColumns(_ state: StripState,
                                    at width: CommandBlockChrome.WidthClass) -> Int {
         guard width == .w3 else { return freeColumns(for: width) }

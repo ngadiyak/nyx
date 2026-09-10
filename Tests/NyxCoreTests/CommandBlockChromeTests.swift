@@ -284,7 +284,7 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     #expect(placement.row == 5)
     #expect(placement.plan.pills == [.stop])
     let summaryRow = CommandBlockChrome.summaryPlacement(commandRows: rows, textCount: 32,
-                                                         chevronCount: 1, cols: 80)?.row
+                                                         cols: 80)?.row
     #expect(summaryRow == 4)
     #expect(!CommandBlockChrome.suppressesSummary(
         placement.plan, stripRow: placement.row,
@@ -404,6 +404,14 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     #expect(CommandBlockChrome.stripGroundHeight(cellHeight: 13) == 13)
 }
 
+/// Column 0's triangle gets the same 20 pt the gutter gets, for the same reason: it is one cell
+/// wide (about 8 pt) and one row tall (13 pt at `line-height 0.8`), which is not a target.
+@Test func theFoldTriangleGetsTheSameTargetTheGutterHas() {
+    #expect(CommandBlockChrome.foldColumnWidth == 20)
+    #expect(CommandBlockChrome.foldTriangleHit(cellHeight: 13) == (width: 20, height: 16))
+    #expect(CommandBlockChrome.foldTriangleHit(cellHeight: 24) == (width: 20, height: 24))
+}
+
 // MARK: - The two-stage placement, as the pane calls it
 
 /// The whole point of the two-stage placement: the strip that is measured is the strip that is
@@ -520,9 +528,11 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     #expect(elsewhere?.plan.readout == "run 31 · 200")
 }
 
-/// A summary that only had room for its chevron is not a sentence anybody can read, so there is
-/// nothing for the strip to repeat -- and nothing it can speak for either.
-@Test func aChevronOnlySummaryProtectsNothingAndIsNotSpokenFor() throws {
+/// A row that had no space for the whole sentence carries none of it, so there is nothing for the
+/// strip to repeat -- and nothing it can speak for either. (`suppressesSummary` keeps the empty-text
+/// guard because a `PlacedSummary` is a tuple any caller can build, not because a placement can be
+/// empty: `summaryPlacement` refuses a row rather than shortening the sentence on it.)
+@Test func aSummaryThatDidNotFitProtectsNothingAndIsNotSpokenFor() throws {
     let h = header(summary: "8.8s")
     let placement = try #require(CommandBlockChrome.stripPlacement(
         h, commandRows: [(absoluteRow: 4, lastUsedColumn: 40)], cols: 84,

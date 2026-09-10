@@ -218,3 +218,38 @@ private func text(_ row: Row) -> String {
     #expect(lens.dim != LensPalette.standard.dim)
     #expect(lens.dim.kind == .rgb)
 }
+
+// MARK: - Where a lens line's fold control actually is
+
+/// §2.4 narrows a lens line's fold target from the whole row to the marker, so a reader can drag
+/// across the text beside it. The spec says that marker is at column 0; in a pretty-printed body it
+/// is not, because `JSONDocument` writes the indent and the key before it. This is the column it
+/// really occupies, so the pointing hand and the click land on the glyph the eye picked.
+@Test func aLensLineKnowsWhichColumnItsFoldMarkerIsIn() {
+    let lines = [
+        LensLine("\u{25B8} 5 headers \u{b7} content-type: application/json",
+                 node: ResponseLens.headersNode),          // the headers line: column 0
+        LensLine("{", node: NodePath([])),                  // an open root: the bracket, column 0
+        LensLine("  \"results\": \u{25B8} [\u{2026}] 40 items,",
+                 node: NodePath([.key("results")])),        // folded, indented, after the key
+        LensLine("  \"users\": [", node: NodePath([.key("users")])),  // open: its bracket
+        LensLine("    \"id\": 1,"),                          // not a fold point at all
+    ]
+    let b = buffer(lines)
+    #expect(b.foldMarkerColumn(line: 0) == 0)
+    #expect(b.foldMarkerColumn(line: 1) == 0)
+    #expect(b.foldMarkerColumn(line: 2) == 13)
+    #expect(b.foldMarkerColumn(line: 3) == 11)
+    #expect(b.foldMarkerColumn(line: 4) == nil)
+    #expect(b.foldMarkerColumn(line: 99) == nil)
+}
+
+/// Measured in cells, like everything else a lens hands the grid: a wide glyph in a key is two
+/// columns, and a marker column counted in Characters would put the target one cell left of the
+/// triangle for every such line.
+@Test func theFoldMarkerColumnIsCountedInCellsNotCharacters() {
+    let b = buffer([LensLine("  \"\u{65E5}\u{672C}\": \u{25B8} [\u{2026}] 2 items",
+                             node: NodePath([.key("\u{65E5}\u{672C}")]))])
+    // 2 spaces + `"` + 日本 (4 cells) + `"` + `:` + space = 10
+    #expect(b.foldMarkerColumn(line: 0) == 10)
+}

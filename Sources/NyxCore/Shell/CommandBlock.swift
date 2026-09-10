@@ -130,36 +130,31 @@ public enum CommandBlockChrome {
         return start..<cols
     }
 
-    /// Which of a command's rows carries its summary, and how much of it fits.
+    /// Which row of a command carries its summary, and which columns.
     ///
     /// `summaryColumns` alone answers "does the whole thing fit on this row", and the answer for a
-    /// realistic pasted `curl` in a 100-column pane -- or for any narrow split -- is no. That lost
-    /// the chevron, which is the only thing on the row that folds the block: the status is a nicety
-    /// and the control is not. So this walks the command's rows from the last to the first (a
-    /// wrapped command line has several, and the last is usually the shortest), takes the first row
-    /// with room for the whole summary, falls back to the first with room for the chevron alone,
-    /// and only then gives up -- at which point the gutter mark is what folds the block.
+    /// realistic pasted `curl` in a 100-column pane -- or for any narrow split -- is no. So this
+    /// walks the command's rows from the last to the first (a wrapped command line has several, and
+    /// the last is usually the shortest) and takes the first with room for the whole sentence.
     ///
-    /// Placing it is one rule for the same reason `summaryColumns` is: the renderer draws it, the
-    /// pane records the click target, and the hover overlay attaches to it. Three call sites
-    /// deciding separately is three ways for the pixels, the click and the strip to disagree --
-    /// and the overlay placed from the prompt row alone painted over the command's own text on
-    /// exactly the rows where the summary had been refused.
+    /// It used to fall back to a row with room for the chevron alone, because the chevron was the
+    /// only thing on that row that folded the block. It no longer folds anything -- the gutter cap
+    /// does, at every width, and it costs no columns -- so a row with no room for the whole summary
+    /// simply carries none, and the reader loses a nicety rather than a control (§2.4).
+    ///
+    /// Placing it is one rule for the same reason `summaryColumns` is: the renderer draws it and the
+    /// strip's suppression rule compares against it. Two call sites deciding separately is two ways
+    /// for the pixels and the strip to disagree -- and the overlay placed from the prompt row alone
+    /// painted over the command's own text on exactly the rows where the summary had been refused.
     public static func summaryPlacement(commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
-                                        textCount: Int, chevronCount: Int, cols: Int) -> SummaryPlacement? {
-        var chevronOnly: SummaryPlacement?
+                                        textCount: Int, cols: Int) -> SummaryPlacement? {
         for row in commandRows.reversed() {
             if let columns = summaryColumns(textCount: textCount, cols: cols,
                                             lastUsedColumn: row.lastUsedColumn) {
-                return SummaryPlacement(row: row.absoluteRow, columns: columns, text: .full)
-            }
-            if chevronOnly == nil,
-               let columns = summaryColumns(textCount: chevronCount, cols: cols,
-                                            lastUsedColumn: row.lastUsedColumn) {
-                chevronOnly = SummaryPlacement(row: row.absoluteRow, columns: columns, text: .chevronOnly)
+                return SummaryPlacement(row: row.absoluteRow, columns: columns)
             }
         }
-        return chevronOnly
+        return nil
     }
 }
 
@@ -552,27 +547,28 @@ public extension CommandBlockChrome {
     static func stripGroundHeight(cellHeight: Double) -> Double { cellHeight }
     /// Column 0's fold triangle, widened to the same 20 pt the gutter uses, for the same reason.
     static let foldColumnWidth: Double = 20
+    /// A column-0 triangle's target: 20 pt wide, `hitRowHeight` tall. The same 20 pt the gutter
+    /// uses, so the two fold controls on screen are the same size (§2.4, §8.4).
+    ///
+    /// A tuple of `Double`s rather than a `CGSize`: `NyxCore` has no CoreGraphics type in it.
+    static func foldTriangleHit(cellHeight: Double) -> (width: Double, height: Double) {
+        (width: foldColumnWidth, height: hitRowHeight(cellHeight: cellHeight))
+    }
 }
 
-/// Where a block's summary ended up: which row of the command, which columns, and whether the whole
-/// thing fits there or only the chevron does.
+/// Where a block's summary ended up: which row of the command, and which columns.
+///
+/// It carries no variant any more. There used to be a `chevronOnly` one, because the chevron on the
+/// end of the sentence was a control and had to survive a crowded row; it is a readout now, so a
+/// row either has space for the whole sentence or shows none of it (§2.4).
 public struct SummaryPlacement: Equatable {
-    public enum Variant: Equatable {
-        /// `exit 1 · 8.8s ▾`.
-        case full
-        /// The chevron on its own. The decision was "the chevron is always visible", so when a
-        /// command line crowds the row it is the status that gives way, not the control.
-        case chevronOnly
-    }
-
     /// In whatever space the caller passed its rows in -- absolute rows from the pane, so it can be
     /// mapped back to a display slot through the same map the text went through.
     public let row: Int
     public let columns: Range<Int>
-    public let text: Variant
 
-    public init(row: Int, columns: Range<Int>, text: Variant) {
-        self.row = row; self.columns = columns; self.text = text
+    public init(row: Int, columns: Range<Int>) {
+        self.row = row; self.columns = columns
     }
 }
 
@@ -800,21 +796,6 @@ public struct BlockHeader: Equatable {
     /// pick a colour, kept here rather than re-derived at each call site so a third one cannot
     /// switch on `state` a different way and disagree.
     public var failed: Bool { if case .failed = state { return true } else { return false } }
-
-    public var chevron: String {
-        guard hasOutput else { return "" }
-        return folded ? "\u{25B8}" : "\u{25BE}"
-    }
-
-    /// What the renderer draws at the end of the command row: the summary, a space, the chevron.
-    public var summaryWithChevron: String {
-        switch (summary.isEmpty, chevron.isEmpty) {
-        case (true, true): return ""
-        case (true, false): return chevron
-        case (false, true): return summary
-        case (false, false): return summary + " " + chevron
-        }
-    }
 
     /// The ⋯ menu, in order, each with whether it can do anything right now.
     ///

@@ -126,10 +126,12 @@ private let spineColor = RGB(0, 255, 0)
     #expect(px(plainX, y) == Pixel(r: tint.r, g: tint.g, b: tint.b))
 }
 
-/// The chevron is a real glyph at the end of the summary, in the summary's colour.
-@Test func theSummaryEndsInAChevron() throws {
+/// The summary is drawn to its own last cell, in its own colour. It used to end in a chevron; that
+/// chevron was a control and the gutter cap is the control now, so what the renderer is handed here
+/// is the sentence and nothing else (§2.4).
+@Test func theSummaryIsDrawnToItsLastCell() throws {
     let (fonts, w, px) = try render(cols: 12, padding: 0,
-                                    summaries: [(row: 0, text: "8.8s \u{25BE}", color: RGB(0, 255, 0))])
+                                    summaries: [(row: 0, text: "8.8s", color: RGB(0, 255, 0))])
     let lastCell = (w - fonts.metrics.width)..<w
     var ink = 0
     for x in lastCell { for y in 0..<fonts.metrics.height where px(x, y).g > 100 { ink += 1 } }

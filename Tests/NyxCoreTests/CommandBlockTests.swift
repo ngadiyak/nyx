@@ -211,40 +211,24 @@ private func foldedSession() -> (terminal: Terminal, folding: OutputFolding) {
 
 // MARK: - Where the summary actually goes
 
-// A command line long enough to reach the summary's columns used to mean no summary at all, so a
-// pasted `curl` in a 100-column pane lost the one control that folds it. These decide which of the
-// command's rows carries it, and what fits there.
+// A command line long enough to reach the summary's columns means no summary on that row, so a
+// pasted `curl` in a 100-column pane puts it on whichever of its wrapped rows has room -- and on
+// none of them, carries none. Nothing is lost but a nicety: the gutter cap is the control.
 
-@Test func theSummaryGoesOnTheCommandRowWhenItFits() {
+/// The summary is a readout. It keeps its right alignment and loses its chevron, so the only
+/// chevron-shaped things left on screen are controls: the gutter cap under the pointer and the
+/// column-0 triangles.
+@Test func theSummaryIsARowOfTextAndNoLongerAControl() {
     let placement = CommandBlockChrome.summaryPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 9)], textCount: 10, chevronCount: 1, cols: 40)
-    #expect(placement == SummaryPlacement(row: 4, columns: 30..<40, text: .full))
-}
-
-/// One row, filled to the last column: there is nowhere for the summary and nowhere for the
-/// chevron either, and the gutter mark is what folds the block.
-@Test func aCommandFillingItsOnlyRowLeavesNowhereForTheSummary() {
-    let placement = CommandBlockChrome.summaryPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 39)], textCount: 10, chevronCount: 1, cols: 40)
-    #expect(placement == nil)
-}
-
-/// A wrapped command line has several rows and the last is usually the shortest, so that is where
-/// the summary goes rather than nowhere.
-@Test func aWrappedCommandPutsTheSummaryOnItsLastRow() {
-    let placement = CommandBlockChrome.summaryPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 9)], textCount: 10, cols: 40)
+    #expect(placement == SummaryPlacement(row: 4, columns: 30..<40))
+    // A command line that reaches into the summary's columns takes the whole summary with it: there
+    // is no chevron-only fallback any more, because the chevron was the control and the gutter is.
+    #expect(CommandBlockChrome.summaryPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 39)], textCount: 10, cols: 40) == nil)
+    #expect(CommandBlockChrome.summaryPlacement(
         commandRows: [(absoluteRow: 4, lastUsedColumn: 39), (absoluteRow: 5, lastUsedColumn: 12)],
-        textCount: 10, chevronCount: 1, cols: 40)
-    #expect(placement == SummaryPlacement(row: 5, columns: 30..<40, text: .full))
-}
-
-/// Both rows reach into the summary's columns, but the last leaves one free cell: the user's rule
-/// is that the chevron is always visible, so the status is what gives way.
-@Test func aLongCommandKeepsItsChevronWhenTheStatusNoLongerFits() {
-    let placement = CommandBlockChrome.summaryPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 39), (absoluteRow: 5, lastUsedColumn: 37)],
-        textCount: 10, chevronCount: 1, cols: 40)
-    #expect(placement == SummaryPlacement(row: 5, columns: 39..<40, text: .chevronOnly))
+        textCount: 10, cols: 40) == SummaryPlacement(row: 5, columns: 30..<40))
 }
 
 /// The overlay belongs on the row the summary was actually placed on -- a wrapped command line puts

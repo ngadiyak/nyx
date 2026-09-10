@@ -13,26 +13,24 @@ private func block(_ region: CommandRegion) -> CommandBlock {
     CommandBlock(region: region, visibleRows: 0..<6, showsHeader: true)
 }
 
-@Test func aFinishedCommandSummarisesStatusAndTimeWithAnOpenChevron() {
+@Test func aFinishedCommandSummarisesStatusAndTime() {
     let h = block(region(status: 1)).header(now: 100, folding: OutputFolding(), notifyArmed: false, anyFolds: false, hasOutput: true)
     #expect(h.state == .failed(status: 1))
     #expect(h.summary == "exit 1 · 8.8s")
-    #expect(h.chevron == "\u{25BE}")
-    #expect(h.summaryWithChevron == "exit 1 · 8.8s \u{25BE}")
 }
 
-@Test func aQuickSuccessShowsOnlyTheChevron() {
+/// A command that took a fifth of a second has nothing worth saying, so its row carries no summary
+/// at all -- there is no chevron left to keep it on screen (§2.4).
+@Test func aQuickSuccessHeaderSaysNothing() {
     let h = block(region(duration: 0.2)).header(now: 100, folding: OutputFolding(), notifyArmed: false, anyFolds: false, hasOutput: true)
     #expect(h.summary == "")
-    #expect(h.summaryWithChevron == "\u{25BE}")
 }
 
-@Test func aFoldedBlockPointsRight() {
+@Test func aFoldedBlockKnowsItIsFolded() {
     var f = OutputFolding()
     f.fold(4, .all)
     let h = block(region()).header(now: 100, folding: f, notifyArmed: false, anyFolds: true, hasOutput: true)
     #expect(h.folded)
-    #expect(h.chevron == "\u{25B8}")
 }
 
 @Test func aRunningCommandCountsUpAfterOneSecond() {
@@ -45,12 +43,13 @@ private func block(_ region: CommandRegion) -> CommandBlock {
     #expect(later.summary == "12s")
 }
 
-@Test func aCommandWithoutOutputHasNoChevronAndNoOutputActions() {
+/// A `sleep 10` one second in has nothing to fold. That rule still decides the gutter cap and the
+/// strip's `Fold` pill, which is why `hasOutput` and the disabled `.toggleFold` are still asserted.
+@Test func aCommandWithoutOutputHasNoOutputActions() {
     let h = block(region(output: 0, started: false)).header(now: 100, folding: OutputFolding(),
                                                             notifyArmed: false, anyFolds: false,
                                                             hasOutput: false)
     #expect(!h.hasOutput)
-    #expect(h.chevron == "")
     #expect(h.actions.first { $0.action == .copyOutput }?.enabled == false)
     #expect(h.actions.first { $0.action == .toggleFold }?.enabled == false)
 }
@@ -108,7 +107,6 @@ private func httpSummary(_ text: String, _ tone: HTTPSummary.Tone) -> HTTPSummar
                                       anyFolds: false, hasOutput: true,
                                       httpSummary: httpSummary("200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json", .success))
     #expect(http.summary == "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json")
-    #expect(http.summaryWithChevron == "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json \u{25BE}")
     #expect(http.tone == .success)
 }
 

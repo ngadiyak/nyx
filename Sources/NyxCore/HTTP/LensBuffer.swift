@@ -244,6 +244,30 @@ public struct LensBuffer: Equatable {
         return text.count
     }
 
+    /// Which column a foldable line's marker is drawn in, or nil when the line is not a fold point.
+    ///
+    /// §2.4 narrows a lens line's fold target from the whole row to the marker glyph, so that the
+    /// text beside it can be dragged across and selected. That needs the marker's column, and the
+    /// spec's "column 0" is only true of the headers line and the root bracket: `JSONDocument`
+    /// writes the indent and the key first, so `"results": ▸ […] 40 items,` carries its triangle at
+    /// column 13. A 20 pt box at column 0 on that row would be a pointing hand over blank indent
+    /// and a fold nothing could reach with a mouse.
+    ///
+    /// A folded container shows a `▸`; an open one shows no triangle at all, and its marker is the
+    /// bracket it ends in (`{`, `"users": [`). Hence: the first triangle if there is one, else the
+    /// last glyph that is not a space. (A *key* containing a `▸` would win the search over the real
+    /// marker. It costs a misplaced 20 pt box on that one line and nothing else, which is cheaper
+    /// than a rule that has to parse the line.)
+    public func foldMarkerColumn(line index: Int) -> Int? {
+        guard let line = line(index), line.node != nil else { return nil }
+        let text = line.text
+        let marker = text.firstIndex(where: { $0 == "\u{25B8}" || $0 == "\u{25BE}" })
+            ?? text.lastIndex(where: { $0 != " " })
+        guard let marker else { return nil }
+        let offset = text.distance(from: text.startIndex, to: marker)
+        return columnRange(ofCharacters: offset ..< (offset + 1), line: index).lowerBound
+    }
+
     /// The cells a run of Characters occupies, for drawing a selection over them.
     public func columnRange(ofCharacters characters: Range<Int>, line index: Int) -> Range<Int> {
         guard let text = line(index)?.text else { return 0 ..< 0 }

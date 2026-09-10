@@ -453,39 +453,23 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         }
     }
 
-    /// The subviews (gutter, sticky strip, block header overlay) plus one element per block's
-    /// chevron, which is drawn in Metal as a glyph and has nothing else in the view hierarchy to
-    /// report it. Without this the fold control is invisible to VoiceOver even while the mouse can
-    /// click it.
+    /// The subviews (gutter, sticky strip, block header overlay) plus one element per fold
+    /// placeholder, which is drawn in Metal as a row of cells and has nothing else in the view
+    /// hierarchy to report it. Without this a folded block could be opened with a mouse and by no
+    /// other means.
+    ///
+    /// The in-grid summary has no element here any more. It used to have one because its chevron
+    /// was a fold control; the chevron is gone and the sentence is a readout (§2.4), and the fold
+    /// control VoiceOver reaches on a command row is the gutter cap's, which `PromptGutterView`
+    /// publishes with a real label at every width -- including the narrow ones where the strip has
+    /// no `Fold` pill.
     override func accessibilityChildren() -> [Any]? {
         var children = subviews.filter { !$0.isHidden } as [Any]
-        let cell = cellSizePoints
-        // The strip carries a `Fold`/`Unfold` pill only at its wider classes, and that pill is an
-        // element of its own through `blockHeader` above. Where it does not -- W1, W0, a watched
-        // block -- the drawn summary on that row is still the only fold control the row has, so its
-        // element stays. Skipping it whenever a strip was up left the row with no way to fold from
-        // VoiceOver at exactly the widths that have the fewest controls.
-        let coveredRow = blockHeader.isHidden || hoverStripPlan?.pills.contains(where: {
-            if case .fold = $0 { return true } else { return false }
-        }) != true ? nil : hoveredBlock?.headerRow
-        for (row, columns) in summaryColumnsOnScreen {
-            if let coveredRow, coveredRow == row { continue }
-            guard let header = headersOnScreen[row], header.hasOutput else { continue }
-            let frame = NSRect(x: padding + CGFloat(columns.lowerBound) * cell.width,
-                               y: bounds.height - padding - CGFloat(row + 1) * cell.height,
-                               width: CGFloat(columns.count) * cell.width, height: cell.height)
-            children.append(DrawnControlElement.make(
-                label: "\(header.title(for: .toggleFold)) of the command on line \(row + 1)",
-                role: .button, frame: frame, in: self,
-                press: { [weak self] in self?.toggleFold(ofCommand: header.id, full: false) }))
-        }
-        // The fold placeholder is a button -- clicking it puts the output back -- and it is drawn
-        // as a row of cells, so nothing in the view hierarchy reports it. Without this, a folded
-        // block could be opened with a mouse and by no other means.
         for (row, entry) in foldRowsOnScreen.enumerated() {
             guard case .fold(let id, let hidden, _) = entry, id != 0 else { continue }
-            let frame = NSRect(x: padding, y: bounds.height - padding - CGFloat(row + 1) * cell.height,
-                               width: bounds.width - padding * 2, height: cell.height)
+            // The same box the pointer gets, from the same rule: one row of cells is 13 pt at
+            // `line-height 0.8`, below the floor for a target VoiceOver rings (§8.4).
+            let frame = foldPlaceholderRect(onVisibleRow: row)
             children.append(DrawnControlElement.make(
                 label: "Unfold the \(hidden) hidden lines of the command on line \(row + 1)",
                 role: .button, frame: frame, in: self,
@@ -2078,7 +2062,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                         mark: block.failed ? .failed : (block.isRunning ? .running : .succeeded),
                         folded: header.folded, hasOutput: header.hasOutput, line: promptSlot + 1)
                 }
-                let text = header.summaryWithChevron
+                // The sentence only. The chevron that used to follow it was a control, and the
+                // gutter cap is the control now: what stays here is a readout (§2.4).
+                let text = header.summary
                 // Every row of the command line is a candidate, not just the prompt row: a pasted
                 // `curl` wraps, and the row that has room is usually the last one.
                 let lastCommandRow = block.region.outputStart.map { $0 - 1 } ?? block.region.promptRow
@@ -2093,14 +2079,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                     }
                 }
                 // Where the summary would go if there were no strip at all, asked first so the
-                // suppression rule can compare what the two of them say. The *sentence* it would
-                // show there, empty when only the chevron fitted: a row showing nothing but `▾` has
-                // no fact for the strip to protect.
+                // suppression rule can compare what the two of them say. A row with no room for the
+                // whole sentence carries none of it, so whatever is placed is the whole fact.
                 let summaryHere = text.isEmpty ? nil : CommandBlockChrome.summaryPlacement(
-                    commandRows: candidates, textCount: text.count,
-                    chevronCount: header.chevron.count, cols: t.cols)
+                    commandRows: candidates, textCount: text.count, cols: t.cols)
                 let placedSummary: CommandBlockChrome.PlacedSummary? = summaryHere.map {
-                    (row: $0.row, text: $0.text == .full ? header.summary : "")
+                    (row: $0.row, text: text)
                 }
                 // The hovered block's strip is placed by the same ladder against the same rows,
                 // from the view's own measured width. Measured here, under the lock, because the
@@ -2141,12 +2125,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 notesSpokenFor.insert(slot)
                 notesSpokenFor.insert(promptSlot)
                 // A running block used to differ from a finished one only by the digit in the
-                // elapsed time -- the same grey `12s ▾` a finished command's `12s ▾` shows. The
+                // elapsed time -- the same grey `12s` a finished command's `12s` shows. The
                 // theme's running colour is the one the spine already uses for the same state,
                 // so a glance down the screen says which command is still going. `tone` is the same
                 // ladder the hover strip and the sticky strip use, so a 404 is red in all three.
-                return (row: slot, text: placement.text == .full ? text : header.chevron,
-                        color: header.tone.color(in: t.palette))
+                return (row: slot, text: text, color: header.tone.color(in: t.palette))
             }
             // The overlay goes where it fits, which is not always the prompt row: a strip placed
             // from the prompt row alone and sized only from its own content painted over the end of
@@ -2693,27 +2676,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let wasEmpty = selection == nil || selection?.isEmpty == true
         if selectionController.end() { markDirty() }
         if config.copyOnSelect, selection != nil { copy(nil) }
-        // The summary -- `exit 1 · 8.8s ▾` -- is a target of its own, checked before the spine: the
-        // two never overlap, but the summary is the more specific claim on the click.
-        if wasEmpty, event.clickCount == 1,
-           toggleFoldOnSummary(at: convert(event.locationInWindow, from: nil),
-                               full: event.modifierFlags.contains(.option)) { return }
         // A click that selected nothing is a click, not a drag. On the command line that means
         // "put the caret here" -- which is how anyone expects to fix one value in the middle of a
         // pasted `curl`, rather than holding an arrow key.
         if wasEmpty, event.clickCount == 1 {
             moveShellCaret(to: convert(event.locationInWindow, from: nil))
         }
-    }
-
-    /// A click on a block's summary -- `exit 1 · 8.8s ▾` -- folds and unfolds it. ⌥ folds fully.
-    private func toggleFoldOnSummary(at point: NSPoint, full: Bool) -> Bool {
-        guard let row = visibleRow(at: point), let columns = summaryColumnsOnScreen[row],
-              let header = headersOnScreen[row], header.hasOutput else { return false }
-        let column = Int((Double(point.x) - Double(padding)) / Double(cellSizePoints.width))
-        guard columns.contains(column) else { return false }
-        toggleFold(ofCommand: header.id, full: full)
-        return true
     }
 
     /// The one place a fold is toggled from a control, so every route agrees on the shape.
@@ -3133,9 +3101,36 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         markDirty()
     }
 
+    /// The box of one in-grid fold triangle: 20 pt by `hitRowHeight`, centred on its row and on the
+    /// column the marker is actually drawn in. One rule, because the pointing hand and the click
+    /// have to agree about where the control is -- they disagreed about the old summary chevron for
+    /// two releases (§2.4).
+    private func foldTriangleRect(onVisibleRow visible: Int, markerColumn column: Int) -> NSRect {
+        let cell = cellSizePoints
+        let box = CommandBlockChrome.foldTriangleHit(cellHeight: Double(cell.height))
+        let centre = bounds.height - padding - (CGFloat(visible) + 0.5) * cell.height
+        return NSRect(x: padding + CGFloat(column) * cell.width,
+                      y: centre - CGFloat(box.height) / 2,
+                      width: CGFloat(box.width), height: CGFloat(box.height))
+    }
+
+    /// The fold placeholder's box: the whole row, at the same height floor. It is a control end to
+    /// end -- there is no content on it to select past.
+    private func foldPlaceholderRect(onVisibleRow visible: Int) -> NSRect {
+        let cell = cellSizePoints
+        let box = CommandBlockChrome.foldTriangleHit(cellHeight: Double(cell.height))
+        let centre = bounds.height - padding - (CGFloat(visible) + 0.5) * cell.height
+        return NSRect(x: padding, y: centre - CGFloat(box.height) / 2,
+                      width: max(0, bounds.width - padding * 2), height: CGFloat(box.height))
+    }
+
     /// The pointing hand is a cursor rect rather than a `NSCursor.set()`, so AppKit restores the
     /// arrow on its own when the pointer leaves the link -- and when it leaves the window entirely.
-    /// Two independent things can claim it at once: a link, and a block's summary.
+    ///
+    /// Everything it is placed on is a control: a link, a lens line's fold triangle, a fold
+    /// placeholder. The in-grid summary is not one of them any more, which is what makes the hand
+    /// truthful -- it used to be offered on a chevron that was the only clickable thing on a row of
+    /// unclickable text beside it (§2.4).
     private func updateHoverCursor() {
         let cell = cellSizePoints
         var rects: [NSRect] = []
@@ -3151,20 +3146,23 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                     width: width, height: cell.height))
             }
         }
-        if let row = hoveredBlock?.headerRow, let columns = summaryColumnsOnScreen[row] {
-            rects.append(NSRect(x: padding + CGFloat(columns.lowerBound) * cell.width,
-                                y: bounds.height - padding - CGFloat(row + 1) * cell.height,
-                                width: CGFloat(columns.count) * cell.width, height: cell.height))
-        }
-        // A lens line with a fold point on it is a control, and the pointer has to say so: it is
-        // the only thing on that row a click does something to.
+        // A lens container line's marker is the control; the rest of the line is text, and a reader
+        // dragging across it is selecting. The box is the gutter's own 20 pt by `hitRowHeight`
+        // (§2.4) -- one cell is about 8 pt and one row 13 pt at `line-height 0.8`, neither a target.
         if !lenses.isEmpty {
             for (visible, entry) in foldRowsOnScreen.enumerated() {
                 guard case .lens(let id, let line) = entry,
-                      lensBuffers[id]?.line(line)?.node != nil else { continue }
-                rects.append(NSRect(x: padding,
-                                    y: bounds.height - padding - CGFloat(visible + 1) * cell.height,
-                                    width: max(0, bounds.width - 2 * padding), height: cell.height))
+                      let column = lensBuffers[id]?.foldMarkerColumn(line: line) else { continue }
+                rects.append(foldTriangleRect(onVisibleRow: visible, markerColumn: column))
+            }
+        }
+        // The placeholder row is a control end to end: it has no content worth selecting, and it is
+        // the one affordance the PM's read found already legible. It had no pointing hand (a11y
+        // 6.13), which is the one thing that said so.
+        if !folding.isEmpty {
+            for (visible, entry) in foldRowsOnScreen.enumerated() {
+                guard case .fold(let id, _, _) = entry, id != 0 else { continue }
+                rects.append(foldPlaceholderRect(onVisibleRow: visible))
             }
         }
         hoveredRect = rects
@@ -3671,12 +3669,20 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return (id, line, buffer.characterOffset(atColumn: max(0, column), line: line))
     }
 
-    /// A click on a folded or foldable node in a lens folds or unfolds it. The placeholder line is
-    /// the control, the same way a fold placeholder is: there is nowhere else to put a chevron for
-    /// a line the terminal does not know exists.
+    /// A click on the fold marker of a foldable node in a lens folds or unfolds it.
+    ///
+    /// The *marker* and not the whole line, which is what it used to be: the rest of a lens line is
+    /// text a reader drags across to select, and a control that swallows the whole row is a control
+    /// that cannot be selected past (§2.4). The box is that marker's cell widened to the same 20 pt
+    /// the gutter cap gets. `foldMarkerColumn` is what says which cell -- a pretty-printed body
+    /// writes its indent and its key before the triangle, so it is not column 0.
     private func toggleLensFold(at point: NSPoint) -> Bool {
-        guard let hit = lensLine(at: point),
-              let node = lensBuffers[hit.id]?.line(hit.line)?.node else { return false }
+        guard let hit = lensLine(at: point), let buffer = lensBuffers[hit.id],
+              let node = buffer.line(hit.line)?.node,
+              let column = buffer.foldMarkerColumn(line: hit.line) else { return false }
+        // The same rect `updateHoverCursor` drew the hand on, so what looks pressable is.
+        let box = foldTriangleRect(onVisibleRow: visibleRow(at: point) ?? -1, markerColumn: column)
+        guard point.x >= box.minX, point.x < box.maxX else { return false }
         lenses.toggleFold(node, in: hit.id)
         rebuildLens(for: hit.id)
         return true

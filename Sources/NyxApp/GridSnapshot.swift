@@ -972,12 +972,11 @@ struct GridScene {
                                        lastUsedColumn: CommandBlockChrome.lastUsedColumn(of: lines[slot])))
                 }
             }
-            let text = header.summaryWithChevron
+            let text = header.summary
             let summaryHere = text.isEmpty ? nil : CommandBlockChrome.summaryPlacement(
-                commandRows: candidates, textCount: text.count,
-                chevronCount: header.chevron.count, cols: cols)
+                commandRows: candidates, textCount: text.count, cols: cols)
             let placedSummary: CommandBlockChrome.PlacedSummary? = summaryHere.map {
-                (row: $0.row, text: $0.text == .full ? header.summary : "")
+                (row: $0.row, text: text)
             }
             if hovered == block.region.id,
                let placement = CommandBlockChrome.stripPlacement(
@@ -998,8 +997,7 @@ struct GridScene {
             guard !text.isEmpty else { continue }
             guard let placement = summaryHere,
                   let slot = slotOfRow[placement.row] else { continue }
-            summaries.append((row: slot, text: placement.text == .full ? text : header.chevron,
-                              color: header.tone.color(in: palette)))
+            summaries.append((row: slot, text: text, color: header.tone.color(in: palette)))
             notes[slot] = nil
             if notes.indices.contains(promptSlot) { notes[promptSlot] = nil }
         }

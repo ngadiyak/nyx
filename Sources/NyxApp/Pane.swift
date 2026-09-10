@@ -1280,22 +1280,27 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     /// Whether `⌘.` has a series to stop here: an unfinished series in this pane, and the keyboard
-    /// on any run of it or on no request at all.
+    /// on any run of it, on the block it was armed from, or on no request at all.
     ///
-    /// `WatchSeries.mayBeStopped(byChordOnRequest:)` is the rule; what this adds is the one thing
-    /// only the pane can answer -- which request block the cursor is on, if any. Note that this is
-    /// the *cursor's* block and not `targetRequestBlockID`: that resolver falls back to the last
-    /// request in the pane, and the fallback is what made ⌘. accept on a request belonging to no
-    /// series (PM P3). Nothing under the keyboard is not a reason to refuse; somebody else's
-    /// request is.
+    /// `WatchSeries.mayBeStopped(byChordOn:)` is the rule; what this adds is the two things only
+    /// the pane can answer -- which request block the cursor is on, and what that block's request
+    /// is. Note that it is the *cursor's* block and not `targetRequestBlockID`: that resolver falls
+    /// back to the last request in the pane, and the fallback is what made ⌘. accept on a request
+    /// belonging to no series (PM P3). Nothing under the keyboard is not a reason to refuse;
+    /// somebody else's request is.
     var canStopWatch: Bool {
         guard let series = watch else { return false }
-        let cursorRequest: UInt32? = session.withTerminal { t in
-            guard let id = self.blockCursor.commandID, id != 0, self.requestCache.isRequest(id: id),
-                  t.promptRow(ofCommand: id) != nil else { return nil }
-            return id
-        }
-        return series.mayBeStopped(byChordOnRequest: cursorRequest)
+        // The command line comes from the request cache rather than the grid: `isRequest` is only
+        // true for a block whose line the cache has parsed, and this is asked on every keystroke
+        // that validates a menu. `watchLine` is the same normalisation `startWatch` applied to the
+        // series' own command, so "the same request" is one spelling compared with itself.
+        let cursorRequest: (id: UInt32, command: String)? = {
+            guard let id = blockCursor.commandID, id != 0, requestCache.isRequest(id: id),
+                  let line = requestCache.commandLine(of: id),
+                  session.withTerminal({ $0.promptRow(ofCommand: id) != nil }) else { return nil }
+            return (id, Pane.watchLine(line))
+        }()
+        return series.mayBeStopped(byChordOn: cursorRequest)
     }
 
     /// The last block in the pane whose command was a request. Takes the terminal rather than

@@ -426,35 +426,48 @@ private func watchRun(_ series: inout WatchSeries, id: UInt32, status: Int?, exi
 /// the chord agree with the strip's `Stop` pill, which stops the series it belongs to wherever the
 /// pointer happens to be -- the two disagreed on exactly the blocks a user scrolls to.
 @Test func aChordOnAnyRunOfTheSeriesMayStopIt() {
-    var series = watchSeries(interval: 5, startedAt: 0)
+    var series = watchSeries(interval: 5, command: "curl -sS https://example.com", startedAt: 0)
     watchRun(&series, id: 1, status: 200, start: 0, end: 1)
     watchRun(&series, id: 2, status: 200, start: 6, end: 7)
-    #expect(series.mayBeStopped(byChordOnRequest: 2))   // the newest run
-    #expect(series.mayBeStopped(byChordOnRequest: 1))   // an older run: scrolled up to compare
-    #expect(series.mayBeStopped(byChordOnRequest: nil)) // nothing, or a block that is no request
+    let elsewhere = "curl -sS https://other.example.com"
+    #expect(series.mayBeStopped(byChordOn: (2, elsewhere)))   // the newest run
+    #expect(series.mayBeStopped(byChordOn: (1, elsewhere)))   // an older run: scrolled up to compare
+    #expect(series.mayBeStopped(byChordOn: nil))              // no request under the keyboard
 }
 
-/// A request that is not part of the series is somebody else's block, and the chord pressed on it
-/// means nothing -- greyed in the menu, absent from the palette, rather than silently killing a
-/// watch somewhere else in the pane.
+/// The block the watch was armed **from** is the same request and is not one of the runs:
+/// `startWatch` opens a series with none, and the runs are what the series sent afterwards. It is
+/// also exactly where the cursor is when somebody presses `Run Every 5 s` and then changes their
+/// mind, so it counts -- by its command line, which is what makes it the same request. Found by
+/// pressing the keys in the built app: `canStop` came back false on the block just armed.
+@Test func aChordOnTheBlockTheWatchWasArmedFromMayStopIt() {
+    var series = watchSeries(interval: 5, command: "curl -sS https://example.com", startedAt: 0)
+    watchRun(&series, id: 7, status: 200, start: 0, end: 1)
+    #expect(series.mayBeStopped(byChordOn: (4, "curl -sS https://example.com")))
+}
+
+/// A request that is neither a run nor the same request is somebody else's block, and the chord
+/// pressed on it means nothing -- greyed in the menu, absent from the palette, rather than
+/// silently killing a watch somewhere else in the pane.
 @Test func aChordOnAnUnrelatedRequestMayNotStopTheSeries() {
-    var series = watchSeries(interval: 5, startedAt: 0)
+    var series = watchSeries(interval: 5, command: "curl -sS https://example.com", startedAt: 0)
     watchRun(&series, id: 1, status: 200, start: 0, end: 1)
-    #expect(!series.mayBeStopped(byChordOnRequest: 99))
+    #expect(!series.mayBeStopped(byChordOn: (99, "curl -sS https://other.example.com")))
 }
 
-/// A series that has not run anything yet passes from anywhere: nothing can belong to it, and the
-/// user who just armed it must be able to take it back.
+/// A series that has not run anything yet passes from anywhere: until the first run there is no
+/// `Stop` pill either -- the strip only draws one on the newest run -- so the chord is the only way
+/// to take back a watch that has not sent anything.
 @Test func aSeriesWithNoRunsYetMayBeStoppedFromAnywhere() {
     let series = watchSeries(interval: 5, startedAt: 0)
-    #expect(series.mayBeStopped(byChordOnRequest: 99))
+    #expect(series.mayBeStopped(byChordOn: (99, "curl -sS https://other.example.com")))
 }
 
 /// A series that has already ended has nothing to stop, wherever the keyboard is.
 @Test func aFinishedSeriesMayNotBeStopped() {
-    var series = watchSeries(interval: 5, startedAt: 0)
+    var series = watchSeries(interval: 5, command: "curl -sS https://example.com", startedAt: 0)
     watchRun(&series, id: 1, status: 200, start: 0, end: 1)
     series.stop(.stopped)
-    #expect(!series.mayBeStopped(byChordOnRequest: 1))
-    #expect(!series.mayBeStopped(byChordOnRequest: nil))
+    #expect(!series.mayBeStopped(byChordOn: (1, "curl -sS https://example.com")))
+    #expect(!series.mayBeStopped(byChordOn: nil))
 }

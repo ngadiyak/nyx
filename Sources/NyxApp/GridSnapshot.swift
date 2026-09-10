@@ -1018,10 +1018,15 @@ struct GridScene {
                                       anyFolds: !folding.isEmpty,
                                       hasOutput: terminal.commandHasOutput(atAbsoluteRow: region.promptRow))
             sticky = (StickyPromptLabel.text(command: terminal.commandText(of: region),
-                                             exitStatus: pinned.exitStatus, columns: cols),
+                                             exitStatus: pinned.exitStatus, columns: cols,
+                                             summary: header.summary),
                       header.summary, header.tone)
-            // Exactly as `Pane.render` does it: the row the band covers is blanked in the frame, so
-            // a composite of the pinned band is a picture of what the band actually sits on.
+            // The row the band covers is blanked in the frame, as `Pane.render` does it, so a
+            // composite of the pinned band is a picture of what the band actually sits on.
+            //
+            // Slot 0 outright, where the pane asks `stickyStripRow`: that property answers 1 while
+            // a remote pane's attach strip has the top row, and no composite has a remote strip in
+            // it. A scene that grows one has to grow this with it.
             if !lines.isEmpty { lines[0] = Row(cols: cols) }
         }
 

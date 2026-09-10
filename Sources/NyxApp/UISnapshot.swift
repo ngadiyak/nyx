@@ -1089,11 +1089,12 @@ enum UISnapshot {
         let view = StickyPromptView(frame: NSRect(x: 0, y: 0, width: 900, height: height))
         view.appearance = NSAppearance(named: appearance)
         let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        // Through `StickyPromptLabel.text`, so a failed command's status is in the picture the way
-        // it is on screen: it is in the *text* now, not in a red label the band no longer paints.
+        // Through `StickyPromptLabel.text`, with the note it will be drawn beside, so each picture
+        // says the status exactly where the real band would: in the note when there is one, in the
+        // text when there is not (`sticky-prompt-failed-*` is the second case).
         let text = StickyPromptLabel.text(
             command: failed ? "$ make test" : "$ ./deploy.sh --env production --wait",
-            exitStatus: failed ? 2 : 0, columns: 100)
+            exitStatus: failed ? 2 : 0, columns: 100, summary: summary)
         view.update(text: text, summary: summary, tone: tone ?? (failed ? .failure : .plain),
                     palette: palette, font: font, padding: 8,
                     cellWidth: ("M" as NSString).size(withAttributes: [.font: font]).width)

@@ -66,12 +66,25 @@ public enum StickyPromptLabel {
     /// routinely contains runs of them for alignment; collapsing those is what makes a 40-column
     /// strip show the command rather than the padding in front of it.
     ///
-    /// A failed command carries its status in the text as well as in the colour: colour alone says
-    /// "something is wrong here" to a reader who can see it and nothing at all to one who cannot.
-    public static func text(command: String, exitStatus: Int32?, columns: Int) -> String {
+    /// A failed command carries its status in the text as well as in the colour -- colour alone says
+    /// "something is wrong here" to a reader who can see it and nothing at all to one who cannot --
+    /// *unless* `summary` is already saying it at the other end of the same row.
+    ///
+    /// `summary` is the note the band draws right-aligned (`BlockHeader.summary`: `exit 2 · 8.8s`,
+    /// `200 · 142 ms · 1.2 KB · json`). When it is there and there is room for both with a column
+    /// between them, the text is the command and nothing else: `↑ $ make test  exit 2 … exit 2 ·
+    /// 8.8s` said the status twice on one row, and the spoken sentence said it twice too. The
+    /// suffix comes back only when the two do not fit, because the note is drawn at the right edge
+    /// whatever happens and the text is what gets cut.
+    ///
+    /// Defaulted to `""` so a caller with no note -- a test, or any future band without one -- gets
+    /// the old, self-sufficient text rather than silently losing the status.
+    public static func text(command: String, exitStatus: Int32?, columns: Int,
+                            summary: String = "") -> String {
         let status = (exitStatus ?? 0) != 0 ? "  exit \(exitStatus!)" : ""
         let body = collapsed(command)
         guard columns > 0 else { return "" }
+        if !summary.isEmpty, body.count + summary.count + 1 <= columns { return body }
         let room = max(0, columns - status.count)
         // The status is worth more than the tail of a long command line: it is the thing the user
         // scrolled back to find out.
@@ -98,16 +111,38 @@ public enum StickyPromptLabel {
 }
 
 public extension StickyPromptLabel {
-    /// What VoiceOver hears: `Pinned command: swift build … · exit 1 · 8.8s. Scrolls back to it.`
+    /// What VoiceOver hears: `exit 1 · 8.8s: swift build …. Scroll to its prompt.`
     ///
     /// "Running command: …" was said of commands that had finished, which is a label describing the
-    /// wrong half of the state it was built from (a11y 7.1). `text` is
-    /// `text(command:exitStatus:columns:)`'s answer -- the collapsed, cut command line the band
-    /// draws -- so the spoken sentence and the drawn one are one string, cut once, and the second
-    /// sentence is the only place the band says what pressing it does: it has no bezel and no title.
+    /// wrong half of the state it was built from (a11y 7.1). What happened comes first, because it
+    /// is the answer to the question that made someone press this; the command line is the middle;
+    /// and the last sentence is the only place the band says what pressing it does, since it has no
+    /// bezel and no title.
+    ///
+    /// `text` is `text(command:exitStatus:columns:summary:)`'s answer -- the collapsed, cut command
+    /// line the band draws -- so the spoken sentence and the drawn one are one string, cut once,
+    /// and the status is in exactly one of them. Concatenating the two blindly is what said
+    /// "exit 1 middle-dot exit 1".
     static func accessibilityLabel(text: String, summary: String) -> String {
-        let sentence = summary.isEmpty ? text : "\(text) \u{b7} \(summary)"
-        return "Pinned command: \(sentence). Scrolls back to it."
+        // A header with nothing to say -- a quick success, a shell that reported no status -- still
+        // gets a sentence that names what this thing is.
+        guard !summary.isEmpty else { return "Pinned command: \(text). Scroll to its prompt." }
+        return "\(summary): \(text). Scroll to its prompt."
+    }
+
+    /// The letter spacing the band's label needs so that its N-th glyph starts N whole cells in.
+    ///
+    /// The band draws in `NSFont.monospacedSystemFont`, whose advance is *not* the pane's cell: the
+    /// cell is `ceil(advance × scale)` device pixels (`FontSet`), so at scale 2 a 16 px advance
+    /// lives in a 17 px cell. Half a pixel per character is invisible at the first glyph and two
+    /// and a half cells out by the 44th, which is a pinned command line sliding out from under the
+    /// output it names -- the drift `textInset` alone cannot fix, because it only places the start.
+    ///
+    /// Zero for an unmeasured pane rather than a nonsense number: a band laid out before its font
+    /// or its grid has been measured is one frame from being laid out again.
+    static func kern(cellWidth: Double, glyphAdvance: Double) -> Double {
+        guard cellWidth > 0, glyphAdvance > 0 else { return 0 }
+        return cellWidth - glyphAdvance
     }
 
     /// Where the band's command line begins, in points from the band's own leading edge: the first

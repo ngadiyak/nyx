@@ -2182,8 +2182,11 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                 // No `failed` flag beside the tone: a curl that returned 404 exited 0, so the
                 // command did not fail and the response did, and `BlockHeader.tone` is the one
                 // place that distinction is made.
+                // `summary:` so the status is said once: the note on the right of the band already
+                // reads `exit 2 · 8.8s`, and the text appended `  exit 2` to the command as well.
                 sticky = (StickyPromptLabel.text(command: t.commandText(of: region),
-                                                 exitStatus: pinned.exitStatus, columns: t.cols),
+                                                 exitStatus: pinned.exitStatus, columns: t.cols,
+                                                 summary: header.summary),
                           pinned.row, header.summary, header.tone)
             }
             if self.watchSentAt != nil { runningCommandID = t.runningCommand?.id }
@@ -2198,8 +2201,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             //
             // The blanked slot is the one `layoutStickyStrip` puts the band on: the top row, or the
             // one below it while the remote strip has the top.
+            // Keyed on the text, not on `sticky != nil`: an empty text hides the band
+            // (`StickyPromptView.update`), and blanking a row with nothing drawn over it is one row
+            // of somebody's output silently gone.
             let blankRow = self.stickyStripRow
-            if sticky != nil, blankRow < lines.count {
+            let pinned = !(sticky?.text.isEmpty ?? true)
+            if pinned, blankRow < lines.count {
                 lines[blankRow] = Row(cols: t.cols)
             }
             // The renderer caches shaped rows and rebuilds a row only when the terminal says it
@@ -2208,7 +2215,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // old glyphs under it, and the frame that unpinned it left the row blank with nothing
             // over it -- one row of somebody's output missing until it was next written to. An
             // empty `dirty` already means "everything changed".
-            let blanked = sticky != nil ? blankRow : nil
+            let blanked = pinned ? blankRow : nil
             if blanked != self.blankedStickyRow, !dirty.isEmpty {
                 for row in [blanked, self.blankedStickyRow].compactMap({ $0 })
                 where dirty.indices.contains(row) {

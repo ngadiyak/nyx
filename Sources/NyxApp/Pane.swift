@@ -296,6 +296,12 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Notices that a command ended, from nothing but the prompt marks; see `CommandWatcher`.
     private var commandWatcher = CommandWatcher()
     private var commandCheckScheduled = false
+    /// The last finish this pane has dealt with -- announced, or deliberately kept quiet about.
+    /// The announcement has two signals for one event (the watcher's and the bottom command's
+    /// predecessor), so without this a command that ran three seconds was spoken twice; and nil
+    /// means "this pane has not looked yet", which is what keeps a restored session's last build
+    /// from being read out at launch. See `announceFinish`.
+    private var lastAnnouncedCommandID: UInt32?
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     /// Clamped the same way the old hardcoded zoom was (6...72pt), independent of the config's own
@@ -4296,8 +4302,14 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let bottom: (row: Int?, started: Bool, runningID: UInt32, previous: CommandRegion?) = session.withTerminal { t in
             guard t.totalRows > 0, let region = t.command(containingAbsoluteRow: t.totalRows - 1)
             else { return (nil, false, 0, nil) }
+            // The predecessor **unconditionally**, where automatic folding once asked for it only
+            // while the bottom command was running: it is also the announcement's second finish
+            // signal, and the finish it exists to catch -- `false` at the prompt -- leaves a bottom
+            // that has not started anything. One backwards step from the bottom row per coalesced
+            // check, which is the same walk `previousCommand` was already doing on every check a
+            // command was running.
             return (region.promptRow, region.outputStart != nil, t.runningCommand?.id ?? 0,
-                    region.outputStart != nil ? t.previousCommand(of: region) : nil)
+                    t.previousCommand(of: region))
         }
         // The moment a new command starts running is when the one before it is "done with", and
         // the only moment automatic folding is allowed to touch it.
@@ -4315,22 +4327,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // pane with no frames -- a background tab, an occluded or minimised window -- and it is
         // what keeps a watch advancing there. See `pollWatch`.
         pollWatch()
-        guard let finished = commandWatcher.observe(bottomPromptRow: bottom.row, outputStarted: bottom.started,
-                                                    runningID: bottom.runningID, now: now) else { return }
+        let observed = commandWatcher.observe(bottomPromptRow: bottom.row, outputStarted: bottom.started,
+                                              runningID: bottom.runningID, now: now)
+        // Before the notification rule, independent of it, and reached whether or not the watcher
+        // saw anything: a notification is for a window you are not looking at, an announcement is
+        // for the pane you are in -- and the finish an announcement most needs to make, a command
+        // that failed instantly, is one the watcher never sees.
+        announceFinish(observed: observed, predecessor: bottom.previous)
+        guard let finished = observed else { return }
         let armed = armedNotifications
         armedNotifications.remove(finished.id)
-        // Before the notification rule and independent of it: a notification is for a window you
-        // are not looking at, an announcement is for the pane you are in. The focused pane only,
-        // and only a command that ran two seconds or failed; the sentence is the command and the
-        // block's own summary, so the announcement and the strip say the same words about one
-        // command -- and say *which* command.
-        if let region = session.withTerminal({ $0.command(containingAbsoluteRow: finished.promptRow) }),
-           let spoken = BlockAnnouncement.text(for: region,
-                                               command: session.withTerminal { $0.commandLine(of: region) },
-                                               summary: blockMenuHeader(for: region.id)?.summary ?? "",
-                                               paneIsFocused: isKeyboardFocused) {
-            Announce.say(spoken)
-        }
         guard CommandNotificationRule.shouldNotify(finished, armed: armed,
                                                    windowFocused: window?.isKeyWindow == true,
                                                    minimumDuration: commandWatcher.minimumDuration) else { return }
@@ -4341,6 +4347,47 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         CommandNotifier.shared.post(title: CommandNotification.title(failed: (described.status ?? 0) != 0),
                                     body: CommandNotification.body(command: described.text,
                                                                    exitStatus: described.status))
+    }
+
+    /// Says a finished command out loud, from either of the two signals a check has:
+    /// `CommandWatcher.observe`'s answer (a command this pane *saw* running) and the bottom
+    /// command's predecessor (the only trace an instant command leaves -- `false` at the prompt
+    /// begins and ends between two coalesced checks, so the watcher never reports it at all).
+    ///
+    /// `lastAnnouncedCommandID` is written for whatever `BlockAnnouncement.finish` returns, on
+    /// **both** signals and **whether or not** anything is spoken -- so a three-second build that
+    /// both signals name is spoken once, and a finish in a pane nobody was looking at is not
+    /// spoken half an hour later when that pane is focused.
+    ///
+    /// The words: `blockMenuHeader` when the block can still be described (it is what the strip
+    /// and the pinned line read, and for a request block its `httpSummary` replaces the duration),
+    /// and `CommandBlock.summary(of:)` from the region itself when it cannot -- a block whose rows
+    /// scrollback has trimmed still finished, and `""` there was an announcement that decided to
+    /// stay silent about a failure for a reason a user cannot see.
+    ///
+    /// **`blockMenuHeader` has a side effect**, and this is now one of the two places that pays
+    /// it: reading a `curl` block's response for its summary records that request in the request
+    /// history (`requestSummary` sets `recordAfterFrame`, and `drainPendingRecord` writes it). The
+    /// frame does the same thing the first time such a block is drawn, so the only new case is a
+    /// pane that is never drawn -- a background tab -- whose finished request now reaches the
+    /// history when it finishes rather than when the tab is next looked at. That is the better of
+    /// the two behaviours, and it is deliberate rather than incidental.
+    private func announceFinish(observed: FinishedCommand?, predecessor: CommandRegion?) {
+        let observedRegion: CommandRegion? = observed.flatMap { finished in
+            session.withTerminal { $0.command(containingAbsoluteRow: finished.promptRow) }
+        }
+        guard let finish = BlockAnnouncement.finish(observed: observedRegion, predecessor: predecessor,
+                                                    lastHandled: lastAnnouncedCommandID) else { return }
+        lastAnnouncedCommandID = finish.region.id
+        guard finish.isNews else { return }
+        let region = finish.region
+        guard let spoken = BlockAnnouncement.text(
+            for: region,
+            command: session.withTerminal { $0.commandLine(of: region) },
+            summary: blockMenuHeader(for: region.id)?.summary ?? CommandBlock.summary(of: region),
+            paneIsFocused: isKeyboardFocused
+        ) else { return }
+        Announce.say(spoken)
     }
 
     /// `select_command_output`: the output of the block the keyboard is on -- the same block ⌘⇧↑

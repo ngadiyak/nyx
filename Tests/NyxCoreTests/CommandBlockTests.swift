@@ -75,6 +75,18 @@ private func session() -> Terminal {
     #expect(build.failed)
 }
 
+/// The sentence needs a region and nothing else, and one caller has only that: the finish
+/// announcement speaks for a block that may be nowhere near the screen, so no `BlockHeader` can be
+/// built for it and the summary is taken from the region directly. It has to be the *same*
+/// sentence -- the announcement saying `exit 1 · 8.8s` while the strip says something else about
+/// one command is exactly what keeping the wording in one place is for.
+@Test func theSummaryOfARegionIsTheSummaryOfItsBlock() {
+    let blocks = session().visibleBlocks(rows: 8)
+    let build = try! #require(blocks.first { $0.region.promptRow == 2 })
+    #expect(CommandBlock.summary(of: build.region) == "exit 1 · 8.8s")
+    #expect(CommandBlock.summary(of: build.region) == build.summary())
+}
+
 /// A command that succeeded quickly has nothing worth saying: `exit 0` is the expected case and
 /// `0.2s` is noise. A header full of nothing trains people to stop reading headers.
 @Test func aQuickSuccessSaysNothing() {

@@ -39,7 +39,14 @@ public struct CommandBlock: Equatable {
     /// Empty for a command still running that has not been going long enough to be worth a word --
     /// a status that appears the instant you press return is noise, and one that never appears is
     /// a terminal that looks stuck.
-    public func summary() -> String {
+    public func summary() -> String { CommandBlock.summary(of: region) }
+
+    /// The same sentence from a region alone, for the caller that has no block: the finish
+    /// announcement speaks for a command that may be a thousand rows off the screen, where no
+    /// `BlockHeader` exists to read `summary` off. Not a second copy of the wording -- the
+    /// instance method is this one -- because an announcement and a strip describing one command
+    /// two ways is the whole reason the words live in Core.
+    public static func summary(of region: CommandRegion) -> String {
         var parts: [String] = []
         if let status = region.exitStatus, status != 0 { parts.append("exit \(status)") }
         if let duration = region.duration, DurationText.isWorthShowing(duration) {

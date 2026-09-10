@@ -13,6 +13,61 @@ public enum BlockAnnouncement {
     /// Below this a command finished while you were still reading the line you typed.
     public static let minimumDuration: Double = 2
 
+    /// The finish one check found, and whether it is worth saying anything about.
+    public struct Finish: Equatable {
+        /// The command that ended. Its id is recorded by the caller **whatever happens next** --
+        /// on both signals, and whether or not the pane is focused -- so that one command is
+        /// spoken once and a finish nobody was there to hear is not spoken later.
+        public let region: CommandRegion
+        /// Whether this finish happened while the pane was looking. False for the history a pane
+        /// starts life with, which is recorded and not spoken.
+        public let isNews: Bool
+
+        public init(region: CommandRegion, isNews: Bool) {
+            self.region = region
+            self.isNews = isNews
+        }
+    }
+
+    /// Which finished command a coalesced check is looking at, from the two signals it has.
+    ///
+    /// `observed` is `CommandWatcher.observe`'s answer, resolved to its region: a command this pane
+    /// **saw running**. `predecessor` is the region above the bottom-most one -- the command whose
+    /// prompt the shell has just replaced -- which is the only signal an *instant* command leaves.
+    /// The watcher cannot report one: the check is coalesced half a second after output arrives, so
+    /// `false` at the prompt started and ended between two looks, and "a failure is announced
+    /// however short" was a rule with no path to it (Task 6's §7, review Important).
+    ///
+    /// `lastHandled` is the last finish this pane dealt with -- announced, or deliberately not.
+    /// Both signals name the same command whenever both fire, so one id recorded on both paths is
+    /// what keeps a three-second build from being spoken twice.
+    ///
+    /// **With several prompts between two checks only the newest predecessor is announced.** A
+    /// check has exactly one predecessor to look at; the finishes before it are history by the time
+    /// anyone could be told about them, and three sentences spoken over each other is worse than
+    /// one. That is a decision, not an omission.
+    ///
+    /// A pane's **first** look is never news: the command above the prompt then is a restored
+    /// session's last build or a snapshot fed in before the shell started, and announcing it is a
+    /// terminal telling you about yesterday. It is recorded, and the check after it has a baseline.
+    /// A command in `observed` is news even on a first look, because the watcher only has it if it
+    /// started here.
+    public static func finish(observed: CommandRegion?, predecessor: CommandRegion?,
+                              lastHandled: UInt32?) -> Finish? {
+        if let observed, ended(observed), observed.id != 0, observed.id != lastHandled {
+            return Finish(region: observed, isNews: true)
+        }
+        guard let predecessor, ended(predecessor), predecessor.id != 0,
+              predecessor.id != lastHandled else { return nil }
+        return Finish(region: predecessor, isNews: lastHandled != nil)
+    }
+
+    /// A command with an ending. The prompt you are typing at, and the command running at it, have
+    /// neither a status nor a duration -- and "12s" is a clock, not news.
+    private static func ended(_ region: CommandRegion) -> Bool {
+        region.exitStatus != nil || region.duration != nil
+    }
+
     /// The sentence is `<command line> — <summary>`, and the subject is not decoration.
     /// `exit 1 · 815ms` on its own names nothing: a VoiceOver user with a build in one pane, a
     /// test run in another and a `curl` in a third is told that something failed and left to find
@@ -31,8 +86,7 @@ public enum BlockAnnouncement {
                             summary: @autoclosure () -> String,
                             paneIsFocused: Bool) -> String? {
         guard paneIsFocused else { return nil }
-        // Still running: it has neither a status nor a duration, and "12s" is a clock, not news.
-        guard region.exitStatus != nil || region.duration != nil else { return nil }
+        guard ended(region) else { return nil }
         guard region.failed || (region.duration ?? 0) >= minimumDuration else { return nil }
         let words = summary()
         guard !words.isEmpty else { return nil }

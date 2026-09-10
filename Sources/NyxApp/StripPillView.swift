@@ -59,18 +59,8 @@ final class StripPillView: NSView {
         toolTip = pill.help
         setAccessibilityLabel(pill.accessibilityLabel)
         setAccessibilityHelp(pill.help)
-        // A disabled pill reports as disabled rather than as a button that beeps -- the gutter's
-        // no-output mark already answers this way, through `press: nil`.
-        setAccessibilityEnabled(isEnabled)
         invalidateIntrinsicContentSize()
         needsDisplay = true
-    }
-
-    /// `.copy(enabled: false)` is the one pill that can arrive inert: it draws dimmed, does not
-    /// press, and offers no pointing hand.
-    private var isEnabled: Bool {
-        if case .copy(let enabled) = pill { return enabled }
-        return true
     }
 
     /// `StateSnapshot` presses a pill by name; `NSButton.highlight(true)` has no equivalent here.
@@ -98,7 +88,6 @@ final class StripPillView: NSView {
         guard let pill else { return }
         var on = false
         if case .lens(_, let lit) = pill { on = lit }
-        let enabled = isEnabled
         let box = NSRect(x: 0, y: (bounds.height - StripPillView.height) / 2,
                          width: bounds.width, height: StripPillView.height)
         let path = NSBezierPath(roundedRect: box, xRadius: StripPillView.radius,
@@ -140,7 +129,7 @@ final class StripPillView: NSView {
                     alpha: 1).setStroke()
             path.lineWidth = 1
             path.stroke()
-            ink = enabled ? tint(of: pill, on: ground) : palette.noteForeground
+            ink = tint(of: pill, on: ground)
         }
         if pill.glyph != nil {
             draw(.ellipsis, in: NSRect(x: box.midX - StripPillView.glyphWidth / 2,
@@ -222,15 +211,13 @@ final class StripPillView: NSView {
     override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
     override func mouseExited(with event: NSEvent) { hovered = false; pressed = false; needsDisplay = true }
     override func mouseDown(with event: NSEvent) {
-        guard isEnabled else { return }
         pressed = true
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
         pressed = false
         needsDisplay = true
-        guard !isHidden, isEnabled,
-              bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        guard !isHidden, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
         onPress?()
     }
 
@@ -249,15 +236,14 @@ final class StripPillView: NSView {
         }
     }
     override func accessibilityPerformPress() -> Bool {
-        guard !isHidden, isEnabled, let onPress else { return false }
+        guard !isHidden, let onPress else { return false }
         onPress()
         return true
     }
     override func resetCursorRects() {
         super.resetCursorRects()
-        // No hand over a pill that cannot be pressed: the pointing hand is a promise, and this
-        // round exists to make it a true one everywhere.
-        guard isEnabled else { return }
+        // Every pill on the strip can be pressed, so every one gets the hand: the pointing hand is
+        // a promise, and there is no longer an inert pill for it to lie about (PM P7).
         addCursorRect(bounds, cursor: .pointingHand)
     }
 }

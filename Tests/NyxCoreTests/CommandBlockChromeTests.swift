@@ -57,8 +57,8 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
 
 @Test func theTableHoveredFinished() {
     let h = header(summary: "8.8s")
-    #expect(pills(h, .w3) == [.fold(.fold), .copy(enabled: true), .actions(.labelled)])
-    #expect(pills(h, .w2) == [.copy(enabled: true), .actions(.labelled)])
+    #expect(pills(h, .w3) == [.fold(.fold), .copy, .actions(.labelled)])
+    #expect(pills(h, .w2) == [.copy, .actions(.labelled)])
     #expect(pills(h, .w1) == [.actions(.glyph)])
     #expect(CommandBlockChrome.stripContent(h, at: .w0) == nil)
     #expect(readout(h, .w3) == "8.8s")
@@ -67,8 +67,8 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
 
 @Test func theTableHoveredFailed() {
     let h = header(summary: "exit 1 · 8.8s", state: .failed(status: 1))
-    #expect(pills(h, .w3) == [.fold(.fold), .copy(enabled: true), .actions(.labelled)])
-    #expect(pills(h, .w2) == [.copy(enabled: true), .actions(.labelled)])
+    #expect(pills(h, .w3) == [.fold(.fold), .copy, .actions(.labelled)])
+    #expect(pills(h, .w2) == [.copy, .actions(.labelled)])
     #expect(pills(h, .w1) == [.actions(.glyph)])
     #expect(readout(h, .w3) == "exit 1 · 8.8s")
     #expect(readout(h, .w2) == "exit 1 · 8.8s")
@@ -78,8 +78,8 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
 
 @Test func theTableHoveredRunning() {
     let h = header(summary: "12s", state: .running(elapsed: 12))
-    #expect(pills(h, .w3) == [.fold(.fold), .copy(enabled: true), .actions(.labelled)])
-    #expect(pills(h, .w2) == [.copy(enabled: true), .actions(.labelled)])
+    #expect(pills(h, .w3) == [.fold(.fold), .copy, .actions(.labelled)])
+    #expect(pills(h, .w2) == [.copy, .actions(.labelled)])
     #expect(pills(h, .w1) == [.actions(.glyph)])
     #expect(readout(h, .w1) == "12s")
 }
@@ -88,7 +88,7 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
 /// one control the ⋯ menu certainly still carries.
 @Test func theTableFolded() {
     let h = header(summary: "8.8s", folded: true)
-    #expect(pills(h, .w3) == [.fold(.unfold), .copy(enabled: true), .actions(.labelled)])
+    #expect(pills(h, .w3) == [.fold(.unfold), .copy, .actions(.labelled)])
     #expect(pills(h, .w2) == [.fold(.unfold), .actions(.labelled)])
     #expect(pills(h, .w1) == [.actions(.glyph)])
 }
@@ -97,7 +97,7 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     let h = header(summary: "", http: HTTPSummary(text: "200 · 142 ms · 1.2 KB · json", tone: .success),
                    isHTTP: true, json: true)
     #expect(pills(h, .w3) == [.lens(name: "Raw", on: false), .fold(.fold),
-                              .copy(enabled: true), .actions(.labelled)])
+                              .copy, .actions(.labelled)])
     #expect(pills(h, .w2) == [.lens(name: "Raw", on: false), .actions(.labelled)])
     // The chip outlives `Fold` and `Copy`, so it is still on the strip at W1: it is the lens's only
     // visible state, and `Copy Output` is a row of the ⋯ menu. Before this ruling W1 was `[⋯]` and
@@ -130,7 +130,7 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     // Nothing a lens can do anything with, and none open: no chip at all rather than an inert one.
     let big = header(summary: "", http: HTTPSummary(text: "200 · 142 ms", tone: .success),
                      isHTTP: true, lensTooLarge: true, json: true)
-    #expect(pills(big, .w3) == [.fold(.fold), .copy(enabled: true), .actions(.labelled)])
+    #expect(pills(big, .w3) == [.fold(.fold), .copy, .actions(.labelled)])
     #expect(pills(big, .w1) == [.actions(.glyph)])
 }
 
@@ -748,7 +748,7 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
         h, commandRows: rows, cols: cols, summary: (row: summaryRow.row, text: "8.8s"),
         measure: { $0.readout.isEmpty ? 15 : 30 }))
     #expect(placement.plan.readout == "")
-    #expect(placement.plan.pills == [.copy(enabled: true), .actions(.labelled)])
+    #expect(placement.plan.pills == [.copy, .actions(.labelled)])
     // The strip ends where the summary begins, and begins clear of the command's last glyph.
     #expect(placement.plan.trailingColumn == summaryRow.columns.lowerBound)
     #expect(placement.plan.firstColumn == summaryRow.columns.lowerBound - 15)

@@ -194,11 +194,14 @@ public extension CommandBlockChrome {
         public enum Actions: Equatable, Hashable { case labelled, glyph }
         public enum Glyph: Equatable, Hashable { case ellipsis }
         case fold(FoldLabel)
-        /// `enabled` is `BlockHeader.hasOutput`: the pill and the ⋯ menu's `Copy Output` row answer
-        /// to one bit. The table gives a block with nothing to copy the no-output row, so no plan
-        /// built today carries a disabled Copy -- and if one ever does, it draws as disabled rather
-        /// than beeping.
-        case copy(enabled: Bool)
+        /// No `enabled` flag: §2.6 gives a block with nothing to copy the *no-output* row, whose
+        /// cells carry no `Copy` at all, and `pills(_:at:)` guards on `header.hasOutput` before
+        /// appending this one -- so `enabled` was `true` at every call site that could construct it
+        /// and `false` at none of them. A parameter with one reachable value is a state nobody can
+        /// see, a disabled art nobody can render, and three branches in the view keeping it alive
+        /// (PM P7). A block whose output really cannot be copied gets no pill, which is the
+        /// affordance telling the truth.
+        case copy
         case lens(name: String, on: Bool)
         case stop
         case actions(Actions)
@@ -351,10 +354,10 @@ public extension CommandBlockChrome {
             if header.hasOutput, !watched, !header.folded { list.append(.fold(.fold)) }
             // `!watched`: the dots outlive `Copy`, and the dots are a W3-only feature, so a watched
             // block has no rung anywhere that carries `Copy` without them.
-            if header.hasOutput, !watched { list.append(.copy(enabled: header.hasOutput)) }
+            if header.hasOutput, !watched { list.append(.copy) }
         } else if list.isEmpty, header.hasOutput, !watched {
             // W2 with no Stop, no chip and nothing folded: Copy is what the rung carries.
-            list.append(.copy(enabled: header.hasOutput))
+            list.append(.copy)
         }
         list.append(.actions(.labelled))
         return list

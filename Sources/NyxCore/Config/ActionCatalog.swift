@@ -48,7 +48,7 @@ public extension TerminalAction {
         case .findNext: return "Find Next"
         case .findPrevious: return "Find Previous"
         case .commandPalette: return "Command Palette"
-        case .editAndRunCommand: return "Edit This Command\u{2026}"
+        case .editAndRunCommand: return "Edit and Run This Command\u{2026}"
         case .pasteWithEditor: return "Paste and Edit…"
         case .renameTab: return "Rename Tab…"
         case .groupTab: return "Group Tab…"

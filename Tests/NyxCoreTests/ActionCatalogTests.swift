@@ -39,7 +39,14 @@ import Testing
     #expect(TerminalAction.copyCommandOutput.title == "Copy Command Output")
     #expect(TerminalAction.copyBlockMarkdown.title == "Copy Command as Markdown")
     #expect(TerminalAction.saveCommandOutput.title == "Save Command Output\u{2026}")
-    #expect(TerminalAction.editAndRunCommand.title == "Edit This Command\u{2026}")
+    // The ⋯ menu row's own words, so the menu bar and the block menu are not two spellings of one
+    // act on one block (`BlockAction.editAndRun.title`).
+    #expect(TerminalAction.editAndRunCommand.title == "Edit and Run This Command\u{2026}")
+    // The four the plan leaves alone: they changed their target, not their words.
+    #expect(TerminalAction.foldCommand.title == "Fold Command Output")
+    #expect(TerminalAction.selectCommandOutput.title == "Select Command Output")
+    #expect(TerminalAction.toggleHTTPLens.title == "Toggle Pretty Response")
+    #expect(TerminalAction.stopWatch.title == "Stop Watching")
 }
 
 @Test func sectionsAreNamedAndNonEmpty() {

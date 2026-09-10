@@ -1609,7 +1609,12 @@ extension TabController: ActionTarget {
             return focusedPane?.hasPromptMarks ?? false
         case .selectCommandOutput, .copyCommandOutput, .foldCommand, .copyBlockMarkdown,
              .saveCommandOutput:
-            // Marks, and a block for the cursor to be on. Greyed rather than beeping.
+            // Marks, and a block for the cursor to be on: a pane with no blocks greys all five
+            // rather than beeping at whoever chose one. A block that printed *nothing* still
+            // enables them, and `select_command_output` and `fold_command` then beep -- the two
+            // that need output, where the other three are meaningful without it (the command line
+            // is still copied, saved and fenced). One gate cannot say both, and the honest gate for
+            // five rows is "is there a block at all".
             return focusedPane?.hasBlockTarget ?? false
         case .notifyWhenDone:
             return focusedPane?.hasRunningCommand ?? false

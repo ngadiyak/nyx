@@ -188,7 +188,7 @@ xterm, Ghostty and iTerm2 all report there.
 | `remote_pair` | — | Opens the pairing sheet, either side |
 | `remote_take_control` | — | On an observed remote tab, takes over as writer |
 | `toggle_http_lens` | ⌘⇧J | Flips the block the keyboard is on — or the last response in the pane — between `pretty` and `raw`. Greyed when the pane has no request to show |
-| `stop_watch` | ⌘. | Stops the watch running in this pane, while the block the keyboard is on is the series' newest run. Greyed in the menu and absent from the palette when there is no such series; the strip's **Stop** button names the same series, so the two no longer diverge. `⌘K` (clear the pane) also stops a running series and *forgets* it — every run's block id names rows that are gone, so a kept header would sit on a stranger's command |
+| `stop_watch` | ⌘. | Stops the watch running in this pane, while the block the keyboard is on is the series' newest run. Greyed in the menu and absent from the palette when there is no such series; the strip's **Stop** button has no such rule and always stops the series it belongs to, so the two agree whenever the cursor is on that run. `⌘K` (clear the pane) also stops a running series and *forgets* it — every run's block id names rows that are gone, so a kept header would sit on a stranger's command |
 
 ⌘↑ / ⌘↓ move the block cursor — the block Nyx draws as hovered and every block action acts on;
 it clears with ⌘K and follows the screen when you scroll.

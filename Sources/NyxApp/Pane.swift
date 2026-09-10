@@ -965,10 +965,15 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return toggleLens(on: id)
     }
 
-    /// The same flip, on a block the caller has already named -- the ⋯ menu's `Toggle Pretty` row
-    /// and the strip's lens chip, which are pressed *on* a block. Split out from
-    /// `toggleLensOfCurrentBlock` because that one now resolves the block cursor: a chip pressed on
-    /// the block under the pointer must not flip the lens of a block three screens up.
+    /// The same flip, on a block the caller has already named.
+    ///
+    /// Split out from `toggleLensOfCurrentBlock` because that one now resolves the *block cursor*,
+    /// and `perform(_:on:)` -- which is handed an id by whichever control was pressed -- must act on
+    /// that id: a control pressed on one block flipping the lens of another is the divergence this
+    /// change exists to remove. Nothing produces `BlockAction.toggleLens` today (the menu offers the
+    /// lenses by name and the strip's chip carries the name too), so `perform`'s branch is reached
+    /// by no control yet; the switch over `BlockAction` is exhaustive, and this is what the branch
+    /// must do when one arrives.
     @discardableResult
     private func toggleLens(on id: UInt32) -> Bool {
         guard !lensIsTooLarge(id) else { return false }
@@ -1251,12 +1256,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return true
     }
 
-    /// Whether `⌘.` has a series to stop here: the block the keyboard is on must be the series'
-    /// newest run. With no cursor that is the old rule word for word -- the newest run is the last
-    /// request in the pane, so a watch scrolled away from cannot be killed by a chord pressed for
-    /// something else -- and with one, the chord and the strip's `Stop` pill finally name the same
-    /// series (a11y 6.9). A series that has not run anything yet passes: nothing can be later than
-    /// nothing.
+    /// Whether `⌘.` has a series to stop here: the block the two request actions target must be the
+    /// series' newest run.
+    ///
+    /// With no cursor -- or a cursor on something that is not a request -- that is the old rule word
+    /// for word: the target is then the last request in the pane, so a watch scrolled away from
+    /// cannot be killed by a chord pressed for something else. With the cursor *on* that run the
+    /// chord and the strip's `Stop` pill name the same series, which is the half of a11y 6.9 this
+    /// can fix; the pill itself keeps no such rule and always stops the series it belongs to,
+    /// because pressing it names the series and pressing `⌘.` does not.
+    ///
+    /// A series that has not run anything yet passes: nothing can be later than nothing.
     var canStopWatch: Bool {
         guard let series = watch, !series.isFinished else { return false }
         guard let newest = series.runs.last?.id else { return true }
@@ -1265,12 +1275,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// The last block in the pane whose command was a request. Takes the terminal rather than
     /// opening the session itself: every caller now asks it from inside a `withTerminal` block.
+    ///
+    /// Newest first, and it stops at the first hit: this is asked twice per menu validation
+    /// (`toggle_http_lens` and `⌘.`), and a `compactMap` over every prompt row to take one element
+    /// off the front of the result read every block in the pane to answer about the last one.
     private func latestRequestBlock(in t: Terminal) -> UInt32? {
-        t.promptRows.reversed().compactMap { row -> UInt32? in
+        for row in t.promptRows.reversed() {
             guard let region = t.command(containingAbsoluteRow: row), region.id != 0,
-                  self.requestCache.isRequest(id: region.id) else { return nil }
+                  requestCache.isRequest(id: region.id) else { continue }
             return region.id
-        }.first
+        }
+        return nil
     }
 
     /// The header for a block that is a series' newest run, or nil for every other block.
@@ -3660,14 +3675,29 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     }
 
     /// The same block as a region, for the callers that need its rows rather than its id.
+    ///
+    /// The row `exists` found is carried out of the resolve rather than asked for a second time:
+    /// `promptRow(ofCommand:)` scans the visible rows and then the *whole buffer backwards* for a
+    /// block that is off the screen, and `hasBlockTarget` asks this from menu validation. The
+    /// fallback needs no lookup at all -- `commandToFold()` hands back a region.
     private func targetBlock(in t: Terminal) -> CommandRegion? {
-        guard let id = targetBlockID(in: t), let row = t.promptRow(ofCommand: id) else { return nil }
+        let fallback = t.commandToFold()
+        var cursorRow: Int?
+        let id = BlockTarget.resolve(cursor: blockCursor,
+                                     exists: {
+                                         cursorRow = t.promptRow(ofCommand: $0)
+                                         return cursorRow != nil
+                                     },
+                                     fallback: fallback?.id)
+        guard let id else { return nil }
+        guard id == blockCursor.commandID, let row = cursorRow else { return fallback }
         return t.command(containingAbsoluteRow: row)
     }
 
-    /// The block the two request actions act on. The cursor's, when it is a request; otherwise the
-    /// last request in the pane, which is the same answer for the same reason it always was --
-    /// "the response you were just looking at".
+    /// The block the two request actions act on: the cursor's, when the cursor is on a request.
+    /// Otherwise -- no cursor, or a cursor on a block that is not a request -- the last request in
+    /// the pane, which is the same answer for the same reason it always was: "the response you were
+    /// just looking at".
     private func targetRequestBlockID(in t: Terminal) -> UInt32? {
         BlockTarget.resolve(cursor: blockCursor,
                             exists: { self.requestCache.isRequest(id: $0) && t.promptRow(ofCommand: $0) != nil },

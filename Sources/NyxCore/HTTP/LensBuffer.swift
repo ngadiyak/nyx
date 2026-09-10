@@ -241,6 +241,30 @@ public struct LensBuffer: Equatable {
         return CharWidth.width(of: String(character))
     }
 
+    /// The structured token at a cell on a lens line -- a URL in a JSON body, a path in a header --
+    /// or the plain word there, in the line's own columns.
+    ///
+    /// A lens line has no absolute row: it stands for a block whose output it replaced, and
+    /// `Pane.characterPosition` answers nil for its display slot on purpose. So the link under the
+    /// pointer cannot be found through the buffer, and a pretty-printed response -- which is
+    /// nothing but URLs -- had no clickable link in it at all, while the same URL was clickable in
+    /// the raw rows the lens replaced.
+    public func token(atColumn column: Int, line index: Int,
+                      separators: Set<Character>) -> TextToken? {
+        guard let text = line(index)?.text, !text.isEmpty else { return nil }
+        // The column mapping the terminal's own tokeniser wants: where each Character starts, in
+        // cells. Built here rather than kept, because this runs on a pointer move and not per frame.
+        var columnOf: [Int] = []
+        columnOf.reserveCapacity(text.count)
+        var cell = 0
+        for character in text {
+            columnOf.append(cell)
+            cell += max(1, LensBuffer.width(of: character))
+        }
+        return TextPatterns.selectionToken(at: column, in: text, separators: separators,
+                                           columnOf: columnOf)
+    }
+
     /// Which Character a click at `column` landed on, clamped: the second cell of a wide glyph is
     /// still that glyph, and anything past the end of the line is the end of the line. The mouse
     /// arrives in cells and the text is measured in Characters, so something has to convert.

@@ -96,6 +96,50 @@ public enum LinkResolver {
     }
 }
 
+/// What the app *says* about a link: the two things a right-click offers, and the sentence the
+/// pointer's tooltip carries.
+///
+/// ⌘-click is the convention Nyx keeps -- iTerm2 and Ghostty both use it, Warp uses a plain click --
+/// but nothing in the app said so. There was no menu item even with the pointer on a link, no
+/// tooltip, and the docs never mentioned the modifier: the only way to find out was to hover,
+/// notice the underline, and guess. A menu row is where a person looks first, it costs no new
+/// chrome, and showing that the action exists is what makes the chord discoverable.
+public enum LinkMenu {
+    public enum Entry: Equatable, CaseIterable {
+        case open, copy
+
+        /// The same two words whether the link is a URL or a path. A clicked path *is* a link
+        /// here -- it goes to `open-file-command` or to the Finder -- and a menu that renames its
+        /// rows by the kind of thing under the pointer teaches the reader nothing extra.
+        public var title: String {
+            switch self {
+            case .open: return "Open Link"
+            case .copy: return "Copy Link"
+            }
+        }
+    }
+
+    /// Empty when there is nothing openable under the pointer, so the menu simply has no link
+    /// group rather than a greyed one.
+    public static func entries(for target: LinkTarget?) -> [Entry] {
+        target == nil ? [] : [.open, .copy]
+    }
+
+    /// What Copy Link puts on the pasteboard. For a file that is the path: `file://` is not what
+    /// anyone pastes into an editor or another shell, and neither is the `:12:3` a compiler
+    /// printed after it -- `LinkResolver` has already taken that off and kept it separately.
+    public static func copyText(for target: LinkTarget) -> String {
+        switch target {
+        case .url(let text): return text
+        case .file(let path, _, _): return path
+        }
+    }
+
+    /// The tooltip over a link. It names the modifier, which is the one thing the underline and
+    /// the pointing hand cannot say.
+    public static let hoverHint = "\u{2318}-click to open"
+}
+
 /// Turning the `open-file-command` template into an argument list.
 ///
 /// The template is what a user writes in their config -- `code -g {file}:{line}` -- and it has to

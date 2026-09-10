@@ -37,7 +37,7 @@ WebSocket at `wss://<host>/v1/ws`. Text frames are JSON control messages; binary
 | `welcome` | relay → device | `server_time` (RFC 3339) | device is now online |
 | `error` | relay → device | `code`, `message` | codes below |
 | `paired` | device → relay | `device_ids: [..]` | the devices this one trusts; a pairing is mutual only when both lists contain each other |
-| `presence` | relay → device | `devices: [{device_id, name, online}]` | sent after `welcome` and whenever a mutually paired device's presence changes; lists the device's own `paired` entries |
+| `presence` | relay → device | `devices: [{device_id, name, online, not_paired}]` | sent after `welcome` and whenever a mutually paired device's presence changes; lists the device's own `paired` entries |
 | `sessions` | host → relay | `sessions: [Session]` | stored as the host's catalogue; forwarded as `catalogue` to every online mutually paired device |
 | `catalogue` | relay → device | `device_id` (the host), `sessions: [Session]` | also sent after `welcome` for every online mutually paired host |
 | `pair_open` | host → relay | `code` (6 chars `[A-HJ-NP-Z2-9]`, host-generated) | stores `code → host` for 5 minutes; a second `pair_open` from the same host replaces its code; a code in use by another host → `error pair_taken` |
@@ -50,7 +50,7 @@ WebSocket at `wss://<host>/v1/ws`. Text frames are JSON control messages; binary
 | `attached` | host → relay → client | `to`, `session_id`, `ephemeral_pubkey`, `sig`, `role` (`writer`/`observer`), `cols`, `rows` | forwarded; relay records `session_id → host` and adds `to` to its attached clients |
 | `snapshot_end` | host → relay → client | `to`, `session_id` | forwarded |
 | `take_control` | client → relay → host | `to`, `session_id` | forwarded |
-| `role` | host → relay → client | `to`, `session_id`, `device_id`, `role` | forwarded (the host sends one per attached client) |
+| `role` | host → relay → client | `to`, `session_id`, `device_id`, `role`, `cols`, `rows` | forwarded (the host sends one per attached client); `cols`/`rows` are the host's current screen and may be absent (a host that has not resized) |
 | `detach` | client → relay → host | `to`, `session_id` | forwarded; relay removes the client from the attachment |
 | `session_ended` | host → relay → client | `to`, `session_id` | forwarded; relay removes the client from the attachment |
 | `session_suspended` | relay → client | `session_id`, `from` (the host) | sent to every attached client when the *host* disconnects (instead of `session_ended`, which only a host sends); the attachment is dropped at the relay; the client keeps the tab and re-attaches when the host's catalogue lists the session again |
@@ -65,9 +65,11 @@ An `error` that answers a message naming a session echoes that message's `sessio
 
 Close codes: 4400 (protocol violation before auth), 4401 (bad token), 4403 (bad signature), 4000 (replaced by a newer connection of the same device), 1001 (relay shutting down).
 
+An unpaired peer is reported in `presence` with `not_paired: true` rather than as offline; it is set when the other side re-declares a list without this device and cleared when it declares it again.
+
 Ownership and limits (added after review): a host may only send `attached` for a session id it currently publishes in its `sessions`; an `attach` naming a session the host does not publish, or an `attached` for a session another host already owns, is answered `no_such_session`. `host_offline` is answered only when the relay can prove the pairing was mutual (it keeps an offline device's last declared peers for one hour), otherwise `not_paired`. Caps per device: 64 paired ids, 256 sessions, 64 hosted attachments, 10 `pair_join` per 5 minutes; a code already joined by another device answers `pair_taken`. Over a cap → `error too_many`. Every connection has a bounded outbound queue (256 frames); a peer that does not drain it is closed.
 
-Presence rules: a device is online from `welcome` until its socket closes or is silent for 90 s (the relay pings every 30 s). On disconnect: its catalogue is dropped (paired devices get an empty `catalogue` for it), every attachment it hosted sends **`session_suspended`** to the attached clients (`session_ended` is host-originated only — a host that has gone cannot say its session is over), every attachment it was a client of is left, and mutually paired devices get a `presence` update. The three arrive in that order — `session_suspended`, then the empty `catalogue`, then the `presence` — which is why a client must not treat that catalogue as news about the session until the presence says the host is back. In the other direction, on every client connect *and* reconnect the relay answers a `paired` declaration with that device's `presence` first and its peers' `catalogue`s after it, so a client re-attaching after its own outage learns whether a host is there before any catalogue arrives (or fails to).
+Presence rules: a device is online from `welcome` until its socket closes or it stops answering the relay's pings (one every 30 s; the socket is closed when no pong and no frame has arrived for 90 s). On disconnect: its catalogue is dropped (paired devices get an empty `catalogue` for it), every attachment it hosted sends **`session_suspended`** to the attached clients (`session_ended` is host-originated only — a host that has gone cannot say its session is over), every attachment it was a client of is left, and mutually paired devices get a `presence` update. The three arrive in that order — `session_suspended`, then the empty `catalogue`, then the `presence` — which is why a client must not treat that catalogue as news about the session until the presence says the host is back. In the other direction, on every client connect *and* reconnect the relay answers a `paired` declaration with that device's `presence` first and its peers' `catalogue`s after it, so a client re-attaching after its own outage learns whether a host is there before any catalogue arrives (or fails to).
 
 ---
 

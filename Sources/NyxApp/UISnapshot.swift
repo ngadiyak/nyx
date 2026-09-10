@@ -1085,11 +1085,18 @@ enum UISnapshot {
     private static func stickyPrompt(palette: Palette, failed: Bool, summary: String = "",
                                      tone: SummaryTone? = nil,
                                      appearance: NSAppearance.Name = .darkAqua) -> NSView {
-        let view = StickyPromptView(frame: NSRect(x: 0, y: 0, width: 900, height: 22))
+        let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: 22))
+        let view = StickyPromptView(frame: NSRect(x: 0, y: 0, width: 900, height: height))
         view.appearance = NSAppearance(named: appearance)
-        view.update(text: failed ? "$ make test" : "$ ./deploy.sh --env production --wait",
-                    summary: summary, tone: tone ?? (failed ? .failure : .plain), failed: failed,
-                    palette: palette, font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        // Through `StickyPromptLabel.text`, so a failed command's status is in the picture the way
+        // it is on screen: it is in the *text* now, not in a red label the band no longer paints.
+        let text = StickyPromptLabel.text(
+            command: failed ? "$ make test" : "$ ./deploy.sh --env production --wait",
+            exitStatus: failed ? 2 : 0, columns: 100)
+        view.update(text: text, summary: summary, tone: tone ?? (failed ? .failure : .plain),
+                    palette: palette, font: font, padding: 8,
+                    cellWidth: ("M" as NSString).size(withAttributes: [.font: font]).width)
         view.layoutSubtreeIfNeeded()
         return view
     }

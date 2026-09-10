@@ -111,7 +111,12 @@ enum GridSnapshot {
             var tweaked = config
             change(&tweaked)
             guard let canvas = GridCanvas(cols: 84, rows: 20, config: tweaked) else { continue }
-            for (name, kind) in [("strip", Case.hoverStrip(.w3, .finished)), ("gutter", Case.gutter)] {
+            // The pinned band is in this set because `line-height = 0.8` is the setting
+            // `hitRowHeight` exists for: at a 13 pt row the band is 16 pt and overhangs the rows it
+            // does not blank, and `padding = 0` is where its left edge sits two columns into the
+            // grid. Both are settings a person can choose, and neither had a picture of this band.
+            for (name, kind) in [("strip", Case.hoverStrip(.w3, .finished)), ("gutter", Case.gutter),
+                                 ("sticky", Case.sticky)] {
                 write(canvas: canvas, palette: dark, appearance: .darkAqua, case: kind,
                       into: directory, named: "composite-\(label)-\(name)-nyx-dark-dark")
             }
@@ -491,19 +496,22 @@ extension GridCanvas {
         return view
     }
 
-    /// The pinned command line, one row tall over the first row, clear of the gutter -- the frame
-    /// `Pane.layoutStickyStrip` gives it.
+    /// The pinned command line, `hitRowHeight` tall and centred on the row it covers, clear of the
+    /// gutter -- the frame `Pane.layoutStickyStrip` gives it, including the padding and cell width
+    /// that put its text on a column boundary.
     func stickyStrip(_ built: GridScene.Built, palette: Palette,
                      appearance: NSAppearance.Name) -> NSView? {
         guard let sticky = built.sticky else { return nil }
         let left = max(padding, CGFloat(PromptGutter.hitWidth))
         let width = max(0, bounds.width - left - padding)
-        let view = StickyPromptView(frame: NSRect(x: left, y: bounds.height - padding - cell.height,
-                                                  width: width, height: cell.height))
+        let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cell.height)))
+        let centre = bounds.height - padding - cell.height / 2
+        let view = StickyPromptView(frame: NSRect(x: left, y: centre - height / 2,
+                                                  width: width, height: height))
         view.appearance = NSAppearance(named: appearance)
-        view.update(text: sticky.text, summary: sticky.summary, tone: sticky.tone,
-                    failed: sticky.failed, palette: palette,
-                    font: .monospacedSystemFont(ofSize: CGFloat(config.fontSize), weight: .regular))
+        view.update(text: sticky.text, summary: sticky.summary, tone: sticky.tone, palette: palette,
+                    font: .monospacedSystemFont(ofSize: CGFloat(config.fontSize), weight: .regular),
+                    padding: padding, cellWidth: cell.width)
         view.layoutSubtreeIfNeeded()
         return view
     }
@@ -635,7 +643,7 @@ struct GridScene {
         var gutterCaps: [Int: CommandBlockChrome.GutterCap]
         var gutterLabels: [Int: String]
         var strip: (slot: Int, plan: CommandBlockChrome.StripPlan, header: BlockHeader)?
-        var sticky: (text: String, summary: String, tone: SummaryTone, failed: Bool)?
+        var sticky: (text: String, summary: String, tone: SummaryTone)?
         var lensField: (slot: Int, caption: String, text: String, message: String?, offersJq: Bool)?
         var search: (query: String, readout: String)?
     }
@@ -1002,7 +1010,7 @@ struct GridScene {
             if notes.indices.contains(promptSlot) { notes[promptSlot] = nil }
         }
 
-        var sticky: (text: String, summary: String, tone: SummaryTone, failed: Bool)?
+        var sticky: (text: String, summary: String, tone: SummaryTone)?
         if let pinned = terminal.stickyPrompt(viewportTop: windowTop),
            let region = terminal.command(containingAbsoluteRow: pinned.row) {
             let block = CommandBlock(region: region, visibleRows: 0..<0, showsHeader: true)
@@ -1011,7 +1019,10 @@ struct GridScene {
                                       hasOutput: terminal.commandHasOutput(atAbsoluteRow: region.promptRow))
             sticky = (StickyPromptLabel.text(command: terminal.commandText(of: region),
                                              exitStatus: pinned.exitStatus, columns: cols),
-                      header.summary, header.tone, pinned.failed)
+                      header.summary, header.tone)
+            // Exactly as `Pane.render` does it: the row the band covers is blanked in the frame, so
+            // a composite of the pinned band is a picture of what the band actually sits on.
+            if !lines.isEmpty { lines[0] = Row(cols: cols) }
         }
 
         var matches = [[Range<Int>]](repeating: [], count: rows)

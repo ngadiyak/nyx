@@ -72,6 +72,52 @@ private func session() -> Terminal {
     #expect(sticky.exitStatus == 0)
 }
 
+/// Addendum 1: block chrome steps aside for a full-screen program -- spines, summaries and the
+/// gutter all do, and the pinned strip did not, so vim was drawn under a band naming the command
+/// that started it (and, on the alternate screen, one whose exit status was gone).
+@Test func nothingIsPinnedWhileAFullScreenProgramOwnsTheDisplay() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 200)
+    t.feed(mark("A") + "$ " + mark("B") + "swift build\r\n" + mark("C"))
+    for line in 1...40 { t.feed("compiling \(line)\r\n") }
+    t.feed(mark("D;0"))
+    #expect(t.stickyPrompt() != nil)
+    t.feed("\u{1B}[?1049h")            // vim takes the screen
+    #expect(t.stickyPrompt() == nil)
+    t.feed("\u{1B}[?1049l")
+    #expect(t.stickyPrompt() != nil)
+    // And while a TUI owns the mouse, for the same reason `CommandBlockChrome.isAllowed` says so.
+    t.feed("\u{1B}[?1000h")
+    #expect(t.stickyPrompt() == nil)
+}
+
+/// The band said "Running command" for a command that finished half an hour ago (a11y 7.1). It
+/// says what it is and what pressing it does, and carries the same summary the strip shows.
+@Test func thePinnedBandSaysWhatItIsAndWhatItDid() {
+    #expect(StickyPromptLabel.accessibilityLabel(text: "$ swift build", summary: "exit 1 \u{b7} 8.8s")
+        == "Pinned command: $ swift build \u{b7} exit 1 \u{b7} 8.8s. Scrolls back to it.")
+    #expect(StickyPromptLabel.accessibilityLabel(text: "$ ls", summary: "")
+        == "Pinned command: $ ls. Scrolls back to it.")
+}
+
+/// The band begins at the gutter's edge, which is not a column boundary: at the shipping
+/// `padding = 8` a 20 pt gutter puts it two thirds of the way into column 1, and the pinned command
+/// line was then drawn a fraction of a cell out of step with the output under it -- which reads as
+/// a smeared duplicate rather than as a different surface (Task 2's review).
+@Test func theBandsTextStartsOnAColumnBoundaryClearOfTheArrow() {
+    // padding 8, cells 7.2 pt wide, band at the gutter's 20 pt edge: the first column at or past
+    // the arrow (20 + 14 = 34 pt) starts at 8 + 4 * 7.2 = 36.8, which is 16.8 into the band.
+    let inset = StickyPromptLabel.textInset(bandLeft: 20, padding: 8, cellWidth: 7.2, minimum: 14)
+    #expect(abs(inset - 16.8) < 0.001)
+    // A column boundary is a column boundary: the inset plus the band's own left edge is a whole
+    // number of cells from the first column.
+    #expect(abs((20 + inset - 8).remainder(dividingBy: 7.2)) < 0.001)
+    // Never less than the arrow needs, whatever the geometry says.
+    #expect(StickyPromptLabel.textInset(bandLeft: 20, padding: 20, cellWidth: 7.2, minimum: 14) >= 14)
+    // A pane with no metrics yet (a view laid out before its font is measured) gets the minimum
+    // rather than a division by zero.
+    #expect(StickyPromptLabel.textInset(bandLeft: 20, padding: 8, cellWidth: 0, minimum: 14) == 14)
+}
+
 // MARK: - Folding
 
 @Test func nothingIsHiddenUntilSomethingIsFolded() {

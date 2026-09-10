@@ -5,12 +5,13 @@ import NyxCore
 ///
 /// Drawn *over* the terminal's top row rather than above it: the grid is what the shell resized
 /// itself to, and stealing a row from it to draw chrome would mean every pinned strip resized the
-/// session. The row underneath is still there, still in the buffer and still selectable -- it is
-/// covered while there is something worth pinning and uncovered the instant there is not, which is
-/// the whole reason `Terminal.stickyPrompt` returns nil while the prompt is on screen.
+/// session. `Pane.render` blanks the row it covers in the frame it hands the renderer, so the band
+/// and the output beneath it cannot print on top of each other -- the row is still in the buffer and
+/// still selectable, it is only not *drawn* while something is pinned over it.
 ///
-/// Which command to pin, and what the strip reads, are `StickyPrompt` and `StickyPromptLabel` in
-/// NyxCore. What is here is a background, a label and a click.
+/// Which command to pin, what the strip reads, what it says to VoiceOver and where its text begins
+/// are `StickyPrompt` and `StickyPromptLabel` in NyxCore. What is here is a ground, a divider, an
+/// arrow, two labels and a click.
 final class StickyPromptView: NSView {
     /// The strip was clicked: scroll to the pinned command's prompt.
     var onClick: (() -> Void)?
@@ -19,8 +20,27 @@ final class StickyPromptView: NSView {
     /// The right-aligned "exit 1 · 8.8s" -- the same summary the hover overlay shows for this
     /// command, so scrolling to it after reading the strip finds the header saying the same thing.
     private let note = NSTextField(labelWithString: "")
-    /// The command currently pinned, so an unchanged frame does no work at all.
-    private var shown: (text: String, summary: String, tone: SummaryTone, failed: Bool)?
+    /// The 1 px hairline along the bottom edge. Without it the band's opaque ground ended in mid
+    /// air: an opaque rectangle the colour of the terminal's background, over the terminal's
+    /// background, is invisible at its own boundary, which is where a reader needs it most.
+    private let divider = NSView(frame: .zero)
+    /// The leading `↑`, drawn as a path. Before it the band had no bezel, no chevron, no pin and no
+    /// divider, and was a click target end to end -- a control that said nothing about being one.
+    private let arrow = StickyArrowView(frame: .zero)
+    /// The command currently pinned, so an unchanged frame does no work at all. The palette and the
+    /// text inset are part of the key: a theme reload and a font change move both without changing
+    /// a word, and a guard that ignored them left the old theme's colours and the old grid's
+    /// alignment on screen.
+    private var shown: (text: String, summary: String, tone: SummaryTone, palette: Palette,
+                        inset: CGFloat, font: NSFont)?
+    /// The label's leading constraint, moved to whichever column boundary clears the arrow.
+    private var labelLeading: NSLayoutConstraint!
+
+    /// The arrow's 8 pt box and the gap after it: the least room the text can begin at, which is
+    /// what `StickyPromptLabel.textInset` is asked to clear.
+    static let arrowWidth: CGFloat = 8
+    static let arrowGap: CGFloat = 6
+    static var minimumTextInset: Double { Double(arrowWidth + arrowGap) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -31,12 +51,31 @@ final class StickyPromptView: NSView {
         note.lineBreakMode = .byClipping
         note.translatesAutoresizingMaskIntoConstraints = false
         addSubview(note)
+        arrow.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(arrow)
+        divider.wantsLayer = true
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(divider)
+
+        labelLeading = label.leadingAnchor.constraint(equalTo: leadingAnchor,
+                                                      constant: CGFloat(StickyPromptView.minimumTextInset))
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            labelLeading,
             label.trailingAnchor.constraint(lessThanOrEqualTo: note.leadingAnchor, constant: -6),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             note.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             note.centerYAnchor.constraint(equalTo: centerYAnchor),
+            // Immediately before the text, whichever column the text landed on: the arrow belongs
+            // to the sentence, not to the band's corner.
+            arrow.trailingAnchor.constraint(equalTo: label.leadingAnchor,
+                                            constant: -StickyPromptView.arrowGap),
+            arrow.centerYAnchor.constraint(equalTo: centerYAnchor),
+            arrow.widthAnchor.constraint(equalToConstant: StickyPromptView.arrowWidth),
+            arrow.heightAnchor.constraint(equalToConstant: StickyPromptView.arrowWidth),
+            divider.leadingAnchor.constraint(equalTo: leadingAnchor),
+            divider.trailingAnchor.constraint(equalTo: trailingAnchor),
+            divider.bottomAnchor.constraint(equalTo: bottomAnchor),
+            divider.heightAnchor.constraint(equalToConstant: 1),
         ])
         isHidden = true
     }
@@ -52,44 +91,70 @@ final class StickyPromptView: NSView {
 
     /// nil hides the strip. Everything is compared before it is applied: this is called once per
     /// frame, and an unchanged strip must not relayout a text field sixty times a second.
-    /// `tone` colours the right-hand note. Not derived from `failed` here: a curl that returned
-    /// 404 exited 0, so the command did not fail and the response did -- `BlockHeader.tone` is the
-    /// one place that distinction is made, and this obeys it.
-    func update(text: String?, summary: String, tone: SummaryTone, failed: Bool, palette: Palette,
-                font: NSFont) {
+    ///
+    /// `tone` colours the right-hand note and is not derived from a `failed` flag: a curl that
+    /// returned 404 exited 0, so the command did not fail and the response did -- `BlockHeader.tone`
+    /// is the one place that distinction is made, and a second flag here would be a second opinion.
+    ///
+    /// `padding` and `cellWidth` are the pane's own, and only so the text can be put on a column
+    /// boundary (`StickyPromptLabel.textInset`); nothing else in the band is measured in cells.
+    func update(text: String?, summary: String, tone: SummaryTone, palette: Palette, font: NSFont,
+                padding: CGFloat, cellWidth: CGFloat) {
         guard let text, !text.isEmpty else {
             if !isHidden { isHidden = true; shown = nil }
             return
         }
+        // Everything below is inside the unwrap, so `text` is a `String` by the time the label is
+        // built and `StickyPromptLabel.accessibilityLabel` never sees an optional. It is already
+        // `StickyPromptLabel.text(command:exitStatus:columns:)`'s answer -- the collapsed, cut
+        // command line the band draws -- so the spoken sentence and the drawn one are one string,
+        // cut once.
+        let inset = textInset(padding: padding, cellWidth: cellWidth)
         guard shown?.text != text || shown?.summary != summary || shown?.tone != tone
-                || shown?.failed != failed || label.font != font else {
+                || shown?.palette != palette || shown?.inset != inset || shown?.font != font else {
             isHidden = false
             return
         }
-        shown = (text, summary, tone, failed)
+        shown = (text, summary, tone, palette, inset, font)
         label.stringValue = text
         note.stringValue = summary
         note.isHidden = summary.isEmpty
-        // A strip that means "this output belongs to that command", and clicking it goes there.
-        // Whether the command failed is drawn in colour, which is exactly what a label has to say
-        // in words instead.
+        labelLeading.constant = inset
+        // A band that means "this output belongs to that command", and pressing it goes there.
+        // "Running command: …" was said of commands that had finished half an hour ago; the whole
+        // sentence is decided in Core beside the text the band draws.
         setAccessibilityRole(.button)
-        setAccessibilityLabel(failed
-            ? "Failed command: \(text). Scroll to its prompt."
-            : "Running command: \(text). Scroll to its prompt.")
+        setAccessibilityLabel(StickyPromptLabel.accessibilityLabel(text: text, summary: summary))
         label.font = font
         note.font = font
-        // The theme's own red for a failure, its foreground otherwise, over a background lifted
-        // just far enough off the terminal's to read as a different surface rather than as text.
-        // `readable(1)` rather than `colors[1]`: gruvbox's red is 2.7:1 against its own background
-        // and unreadable as a line of text; its bright red is 4.3:1.
-        label.textColor = nsColor(failed ? palette.readable(1) : palette.foreground, alpha: 1)
+        // The theme's own colours, never system ones, and the theme's own appearance: this sits on
+        // the terminal's background, and a system label colour on a dark theme under Light Mode is
+        // the bug the block header already has a comment about.
+        label.textColor = nsColor(palette.foreground, alpha: 1)
         // The note follows the block's tone rather than the command line's: `curl` reporting 404
         // exited 0, so the command is not a failure and the response is.
         note.textColor = nsColor(tone.color(in: palette), alpha: 1)
-        layer?.backgroundColor = nsColor(palette.foreground, alpha: 0.10).cgColor
+        // Opaque, and pinned to the palette's own appearance: `foreground @ 0.10` over live text is
+        // why every scrolled composite showed a pinned command and the output beneath it printed on
+        // top of each other.
+        appearance = NSAppearance(named: palette.isLight ? .aqua : .darkAqua)
+        layer?.backgroundColor = nsColor(palette.background, alpha: 1).cgColor
         layer?.borderWidth = 0
+        divider.layer?.backgroundColor = nsColor(palette.foreground, alpha: 0.20).cgColor
+        arrow.colour = palette.foreground
         isHidden = false
+    }
+
+    /// Where the text begins, with the field's own inset taken off: `NSTextField` insets its string
+    /// inside its frame, so a constraint set to the column's offset put the *field* on the column
+    /// and the glyphs two points to the right of it.
+    private func textInset(padding: CGFloat, cellWidth: CGFloat) -> CGFloat {
+        let wanted = StickyPromptLabel.textInset(bandLeft: Double(frame.minX), padding: Double(padding),
+                                                 cellWidth: Double(cellWidth),
+                                                 minimum: StickyPromptView.minimumTextInset)
+        let probe = NSRect(x: 0, y: 0, width: 200, height: 20)
+        let inner = label.cell?.titleRect(forBounds: probe).minX ?? 0
+        return max(CGFloat(StickyPromptView.minimumTextInset), CGFloat(wanted) - inner)
     }
 
     override func mouseDown(with event: NSEvent) { onClick?() }
@@ -105,5 +170,30 @@ final class StickyPromptView: NSView {
         super.resetCursorRects()
         guard !isHidden else { return }
         addCursorRect(bounds, cursor: .pointingHand)
+    }
+}
+
+/// The band's leading `↑`: an 8 pt path, at `foreground @ 0.55`.
+///
+/// A path rather than a glyph set in the band's font, for the same reason the strip's `⋯` and `▾`
+/// are paths: an arrow set at the terminal's font size inside a 20 pt band measures as "weak
+/// because of size" (design §2.7), and this one has to carry the band's only claim to being a
+/// control.
+private final class StickyArrowView: NSView {
+    var colour: RGB = RGB(255, 255, 255) {
+        didSet { if colour != oldValue { needsDisplay = true } }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        nsColor(colour, alpha: 0.55).setFill()
+        // Unflipped, so "up" is `+y`: a head across the top third and a shaft down the middle.
+        let head = NSBezierPath()
+        head.move(to: NSPoint(x: bounds.midX, y: bounds.maxY))
+        head.line(to: NSPoint(x: bounds.minX, y: bounds.maxY - 4))
+        head.line(to: NSPoint(x: bounds.maxX, y: bounds.maxY - 4))
+        head.close()
+        head.fill()
+        NSBezierPath(rect: NSRect(x: bounds.midX - 0.75, y: bounds.minY,
+                                  width: 1.5, height: bounds.height - 4)).fill()
     }
 }

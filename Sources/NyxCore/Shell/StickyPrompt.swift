@@ -28,10 +28,18 @@ public extension Terminal {
     /// already see wastes a row and reads as a rendering bug -- and nil when the shell emits no
     /// marks, since then there is no command line to name.
     func stickyPrompt(viewportTop: Int? = nil) -> StickyPrompt? {
-        // Asked once per frame. Without marks there is nothing to pin, and finding that out the
-        // slow way means `previousPrompt` walking the whole scrollback -- under the session lock,
-        // on every frame, for every shell without integration.
-        guard shellEmitsPromptMarks else { return nil }
+        // The same gate the spine, the summary and the gutter obey. A band naming the command that
+        // started vim, drawn over vim, is the chrome-that-does-not-step-aside bug this project
+        // avoids everywhere else (Addendum 1) -- and on the alternate screen the pinned command's
+        // exit status is gone as well, so the band was drawn over a TUI *and* lying about it.
+        //
+        // `hasMarks` carries the old `shellEmitsPromptMarks` guard, which is also why this is the
+        // first line: without marks there is nothing to pin, and finding that out the slow way
+        // means `previousPrompt` walking the whole scrollback -- under the session lock, on every
+        // frame, for every shell without integration.
+        guard CommandBlockChrome.isAllowed(altScreen: modes.altScreen,
+                                           mouseReporting: modes.mouse != .none,
+                                           hasMarks: shellEmitsPromptMarks) else { return nil }
         let top = viewportTop ?? viewportTopRow
         guard let region = command(containingAbsoluteRow: top) else { return nil }
 
@@ -86,5 +94,37 @@ public enum StickyPromptLabel {
             out.append(character)
         }
         return out
+    }
+}
+
+public extension StickyPromptLabel {
+    /// What VoiceOver hears: `Pinned command: swift build … · exit 1 · 8.8s. Scrolls back to it.`
+    ///
+    /// "Running command: …" was said of commands that had finished, which is a label describing the
+    /// wrong half of the state it was built from (a11y 7.1). `text` is
+    /// `text(command:exitStatus:columns:)`'s answer -- the collapsed, cut command line the band
+    /// draws -- so the spoken sentence and the drawn one are one string, cut once, and the second
+    /// sentence is the only place the band says what pressing it does: it has no bezel and no title.
+    static func accessibilityLabel(text: String, summary: String) -> String {
+        let sentence = summary.isEmpty ? text : "\(text) \u{b7} \(summary)"
+        return "Pinned command: \(sentence). Scrolls back to it."
+    }
+
+    /// Where the band's command line begins, in points from the band's own leading edge: the first
+    /// column boundary at or past `minimum` (the leading arrow and the gap after it).
+    ///
+    /// The band starts at the gutter's edge -- `max(padding, PromptGutter.hitWidth)` -- which is not
+    /// a column boundary at the shipping `padding = 8`. Text laid out from there is a fraction of a
+    /// cell out of step with the output rows above and below it, and monospaced text half a cell out
+    /// of step reads as a smeared duplicate of itself rather than as a different surface.
+    ///
+    /// Points, not columns, because the caller has a constraint to set rather than a cell to fill;
+    /// `Double` because `NyxCore` hands out no CoreGraphics type (plan 1a's constraints).
+    static func textInset(bandLeft: Double, padding: Double, cellWidth: Double,
+                          minimum: Double) -> Double {
+        guard cellWidth > 0 else { return minimum }
+        let need = bandLeft + minimum
+        let column = max(0, ((need - padding) / cellWidth).rounded(.up))
+        return max(minimum, padding + column * cellWidth - bandLeft)
     }
 }

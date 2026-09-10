@@ -104,6 +104,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     private let workbenchHint = WorkbenchHintView(frame: .zero)
     /// The prompt row the strip currently names, for its click.
     private var stickyPromptRow: Int?
+    /// Which display slot the last frame blanked for the pinned band, so the frame that stops
+    /// blanking it can tell the renderer's row cache that the row it has is no longer the row.
+    private var blankedStickyRow: Int?
     /// Which commands' output is collapsed. Empty for almost every pane that ever exists, which is
     /// what keeps the render path unchanged: every fold-aware branch is behind `isEmpty`.
     private var folding = OutputFolding()
@@ -1706,7 +1709,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         var notes: [String?] = []
         var spines: [(rows: Range<Int>, color: RGB)] = []
         var summaries: [(row: Int, text: String, color: RGB)] = []
-        var sticky: (text: String, failed: Bool, row: Int, summary: String, tone: SummaryTone)?
+        var sticky: (text: String, row: Int, summary: String, tone: SummaryTone)?
         var anyRunningOnScreen = false
         // Where the workbench pill goes this frame and what it says, or nil for no pill. Decided
         // under the lock with the rest of the chrome, applied after it.
@@ -1824,7 +1827,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // Resolved here, inside the lock, so the highlighted columns belong to the same
             // viewport as the lines being drawn.
             let top = t.viewportTopRow
-            let lines: [Row]
+            // A `var` for one assignment: the row the sticky band covers is blanked below, which is
+            // one row of an array this pass already owns.
+            var lines: [Row]
             let selected: [Range<Int>?]
             let matches: [[Range<Int>]]
             let current: [Range<Int>?]
@@ -2174,18 +2179,49 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
                                           hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow),
                                           httpSummary: self.requestSummary(for: block, in: t),
                                           watch: self.watchHeader(forBlock: region.id))
+                // No `failed` flag beside the tone: a curl that returned 404 exited 0, so the
+                // command did not fail and the response did, and `BlockHeader.tone` is the one
+                // place that distinction is made.
                 sticky = (StickyPromptLabel.text(command: t.commandText(of: region),
                                                  exitStatus: pinned.exitStatus, columns: t.cols),
-                          pinned.failed, pinned.row, header.summary, header.tone)
+                          pinned.row, header.summary, header.tone)
             }
             if self.watchSentAt != nil { runningCommandID = t.runningCommand?.id }
             builtAtContentVersion = t.contentVersion
+            var dirty = self.dirtyRows(of: t, top: top)
+            // `stickyPromptRow` has been computed since the strip existed and read only by the
+            // click handler. The row the band covers is blanked in the frame, so the pinned command
+            // and the output beneath it cannot print on top of each other -- which the opaque ground
+            // alone does not fix: the band is one row tall over a grid whose glyphs overhang their
+            // own cells at `line-height` below 1, so the descenders of the covered row came out
+            // above and below it.
+            //
+            // The blanked slot is the one `layoutStickyStrip` puts the band on: the top row, or the
+            // one below it while the remote strip has the top.
+            let blankRow = self.stickyStripRow
+            if sticky != nil, blankRow < lines.count {
+                lines[blankRow] = Row(cols: t.cols)
+            }
+            // The renderer caches shaped rows and rebuilds a row only when the terminal says it
+            // changed or its `RowKey` moved, and neither hears about this: blanking is done to the
+            // frame after the buffer has spoken. Without saying so, the band's first frame drew the
+            // old glyphs under it, and the frame that unpinned it left the row blank with nothing
+            // over it -- one row of somebody's output missing until it was next written to. An
+            // empty `dirty` already means "everything changed".
+            let blanked = sticky != nil ? blankRow : nil
+            if blanked != self.blankedStickyRow, !dirty.isEmpty {
+                for row in [blanked, self.blankedStickyRow].compactMap({ $0 })
+                where dirty.indices.contains(row) {
+                    dirty[row] = true
+                }
+            }
+            self.blankedStickyRow = blanked
             return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
                                cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit,
                                selection: selected, searchMatches: matches, currentSearchMatch: current,
                                hoveredLink: hovered, rowNotes: notes, blockSpines: spines,
                                blockSummaries: summaries, highlightedRows: self.hoveredBlock?.rows,
-                               dirtyRows: self.dirtyRows(of: t, top: top))
+                               dirtyRows: dirty)
         }
         drainPendingRecord()
         if abandonWatch {
@@ -2220,8 +2256,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         stickyPromptRow = sticky?.row
         let wasHidden = stickyStrip.isHidden
         stickyStrip.update(text: sticky?.text, summary: sticky?.summary ?? "", tone: sticky?.tone ?? .plain,
-                           failed: sticky?.failed ?? false, palette: frame.palette,
-                           font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
+                           palette: frame.palette,
+                           font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular),
+                           padding: padding, cellWidth: cellSizePoints.width)
         // The strip claims the pointer only while it is up, so appearing or disappearing changes
         // which view the cursor over the top row belongs to.
         if wasHidden != stickyStrip.isHidden { window?.invalidateCursorRects(for: stickyStrip) }
@@ -3549,17 +3586,28 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return found
     }
 
+    /// Which display slot the pinned band sits on: the top row, or the one below it while the
+    /// remote strip has the top -- two strips over one row would leave whichever was added last
+    /// covering the other, and both are sentences somebody has to read.
+    ///
+    /// One property rather than the same expression in two places: `render` blanks this row and
+    /// `layoutStickyStrip` puts the band on it, and a band over one row with another one blanked is
+    /// two rows of nonsense.
+    private var stickyStripRow: Int { remote != nil && !remoteStrip.isHidden ? 1 : 0 }
+
     private func layoutStickyStrip() {
         let cell = cellSizePoints
         let left = max(padding, CGFloat(PromptGutter.hitWidth))
         let width = max(0, bounds.width - left - padding)
         let top = bounds.height - padding - cell.height
         remoteStrip.frame = NSRect(x: left, y: top, width: width, height: cell.height)
-        // A row lower while the remote strip is up. Two strips over one row would leave whichever
-        // was added last covering the other, and both of them are sentences somebody has to read.
-        let stickyRow = remote != nil && !remoteStrip.isHidden ? 1 : 0
-        stickyStrip.frame = NSRect(x: left, y: top - CGFloat(stickyRow) * cell.height,
-                                   width: width, height: cell.height)
+        // `hitRowHeight`, centred on the row it covers, so the band is never 13 pt tall at
+        // `line-height = 0.8` -- the same floor every other one-row target in a pane obeys (§8.4).
+        // It overhangs the rows above and below by up to 1.5 pt, which is a band the mouse can hit
+        // rather than a row of output taken away: the covered row is the only one blanked.
+        let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cell.height)))
+        let centre = top + cell.height / 2 - CGFloat(stickyStripRow) * cell.height
+        stickyStrip.frame = NSRect(x: left, y: centre - height / 2, width: width, height: height)
     }
 
     // MARK: - The remote strip

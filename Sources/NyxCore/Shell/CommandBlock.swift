@@ -330,8 +330,7 @@ public extension CommandBlockChrome {
         guard width != .w1 else {
             if watching { return [.stop, .actions(.glyph)] }
             if !watched, lensable {
-                return [.lens(name: (header.lens ?? .raw).chipTitle, on: header.lens != nil),
-                        .actions(.glyph)]
+                return [chip(for: header), .actions(.glyph)]
             }
             return [.actions(.glyph)]
         }
@@ -342,9 +341,7 @@ public extension CommandBlockChrome {
         if watching {
             list.append(.stop)
         } else if !watched, lensable {
-            // The chip is a state readout, not a suggestion: `nil` is the response showing raw, so
-            // the chip reads `Raw` unlit rather than naming the lens pressing it would switch to.
-            list.append(.lens(name: (header.lens ?? .raw).chipTitle, on: header.lens != nil))
+            list.append(chip(for: header))
         } else if header.folded, header.hasOutput {
             list.append(.fold(.unfold))
         }
@@ -361,6 +358,24 @@ public extension CommandBlockChrome {
         }
         list.append(.actions(.labelled))
         return list
+    }
+
+    /// The lens chip for a block: which lens is showing, and whether the chip is **lit**.
+    ///
+    /// The chip is a state readout, not a suggestion -- `nil` is the response showing raw, so the
+    /// chip reads `Raw` rather than naming the lens pressing it would switch to.
+    ///
+    /// And `.raw` is **unlit**, exactly as `nil` is (design D8). §2.3 reads "On = filled accent",
+    /// which a reader takes to mean "a lens is on"; a lit chip reading `Raw` meant "you picked the
+    /// no-op on purpose", which has no user-visible consequence whatever -- the response is raw
+    /// either way, so the two states were one state drawn two ways. `nil` and `.raw` now produce
+    /// the same pill, which is why `block-header-http-lens-raw-*` is byte-identical to
+    /// `block-header-http-lens-*`: that pair *is* the assertion. The ⋯ menu still ticks its `Raw`
+    /// row, because there raw is one of seven choices and the tick says which one you are on
+    /// (`BlockHeader.isChecked`, which reads `lens ?? .raw`).
+    private static func chip(for header: BlockHeader) -> Pill {
+        let lens = header.lens ?? .raw
+        return .lens(name: lens.chipTitle, on: lens != .raw)
     }
 
     /// The readout, longest first: the whole sentence → drop the interval and the percentiles →

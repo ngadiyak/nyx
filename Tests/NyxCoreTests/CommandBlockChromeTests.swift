@@ -116,13 +116,22 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     let h = header(summary: "", http: HTTPSummary(text: "200 · 142 ms", tone: .success),
                    isHTTP: true, lens: .pretty, json: true)
     #expect(pills(h, .w3).first == .lens(name: "Pretty", on: true))
+    // The chip outlives `Fold` and `Copy` (§2.6 as amended by F4), so it is still there at W1 --
+    // the rung a pasted `curl` actually gets. The review round asked for this cell by name.
+    #expect(pills(h, .w1) == [.lens(name: "Pretty", on: true), .actions(.glyph)])
+    #expect(readout(h, .w1) == "200")
+    // D8: `.raw` is a lens value meaning "no transformation", so its chip is **unlit** -- the same
+    // pill `nil` produces, because the response is raw either way. The body need not be JSON: the
+    // chip is also how a reader gets back out of a lens.
     let raw = header(summary: "", http: HTTPSummary(text: "200 · 142 ms", tone: .success),
                      isHTTP: true, lens: .raw, json: false)
-    #expect(pills(raw, .w3).first == .lens(name: "Raw", on: true))
+    #expect(pills(raw, .w3).first == .lens(name: "Raw", on: false))
+    #expect(pills(raw, .w1) == [.lens(name: "Raw", on: false), .actions(.glyph)])
     // Nothing a lens can do anything with, and none open: no chip at all rather than an inert one.
     let big = header(summary: "", http: HTTPSummary(text: "200 · 142 ms", tone: .success),
                      isHTTP: true, lensTooLarge: true, json: true)
     #expect(pills(big, .w3) == [.fold(.fold), .copy(enabled: true), .actions(.labelled)])
+    #expect(pills(big, .w1) == [.actions(.glyph)])
 }
 
 /// Stop is present at every width, and a watched block never takes the lens chip -- the two would
@@ -584,7 +593,12 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
         return CommandBlockChrome.pills(h, at: .w3).first
     }
     #expect(chip(nil) == .lens(name: "Raw", on: false))
-    #expect(chip(.raw) == .lens(name: "Raw", on: true))
+    // D8: `.raw` is unlit too. A lit chip reading `Raw` said "you picked the no-op on purpose",
+    // which has no user-visible consequence -- the response is raw either way -- and directly
+    // contradicts §2.3's "On = filled accent" reading of a chip that is *on*. The ⋯ menu still
+    // ticks its `Raw` row: there raw is one of seven choices.
+    #expect(chip(.raw) == .lens(name: "Raw", on: false))
+    #expect(chip(nil) == chip(.raw))
     #expect(chip(.pretty) == .lens(name: "Pretty", on: true))
     #expect(chip(.headers) == .lens(name: "Headers", on: true))
     #expect(chip(.body) == .lens(name: "Body", on: true))

@@ -1294,9 +1294,12 @@ enum UISnapshot {
             ("http-lens-on", request(11, lens: .pretty, tooLarge: false, json: true), .w3),
             ("http-lens-body", request(12, lens: .body, tooLarge: false, json: true), .w3),
             ("http-lens-too-large", request(13, lens: nil, tooLarge: true, json: true), .w3),
-            // `.raw` chosen explicitly (from the menu, after some other lens was on) is lit, unlike
-            // `nil` -- the chip is a state readout, and both read `Raw`, but only one of them is the
-            // response actually having been switched back to it on purpose.
+            // `.raw` chosen explicitly, from the menu, after some other lens was on. It is
+            // **byte-identical** to `http-lens` above, and that is the assertion (design D8): a
+            // lens value of raw is "no transformation", the response is raw either way, and a lit
+            // chip reading `Raw` meant "you picked the no-op on purpose" -- a state with no
+            // user-visible consequence, drawn as though a lens were on. The ⋯ menu still ticks its
+            // `Raw` row, because there raw is one of seven choices.
             ("http-lens-raw", request(25, lens: .raw, tooLarge: false, json: true), .w3),
             // The same "there is nothing behind this control" state on a crowded command line: the
             // narrow strip is where a missing control is easiest to mistake for a dropped one.

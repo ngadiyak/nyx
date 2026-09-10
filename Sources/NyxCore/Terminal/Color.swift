@@ -319,20 +319,26 @@ public struct Palette: Equatable {
     /// said "walked *down* from 40 %", which reads as the mark getting fainter and is the opposite
     /// of what happens.)
     ///
-    /// Resolved against `background` rather than `blockHoverBackground` -- a block with nothing to
-    /// fold is tinted while the pointer is on it, and the tint only ever moves the ground *towards*
-    /// the mark, so the plain background is the harder of the two grounds and the right one to hold
-    /// the floor against.
+    /// The floor is held against **both grounds** -- `background` and the hovered block's tint --
+    /// because the mark lands on either. The comment here used to say `background` was the harder of
+    /// the two and the only one worth holding: that was true while the tint began at column 0's ink,
+    /// and D6 moved it out to the window's own edge so that it now runs *under* the gutter, where
+    /// `PromptGutterView` paints no ground of its own. Measured after D6 and before this: all 21
+    /// theme×tone cells were **2.71:1 to 3.00:1** on the tint against a floor of 3, while every one
+    /// cleared it on `background` (3.02-3.33). The tint moves `background` toward `accent`, which is
+    /// toward these marks, so it is the harder ground now and `min` is the honest test (S1).
     ///
     /// The steps are explicit rather than a `while amount > 0` countdown, whose last iteration
     /// landed on a floating-point residue of 0.60 - 12 × 0.05 and made the final `return solid` a
     /// path nothing could reach: the cap is real now, and it is what a theme whose own solid mark
     /// is under 3:1 gets.
     public func fadedMark(_ solid: RGB) -> RGB {
+        let hover = blockHoverBackground
         for step in 0...11 {
             let amount = 0.60 - Double(step) * 0.05
             let candidate = RGB.blend(solid, into: background, amount: amount)
-            if RGB.contrast(candidate, background) >= 3 { return candidate }
+            if min(RGB.contrast(candidate, background),
+                   RGB.contrast(candidate, hover)) >= 3 { return candidate }
         }
         return solid
     }

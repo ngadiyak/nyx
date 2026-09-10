@@ -151,12 +151,23 @@ private let sheetGreyDark = RGB(50, 50, 50)        // windowBackgroundColor, dar
                                ("running", .running)] {
             let solid = colour.color(in: palette)
             let faded = palette.fadedMark(solid)
-            let ratio = RGB.contrast(faded, palette.background)
+            // **Both grounds**, and the tint is the harder one. D6 moved the hover tint out to the
+            // window's own edge so it now runs *under* the gutter mark, and `PromptGutterView`
+            // paints no ground of its own -- so a `.faded` cap on a hovered block sits on
+            // `blockHoverBackground`, where all 21 theme×tone cells measured 2.71:1 to 3.00:1
+            // against a floor of 3 while every one of them cleared it against `background`
+            // (3.02-3.33). `fadedMark`'s own comment claimed `background` was the harder of the
+            // two; that was true before the tint reached the mark and false after (S1).
+            let ratio = min(RGB.contrast(faded, palette.background),
+                            RGB.contrast(faded, palette.blockHoverBackground))
             #expect(ratio >= 3, "\(name) \(tone): \(ratio)")
             // Never *more* than the solid mark: the faded treatment says "less", and a mark that
             // came back brighter than the pressable one would say the opposite.
             #expect(RGB.contrast(faded, palette.background)
                 <= RGB.contrast(solid, palette.background) + 0.001, "\(name) \(tone) is not louder")
+            #expect(RGB.contrast(faded, palette.blockHoverBackground)
+                <= RGB.contrast(solid, palette.blockHoverBackground) + 0.001,
+                    "\(name) \(tone) is not louder on the tint")
         }
     }
 }

@@ -236,10 +236,10 @@ Width class = free columns after the command's last glyph. **W3 ≥ 34, W2 18–
 | hovered, failed | `exit 1 · 8.8s [Fold] [Copy] [Actions ▾]` (`.failure` tone) | `exit 1 · 8.8s [Copy] [Actions ▾]` | `exit 1 [⋯]` | cap → `▾` |
 | hovered, running | `12s [Fold] [Copy] [Actions ▾]` | `12s [Copy] [Actions ▾]` | `12s [⋯]` | cap → `▾` |
 | folded | `‹summary› [Unfold] [Copy] [Actions ▾]` | `‹summary› [Unfold] [Actions ▾]` | `‹summary› [⋯]` | cap → `▸` |
-| hovered, HTTP | `200 · 142 ms · 1.2 KB · json [Pretty ▾] [Fold] [Copy] [Actions ▾]` | `200 · 142 ms [Pretty ▾] [Actions ▾]` | `200 [⋯]` | cap → `▾` |
-| lensed | as HTTP, the lens chip filled accent | as HTTP | `200 [⋯]` | cap → `▾` |
-| watched, running | `●●●○ run 12 · 200 · 100 ms · every 5 s [Stop] [Copy] [Actions ▾]` | `run 12 · 200 [Stop] [Actions ▾]` | `run 12 [Stop] [⋯]` | `[Stop]` alone over the tail |
-| watched, finished | `●●●● 11 runs · p50 140 · p95 190 · 2 failures [Copy] [Actions ▾]` | `11 runs · 2 failures [Actions ▾]` | `11 runs [⋯]` | — |
+| hovered, HTTP | `200 · 142 ms · 1.2 KB · json [Pretty ▾] [Fold] [Copy] [Actions ▾]` | `200 · 142 ms [Pretty ▾] [Actions ▾]` | `200 [Pretty ▾] [⋯]` | cap → `▾` |
+| lensed | as HTTP, the lens chip filled accent | as HTTP | as HTTP | cap → `▾` |
+| watched, running | `●●●○ run 12 · 200 · 100 ms · every 5 s [Stop] [Actions ▾]` | `run 12 · 200 [Stop] [Actions ▾]` | `run 12 [Stop] [⋯]` | `[Stop]` alone over the tail |
+| watched, finished | `●●●● 11 runs · p50 140 · p95 190 · 2 failures [Actions ▾]` | `11 runs · 2 failures [Actions ▾]` | `11 runs [⋯]` | — |
 | no output | `‹summary› [Actions ▾]` | same | `[⋯]` | — |
 
 **Reading the table.** `‹summary›` is `BlockHeader.summary`, unchanged in wording. A `—` in the W0
@@ -253,9 +253,18 @@ own table contradicts (the table drops `Fold` before `Copy`, and keeps `Unfold` 
 cell against it.
 
 *Pills, kept longest first:* `Stop` → `Actions` (which collapses from `Actions ▾` to `⋯` before any
-pill is dropped) → the lens chip when HTTP, or `Unfold` when folded → `Copy` → `Fold` → the dots.
+pill is dropped) → the lens chip when HTTP, or `Unfold` when folded → the dots → `Copy` → `Fold`.
 `Stop` and `Actions` are present at every width. A block that is both watched and HTTP takes
 `Stop`, never the lens chip: the two never share the strip, and the lens stays in the menu (§3.13).
+
+**Amended 2026-09-10, after the plan-1a picture set (task 8, F4).** Two rungs moved, and the two
+rows above with them. The **lens chip now outlives `Fold` and `Copy`** — it is the lens's only
+visible state, and `Copy Output` is a row of the ⋯ menu — because a pasted `curl` is long, the strip
+a person actually gets is a rung or two below W3, and the chip was the first thing dropped: it
+appeared in *no* composite of the whole set. The **dots now outlive `Copy`** for the same kind of
+reason — a timeline is the series' whole shape and there is a second route to the pasteboard, so a
+watched block carries no `Copy` at any width. Measured, §2.6's W3 cells need far more than the
+band's 34 free columns: 58 for the HTTP row and **76 of an 84-column pane** for the watch rows.
 
 *Readout, longest first:* the full sentence → drop the interval (`every 5 s`) and the percentiles →
 drop the timing and size (`142 ms`, `1.2 KB`, `json`) → drop the run count → **the status or exit

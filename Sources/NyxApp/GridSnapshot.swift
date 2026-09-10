@@ -815,8 +815,8 @@ struct GridScene {
     mutating func show(_ state: StripState, at width: CommandBlockChrome.WidthClass) {
         // The same arithmetic the fixture's own per-class commands use, prompt included: the class
         // is read from the free columns after the last glyph, and the shell's `$ ` is two of them.
-        let line = GridScene.commandLine(ofLength: max(8, canvas.cols
-                                                          - GridScene.freeColumns(for: width) - 2))
+        let line = GridScene.commandLine(
+            ofLength: max(8, canvas.cols - GridScene.pictureFreeColumns(state, at: width) - 2))
         let response = ["HTTP/2 200", "content-type: application/json; charset=utf-8", "",
                         "{\"page\":1,\"total\":3,\"users\":[\u{2026}]}"]
         let id: UInt32
@@ -897,12 +897,45 @@ struct GridScene {
     /// summary where it was, and *that* is the picture. Two of §2.6's cells turn out to be
     /// unreachable at these numbers (the W3 HTTP and watch rows measure 52–75 columns against a
     /// band that begins at 34), which is a finding about the table rather than about the fixture.
+    ///
+    /// W3 has no ceiling -- it is "34 or more" -- so the class a picture is named after does not say
+    /// how much room the picture leaves, and `pictureFreeColumns` is where that is decided.
     static func freeColumns(for width: CommandBlockChrome.WidthClass) -> Int {
         switch width {
         case .w3: return 40
         case .w2: return 24
         case .w1: return 12
         case .w0: return 4
+        }
+    }
+
+    /// The free columns a *picture* of one cell of §2.6's table leaves after the command's last
+    /// glyph.
+    ///
+    /// The band's own number for W2, W1 and W0, which have ceilings and must not drift into the
+    /// class above. W3 has none -- any count from 34 up is W3 -- and four of its cells measure far
+    /// more than 40: the first picture set left every one of them at 40, the ladder stepped down past
+    /// the lens chip and the timeline, and §2.6's W3 row for `http`, `lensed` and the two watch
+    /// states appeared in no composite at all.
+    ///
+    /// So these are what those four cells *measure*, found by rendering and reading the pictures
+    /// rather than by arithmetic:
+    ///
+    /// - `http` and `lensed` need **58** free columns for `200 · 142 ms · 1.2 KB · json` beside
+    ///   `[Raw ▾] [Fold] [Copy] [Actions ▾]`. At 46 the chip and `Actions` fit and `Fold` and `Copy`
+    ///   do not.
+    /// - the two watch rows need **76** -- of eighty-four. Eleven dots on a 10 pt pitch are thirteen
+    ///   columns, and the sentence is thirty-three; at 62 everything but the timeline fits. That
+    ///   leaves six columns of command, which is why the picture's `curl` is cut to `curl -sS`: the
+    ///   W3 watch cell is only reachable at all on a very short command line, and the picture is the
+    ///   honest way to say so.
+    static func pictureFreeColumns(_ state: StripState,
+                                   at width: CommandBlockChrome.WidthClass) -> Int {
+        guard width == .w3 else { return freeColumns(for: width) }
+        switch state {
+        case .http, .lensed: return 58
+        case .watchRunning, .watchFinished: return 76
+        default: return freeColumns(for: .w3)
         }
     }
 

@@ -99,7 +99,12 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
     #expect(pills(h, .w3) == [.lens(name: "Raw", on: false), .fold(.fold),
                               .copy(enabled: true), .actions(.labelled)])
     #expect(pills(h, .w2) == [.lens(name: "Raw", on: false), .actions(.labelled)])
-    #expect(pills(h, .w1) == [.actions(.glyph)])
+    // The chip outlives `Fold` and `Copy`, so it is still on the strip at W1: it is the lens's only
+    // visible state, and `Copy Output` is a row of the ⋯ menu. Before this ruling W1 was `[⋯]` and
+    // the chip appeared in no composite of the whole set -- the strip a person actually gets on a
+    // pasted `curl` is a rung or two down from W3, and the chip was always the first thing to go.
+    #expect(pills(h, .w1) == [.lens(name: "Raw", on: false), .actions(.glyph)])
+    #expect(pills(h, .w0) == [])
     #expect(readout(h, .w3) == "200 · 142 ms · 1.2 KB · json")
     #expect(readout(h, .w2) == "200 · 142 ms")
     #expect(readout(h, .w1) == "200")
@@ -128,7 +133,10 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
                    watch: WatchHeader(text: "run 12 · 200 · 100 ms · every 5 s",
                                       dots: [.success, .success, .success, .running],
                                       showsStop: true, tone: .success))
-    #expect(pills(h, .w3) == [.stop, .copy(enabled: true), .actions(.labelled)])
+    // No `Copy` on a watched block at any width: the dots outlive it. A timeline is the series'
+    // whole shape and `Copy Output` is a row of the ⋯ menu, so the strip spends its columns on the
+    // reading rather than on a second route to the pasteboard.
+    #expect(pills(h, .w3) == [.stop, .actions(.labelled)])
     #expect(pills(h, .w2) == [.stop, .actions(.labelled)])
     #expect(pills(h, .w1) == [.stop, .actions(.glyph)])
     #expect(pills(h, .w0) == [.stop])
@@ -170,7 +178,9 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
                    isHTTP: true, json: true,
                    watch: WatchHeader(text: "11 runs · p50 140 ms · p95 190 ms · 2 failures",
                                       dots: [.success, .failure], showsStop: false, tone: .failure))
-    #expect(pills(h, .w3) == [.copy(enabled: true), .actions(.labelled)])
+    // `Copy` drops before the dots here too, so a finished series' W3 strip is its timeline, its
+    // sentence and `Actions ▾`.
+    #expect(pills(h, .w3) == [.actions(.labelled)])
     #expect(pills(h, .w2) == [.actions(.labelled)])
     #expect(pills(h, .w1) == [.actions(.glyph)])
     #expect(CommandBlockChrome.stripContent(h, at: .w0) == nil)
@@ -440,26 +450,28 @@ private func readout(_ h: BlockHeader, _ w: CommandBlockChrome.WidthClass) -> St
 
 /// A width class is a budget, not a promise.
 ///
-/// §2.6 puts the timeline, the sentence, `Stop`, `Copy` and `Actions` on a W3 watched block, and
-/// measured that is sixty to eighty columns of strip -- while W3 begins at thirty-four free ones.
-/// Refusing the row outright took `Stop`, the one control the table says is present at *every*
-/// width, off the screen entirely; the composites named after the watch and the lens had no strip
-/// in them at all. So a row walks down its own ladder until the strip fits, which is what the two
-/// ladders are for.
+/// §2.6 puts the timeline, the sentence, `Stop` and `Actions` on a W3 watched block, and measured
+/// that is sixty to seventy columns of strip -- while W3 begins at thirty-four free ones. Refusing
+/// the row outright took `Stop`, the one control the table says is present at *every* width, off the
+/// screen entirely; the composites named after the watch and the lens had no strip in them at all.
+/// So a row walks down its own ladder until the strip fits, which is what the two ladders are for.
 @Test func aRowTooNarrowForItsClassStepsDownTheLadder() {
     let watching = header(summary: "", isHTTP: true,
                           watch: WatchHeader(text: "run 12 · 200 · 100 ms · every 5 s",
                                              dots: [.success, .running], showsStop: true,
                                              tone: .success))
+    // Keyed on the timeline rather than the pill count: the dots are what makes a W3 watch strip
+    // the widest thing this chrome draws, and since the F4 ruling took `Copy` off a watched block
+    // the W3 and W2 rungs carry the same two pills.
     var tried: [Int] = []
     let placement = CommandBlockChrome.stripPlacement(
         watching, commandRows: [(absoluteRow: 4, lastUsedColumn: 30)], cols: 80, summary: nil,
         measure: { content in
-            tried.append(content.pills.count)
-            return content.pills.count == 3 ? 70 : 12
+            tried.append(content.dots.count)
+            return content.dots.isEmpty ? 12 : 70
         })
-    // W3 (49 free) is asked first and does not fit after the last glyph; W2 does.
-    #expect(tried == [3, 2])
+    // W3 (49 free) is asked first and its timeline does not fit after the last glyph; W2 does.
+    #expect(tried == [2, 0])
     #expect(placement?.plan.pills == [.stop, .actions(.labelled)])
     #expect(placement?.plan.firstColumn == 68)
     // A rung that fits keeps its own class's placement: the strip sits after the last glyph rather

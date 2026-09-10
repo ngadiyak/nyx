@@ -309,14 +309,32 @@ public extension CommandBlockChrome {
     /// Actions, and the lens stays in the ⋯ menu (§3.13). A watched block shows no fold pill
     /// either -- §2.6's two watch rows have none, because a series' newest run is the thing being
     /// read.
+    ///
+    /// Two rungs of the order were ruled on after the first picture set (F4), and §2.6's two
+    /// affected rows and its drop-order sentence were edited with them:
+    ///
+    /// - **On an HTTP block the chip outlives `Fold` and `Copy`.** It is the lens's only visible
+    ///   state -- what the response is being read *as* -- and `Copy Output` is a row of the ⋯ menu.
+    ///   Dropping it first meant the chip appeared in no composite of the whole set: a pasted `curl`
+    ///   is long, so the strip a person actually gets is a rung or two below W3.
+    /// - **On a watched block the dots outlive `Copy`.** The timeline is the series' whole shape and
+    ///   there is a second route to the pasteboard; there is no second picture of eleven runs.
     static func pills(_ header: BlockHeader, at width: WidthClass) -> [Pill] {
         let watching = header.watch?.showsStop == true
         let watched = header.watch != nil
         let lensable = header.isHTTP && !header.lensTooLarge && (header.bodyIsJSON || header.lens != nil)
         // W0 is the row that costs a column of the user's own text, so only the one control with a
-        // running side effect earns it.
+        // running side effect earns it -- not even the chip, which says something rather than doing
+        // it.
         guard width != .w0 else { return watching ? [.stop] : [] }
-        guard width != .w1 else { return watching ? [.stop, .actions(.glyph)] : [.actions(.glyph)] }
+        guard width != .w1 else {
+            if watching { return [.stop, .actions(.glyph)] }
+            if !watched, lensable {
+                return [.lens(name: (header.lens ?? .raw).chipTitle, on: header.lens != nil),
+                        .actions(.glyph)]
+            }
+            return [.actions(.glyph)]
+        }
 
         // The rung under Actions: whichever of Stop, the lens chip and Unfold applies, and Copy
         // when none does. At W3 the rest of the ladder is added below it.
@@ -334,7 +352,9 @@ public extension CommandBlockChrome {
             // Fold is the widest labelled duplicate of a control the gutter already offers, so it
             // is the first pill to go; a folded block already carries `Unfold` above.
             if header.hasOutput, !watched, !header.folded { list.append(.fold(.fold)) }
-            if header.hasOutput { list.append(.copy(enabled: header.hasOutput)) }
+            // `!watched`: the dots outlive `Copy`, and the dots are a W3-only feature, so a watched
+            // block has no rung anywhere that carries `Copy` without them.
+            if header.hasOutput, !watched { list.append(.copy(enabled: header.hasOutput)) }
         } else if list.isEmpty, header.hasOutput, !watched {
             // W2 with no Stop, no chip and nothing folded: Copy is what the rung carries.
             list.append(.copy(enabled: header.hasOutput))
@@ -434,13 +454,11 @@ public extension CommandBlockChrome {
                                measure: (StripContent) -> Int) -> StripPlacement? {
         for row in commandRows.reversed() {
             let free = freeColumns(cols: cols, lastUsedColumn: row.lastUsedColumn)
-            for width in narrowing(from: widthClass(freeColumns: free)) {
-                guard var content = stripContent(header, at: width) else { continue }
+            for (width, rung) in rungs(header, freeColumns: free) {
+                var content = rung
                 // On the row that is already showing the sentence, the readout ladder stops at the
                 // sentence: it is the *pills* that keep giving way. A shortened readout on such a
-                // row is the strip removing a fact the moment the pointer arrives (§2.5), and a
-                // strip that cannot carry the whole sentence beside its pills is not drawn at all
-                // -- the summary stays where it was and the gutter still folds.
+                // row is the strip removing a fact the moment the pointer arrives (§2.5).
                 if let summary, summary.row == row.absoluteRow, !summary.text.isEmpty,
                    content.readout != summary.text {
                     content = StripContent(readout: summary.text, readoutTone: content.readoutTone,
@@ -462,12 +480,11 @@ public extension CommandBlockChrome {
         for row in commandRows.reversed() {
             let free = freeColumns(cols: cols, lastUsedColumn: row.lastUsedColumn)
             let edge = rightEdge(cols: cols, row: row, summary: summary)
-            for width in narrowing(from: widthClass(freeColumns: free)) {
-                guard let content = stripContent(header, at: width) else { continue }
+            for (width, rung) in rungs(header, freeColumns: free) {
                 // Dots go with the sentence: they are the readout's own picture, and a timeline
                 // with no run number beside it says less than nothing.
-                let pillsOnly = StripContent(readout: "", readoutTone: content.readoutTone,
-                                             dots: [], overflowDot: nil, pills: content.pills)
+                let pillsOnly = StripContent(readout: "", readoutTone: rung.readoutTone,
+                                             dots: [], overflowDot: nil, pills: rung.pills)
                 guard let plan = stripPlan(pillsOnly, widthClass: width,
                                            lastUsedColumn: row.lastUsedColumn, cols: cols,
                                            stripColumns: measure(pillsOnly),
@@ -507,6 +524,34 @@ public extension CommandBlockChrome {
                                            lastUsedColumn: row.lastUsedColumn)
         else { return cols }
         return columns.lowerBound
+    }
+
+    /// Every rung a row of this class may fall back to, richest first, paired with the width class
+    /// each one is placed as.
+    ///
+    /// The classes' own contents, and then one more: the two pills §2.6 never drops -- `Stop` while
+    /// a watch is running, and `Actions`, collapsed to the glyph -- carrying the narrowest readout.
+    /// That rung exists because the drop order keeps `Actions` *longer* than the lens chip, so an
+    /// HTTP row with no room for `[Pretty ▾] [⋯]` still gets its `⋯` and keeps the route to every
+    /// action rather than losing the strip altogether. Not offered to a W0 row: there the only thing
+    /// that may cost a column of somebody's command is `Stop`.
+    private static func rungs(_ header: BlockHeader,
+                              freeColumns free: Int) -> [(WidthClass, StripContent)] {
+        let classes = narrowing(from: widthClass(freeColumns: free))
+        var list = classes.compactMap { width in
+            stripContent(header, at: width).map { (width, $0) }
+        }
+        guard classes != [.w0], let (width, narrowest) = list.last else { return list }
+        let minimum = header.watch?.showsStop == true ? [Pill.stop, .actions(.glyph)]
+                                                      : [Pill.actions(.glyph)]
+        if narrowest.pills != minimum {
+            list.append((width, StripContent(readout: narrowest.readout,
+                                             readoutTone: narrowest.readoutTone,
+                                             dots: narrowest.dots,
+                                             overflowDot: narrowest.overflowDot,
+                                             pills: minimum)))
+        }
+        return list
     }
 
     /// A row's class and every narrower one it may fall back to, richest first.

@@ -1044,16 +1044,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
         guard let window = view.window, let directory = projectDirectory,
               let digest = projectState.digest, projectState.needsApproval else { return }
         let actions = projectState.actionsToShow
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Run these actions from \(ProjectActionsGate.displayName(of: directory))?"
-        alert.informativeText = "Approving adds them as buttons in this terminal. They come from a "
-            + "file in that directory, so anyone who can write there chooses what they do. "
-            + "Approval covers exactly this content: an edit, or a pull that brings one in, asks "
-            + "you again.\n\n\(directory)"
-        alert.accessoryView = TabController.reviewView(for: actions)
-        alert.addButton(withTitle: "Approve")
-        alert.addButton(withTitle: "Cancel")
+        let alert = TabController.projectReviewAlert(directory: directory, actions: actions)
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
             guard ProjectApprovalsStore.shared.approve(directory: directory, digest: digest) else {
@@ -1065,6 +1056,23 @@ final class TabController: NSViewController, NSMenuItemValidation {
             // sheet was up, and approving what the user saw is only honest if it is still there.
             self.refreshProjectActions()
         }
+    }
+
+    /// The approval question, built apart from being asked. It is the one alert in Nyx that a
+    /// user is meant to *read* rather than dismiss -- it is what stands between a file in a
+    /// repository and a shell command -- and nothing had ever pictured it.
+    static func projectReviewAlert(directory: String, actions: [QuickAction]) -> NSAlert {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Run these actions from \(ProjectActionsGate.displayName(of: directory))?"
+        alert.informativeText = "Approving adds them as buttons in this terminal. They come from a "
+            + "file in that directory, so anyone who can write there chooses what they do. "
+            + "Approval covers exactly this content: an edit, or a pull that brings one in, asks "
+            + "you again.\n\n\(directory)"
+        alert.accessoryView = TabController.reviewView(for: actions)
+        alert.addButton(withTitle: "Approve")
+        alert.addButton(withTitle: "Cancel")
+        return alert
     }
 
     /// A scrollable list of what would run. Selectable, because the first thing anyone does with a
@@ -1157,15 +1165,21 @@ final class TabController: NSViewController, NSMenuItemValidation {
             close()
             return
         }
+        let alert = TabController.closeConfirmationAlert(message: message)
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            close()
+        }
+    }
+
+    /// The question, built apart from being asked, so `UISnapshot` can picture it.
+    static func closeConfirmationAlert(message: String) -> NSAlert {
         let alert = NSAlert()
         alert.messageText = message
         alert.informativeText = "A process is still running. Closing will end it."
         alert.addButton(withTitle: "Close")
         alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { response in
-            guard response == .alertFirstButtonReturn else { return }
-            close()
-        }
+        return alert
     }
 
     /// Has this pane's shell got anything running under it?

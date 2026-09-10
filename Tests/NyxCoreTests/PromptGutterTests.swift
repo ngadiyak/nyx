@@ -82,15 +82,33 @@ private func session() -> Terminal {
 
 // MARK: - Geometry
 
-/// The gutter lives inside the pane's own padding, so it costs no columns and never touches a
-/// glyph -- which means a pane with no padding gets no gutter rather than one over its text.
-@Test func theGutterFitsInsideThePadding() {
-    // The padding is the ceiling, not `maximumWidth`: at the default eight the gutter is eight.
-    #expect(PromptGutter.width(padding: 8) == 8)
-    #expect(PromptGutter.width(padding: 100) == PromptGutter.maximumWidth)
-    #expect(PromptGutter.width(padding: 5) == 5)
-    #expect(PromptGutter.width(padding: 0) == 0)
-    #expect(PromptGutter.width(padding: 2) == 0)
+/// The target is 20 pt whatever the padding is. At the shipping `padding = 8` the real target was
+/// 8 pt wide and 13 pt tall at `line-height 0.8` -- half what the code claimed (a11y 6.1).
+@Test func theGutterTargetIsTwentyPointsWhateverThePadding() {
+    #expect(PromptGutter.hitWidth == 20)
+}
+
+/// A clamped 16 pt rect on a 13 pt row overhangs its neighbours. Two prompts with nothing between
+/// them therefore have overlapping targets, and the point goes to the nearer centre.
+@Test func overlappingMarkTargetsGoToTheNearerCentre() {
+    let rows = [3, 4]
+    // Row 3's centre is 45.5, row 4's is 58.5, and the 16 pt rects overlap between 50.5 and 53.5.
+    #expect(PromptGutter.markedRow(atY: 46, cellHeight: 13, padding: 0, hitHeight: 16,
+                                   markedRows: rows) == 3)
+    #expect(PromptGutter.markedRow(atY: 53, cellHeight: 13, padding: 0, hitHeight: 16,
+                                   markedRows: rows) == 4)
+    // Exactly between the two centres: the upper row, deterministically.
+    #expect(PromptGutter.markedRow(atY: 52, cellHeight: 13, padding: 0, hitHeight: 16,
+                                   markedRows: rows) == 3)
+    // Above both rects: the pane's, not the gutter's.
+    #expect(PromptGutter.markedRow(atY: 10, cellHeight: 13, padding: 0, hitHeight: 16,
+                                   markedRows: rows) == nil)
+    // An unmarked row claims nothing however close the point is to its middle.
+    #expect(PromptGutter.markedRow(atY: 6, cellHeight: 13, padding: 0, hitHeight: 16,
+                                   markedRows: [3]) == nil)
+    // The top padding shifts every rect with it.
+    #expect(PromptGutter.markedRow(atY: 46 + 8, cellHeight: 13, padding: 8, hitHeight: 16,
+                                   markedRows: rows) == 3)
 }
 
 @Test func aPointMapsToTheRowItIsOver() {
@@ -201,6 +219,22 @@ private func session() -> Terminal {
         == "Command on line 2 is still running. Fold its output. Option-click selects its output.")
 }
 
+/// The pane hands the gutter view the four facts rather than the sentence, so that the sentence is
+/// built once per change instead of once per frame under the PTY lock. The two overloads must not
+/// drift: a tooltip and the VoiceOver label are the same string, and only one of them has a test if
+/// the `Key` route can say something different.
+@Test func theKeyAndTheArgumentsProduceTheSameSentence() {
+    for mark in [GutterMark.succeeded, .failed, .running] {
+        for folded in [false, true] {
+            for hasOutput in [true, false] {
+                let key = GutterMarkLabel.Key(mark: mark, folded: folded, hasOutput: hasOutput, line: 7)
+                #expect(GutterMarkLabel.text(key)
+                    == GutterMarkLabel.text(mark: mark, folded: folded, hasOutput: hasOutput, line: 7))
+            }
+        }
+    }
+}
+
 /// `cd ..`, `export FOO=1`, `true`: the dot is a record of what happened, and there is nothing to
 /// fold and nothing to select, so it promises neither. It used to offer both and then beep.
 @Test func aMarkOnACommandThatPrintedNothingPromisesNothing() {
@@ -208,25 +242,6 @@ private func session() -> Terminal {
         == "Command on line 3 succeeded.")
     #expect(GutterMarkLabel.text(mark: .failed, folded: false, hasOutput: false, line: 3)
         == "Command on line 3 failed.")
-}
-
-@Test func onlyAMarkWithOutputCanBePressed() {
-    #expect(GutterMark.succeeded.isActionable(hasOutput: true))
-    #expect(!GutterMark.succeeded.isActionable(hasOutput: false))
-    // Drawn and not pressable at once: a command that has started and printed nothing.
-    #expect(GutterMark.running.isDrawn(hasStarted: true))
-    #expect(!GutterMark.running.isActionable(hasOutput: false))
-}
-
-/// The prompt you are typing at carries a prompt mark and no status, so it reads as running. A ring
-/// there would sit beside an idle cursor for the rest of the session. What tells the two apart is
-/// the shell's `C` -- not whether anything has been printed, because a `sleep 10` has printed
-/// nothing and is exactly what the ring is for.
-@Test func aRunningMarkIsDrawnOnlyOnceTheShellSaidTheCommandStarted() {
-    #expect(!GutterMark.running.isDrawn(hasStarted: false))
-    #expect(GutterMark.running.isDrawn(hasStarted: true))
-    #expect(GutterMark.succeeded.isDrawn(hasStarted: false))   // a record, whatever it printed
-    #expect(GutterMark.failed.isDrawn(hasStarted: false))
 }
 
 // MARK: - Which commands printed anything
@@ -273,11 +288,10 @@ private func session() -> Terminal {
     t.feed(mark("A") + "$ " + mark("B") + "sleep 10\r\n" + mark("C"))
     #expect(t.commandDidStart(atAbsoluteRow: 0))       // the shell said it began
     #expect(!t.commandHasOutput(atAbsoluteRow: 0))     // and it has printed nothing
-    // So the ring is drawn -- something *is* running -- and it cannot be pressed.
+    // So the mark is a hollow ring -- something *is* running -- and it cannot be pressed; both
+    // are `CommandBlockChrome.gutterCap`'s, and asserted there.
     let m = try #require(t.gutterMarks(rows: 24)[0])
     #expect(m == .running)
-    #expect(m.isDrawn(hasStarted: true))
-    #expect(!m.isActionable(hasOutput: false))
     #expect(GutterMarkLabel.text(mark: m, folded: false, hasOutput: false, line: 1)
         == "Command on line 1 is still running.")
 }
@@ -297,9 +311,7 @@ private func session() -> Terminal {
     #expect(!t.commandHasOutput(atAbsoluteRow: 0))
     t.feed("compiling...\r\n")
     #expect(t.commandHasOutput(atAbsoluteRow: 0))
-    let m = try #require(t.gutterMarks(rows: 24)[0])
-    #expect(m.isDrawn(hasStarted: true))
-    #expect(m.isActionable(hasOutput: true))
+    #expect(t.gutterMarks(rows: 24)[0] == .running)
 }
 
 /// `echo` prints one empty line. There is nothing in it to fold.
@@ -350,31 +362,57 @@ private func session() -> Terminal {
     #expect(!states[1])                      // slot 1 is the placeholder itself
 }
 
-/// The gutter's hit area is wider than the mark it draws.
-///
-/// The owner's report: the dots are hard to click. A 5-point-wide strip is a 5-point-wide target,
-/// and the mark inside it is smaller still. The strip may take up to fourteen points of the pane's
-/// own padding now -- it can never take more than the padding, so nothing moves at the default
-/// eight -- while the capsule keeps exactly the size and the position it had, and the extra width
-/// is empty space on the *text* side, which is where a pointer reaching for a dot overshoots to.
-@Test func theGutterIsWiderThanItsMark() {
-    // Never more than the padding: the gutter lives inside it and must not reach a glyph.
-    #expect(PromptGutter.width(padding: 8) == 8)
-    #expect(PromptGutter.width(padding: 20) == 14)
-    #expect(PromptGutter.width(padding: 4) == 4)
-    // Below the floor there is no gutter at all rather than one over the first column.
-    #expect(PromptGutter.width(padding: 3) == 0)
-    #expect(PromptGutter.width(padding: 0) == 0)
+// MARK: - A command that printed nothing at all still ran
 
-    // The drawn capsule, at every gutter width it can have: same place, same size.
-    let atSix = PromptGutter.markRect(gutterWidth: 6)
-    #expect(atSix.x == 1)
-    #expect(atSix.width == 4)
-    for width in [8.0, 10, 14] {
-        let rect = PromptGutter.markRect(gutterWidth: width)
-        #expect(rect == atSix, "gutter \(width) moved or resized the mark")
+// `cd`, `true` and `export` write not one byte, so the shell's `C` and the next prompt's `A` land
+// on the same row. `outputStartRow` refuses that row -- rightly: a region starting there would take
+// in the next prompt, and folding it would hide it -- and `commandDidStart` used to be
+// `outputStartRow != nil`, so those three commands read as *never started* and the gutter drew no
+// mark at all beside a block that had a hover strip. The mark is the block's identity, so the two
+// questions are now asked separately.
+
+@Test func aCommandThatPrintedNothingAtAllStillStarted() {
+    for command in ["cd ..", "true", "export PATH=$PATH"] {
+        let t = makeTerminal(cols: 40, rows: 8, scrollback: 100)
+        t.feed(mark("A") + "$ " + mark("B") + command + "\r\n" + mark("C") + mark("D", 0))
+        t.feed(mark("A") + "$ ")
+        #expect(t.commandDidStart(atAbsoluteRow: 0), "\(command) ran")
+        #expect(!t.commandHasOutput(atAbsoluteRow: 0), "\(command) printed nothing")
+        let states = t.commandStates(atAbsoluteRow: 0)
+        #expect(states.started, "\(command) started, per commandStates")
+        #expect(!states.hasOutput, "\(command) has no output, per commandStates")
+        // And it still has no output *region*: a fold that began on the successor's prompt row
+        // would hide the prompt.
+        #expect(t.outputStartRow(ofCommandAt: 0) == nil, "\(command) has no output region")
+        // The prompt below it is the one being typed at, and it has started nothing.
+        #expect(!t.commandDidStart(atAbsoluteRow: 1), "the idle prompt after \(command)")
     }
-    // A gutter too narrow for the whole capsule draws what fits rather than overflowing.
-    #expect(PromptGutter.markRect(gutterWidth: 4).width == 2)
-    #expect(PromptGutter.markRect(gutterWidth: 0).width == 0)
+}
+
+/// `echo`, whose one output row is blank, has an output region of its own: unchanged by the seam
+/// above, and the case that says the fix did not simply make everything "started".
+@Test func aCommandThatPrintedOneBlankLineIsUnchanged() {
+    let t = makeTerminal(cols: 40, rows: 8, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "echo\r\n" + mark("C") + "\r\n" + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    #expect(t.commandDidStart(atAbsoluteRow: 0))
+    #expect(!t.commandHasOutput(atAbsoluteRow: 0))
+    #expect(t.outputStartRow(ofCommandAt: 0) == 1)
+    #expect(!t.commandDidStart(atAbsoluteRow: 2))
+}
+
+/// The gutter's own answer, which is what F3 was about: a `cd` gets the faded, unpressable cap
+/// rather than nothing at all.
+@Test func aCommandThatPrintedNothingAtAllStillHasACap() throws {
+    let t = makeTerminal(cols: 40, rows: 8, scrollback: 100)
+    t.feed(mark("A") + "$ " + mark("B") + "cd ..\r\n" + mark("C") + mark("D", 0))
+    t.feed(mark("A") + "$ ")
+    let region = try #require(t.command(containingAbsoluteRow: 0))
+    let block = CommandBlock(region: region, visibleRows: 0..<1, showsHeader: true)
+    let header = block.header(now: 0, folding: OutputFolding(), notifyArmed: false,
+                              anyFolds: false, hasOutput: t.commandHasOutput(atAbsoluteRow: 0))
+    let cap = try #require(CommandBlockChrome.gutterCap(
+        header, hasStarted: t.commandDidStart(atAbsoluteRow: 0), hovered: false))
+    #expect(cap.shape == .faded)
+    #expect(!cap.isPressable)
 }

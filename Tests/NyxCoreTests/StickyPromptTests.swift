@@ -72,6 +72,150 @@ private func session() -> Terminal {
     #expect(sticky.exitStatus == 0)
 }
 
+/// Addendum 1: block chrome steps aside for a full-screen program -- spines, summaries and the
+/// gutter all do, and the pinned strip did not, so vim was drawn under a band naming the command
+/// that started it (and, on the alternate screen, one whose exit status was gone).
+@Test func nothingIsPinnedWhileAFullScreenProgramOwnsTheDisplay() {
+    let t = makeTerminal(cols: 40, rows: 6, scrollback: 200)
+    t.feed(mark("A") + "$ " + mark("B") + "swift build\r\n" + mark("C"))
+    for line in 1...40 { t.feed("compiling \(line)\r\n") }
+    t.feed(mark("D;0"))
+    #expect(t.stickyPrompt() != nil)
+    t.feed("\u{1B}[?1049h")            // vim takes the screen
+    #expect(t.stickyPrompt() == nil)
+    t.feed("\u{1B}[?1049l")
+    #expect(t.stickyPrompt() != nil)
+    // And while a TUI owns the mouse, for the same reason `CommandBlockChrome.isAllowed` says so.
+    t.feed("\u{1B}[?1000h")
+    #expect(t.stickyPrompt() == nil)
+}
+
+/// The band said "Running command" for a command that finished half an hour ago (a11y 7.1). It
+/// says what happened first and what pressing it does last, and it says the status exactly once:
+/// the sentence used to be built from the drawn text *and* the summary, and the drawn text already
+/// carried `exit 1`, so a screen reader heard "exit 1 middle-dot exit 1".
+@Test func thePinnedBandSaysWhatItIsAndWhatItDid() {
+    #expect(StickyPromptLabel.accessibilityLabel(text: "$ swift build", summary: "exit 1 \u{b7} 8.8s")
+        == "exit 1 \u{b7} 8.8s: $ swift build. Scroll to its prompt.")
+    // A command whose header has nothing to say still gets a sentence that names what this is.
+    #expect(StickyPromptLabel.accessibilityLabel(text: "$ ls", summary: "")
+        == "Pinned command: $ ls. Scroll to its prompt.")
+}
+
+/// The note on the right of the band says `exit 2 · 8.8s`, so the text on the left says the command
+/// and nothing else: `↑ $ make test  exit 2 … exit 2 · 8.8s` said it twice on one row.
+@Test func theStatusIsInTheNoteOrInTheTextButNeverInBoth() {
+    // Room for both, with a column between them: the text is the command alone.
+    #expect(StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: 40,
+                                   summary: "exit 2 \u{b7} 8.8s") == "$ make test")
+    // No note to carry it, so the text carries it -- colour alone says nothing to a reader who
+    // cannot see it.
+    #expect(StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: 40,
+                                   summary: "") == "$ make test  exit 2")
+    // A successful command has no suffix either way, so the note changes nothing about it.
+    #expect(StickyPromptLabel.text(command: "$ ls", exitStatus: 0, columns: 40,
+                                   summary: "0.1s") == "$ ls")
+}
+
+/// **P4.** A band too narrow for the command and the note both cuts the **command**. The suffix
+/// never comes back while there is a note, because the note is drawn at the right edge whatever
+/// happens: appending it as well read `↑ $ make te…  exit 2      exit 2 · 8.8s` -- the status twice
+/// on one row, and the command mangled to make room for the duplicate.
+@Test func aBandTooNarrowForBothCutsTheCommandAndNotTheStatus() {
+    // "$ make test" is 11 columns and "exit 2 · 8.8s" is 13: 24 of 20 columns, so they do not fit.
+    // Six columns are left for the command, five of them its own and one an ellipsis.
+    let cut = StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: 20,
+                                     summary: "exit 2 \u{b7} 8.8s")
+    #expect(cut == "$ mak\u{2026}")
+    #expect(!cut.contains("exit"))
+    // Exactly one column of gap is enough (3 + 6 + 1 = 10), and the command is whole.
+    #expect(StickyPromptLabel.text(command: "$ a", exitStatus: 3, columns: 10,
+                                   summary: "exit 3") == "$ a")
+    // One column short: the command loses its last character, and still no second `exit 3`.
+    #expect(StickyPromptLabel.text(command: "$ ab", exitStatus: 3, columns: 10,
+                                   summary: "exit 3") == "$ \u{2026}")
+    // And in the extreme -- a note at least as wide as the band -- the text is an **ellipsis**,
+    // never `""`. `StickyPromptView.update` hides the whole band on empty text, so returning it
+    // took the arrow, the command *and* the note off the screen: at an HTTP summary of 28
+    // characters that was every pane of 29 columns or fewer, and at a watch sentence every pane of
+    // 34 or fewer -- an ordinary vertical split (S2). One glyph of "there is more here" keeps the
+    // band up, and the note beside it is still carrying the status.
+    for columns in 1...15 {
+        let text = StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: columns,
+                                          summary: "exit 2 \u{b7} 8.8s")
+        #expect(!text.isEmpty, "columns=\(columns)")
+        #expect(!text.contains("exit"), "columns=\(columns)")
+    }
+    #expect(StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: 14,
+                                   summary: "exit 2 \u{b7} 8.8s") == "\u{2026}")
+    #expect(StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: 15,
+                                   summary: "exit 2 \u{b7} 8.8s") == "\u{2026}")
+    // A band with no columns at all is the only empty answer, and it is the pane having no width.
+    #expect(StickyPromptLabel.text(command: "$ make test", exitStatus: 2, columns: 0,
+                                   summary: "exit 2 \u{b7} 8.8s") == "")
+}
+
+/// The band draws in `monospacedSystemFont`, whose advance is not the pane's cell: the cell is
+/// `ceil(advance * scale)` device pixels, so at scale 2 a 16 px advance sits in a 17 px cell and by
+/// the 44th character the pinned line is two and a half cells left of the column it names. Kerning
+/// the difference puts every glyph back on its column, not just the first.
+@Test func kerningPutsEveryGlyphOfTheBandOnItsColumn() {
+    let kern = StickyPromptLabel.kern(cellWidth: 8.5, glyphAdvance: 8)
+    #expect(abs(kern - 0.5) < 0.001)
+    // The property that matters: the origin of glyph N is N whole cells from the first.
+    for n in [1, 10, 44, 100] {
+        let origin = Double(n) * (8 + kern)
+        #expect(abs(origin - Double(n) * 8.5) < 0.001)
+    }
+    // A band whose font is already the cell's width is left alone, and an unmeasured pane (no font
+    // yet, or a zero cell) gets no kerning rather than a nonsense one.
+    #expect(StickyPromptLabel.kern(cellWidth: 8.5, glyphAdvance: 8.5) == 0)
+    #expect(StickyPromptLabel.kern(cellWidth: 0, glyphAdvance: 8) == 0)
+    #expect(StickyPromptLabel.kern(cellWidth: 8.5, glyphAdvance: 0) == 0)
+}
+
+/// What bounds the kern, and why it is a rounding gap rather than a difference of opinion about the
+/// font: the band draws in the pane's own face, so the cell it is being fitted to is
+/// `ceil(advance × scale) / scale` of the very advance being kerned. The kern is what the `ceil`
+/// added -- never negative, never a whole device pixel.
+///
+/// It was `monospacedSystemFont` against a cell built from `config.fontFamily`, where the two are
+/// different faces at `fontFamily = "Menlo"` and the "rounding gap" was several points.
+@Test func theKernIsOnlyEverTheRoundingTheCellDoesToTheAdvance() {
+    for scale in [1.0, 2.0, 3.0] {
+        for advance in [7.2, 7.8, 8.0, 8.4331, 10.5, 14.0] {
+            let cell = (advance * scale).rounded(.up) / scale
+            let kern = StickyPromptLabel.kern(cellWidth: cell, glyphAdvance: advance)
+            #expect(kern >= 0)
+            #expect(kern < 1 / scale + 1e-9)
+        }
+    }
+    // And if a cell ever *is* narrower than the advance -- two different faces, which the band no
+    // longer allows -- it kerns negative rather than pretending. The letters crowd, but they crowd
+    // on the columns, which is the one thing the band cannot give up.
+    #expect(abs(StickyPromptLabel.kern(cellWidth: 8, glyphAdvance: 8.4) + 0.4) < 0.001)
+    #expect(abs(StickyPromptLabel.kern(cellWidth: 7.8, glyphAdvance: 8.5) + 0.7) < 0.001)
+}
+
+/// The band begins at the gutter's edge, which is not a column boundary: at the shipping
+/// `padding = 8` a 20 pt gutter puts it two thirds of the way into column 1, and the pinned command
+/// line was then drawn a fraction of a cell out of step with the output under it -- which reads as
+/// a smeared duplicate rather than as a different surface (Task 2's review).
+@Test func theBandsTextStartsOnAColumnBoundaryClearOfTheArrow() {
+    // padding 8, cells 7.2 pt wide, band at the gutter's 20 pt edge: the first column at or past
+    // the arrow (20 + 14 = 34 pt) starts at 8 + 4 * 7.2 = 36.8, which is 16.8 into the band.
+    let inset = StickyPromptLabel.textInset(bandLeft: 20, padding: 8, cellWidth: 7.2, minimum: 14)
+    #expect(abs(inset - 16.8) < 0.001)
+    // A column boundary is a column boundary: the inset plus the band's own left edge is a whole
+    // number of cells from the first column.
+    #expect(abs((20 + inset - 8).remainder(dividingBy: 7.2)) < 0.001)
+    // Never less than the arrow needs, whatever the geometry says.
+    #expect(StickyPromptLabel.textInset(bandLeft: 20, padding: 20, cellWidth: 7.2, minimum: 14) >= 14)
+    // A pane with no metrics yet (a view laid out before its font is measured) gets the minimum
+    // rather than a division by zero.
+    #expect(StickyPromptLabel.textInset(bandLeft: 20, padding: 8, cellWidth: 0, minimum: 14) == 14)
+}
+
 // MARK: - Folding
 
 @Test func nothingIsHiddenUntilSomethingIsFolded() {

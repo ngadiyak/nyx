@@ -28,10 +28,18 @@ public extension Terminal {
     /// already see wastes a row and reads as a rendering bug -- and nil when the shell emits no
     /// marks, since then there is no command line to name.
     func stickyPrompt(viewportTop: Int? = nil) -> StickyPrompt? {
-        // Asked once per frame. Without marks there is nothing to pin, and finding that out the
-        // slow way means `previousPrompt` walking the whole scrollback -- under the session lock,
-        // on every frame, for every shell without integration.
-        guard shellEmitsPromptMarks else { return nil }
+        // The same gate the spine, the summary and the gutter obey. A band naming the command that
+        // started vim, drawn over vim, is the chrome-that-does-not-step-aside bug this project
+        // avoids everywhere else (Addendum 1) -- and on the alternate screen the pinned command's
+        // exit status is gone as well, so the band was drawn over a TUI *and* lying about it.
+        //
+        // `hasMarks` carries the old `shellEmitsPromptMarks` guard, which is also why this is the
+        // first line: without marks there is nothing to pin, and finding that out the slow way
+        // means `previousPrompt` walking the whole scrollback -- under the session lock, on every
+        // frame, for every shell without integration.
+        guard CommandBlockChrome.isAllowed(altScreen: modes.altScreen,
+                                           mouseReporting: modes.mouse != .none,
+                                           hasMarks: shellEmitsPromptMarks) else { return nil }
         let top = viewportTop ?? viewportTopRow
         guard let region = command(containingAbsoluteRow: top) else { return nil }
 
@@ -58,15 +66,43 @@ public enum StickyPromptLabel {
     /// routinely contains runs of them for alignment; collapsing those is what makes a 40-column
     /// strip show the command rather than the padding in front of it.
     ///
-    /// A failed command carries its status in the text as well as in the colour: colour alone says
-    /// "something is wrong here" to a reader who can see it and nothing at all to one who cannot.
-    public static func text(command: String, exitStatus: Int32?, columns: Int) -> String {
-        let status = (exitStatus ?? 0) != 0 ? "  exit \(exitStatus!)" : ""
+    /// A failed command carries its status in the text as well as in the colour -- colour alone says
+    /// "something is wrong here" to a reader who can see it and nothing at all to one who cannot --
+    /// *unless* `summary` is already saying it at the other end of the same row.
+    ///
+    /// `summary` is the note the band draws right-aligned (`BlockHeader.summary`: `exit 2 · 8.8s`,
+    /// `200 · 142 ms · 1.2 KB · json`). **When there is a note, the text never carries the status,
+    /// however little room is left** -- it is the *command* that gets cut. The note is drawn at the
+    /// right edge whatever happens, so a band that appended the suffix as well read
+    /// `↑ $ make te…  exit 2      exit 2 · 8.8s`: the status twice on one row, the command mangled
+    /// to make room for the duplicate, and the spoken sentence saying it twice too (PM P4). The
+    /// first take of this rule kept the suffix "only when the two do not fit", which is exactly the
+    /// narrow band where the duplication is most expensive.
+    ///
+    /// Defaulted to `""` so a caller with no note -- a test, or any future band without one -- gets
+    /// the old, self-sufficient text rather than silently losing the status.
+    public static func text(command: String, exitStatus: Int32?, columns: Int,
+                            summary: String = "") -> String {
         let body = collapsed(command)
         guard columns > 0 else { return "" }
+        guard summary.isEmpty else {
+            // A column of gap between the two, so they never touch. Cut to fit, never appended to.
+            let room = max(0, columns - summary.count - 1)
+            guard body.count > room else { return body }
+            // Never `""` while there is a note. `StickyPromptView.update` hides the whole band on
+            // empty text, so returning it took the arrow, the command *and* the note off the
+            // screen -- at an HTTP summary of 28 characters that was every pane of 29 columns or
+            // fewer, and at a watch sentence every pane of 34 or fewer, which is an ordinary
+            // vertical split (S2). One glyph of "there is more here" keeps the band up, and the
+            // note beside it is still carrying the status; the band's own label truncates what it
+            // cannot draw, which is what it does at every other width too.
+            guard room > 1 else { return "\u{2026}" }
+            return String(body.prefix(room - 1)) + "\u{2026}"
+        }
+        let status = (exitStatus ?? 0) != 0 ? "  exit \(exitStatus!)" : ""
         let room = max(0, columns - status.count)
-        // The status is worth more than the tail of a long command line: it is the thing the user
-        // scrolled back to find out.
+        // With no note, the status is worth more than the tail of a long command line: it is the
+        // thing the user scrolled back to find out.
         guard body.count > room else { return body + status }
         guard room > 1 else { return String(status.suffix(columns)) }
         return String(body.prefix(room - 1)) + "\u{2026}" + status
@@ -86,5 +122,68 @@ public enum StickyPromptLabel {
             out.append(character)
         }
         return out
+    }
+}
+
+public extension StickyPromptLabel {
+    /// What VoiceOver hears: `exit 1 · 8.8s: swift build …. Scroll to its prompt.`
+    ///
+    /// "Running command: …" was said of commands that had finished, which is a label describing the
+    /// wrong half of the state it was built from (a11y 7.1). What happened comes first, because it
+    /// is the answer to the question that made someone press this; the command line is the middle;
+    /// and the last sentence is the only place the band says what pressing it does, since it has no
+    /// bezel and no title.
+    ///
+    /// `text` is `text(command:exitStatus:columns:summary:)`'s answer -- the collapsed, cut command
+    /// line the band draws -- so the spoken sentence and the drawn one are one string, cut once,
+    /// and the status is in exactly one of them. Concatenating the two blindly is what said
+    /// "exit 1 middle-dot exit 1".
+    static func accessibilityLabel(text: String, summary: String) -> String {
+        // A header with nothing to say -- a quick success, a shell that reported no status -- still
+        // gets a sentence that names what this thing is.
+        guard !summary.isEmpty else { return "Pinned command: \(text). Scroll to its prompt." }
+        return "\(summary): \(text). Scroll to its prompt."
+    }
+
+    /// The letter spacing the band's label needs so that its N-th glyph starts N whole cells in.
+    ///
+    /// `glyphAdvance` must be measured from **the same face the cell was measured from** -- the
+    /// pane's own terminal font (`Pane.terminalFont`). Then this is nothing but the rounding
+    /// `FontSet` does: it builds the font at `pointSize × scale` and takes `ceil` of the advance in
+    /// whole device pixels, so the cell is `ceil(advance × scale) / scale` and the kern is what the
+    /// `ceil` added -- at least 0 and less than one device pixel. Half a pixel per character is
+    /// invisible at the first glyph and two and a half cells out by the 44th, which is a pinned
+    /// command line sliding out from under the output it names: the drift `textInset` cannot fix,
+    /// because it only places the start.
+    ///
+    /// Measured from a *different* face -- which is what `.monospacedSystemFont` against a cell
+    /// built from `font-family = Menlo` was -- the number is not a rounding at all but the gap
+    /// between two fonts, of either sign, and the band was drawn in SF Mono over a Menlo grid. The
+    /// arithmetic here still behaves (a cell narrower than the advance kerns negative, so the
+    /// letters crowd but stay on their columns); it is the caller that must not do it.
+    ///
+    /// Zero for an unmeasured pane rather than a nonsense number: a band laid out before its font
+    /// or its grid has been measured is one frame from being laid out again.
+    static func kern(cellWidth: Double, glyphAdvance: Double) -> Double {
+        guard cellWidth > 0, glyphAdvance > 0 else { return 0 }
+        return cellWidth - glyphAdvance
+    }
+
+    /// Where the band's command line begins, in points from the band's own leading edge: the first
+    /// column boundary at or past `minimum` (the leading arrow and the gap after it).
+    ///
+    /// The band starts at the gutter's edge -- `max(padding, PromptGutter.hitWidth)` -- which is not
+    /// a column boundary at the shipping `padding = 8`. Text laid out from there is a fraction of a
+    /// cell out of step with the output rows above and below it, and monospaced text half a cell out
+    /// of step reads as a smeared duplicate of itself rather than as a different surface.
+    ///
+    /// Points, not columns, because the caller has a constraint to set rather than a cell to fill;
+    /// `Double` because `NyxCore` hands out no CoreGraphics type (plan 1a's constraints).
+    static func textInset(bandLeft: Double, padding: Double, cellWidth: Double,
+                          minimum: Double) -> Double {
+        guard cellWidth > 0 else { return minimum }
+        let need = bandLeft + minimum
+        let column = max(0, ((need - padding) / cellWidth).rounded(.up))
+        return max(minimum, padding + column * cellWidth - bandLeft)
     }
 }

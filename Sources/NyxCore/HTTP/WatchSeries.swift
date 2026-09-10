@@ -83,9 +83,9 @@ public struct WatchPlan: Equatable {
     /// Whole seconds without a decimal point, anything else as it was written.
     ///
     /// Deliberately the same rule as `WatchPlanRequest.summary`, which names the same interval in
-    /// the Run menu one step earlier: the item a user clicks ("every 5 s") and the header they then
-    /// read ("watch every 5 s") have to be the same words, or the header looks like a different
-    /// plan from the one they chose.
+    /// the Run menu one step earlier: the item a user clicks ("every 5 s") and the tail of the
+    /// header they then read ("run 12 · 200 · 142 ms · every 5 s") have to be the same words, or the
+    /// header looks like a different plan from the one they chose.
     ///
     /// The finite guard is not decoration: `Int(.infinity)` traps, and an interval arrives here
     /// from a text field. A nonsensical one is printed as it stands -- a plan that reads oddly is
@@ -372,19 +372,23 @@ public struct WatchSeries: Equatable {
         }
     }
 
-    /// "watch every 5 s · run 12 · 200 · 142 ms" while it runs; the statistics, or "stopped after
+    /// "run 12 · 200 · 142 ms · every 5 s" while it runs; the statistics, or "stopped after
     /// 3 runs", once it has stopped.
     ///
-    /// The running form is the plan, how far through it is, and the last answer -- the three things
-    /// someone glancing at a watching pane wants, and they are the ones that change. The finished
-    /// form drops the plan (it is over; how often it ran no longer matters) for what it found.
+    /// The running form is how far through it is, the last answer, and the plan, in that order --
+    /// the readout ladder in `CommandBlockChrome.readout` drops from the right, and the interval is
+    /// the first thing a narrow strip can do without (§2.6's W2 cell reads `run 12 · 200`), so it
+    /// goes last rather than first. The verb ("watch") is gone too: the dots and the `Stop` pill
+    /// already say a watch is running, and its home is the menu titles and the popover instead. The
+    /// finished form drops the plan outright (it is over; how often it ran no longer matters) for
+    /// what it found.
     public var headerText: String {
         if isFinished {
             if let stats { return stats.text }
             guard !runs.isEmpty else { return "stopped" }
             return "stopped after \(runs.count) \(runs.count == 1 ? "run" : "runs")"
         }
-        var parts = ["watch " + plan.title]
+        var parts: [String] = []
         if !runs.isEmpty { parts.append("run \(runs.count)") }
         // The last run that *came back*, not `runs.last`. While the next run is in flight
         // `runs.last` is that run, with no status and no timing yet, so the sentence lost
@@ -398,6 +402,9 @@ public struct WatchSeries: Equatable {
             // as if it went well.
             if last.exitStatus != 0 { parts.append("exit \(last.exitStatus)") }
         }
+        // Last, not first: the readout ladder drops from the right, and the interval is the first
+        // thing a narrow strip can do without (§2.6's W2 cell reads `run 12 · 200`).
+        parts.append(plan.title)
         return parts.joined(separator: " \u{b7} ")
     }
 
@@ -460,21 +467,46 @@ public struct WatchHeader: Equatable {
     /// What colour the sentence is drawn in. `WatchSeries.tone` -- the series', not the newest
     /// run's, because the sentence is about the series.
     public let tone: SummaryTone
+    /// Runs older than the dots shown -- the timeline's own cap, not a truncation the reader has to
+    /// guess at. Zero for a series that has not yet run past the cap, which is every series most of
+    /// its life.
+    public let hiddenRuns: Int
 
-    public init(text: String, dots: [WatchSeries.Dot], showsStop: Bool, tone: SummaryTone = .plain) {
+    public init(text: String, dots: [WatchSeries.Dot], showsStop: Bool, tone: SummaryTone = .plain,
+                hiddenRuns: Int = 0) {
         self.text = text; self.dots = dots; self.showsStop = showsStop; self.tone = tone
+        self.hiddenRuns = hiddenRuns
     }
 }
 
 public extension WatchSeries {
     /// The header for this series' newest run.
     ///
-    /// Thirty dots is the spec's number and about ten seconds of a one-second watch: enough that
-    /// the shape of a flapping endpoint is visible, few enough that the strip still fits on a
-    /// command line. The caller may ask for fewer; nothing may ask for more without the strip
-    /// growing past the row it is drawn on.
-    func header(dots n: Int = 30) -> WatchHeader {
-        WatchHeader(text: headerText, dots: timeline(last: n), showsStop: !isFinished, tone: tone)
+    /// **Twelve** dots, and `+N` for everything older.
+    ///
+    /// Thirty was the spec's number (§2.3) and it did not survive its own pictures. Thirty dots on a
+    /// 10 pt pitch is **300 pt** -- 41 % of a 730 pt window, thirty-four columns -- and the design
+    /// review's ruling names three reasons the strip cannot pay that: nobody reads a timeline
+    /// dot-by-dot; the extra dots carry no information even when drawn, because amber and red are
+    /// not separable by eye at 8 pt (finding 9, next wave); and §2.6's amendment made the dots
+    /// outlive `Copy`, which only pays off if they are cheap enough for the rest of the ladder to
+    /// survive them -- at thirty they were the reason it did not. The measured consequence was a W3
+    /// watch cell needing **76 of an 84-column pane**, and a width class whose content needs 76 of
+    /// 84 is not a class, it is a special case.
+    ///
+    /// At twelve the cell needs about forty columns, inside the ≥ 34 the class *promises*, and the
+    /// W3 threshold does not move (the ruling is explicit: do not raise it). Twelve is still a
+    /// minute of a five-second watch and still shows the shape of a flapping endpoint; the runs
+    /// past it are counted in `hiddenRuns` and drawn as `+N`, so the cap says how much it is hiding
+    /// rather than truncating in silence.
+    ///
+    /// The caller may ask for fewer. Asking for more grows the strip past the row it is drawn on.
+    func header(dots n: Int = 12) -> WatchHeader {
+        // `n <= 0` is "no timeline", not "a cap the reader should be told about" -- `timeline`
+        // already answers `[]` for it, and a `hiddenRuns` of every run ever made would claim a
+        // cap that was never applied.
+        WatchHeader(text: headerText, dots: timeline(last: n), showsStop: !isFinished, tone: tone,
+                   hiddenRuns: n > 0 ? max(0, runs.count - n) : 0)
     }
 }
 

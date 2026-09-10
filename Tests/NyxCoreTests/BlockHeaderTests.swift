@@ -13,26 +13,24 @@ private func block(_ region: CommandRegion) -> CommandBlock {
     CommandBlock(region: region, visibleRows: 0..<6, showsHeader: true)
 }
 
-@Test func aFinishedCommandSummarisesStatusAndTimeWithAnOpenChevron() {
+@Test func aFinishedCommandSummarisesStatusAndTime() {
     let h = block(region(status: 1)).header(now: 100, folding: OutputFolding(), notifyArmed: false, anyFolds: false, hasOutput: true)
     #expect(h.state == .failed(status: 1))
     #expect(h.summary == "exit 1 · 8.8s")
-    #expect(h.chevron == "\u{25BE}")
-    #expect(h.summaryWithChevron == "exit 1 · 8.8s \u{25BE}")
 }
 
-@Test func aQuickSuccessShowsOnlyTheChevron() {
+/// A command that took a fifth of a second has nothing worth saying, so its row carries no summary
+/// at all -- there is no chevron left to keep it on screen (§2.4).
+@Test func aQuickSuccessHeaderSaysNothing() {
     let h = block(region(duration: 0.2)).header(now: 100, folding: OutputFolding(), notifyArmed: false, anyFolds: false, hasOutput: true)
     #expect(h.summary == "")
-    #expect(h.summaryWithChevron == "\u{25BE}")
 }
 
-@Test func aFoldedBlockPointsRight() {
+@Test func aFoldedBlockKnowsItIsFolded() {
     var f = OutputFolding()
     f.fold(4, .all)
     let h = block(region()).header(now: 100, folding: f, notifyArmed: false, anyFolds: true, hasOutput: true)
     #expect(h.folded)
-    #expect(h.chevron == "\u{25B8}")
 }
 
 @Test func aRunningCommandCountsUpAfterOneSecond() {
@@ -45,12 +43,13 @@ private func block(_ region: CommandRegion) -> CommandBlock {
     #expect(later.summary == "12s")
 }
 
-@Test func aCommandWithoutOutputHasNoChevronAndNoOutputActions() {
+/// A `sleep 10` one second in has nothing to fold. That rule still decides the gutter cap and the
+/// strip's `Fold` pill, which is why `hasOutput` and the disabled `.toggleFold` are still asserted.
+@Test func aCommandWithoutOutputHasNoOutputActions() {
     let h = block(region(output: 0, started: false)).header(now: 100, folding: OutputFolding(),
                                                             notifyArmed: false, anyFolds: false,
                                                             hasOutput: false)
     #expect(!h.hasOutput)
-    #expect(h.chevron == "")
     #expect(h.actions.first { $0.action == .copyOutput }?.enabled == false)
     #expect(h.actions.first { $0.action == .toggleFold }?.enabled == false)
 }
@@ -108,7 +107,6 @@ private func httpSummary(_ text: String, _ tone: HTTPSummary.Tone) -> HTTPSummar
                                       anyFolds: false, hasOutput: true,
                                       httpSummary: httpSummary("200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json", .success))
     #expect(http.summary == "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json")
-    #expect(http.summaryWithChevron == "200 \u{b7} 142 ms \u{b7} 1.2 KB \u{b7} json \u{25BE}")
     #expect(http.tone == .success)
 }
 
@@ -339,8 +337,8 @@ private func httpHeader(lens: ResponseLens? = nil, tooLarge: Bool = false,
 
 /// A watched run's header says what the series is doing instead of what the one request answered.
 ///
-/// The substitution is the point: `200 · 142 ms` is already inside `watch every 5 s · run 12 · 200
-/// · 142 ms`, and printing both would put the same status on the row twice.
+/// The substitution is the point: `200 · 142 ms` is already inside `run 12 · 200 · 142 ms · every
+/// 5 s`, and printing both would put the same status on the row twice.
 @Test func watchHeaderReplacesSummary() {
     var series = WatchSeries(plan: WatchPlan(interval: 5, stop: .never), command: "curl x",
                              startedAt: 0)
@@ -351,7 +349,7 @@ private func httpHeader(lens: ResponseLens? = nil, tooLarge: Bool = false,
                                          httpSummary: HTTPSummary(text: "200 \u{b7} 142 ms",
                                                                   tone: .success),
                                          isHTTP: true, watch: series.header())
-    #expect(watched.summary == "watch every 5 s \u{b7} run 1 \u{b7} 200 \u{b7} 142 ms")
+    #expect(watched.summary == "run 1 \u{b7} 200 \u{b7} 142 ms \u{b7} every 5 s")
     #expect(watched.watch?.showsStop == true)
     #expect(watched.watch?.dots == [.success])
     // The colour still comes from the request: a watch of a failing endpoint must not read green.
@@ -395,68 +393,4 @@ private func httpHeader(lens: ResponseLens? = nil, tooLarge: Bool = false,
     let plain = block(region()).header(now: 100, folding: OutputFolding(), notifyArmed: false,
                                        anyFolds: false, hasOutput: true)
     #expect(!plain.actions.contains { if case .runEvery = $0.action { return true } else { return false } })
-}
-
-// MARK: - What the hover strip carries at each width
-
-private func requestHeader(lens: ResponseLens? = nil, tooLarge: Bool = false,
-                           bodyIsJSON: Bool = true, watch: WatchHeader? = nil,
-                           summary: String = "200 \u{b7} 142 ms") -> BlockHeader {
-    BlockHeader(id: 4, state: .finished, folded: false, hasOutput: true, anyFolds: false,
-                notifyArmed: false, summary: "",
-                httpSummary: HTTPSummary(text: summary, tone: .success),
-                isHTTP: true, lens: lens, lensTooLarge: tooLarge, bodyIsJSON: bodyIsJSON,
-                watch: watch)
-}
-
-/// The `{ }` promises pretty JSON, so it is only offered where there is JSON to pretty-print.
-///
-/// On a 301 with an HTML body `.pretty` falls through to the raw lines, so the button did nothing
-/// a user could see -- and its tooltip said it would.
-@Test func theLensControlIsOnlyOfferedForAJSONBody() {
-    #expect(requestHeader().showsLens(at: .full))
-    #expect(!requestHeader(bodyIsJSON: false).showsLens(at: .full))
-    #expect(!requestHeader(tooLarge: true).showsLens(at: .full))
-    // A lens already open keeps its control whatever the body is: the button is also how it is
-    // turned off, and a control that vanishes once pressed strands the reader in a lens.
-    #expect(requestHeader(lens: .headers, bodyIsJSON: false).showsLens(at: .full))
-    // Never on the narrowest strip, and never on a block that is not a request.
-    #expect(!requestHeader().showsLens(at: .minimal))
-    let plain = BlockHeader(id: 1, state: .finished, folded: false, hasOutput: true, anyFolds: false,
-                            notifyArmed: false, summary: "8.8s")
-    #expect(!plain.showsLens(at: .full))
-}
-
-/// Stop is the last control dropped, ahead of the ⋯ menu: it is the only one on the strip with a
-/// running side effect, and a watch you cannot stop from the strip is the control that matters.
-@Test func stopSurvivesToTheNarrowestStrip() {
-    let running = requestHeader(watch: WatchHeader(text: "watch every 5 s \u{b7} run 12",
-                                                   dots: [.success, .success], showsStop: true,
-                                                   tone: .success))
-    for controls in OverlayControls.allCases {
-        #expect(running.showsStop(at: controls), "\(controls)")
-    }
-    // A finished series has nothing to stop; its statistics stay.
-    let finished = requestHeader(watch: WatchHeader(text: "11 runs", dots: [.success],
-                                                    showsStop: false, tone: .success))
-    #expect(!finished.showsStop(at: .full))
-    #expect(!requestHeader().showsStop(at: .full))
-}
-
-/// The rest of the ladder, in one place so the view and the width measurement cannot disagree
-/// about what is on the strip.
-@Test func theStripDropsCopyThenTheTimelineThenTheSummary() {
-    let watched = requestHeader(watch: WatchHeader(text: "watch every 5 s \u{b7} run 12",
-                                                   dots: [.success, .failure], showsStop: true,
-                                                   tone: .failure))
-    #expect(watched.showsCopy(at: .full))
-    #expect(!watched.showsCopy(at: .noCopy))
-    #expect(watched.showsTimeline(at: .full))
-    #expect(!watched.showsTimeline(at: .noCopy))
-    #expect(watched.showsSummary(at: .noCopy))
-    #expect(!watched.showsSummary(at: .minimal))
-    // Nothing to say is nothing drawn, whatever the width.
-    let quiet = BlockHeader(id: 1, state: .finished, folded: false, hasOutput: true, anyFolds: false,
-                            notifyArmed: false, summary: "")
-    #expect(!quiet.showsSummary(at: .full))
 }

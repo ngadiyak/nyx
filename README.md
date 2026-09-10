@@ -25,11 +25,11 @@ which source yours and then add `OSC 133` hooks; nothing in your home directory 
 
 **Because it knows where commands begin and end:**
 
-- A command and its output are a block: a spine beside the rows it owns, and `exit 1 · 8.8s ▾`
-  at the end of its command line. Click the chevron to fold the output down to its last three
-  lines (⌥-click hides all of it); click the placeholder to bring it back. `⌘⇧↑` folds from the
-  keyboard. The status mark in the gutter folds on click too, and is the fallback when a command
-  line leaves no room even for the chevron.
+- A command and its output are a block: one 3 pt mark down the left of the rows it owns, and
+  `exit 1 · 8.8s` at the end of its command line. The mark is the fold control — press it to fold
+  the output down to its last three lines, press it again to put it back, ⌥-click to select the
+  output. `⌘⇧↑` folds from the keyboard, and hovering the block raises a strip of labelled
+  controls — `Fold`, `Copy`, `Actions ▾` — at whatever width the command leaves room for.
 - Hover a block and it shows what you can do to it: Copy, and a `⋯` menu with the command, the
   output, both as a Markdown block, the output to a file, run again, edit and run.
 - A running command counts up on its own row. "Notify When Done" on it asks for a notification

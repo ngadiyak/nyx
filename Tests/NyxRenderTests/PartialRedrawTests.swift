@@ -171,6 +171,52 @@ private func frame(of t: Terminal, cursor: Cursor? = nil, selection: [Range<Int>
     #expect(partial.stats.rowsRebuilt == 2)
 }
 
+/// The sticky band's row. `Pane.render` blanks the display slot the pinned band covers, so the
+/// pinned command and the output beneath it cannot print on top of each other -- and it does that
+/// to the *frame*, after the buffer has already said which rows changed. So the pane marks that row
+/// dirty itself, on the frame the blank arrives and on the frame it goes; without it the row cache
+/// draws the old glyphs under a freshly pinned band, and leaves the row blank once the band is gone.
+@Test func aRowBlankedInTheFrameIsDrawnAsGround() throws {
+    let device = try #require(MTLCreateSystemDefaultDevice())
+    let fonts = makeFonts()
+    let partial = try Renderer(device: device, fonts: fonts)
+    let full = try Renderer(device: device, fonts: fonts)
+    let a = try makeTexture(device, cols: 20, rows: 4, fonts: fonts)
+    let b = try makeTexture(device, cols: 20, rows: 4, fonts: fonts)
+    let t = Terminal(cols: 20, rows: 4, scrollbackLimit: 10)
+    t.feed("$ swift build\r\ncompiling one\r\ncompiling two\r\n")
+    _ = try pixels(partial, frame(of: t), to: a)
+    t.clearDirty()
+
+    // The band goes up: the row it covers is replaced by an empty one, and nothing in the terminal
+    // has changed, so the pane says so on the frame's own dirty flags.
+    var pinned = frame(of: t)
+    #expect(pinned.dirtyRows.allSatisfy { !$0 })
+    pinned.lines[0] = Row(cols: 20)
+    var told = pinned
+    told.dirtyRows[0] = true
+    var blind = pinned
+    blind.dirtyRows = []
+    let rebuiltFromScratch = try pixels(full, blind, to: b)
+    #expect(try firstDifference(pixels(partial, told, to: a), rebuiltFromScratch,
+                                width: a.width) == nil)
+    // And the reason the flag is not optional: told nothing, the cache keeps the row it shaped
+    // before the band existed -- the covered row's glyphs, printed under the pinned command.
+    let untold = try Renderer(device: device, fonts: fonts)
+    _ = try pixels(untold, frame(of: t), to: a)
+    #expect(try firstDifference(pixels(untold, pinned, to: a), rebuiltFromScratch,
+                                width: a.width) != nil)
+
+    // And down again: the row comes back, still with no dirty flag of its own.
+    var unpinned = frame(of: t)
+    unpinned.dirtyRows[0] = true
+    let restored = try pixels(partial, unpinned, to: a)
+    var restoredBlind = unpinned
+    restoredBlind.dirtyRows = []
+    #expect(try firstDifference(restored, pixels(full, restoredBlind, to: b),
+                                width: a.width) == nil)
+}
+
 @Test func aThemeChangeRepaintsEveryRow() throws {
     let device = try #require(MTLCreateSystemDefaultDevice())
     let fonts = makeFonts()

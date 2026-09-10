@@ -8,14 +8,21 @@ import NyxCore
 /// The colours are `SummaryTone`'s, so a dot and the status beside it come from one ladder -- there
 /// is no second opinion here about whether a run went well.
 ///
-/// A running run is drawn hollow rather than in a fourth colour, the same shape the gutter's
-/// running mark uses: "in progress" survives being looked at in greyscale, and a colour-blind
-/// reader can still tell the run that has not answered yet from the ones that have.
+/// A running run is a **filled accent** dot -- the same "this is the live one" colour the rest of
+/// the app uses. It was a hollow amber ring, which shares a hue with `redirect` and, at 6 pt,
+/// smudged into the filled dots beside it instead of standing apart from them.
 final class WatchDotsView: NSView {
-    /// The circle's diameter, in points. The spec's number, and about the height of a lower-case
-    /// letter beside it -- larger reads as a bullet list, smaller as dirt on the screen.
-    static let diameter: CGFloat = 6
-    static let gap: CGFloat = 2
+    /// 7 pt on a 10 pt pitch (§2.3). The old 6 pt on an 8 pt pitch put the whole timeline in 238 pt
+    /// and read as dirt.
+    static let diameter: CGFloat = 7
+    static let pitch: CGFloat = 10
+
+    /// What `count` dots measure, for `BlockHeaderView.width(of:font:)` -- which is the number the
+    /// strip's row is chosen from, and so must be this view's own arithmetic rather than a second
+    /// copy of it.
+    static func width(ofDots count: Int) -> CGFloat {
+        count <= 0 ? 0 : CGFloat(count) * pitch - (pitch - diameter)
+    }
 
     private var dots: [WatchSeries.Dot] = []
     private var palette = Palette.xtermDefault()
@@ -38,30 +45,20 @@ final class WatchDotsView: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        guard !dots.isEmpty else { return NSSize(width: 0, height: WatchDotsView.diameter) }
-        let pitch = WatchDotsView.diameter + WatchDotsView.gap
-        return NSSize(width: CGFloat(dots.count) * pitch - WatchDotsView.gap,
-                      height: WatchDotsView.diameter)
+        NSSize(width: WatchDotsView.width(ofDots: dots.count), height: WatchDotsView.diameter)
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let pitch = WatchDotsView.diameter + WatchDotsView.gap
         let y = (bounds.height - WatchDotsView.diameter) / 2
         for (index, dot) in dots.enumerated() {
-            let box = NSRect(x: CGFloat(index) * pitch, y: y,
+            let box = NSRect(x: CGFloat(index) * WatchDotsView.pitch, y: y,
                              width: WatchDotsView.diameter, height: WatchDotsView.diameter)
-            let color = nsColor(dot.tone.color(in: palette), alpha: 1)
-            if dot == .running {
-                // Inset by half the line width, or the stroke straddles the edge and the ring
-                // comes out a pixel wider than every filled dot beside it.
-                let ring = NSBezierPath(ovalIn: box.insetBy(dx: 0.5, dy: 0.5))
-                ring.lineWidth = 1
-                color.setStroke()
-                ring.stroke()
-            } else {
-                color.setFill()
-                NSBezierPath(ovalIn: box).fill()
-            }
+            // The live run is the accent, not a fourth status colour: `running` and `redirect` come
+            // down `SummaryTone` as the same amber, so a hollow ring was the only thing telling
+            // them apart -- and at this size a ring is a smudge.
+            let colour = dot == .running ? palette.accent : dot.tone.color(in: palette)
+            nsColor(colour, alpha: 1).setFill()
+            NSBezierPath(ovalIn: box).fill()
         }
     }
 
@@ -72,7 +69,7 @@ final class WatchDotsView: NSView {
     override func accessibilityLabel() -> String? { "Recent runs" }
 
     /// The dots as words, because VoiceOver cannot read a colour: "3 ok, 1 failed, 1 running".
-    /// Counted rather than listed -- thirty spoken colours is not a summary of anything.
+    /// Counted rather than listed -- a dozen spoken colours is not a summary of anything.
     static func spoken(_ dots: [WatchSeries.Dot]) -> String {
         guard !dots.isEmpty else { return "no runs yet" }
         var parts: [String] = []

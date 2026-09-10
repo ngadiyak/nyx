@@ -48,9 +48,10 @@ final class WorkbenchHintView: NSView {
                                             constant: WorkbenchHintView.horizontalInset),
             button.trailingAnchor.constraint(equalTo: trailingAnchor,
                                              constant: -WorkbenchHintView.horizontalInset),
-            // Centred rather than pinned: the pill is exactly one cell row tall, which is shorter
-            // than a small button's fitting height, and two required edge constraints on a view
-            // shorter than its content break one every frame.
+            // Centred rather than pinned: the pill is one row tall at `CommandBlockChrome`'s hit
+            // floor, which at a small font is still shorter than a small button's fitting height,
+            // and two required edge constraints on a view shorter than its content break one every
+            // frame.
             button.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
@@ -64,10 +65,10 @@ final class WorkbenchHintView: NSView {
         return super.hitTest(point)
     }
 
-    /// The pill's width in points for a title, so `CommandBlockChrome.overlayPlacement` can be told
-    /// how many columns it is asking for.
+    /// The pill's width in points for a title, so `Pane.workbenchHintPlacement` can be told how
+    /// many columns it is asking for.
     ///
-    /// Measured rather than estimated, for the same reason `BlockHeaderView.width` is: the bezel's
+    /// Measured rather than estimated, for the same reason `BlockHeaderView.width(of:font:)` is: the bezel's
     /// own padding is AppKit's, and a guess would be wrong by about the amount that decides whether
     /// the pill covers a character. Cached, because the pane asks on every frame the pill is up and
     /// the answer changes only when the chord or the font does; and it puts the title back, because
@@ -142,7 +143,9 @@ final class WorkbenchHintView: NSView {
         invalidateIntrinsicContentSize()
     }
 
-    /// Rounded like the pill it is: half of one cell row, which is the height the pane gives it.
+    /// Rounded like the pill it is: half of its own height, capped at 8 pt. The pane frames it at
+    /// `CommandBlockChrome.hitRowHeight(cellHeight:)` -- a one-row target's 16 pt floor, not the
+    /// cell -- so at `line-height 0.8` this is 8 and not 6.5.
     override func layout() {
         super.layout()
         layer?.cornerRadius = min(bounds.height, 16) / 2

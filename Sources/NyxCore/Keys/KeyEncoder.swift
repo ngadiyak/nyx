@@ -25,8 +25,20 @@ public struct KeyEvent: Equatable {
     /// wherever they were pressed, and only application-keypad mode (DECKPAM) cares which physical
     /// key it was. Defaulted so every existing construction keeps its meaning.
     public var isKeypad: Bool
-    public init(key: Key, modifiers: KeyModifiers, text: String?, isKeypad: Bool = false) {
+    /// The unshifted character the pressed key carries on the ASCII layout -- the letter printed
+    /// on the keycap -- when the platform can name it, from `MacKeyCodes.asciiScalar(keyCode)`.
+    ///
+    /// `key` is the character the *active* layout made, because that is what typing must send. It
+    /// is not enough for a control chord: on a Cyrillic layout the C key's character is `с`
+    /// (U+0441), which names no control byte, and ⌃C would send two bytes of UTF-8 instead of
+    /// 0x03 and interrupt nothing. This is the second answer the encoder needs -- kitty calls it
+    /// the *base layout key*, Ghostty the *logical key* -- and it is nil for a key with no ASCII
+    /// identity at all (the ISO `§` key, JIS's extra keys), where there is nothing to fall back to.
+    public var baseLayoutKey: Unicode.Scalar?
+    public init(key: Key, modifiers: KeyModifiers, text: String?, isKeypad: Bool = false,
+                baseLayoutKey: Unicode.Scalar? = nil) {
         self.key = key; self.modifiers = modifiers; self.text = text; self.isKeypad = isKeypad
+        self.baseLayoutKey = baseLayoutKey
     }
 }
 
@@ -44,6 +56,16 @@ public struct KeyEvent: Equatable {
 /// query. And kitty's protocol is not a mode but a stack of five progressive-enhancement flags
 /// with push/pop/query, per screen; supporting only its first flag would answer the query with a
 /// half-truth, which is worse than answering the xterm query with the whole one.
+///
+/// **What it will owe a non-Latin layout when it lands.** In the kitty protocol the code is the
+/// *layout's* code point and the ASCII keycap is an alternate, not a replacement: with
+/// `report alternate keys` on, ⌃C on a Cyrillic layout is `CSI 1089::99;5u` -- U+0441 as the key,
+/// 99 as the third sub-field, because "the base layout key is the key corresponding to the
+/// physical key in the standard PC-101 key layout ... the terminal should send the base layout key
+/// as 99 corresponding to the c key" (kitty's spec). The shifted sub-field is present only when
+/// shift is in the modifiers. xterm's format has no room for either, which is why
+/// `modifiedOtherKey` below reports the layout's code point alone and `controlByte(for:)` keeps
+/// the keycap to itself.
 public enum ModifyOtherKeys: Int, Equatable {
     /// Legacy encoding for everything. Byte-for-byte what the terminal sent before this mode existed.
     case off = 0
@@ -202,7 +224,7 @@ public enum KeyEncoder {
             // to combinations whose legacy bytes are genuinely ambiguous. See `ambiguousOnly`.
             guard isChar else { return nil }
             guard !(m.contains(.ctrl) && code == 0x20) else { return nil }
-            guard isAmbiguous(code, m) else { return nil }
+            guard isAmbiguous(e) else { return nil }
         }
 
         let param = modifierParameter(m)
@@ -216,18 +238,65 @@ public enum KeyEncoder {
     /// ctrl on a key with no control-character mapping falls through to the bare character
     /// (ctrl+1 arrives as "1"), and shift is dropped on a key that does have one (ctrl+shift+a and
     /// ctrl+a both arrive as 0x01).
-    private static func isAmbiguous(_ code: UInt32, _ m: KeyModifiers) -> Bool {
-        guard m.contains(.ctrl) else { return false }
-        guard let scalar = Unicode.Scalar(code) else { return true }
-        if controlByte(for: scalar) == nil { return true }
-        return m.contains(.shift)
+    private static func isAmbiguous(_ e: KeyEvent) -> Bool {
+        guard e.modifiers.contains(.ctrl) else { return false }
+        if controlByte(for: e) == nil { return true }
+        return e.modifiers.contains(.shift)
     }
 
     private static func modifierParameter(_ m: KeyModifiers) -> Int {
         1 + (m.contains(.shift) ? 1 : 0) + (m.contains(.alt) ? 2 : 0) + (m.contains(.ctrl) ? 4 : 0)
     }
 
-    /// The control character a key produces when ctrl is held, or nil when it produces none.
+    /// The control character this key press produces with ctrl held, or nil when it produces none.
+    ///
+    /// Three tables in one rule, and the order is the rule: **the character the layout gave
+    /// answers first**, so a chord the user can read off their own keyboard is never
+    /// re-interpreted. On RussianWin the `/` keycap types `.` and ⌃. is `.`; on the German layout
+    /// ⇧- types `?` and ⌃⇧- is DEL, from the character, not from the keycap's `_`.
+    ///
+    /// Only when the character names no control byte does the keycap answer -- `baseLayoutKey`,
+    /// the same physical key's character on the ASCII layout, put through
+    /// `MacKeyCodes.shiftedAscii` when shift is held -- and then only in two cases:
+    ///
+    /// - the character is not ASCII (⌃с, ⌃х, ⌃ü, ⌃é), which is kitty's rule verbatim -- its
+    ///   fallback to `ev->alternate_key` is guarded by `!is_legacy_ascii_key(ev->key)` -- and
+    ///   Ghostty's, whose `ctrlSeq` reaches for the logical key with the comment "this was added
+    ///   to support cyrillic keyboard layouts such as Russian and Mongolian ... but every terminal
+    ///   I've tested encodes this as ctrl+c";
+    /// - shift is held and the shifted character has no control byte either, where without the
+    ///   keycap ⌃@, ⌃^ and ⌃? would be untypable on the layout: RussianWin puts `"`, `:` and `,`
+    ///   on those three keys, German `"`, `&` and `_`. This half is **ours**: kitty and Ghostty
+    ///   refuse the fallback with shift held and send `CSI code;mod u` instead, which is the kitty
+    ///   protocol and a protocol Nyx does not implement (see `ModifyOtherKeys`), so the choice was
+    ///   the keycap's byte or nothing.
+    ///
+    /// What that buys is bounded, and worth stating exactly: the a-z keys and the four keys that
+    /// carry `@ ^ _ ?` on an ASCII keyboard type the same byte on every layout. It is not a
+    /// general invariant over the punctuation -- ⌃⇧[ is `{` on a US layout, which names no control
+    /// byte, and on RussianWin it is `Х`, which names none either, so both send their character
+    /// and the two characters differ.
+    private static func controlByte(for e: KeyEvent) -> UInt8? {
+        guard case .char(let s) = e.key else { return nil }
+        // The keypad is not the number row, and this is where that matters twice: xterm reports
+        // `modifyKeypadKeys` as 0 (keypad keys are not modified however many modifiers are held),
+        // and a keypad key has no second legend to shift into. So it gets the character's own byte
+        // and neither the digit aliases nor the keycap: ⌃keypad-2 is "2", and ⌃⇧keypad-2 is "2".
+        if e.isKeypad { return controlByte(for: s) }
+        if let b = mainBlockControlByte(for: s) { return b }
+        let shift = e.modifiers.contains(.shift)
+        guard !s.isASCII || shift, let cap = e.baseLayoutKey else { return nil }
+        return mainBlockControlByte(for: shift ? MacKeyCodes.shiftedAscii(cap) : cap)
+    }
+
+    /// A key of the main block: the character's own control byte, or the alias the digit row
+    /// carries for it.
+    private static func mainBlockControlByte(for s: Unicode.Scalar) -> UInt8? {
+        controlByte(for: s) ?? digitControlByte(for: s)
+    }
+
+    /// The control character a character key produces when ctrl is held, or nil when it produces
+    /// none.
     private static func controlByte(for s: Unicode.Scalar) -> UInt8? {
         switch s.value {
         case 0x61...0x7A: return UInt8(s.value - 0x60)          // a-z
@@ -236,6 +305,35 @@ public enum KeyEncoder {
         case 0x5B...0x5F: return UInt8(s.value - 0x40)          // [ \ ] ^ _
         case 0x2F: return 0x1F                                  // /
         case 0x3F: return 0x7F                                  // ?
+        default: return nil
+        }
+    }
+
+    /// The digit row's control characters, which are aliases for the punctuation above them:
+    /// ⌃2 is ⌃@, ⌃3...⌃7 are ⌃[ to ⌃_, ⌃8 is ⌃?.
+    ///
+    /// Not a Nyx invention and not DEC's either -- xterm lists them as translations X11 supplies
+    /// ("the control modifier applied to some of the keyboard digits gives results for control
+    /// characters ... control 2 NUL, control 3 ESC, control 4 FS, control 5 GS, control 6 RS,
+    /// control 7 US, control 8 DEL", `input.c`), kitty's generated `ctrled_key` has exactly this
+    /// set (`'2'` → 0, `'3'` → 27 ... `'8'` → 127, with `'0'`, `'1'` and `'9'` returning
+    /// themselves), Ghostty repeats kitty's table byte for byte ("From Kitty's key encoding logic
+    /// ... I'm just going to repeat what Kitty does"), and iTerm2's own switch is commented
+    /// "control-number comes from xterm". ⌃1, ⌃9 and ⌃0 have no control character anywhere and
+    /// send their digit.
+    ///
+    /// They matter twice over on a non-Latin layout: `⌃2` is the second way to type NUL when the
+    /// layout's shifted `2` is not `@`, and on AZERTY, where the digit row types `&é"'(` unshifted,
+    /// the keycap fallback reaches them through this table.
+    private static func digitControlByte(for s: Unicode.Scalar) -> UInt8? {
+        switch s {
+        case "2": return 0x00
+        case "3": return 0x1B
+        case "4": return 0x1C
+        case "5": return 0x1D
+        case "6": return 0x1E
+        case "7": return 0x1F
+        case "8": return 0x7F
         default: return nil
         }
     }
@@ -288,7 +386,7 @@ public enum KeyEncoder {
             }
         case .char(let s):
             if m.contains(.ctrl) {
-                if let b = controlByte(for: s) { return withAlt([b]) }
+                if let b = controlByte(for: e) { return withAlt([b]) }
                 return withAlt(Array(String(s).utf8))
             }
             if m.contains(.alt) && options.optionAsMeta {

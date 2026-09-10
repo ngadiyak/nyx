@@ -17,7 +17,7 @@ private func blockPalette() -> Palette {
 
 /// The chrome a command block draws, checked in pixels. The model has tests; these are about what
 /// actually reaches the screen — which is where two of this feature's defects lived.
-private func render(cols: Int = 8, rows: Int = 3, padding: Int,
+private func render(cols: Int = 8, rows: Int = 3, padding: Int, scale: CGFloat = 1,
                     spines: [(rows: Range<Int>, color: RGB)] = [],
                     summaries: [(row: Int, text: String, color: RGB)] = [],
                     notes: [String?] = [],
@@ -26,7 +26,7 @@ private func render(cols: Int = 8, rows: Int = 3, padding: Int,
                     lines givenLines: [Row]? = nil,
                     cursor: Cursor? = nil) throws -> (FontSet, Int, (Int, Int) -> Pixel) {
     let device = try #require(MTLCreateSystemDefaultDevice())
-    let fonts = FontSet(family: "Menlo", pointSize: 12, scale: 1)
+    let fonts = FontSet(family: "Menlo", pointSize: 12, scale: scale)
     let r = try Renderer(device: device, fonts: fonts)
     let lines = givenLines ?? Array(repeating: Row(cols: cols), count: rows)
     let frame = RenderFrame(cols: cols, rows: rows, lines: lines, graphemes: [], palette: blockPalette(),
@@ -34,14 +34,17 @@ private func render(cols: Int = 8, rows: Int = 3, padding: Int,
                             selection: selection,
                             rowNotes: notes, blockSpines: spines, blockSummaries: summaries,
                             highlightedRows: highlighted)
-    let w = fonts.metrics.width * cols + padding * 2, h = fonts.metrics.height * rows + padding * 2
+    // `padding` is the *point* padding the user set; the renderer, like `Pane`, is handed it in
+    // device pixels.
+    let pad = Int(CGFloat(padding) * scale)
+    let w = fonts.metrics.width * cols + pad * 2, h = fonts.metrics.height * rows + pad * 2
     let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: w, height: h,
                                                         mipmapped: false)
     desc.usage = [.renderTarget, .shaderRead]
     desc.storageMode = .managed
     let tex = try #require(device.makeTexture(descriptor: desc))
     let cb = try #require(r.queue.makeCommandBuffer())
-    r.render(frame, to: tex, commandBuffer: cb, padding: padding)
+    r.render(frame, to: tex, commandBuffer: cb, padding: pad)
     let blit = try #require(cb.makeBlitCommandEncoder())
     blit.synchronize(resource: tex)
     blit.endEncoding()
@@ -57,31 +60,45 @@ private func render(cols: Int = 8, rows: Int = 3, padding: Int,
 
 private let spineColor = RGB(0, 255, 0)
 
-@Test func aSpineIsDrawnInThePaddingBesideItsRows() throws {
+/// The spine is 3 pt wide at `spineLeadingInset`, which is 4 pt in at the shipping padding -- off
+/// the window's resize margin and exactly where the gutter's cap is drawn.
+@Test func aSpineIsThreePointsWideBesideItsRows() throws {
     let (fonts, _, px) = try render(padding: 8, spines: [(rows: 0..<2, color: spineColor)])
-    // Beside the first two rows.
-    #expect(px(6, 8 + fonts.metrics.height / 2) == Pixel(r: 0, g: 255, b: 0))
-    // And not beside the third, which the block does not own.
-    #expect(px(6, 8 + fonts.metrics.height * 2 + fonts.metrics.height / 2) != Pixel(r: 0, g: 255, b: 0))
-}
-
-/// The spine lives in the padding. With none there is nowhere to put it that is not the first
-/// column of the user's output, and the settings window ships a Padding stepper that reaches zero.
-@Test func noPaddingMeansNoSpine() throws {
-    let (fonts, w, px) = try render(padding: 0, spines: [(rows: 0..<3, color: spineColor)])
-    for x in 0..<min(4, w) {
-        #expect(px(x, fonts.metrics.height / 2) != Pixel(r: 0, g: 255, b: 0), "column \(x)")
-    }
-}
-
-/// The gutter's status pill sits at the far left of the padding. The spine must not be drawn on top
-/// of it: two indicators sharing four points is one indicator drawn twice, in two systems, with the
-/// AppKit one winning.
-@Test func theSpineLeavesTheLeftmostPaddingToTheGutter() throws {
-    let (fonts, _, px) = try render(padding: 8, spines: [(rows: 0..<1, color: spineColor)])
-    let y = fonts.metrics.height / 2
-    #expect(px(1, y) != Pixel(r: 0, g: 255, b: 0))
+    let y = 8 + fonts.metrics.height / 2
+    #expect(px(4, y) == Pixel(r: 0, g: 255, b: 0))
+    #expect(px(6, y) == Pixel(r: 0, g: 255, b: 0))
     #expect(px(2, y) != Pixel(r: 0, g: 255, b: 0))
+    #expect(px(8, y) != Pixel(r: 0, g: 255, b: 0))
+    #expect(px(4, 8 + fonts.metrics.height * 2 + fonts.metrics.height / 2) != Pixel(r: 0, g: 255, b: 0))
+}
+
+/// The spine is 3 **points** wide on a Retina display too, not 3 pixels.
+///
+/// `Renderer.render` is handed its padding in device pixels (`Pane` multiplies by the layer's
+/// `contentsScale`), and `spineWidth`/`spineLeadingInset` are points -- the same points the AppKit
+/// cap is drawn in. Using them raw made the spine 1.5 pt wide at 2 pt beside a 3 pt cap at 4 pt on
+/// every Mac this ships on, which is the "line with beads on it" this whole change exists to
+/// remove, wearing a different hat. Only a scale other than 1 can catch it, and every other case
+/// here runs at 1.
+@Test func theSpineIsThreePointsWideOnARetinaDisplay() throws {
+    let (fonts, _, px) = try render(padding: 8, scale: 2, spines: [(rows: 0..<2, color: spineColor)])
+    let y = 16 + fonts.metrics.height / 2
+    // 4 pt in, 3 pt wide, at two pixels to the point: 8..<14.
+    #expect(px(8, y) == Pixel(r: 0, g: 255, b: 0))
+    #expect(px(13, y) == Pixel(r: 0, g: 255, b: 0))
+    #expect(px(6, y) != Pixel(r: 0, g: 255, b: 0))
+    #expect(px(14, y) != Pixel(r: 0, g: 255, b: 0))
+}
+
+/// `padding = 0` is a setting the settings window ships. The spine takes the first column's leading
+/// 3 pt there rather than disappearing: without it a block loses its left edge entirely, which is
+/// what the second snapshot pass found (Addendum 2).
+@Test func atZeroPaddingTheSpineTakesTheFirstColumnsLeadingEdge() throws {
+    let (fonts, _, px) = try render(padding: 0, spines: [(rows: 0..<3, color: spineColor)])
+    let y = fonts.metrics.height / 2
+    #expect(px(0, y) == Pixel(r: 0, g: 255, b: 0))
+    #expect(px(2, y) == Pixel(r: 0, g: 255, b: 0))
+    #expect(px(4, y) != Pixel(r: 0, g: 255, b: 0))
 }
 
 /// The tint sits under the glyphs across the block's rows and nowhere else.
@@ -92,6 +109,29 @@ private let spineColor = RGB(0, 255, 0)
     let plain = px(mid, fonts.metrics.height * 2 + fonts.metrics.height / 2)
     #expect(tinted != Pixel(r: 0, g: 0, b: 0))
     #expect(plain == Pixel(r: 0, g: 0, b: 0))
+}
+
+/// **D6.** The tint reaches the window's own edges, both paddings included.
+///
+/// It used to run from `padding` to `padding + cols × width`, so its left edge landed exactly where
+/// column 0's ink begins -- and the gutter's hover chevron is drawn in the *padding*, so the tint's
+/// own edge ran down the middle of the triangle and left a vertical seam through the control the
+/// hovered row had grown to offer.
+@Test func theTintReachesTheWindowsEdgesSoItCannotCutTheGutterChevron() throws {
+    let padding = 8
+    let (fonts, w, px) = try render(padding: padding, highlighted: 0..<1)
+    let tint = blockPalette().blockHoverBackground
+    let expected = Pixel(r: tint.r, g: tint.g, b: tint.b)
+    let y = padding + fonts.metrics.height / 2
+    // The leftmost pixel of the window, where the chevron's own leading edge is…
+    #expect(px(0, y) == expected)
+    // …every pixel of the left padding, which is where the whole chevron lives…
+    #expect(px(padding - 1, y) == expected)
+    // …and the right padding too, so the band is the row and not a strip laid over it.
+    #expect(px(w - 1, y) == expected)
+    // An unhovered row keeps the plain background in the same places.
+    let plainY = padding + fonts.metrics.height * 2 + fonts.metrics.height / 2
+    #expect(px(0, plainY) == Pixel(r: 0, g: 0, b: 0))
 }
 
 /// A selection (or a search hit, or a coloured cell, or the block cursor) is a background instance
@@ -109,10 +149,12 @@ private let spineColor = RGB(0, 255, 0)
     #expect(px(plainX, y) == Pixel(r: tint.r, g: tint.g, b: tint.b))
 }
 
-/// The chevron is a real glyph at the end of the summary, in the summary's colour.
-@Test func theSummaryEndsInAChevron() throws {
+/// The summary is drawn to its own last cell, in its own colour. It used to end in a chevron; that
+/// chevron was a control and the gutter cap is the control now, so what the renderer is handed here
+/// is the sentence and nothing else (§2.4).
+@Test func theSummaryIsDrawnToItsLastCell() throws {
     let (fonts, w, px) = try render(cols: 12, padding: 0,
-                                    summaries: [(row: 0, text: "8.8s \u{25BE}", color: RGB(0, 255, 0))])
+                                    summaries: [(row: 0, text: "8.8s", color: RGB(0, 255, 0))])
     let lastCell = (w - fonts.metrics.width)..<w
     var ink = 0
     for x in lastCell { for y in 0..<fonts.metrics.height where px(x, y).g > 100 { ink += 1 } }
@@ -205,4 +247,66 @@ private let spineColor = RGB(0, 255, 0)
     let success = try inkAt(row: 0, text: "200 \u{b7} 142 ms \u{25BE}", tone: .success)
     #expect(success.green > 20)
     #expect(success.red == 0)
+}
+
+/// The Retina audit (Task 7): every *other* chrome number in `buildChrome` is in device pixels end
+/// to end, and this is what says so.
+///
+/// `render(_:to:commandBuffer:padding:)` is handed its padding in pixels, and `fonts.metrics` comes
+/// from a face built at `pointSize * scale`, so `padding + column * m.width` needs no conversion.
+/// Only a Core *point* number does -- the spine's two, which had to be scaled -- and the way that
+/// defect showed itself was everything landing at half its size on a 2× display. So: the tint's
+/// bottom edge, a right-aligned summary, a right-aligned note and the block cursor, all at scale 2,
+/// each measured against the pixel cell. A point number smuggled into any of them halves one of
+/// these distances and fails here; at scale 1, where every other case in this file runs, it cannot
+/// be seen at all.
+@Test func everyOtherChromeNumberIsInPixelsOnARetinaDisplay() throws {
+    let (fonts, w, px) = try render(cols: 8, rows: 3, padding: 8, scale: 2,
+                                    summaries: [(row: 0, text: "8.8s", color: RGB(0, 255, 0))],
+                                    notes: [nil, nil, "1.2s"],
+                                    highlighted: 0..<2,
+                                    cursor: Cursor(x: 0, y: 2))
+    let m = fonts.metrics
+    let pad = 16                                        // 8 pt at two pixels to the point
+    let black = Pixel(r: 0, g: 0, b: 0)
+    // The tint is `rows.count * m.height` tall, in pixels: it ends at the bottom of row 1 and row 2
+    // is untouched. Half of it would have stopped inside row 0.
+    #expect(px(w / 2, pad + m.height * 2 - 1) != black)
+    #expect(px(w / 2, pad + m.height * 2 + 1) == black)
+    // The summary is right-aligned in *columns*, so its last glyph is in the last pixel cell.
+    var summaryInk = 0
+    for x in (w - pad - m.width)..<(w - pad) {
+        for y in pad..<(pad + m.height) where px(x, y).g > 100 { summaryInk += 1 }
+    }
+    #expect(summaryInk > 4)
+    // A note is placed at `cols - count` columns in and never over the text: nothing left of that
+    // column, ink to the right of it.
+    let noteRow = pad + m.height * 2
+    var beforeNote = 0, inNote = 0
+    for x in pad..<(pad + m.width * 4) { for y in noteRow..<(noteRow + m.height) where px(x, y) != black { beforeNote += 1 } }
+    for x in (pad + m.width * 4)..<(w - pad) {
+        for y in noteRow..<(noteRow + m.height) where px(x, y) != black { inNote += 1 }
+    }
+    #expect(inNote > 4)
+    // …and it starts on *that* column and not one further in: `cols - count` is 8 - 4, so the fifth
+    // pixel cell is where the `1` of `1.2s` lands. Sampling the whole right half would pass for a
+    // note placed anywhere in it.
+    var inFirstNoteColumn = 0
+    for x in (pad + m.width * 4)..<(pad + m.width * 5) {
+        for y in noteRow..<(noteRow + m.height) where px(x, y) != black { inFirstNoteColumn += 1 }
+    }
+    #expect(inFirstNoteColumn > 0)
+    // The block cursor is one pixel cell wide, at the pixel padding: column 0 of row 2, and column
+    // 1 is not painted with it.
+    let mid = noteRow + m.height / 2
+    #expect(px(pad + m.width - 1, mid) == Pixel(r: 0, g: 0, b: 255))
+    #expect(px(pad + m.width + 1, mid) != Pixel(r: 0, g: 0, b: 255))
+    // The cursor is the only thing painted in column 0, so `beforeNote` counts it rather than
+    // stray note ink: what matters is that the columns between the cursor and the note are clear.
+    var betweenCursorAndNote = 0
+    for x in (pad + m.width)..<(pad + m.width * 4) {
+        for y in noteRow..<(noteRow + m.height) where px(x, y) != black { betweenCursorAndNote += 1 }
+    }
+    #expect(betweenCursorAndNote == 0)
+    #expect(beforeNote > 0)
 }

@@ -107,10 +107,6 @@ public extension Terminal {
 
 /// Where the chrome for a block goes, and when it should not be drawn at all.
 public enum CommandBlockChrome {
-    /// The spine's width in cells' worth of points, and the gap between it and the text.
-    public static let spineWidth: Double = 2
-    public static let spineGap: Double = 4
-
     /// Whether block chrome may be drawn over this screen at all.
     ///
     /// Not while a full-screen program owns the display or the mouse. `vim`, `htop` and anything
@@ -134,136 +130,749 @@ public enum CommandBlockChrome {
         return start..<cols
     }
 
-    /// Which of a command's rows carries its summary, and how much of it fits.
+    /// Which row of a command carries its summary, and which columns.
     ///
     /// `summaryColumns` alone answers "does the whole thing fit on this row", and the answer for a
-    /// realistic pasted `curl` in a 100-column pane -- or for any narrow split -- is no. That lost
-    /// the chevron, which is the only thing on the row that folds the block: the status is a nicety
-    /// and the control is not. So this walks the command's rows from the last to the first (a
-    /// wrapped command line has several, and the last is usually the shortest), takes the first row
-    /// with room for the whole summary, falls back to the first with room for the chevron alone,
-    /// and only then gives up -- at which point the gutter mark is what folds the block.
+    /// realistic pasted `curl` in a 100-column pane -- or for any narrow split -- is no. So this
+    /// walks the command's rows from the last to the first (a wrapped command line has several, and
+    /// the last is usually the shortest) and takes the first with room for the whole sentence.
     ///
-    /// Placing it is one rule for the same reason `summaryColumns` is: the renderer draws it, the
-    /// pane records the click target, and the hover overlay attaches to it. Three call sites
-    /// deciding separately is three ways for the pixels, the click and the strip to disagree --
-    /// and the overlay placed from the prompt row alone painted over the command's own text on
-    /// exactly the rows where the summary had been refused.
+    /// It used to fall back to a row with room for the chevron alone, because the chevron was the
+    /// only thing on that row that folded the block. It no longer folds anything -- the gutter cap
+    /// does, at every width, and it costs no columns -- so a row with no room for the whole summary
+    /// simply carries none, and the reader loses a nicety rather than a control (§2.4).
+    ///
+    /// Placing it is one rule for the same reason `summaryColumns` is: the renderer draws it and the
+    /// strip's suppression rule compares against it. Two call sites deciding separately is two ways
+    /// for the pixels and the strip to disagree -- and the overlay placed from the prompt row alone
+    /// painted over the command's own text on exactly the rows where the summary had been refused.
     public static func summaryPlacement(commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
-                                        textCount: Int, chevronCount: Int, cols: Int) -> SummaryPlacement? {
-        var chevronOnly: SummaryPlacement?
+                                        textCount: Int, cols: Int) -> SummaryPlacement? {
         for row in commandRows.reversed() {
             if let columns = summaryColumns(textCount: textCount, cols: cols,
                                             lastUsedColumn: row.lastUsedColumn) {
-                return SummaryPlacement(row: row.absoluteRow, columns: columns, text: .full)
-            }
-            if chevronOnly == nil,
-               let columns = summaryColumns(textCount: chevronCount, cols: cols,
-                                            lastUsedColumn: row.lastUsedColumn) {
-                chevronOnly = SummaryPlacement(row: row.absoluteRow, columns: columns, text: .chevronOnly)
+                return SummaryPlacement(row: row.absoluteRow, columns: columns)
             }
         }
-        return chevronOnly
+        return nil
+    }
+}
+
+public extension CommandBlockChrome {
+    /// Free columns after the command's last glyph. W3 ≥ 34, W2 18…33, W1 8…17, W0 < 8 (§2.6).
+    enum WidthClass: Equatable { case w3, w2, w1, w0 }
+
+    static func widthClass(freeColumns: Int) -> WidthClass {
+        switch freeColumns {
+        case 34...: return .w3
+        case 18...33: return .w2
+        case 8...17: return .w1
+        default: return .w0
+        }
     }
 
-    /// Which row the hover strip goes on and how much of it fits there.
+    /// The last column of a row that has anything in it -- **counting the second half of a wide
+    /// glyph**, which has no content of its own. `Renderer.lastUsed` ignores it (D19), and a strip
+    /// placed from that count began on top of the 世 it was avoiding.
+    static func lastUsedColumn(of row: Row) -> Int {
+        var last = -1
+        for (column, cell) in row.cells.enumerated()
+        where cell.content != 0 || cell.attrs.contains(.wideSpacer) {
+            last = column
+        }
+        return last
+    }
+
+    static func freeColumns(cols: Int, lastUsedColumn: Int) -> Int {
+        max(0, cols - lastUsedColumn - 1)
+    }
+
+    /// One control on the strip. What each one says is here rather than in the view, because a
+    /// tooltip that disagrees with a VoiceOver label is two controls with one shape.
+    enum Pill: Equatable, Hashable {
+        public enum FoldLabel: Equatable, Hashable { case fold, unfold }
+        public enum Actions: Equatable, Hashable { case labelled, glyph }
+        public enum Glyph: Equatable, Hashable { case ellipsis }
+        case fold(FoldLabel)
+        /// No `enabled` flag: §2.6 gives a block with nothing to copy the *no-output* row, whose
+        /// cells carry no `Copy` at all, and `pills(_:at:)` guards on `header.hasOutput` before
+        /// appending this one -- so `enabled` was `true` at every call site that could construct it
+        /// and `false` at none of them. A parameter with one reachable value is a state nobody can
+        /// see, a disabled art nobody can render, and three branches in the view keeping it alive
+        /// (PM P7). A block whose output really cannot be copied gets no pill, which is the
+        /// affordance telling the truth.
+        case copy
+        case lens(name: String, on: Bool)
+        case stop
+        case actions(Actions)
+
+        public var title: String {
+            switch self {
+            case .fold(.fold): return "Fold"
+            case .fold(.unfold): return "Unfold"
+            case .copy: return "Copy"
+            case .lens(let name, _): return name
+            case .stop: return "Stop"
+            case .actions(.labelled): return "Actions"
+            case .actions(.glyph): return ""
+            }
+        }
+
+        public var glyph: Glyph? { if case .actions(.glyph) = self { return .ellipsis } else { return nil } }
+
+        /// A `▾` after the title, drawn as an 8 pt path rather than set as a 5 pt text glyph -- the
+        /// measured reason the old chevron read as "weak because of size" (design §2.7).
+        public var trailingChevron: Bool {
+            switch self {
+            case .actions(.labelled), .lens: return true
+            default: return false
+            }
+        }
+
+        public var help: String {
+            switch self {
+            case .fold(.fold): return "Fold this command\u{2019}s output"
+            case .fold(.unfold): return "Unfold this command\u{2019}s output"
+            case .copy: return "Copy this command\u{2019}s output"
+            case .lens: return "Choose how this response is shown"
+            case .stop: return "Stop watching this request"
+            case .actions: return "Command actions"
+            }
+        }
+
+        public var accessibilityLabel: String {
+            switch self {
+            // The chip is a state readout, not a suggestion -- `name` already names *this*
+            // response's current lens (`Raw` when there is none), on or off, so the label says
+            // what is showing and that the `▾` opens a menu rather than performing an action.
+            case .lens(let name, _): return "Response shown as \(name); opens a menu"
+            case .actions: return "Command actions"
+            // "Stop" alone collides with ⌘.'s differently-scoped Stop (a11y 6.9): VoiceOver has to
+            // hear what this one stops.
+            case .stop: return help
+            default: return title
+            }
+        }
+    }
+
+    /// What is on the strip, before anyone knows where it goes.
+    struct StripContent: Equatable {
+        public let readout: String
+        public let readoutTone: SummaryTone
+        public let dots: [WatchSeries.Dot]
+        public let overflowDot: String?
+        public let pills: [Pill]
+        public init(readout: String, readoutTone: SummaryTone, dots: [WatchSeries.Dot],
+                    overflowDot: String?, pills: [Pill]) {
+            self.readout = readout; self.readoutTone = readoutTone; self.dots = dots
+            self.overflowDot = overflowDot; self.pills = pills
+        }
+    }
+
+    /// That content, placed: which columns it occupies and whether it is allowed to sit on the
+    /// command's own text.
+    struct StripPlan: Equatable {
+        public let content: StripContent
+        public let firstColumn: Int
+        /// One past the strip's last column. The pane's own right edge for every rung but one: a
+        /// **pills-only** strip is right-aligned against the *in-grid summary's* first column
+        /// instead, because that rung exists to keep the summary and drawing to the pane's edge
+        /// would put the pills on top of the sentence they were kept for.
+        public let trailingColumn: Int
+        public let overlapsCommand: Bool
+        public init(content: StripContent, firstColumn: Int, trailingColumn: Int = -1,
+                    overlapsCommand: Bool) {
+            self.content = content
+            self.firstColumn = firstColumn
+            // -1 means "not said": the offscreen snapshots build a plan by hand at column 0 and
+            // size the view from the content, so there is nothing sensible for them to pass.
+            self.trailingColumn = trailingColumn
+            self.overlapsCommand = overlapsCommand
+        }
+        public var readout: String { content.readout }
+        public var readoutTone: SummaryTone { content.readoutTone }
+        public var dots: [WatchSeries.Dot] { content.dots }
+        public var overflowDot: String? { content.overflowDot }
+        public var pills: [Pill] { content.pills }
+    }
+
+    struct StripPlacement: Equatable {
+        public let row: Int
+        public let plan: StripPlan
+        public init(row: Int, plan: StripPlan) { self.row = row; self.plan = plan }
+    }
+
+    /// The pills, per §2.6's table -- which wins over any single "richest control survives
+    /// longest" sentence: `Fold` is already gone at the W3→W2 boundary, a labelled duplicate of the
+    /// control the gutter cap already offers, while `Copy` (or the lens chip, or `Unfold`) can
+    /// still be on the row; `Actions ▾` only collapses to `⋯` at the later W2→W1 boundary, where
+    /// every pill but `Stop` goes. `Stop` and `Actions` are present at every width.
     ///
-    /// The same ladder `summaryPlacement` walks, for the same reason and against the same rows: the
-    /// strip is chrome over a row of the user's own text, and the text wins. `stripColumns` is the
-    /// view's measured width per control set, in columns (the pane rounds up, so a strip right
-    /// aligned to the last column can never begin left of `lastUsedColumn + 1`). nil when not even
-    /// the ⋯ and the chevron fit anywhere on the command.
+    /// A watched block takes `Stop` and never the lens chip: the two would share the one rung under
+    /// Actions, and the lens stays in the ⋯ menu (§3.13). A watched block shows no fold pill
+    /// either -- §2.6's two watch rows have none, because a series' newest run is the thing being
+    /// read.
     ///
-    /// `fallbackToTail` decides what happens when no row has room for even the ⋯ and the chevron.
+    /// Two rungs of the order were ruled on after the first picture set (F4), and §2.6's two
+    /// affected rows and its drop-order sentence were edited with them:
     ///
-    /// The hover strip passes true: the minimal strip then goes over the tail of the **last** row
-    /// anyway, because the command it covers is the one that needs it most -- a request run from
-    /// the workbench is a single line hundreds of characters long, it fills every row it touches,
-    /// and its ⋯ menu is the only place "Open in Workbench", the four exports and "Save as Button"
-    /// are. Four cells are hidden *while the pointer is on the block* and come back the moment it
-    /// leaves; a menu that could not be opened at all would not come back.
+    /// - **On an HTTP block the chip outlives `Fold` and `Copy`.** It is the lens's only visible
+    ///   state -- what the response is being read *as* -- and `Copy Output` is a row of the ⋯ menu.
+    ///   Dropping it first meant the chip appeared in no composite of the whole set: a pasted `curl`
+    ///   is long, so the strip a person actually gets is a rung or two below W3.
+    /// - **On a watched block the dots outlive `Copy`.** The timeline is the series' whole shape and
+    ///   there is a second route to the pasteboard; there is no second picture of eleven runs.
+    static func pills(_ header: BlockHeader, at width: WidthClass) -> [Pill] {
+        let watching = header.watch?.showsStop == true
+        let watched = header.watch != nil
+        let lensable = header.isHTTP && !header.lensTooLarge && (header.bodyIsJSON || header.lens != nil)
+        // W0 is the row that costs a column of the user's own text, so only the one control with a
+        // running side effect earns it -- not even the chip, which says something rather than doing
+        // it.
+        guard width != .w0 else { return watching ? [.stop] : [] }
+        guard width != .w1 else {
+            if watching { return [.stop, .actions(.glyph)] }
+            if !watched, lensable {
+                return [chip(for: header), .actions(.glyph)]
+            }
+            return [.actions(.glyph)]
+        }
+
+        // The rung under Actions: whichever of Stop, the lens chip and Unfold applies, and Copy
+        // when none does. At W3 the rest of the ladder is added below it.
+        var list: [Pill] = []
+        if watching {
+            list.append(.stop)
+        } else if !watched, lensable {
+            list.append(chip(for: header))
+        } else if header.folded, header.hasOutput {
+            list.append(.fold(.unfold))
+        }
+        if width == .w3 {
+            // Fold is the widest labelled duplicate of a control the gutter already offers, so it
+            // is the first pill to go; a folded block already carries `Unfold` above.
+            if header.hasOutput, !watched, !header.folded { list.append(.fold(.fold)) }
+            // `!watched`: the dots outlive `Copy`, and the dots are a W3-only feature, so a watched
+            // block has no rung anywhere that carries `Copy` without them.
+            if header.hasOutput, !watched { list.append(.copy) }
+        } else if list.isEmpty, header.hasOutput, !watched {
+            // W2 with no Stop, no chip and nothing folded: Copy is what the rung carries.
+            list.append(.copy)
+        }
+        list.append(.actions(.labelled))
+        return list
+    }
+
+    /// The lens chip for a block: which lens is showing, and whether the chip is **lit**.
     ///
-    /// Everything else passes false, and the workbench pill is why the parameter exists. The pill
-    /// appears on its own, with no pointer anywhere near it, and covering four cells of a command
-    /// somebody is still typing -- to advertise a feature they did not ask for -- is not a trade
-    /// anyone agreed to. No room, no pill.
+    /// The chip is a state readout, not a suggestion -- `nil` is the response showing raw, so the
+    /// chip reads `Raw` rather than naming the lens pressing it would switch to.
     ///
-    /// A pane narrower than the smallest strip gets nothing either way: the strip would begin off
-    /// the left edge. The chevron on the command row, the status mark in the gutter, ⌘⇧↑ and the
-    /// right-click menu all still fold the block.
-    public static func overlayPlacement(commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
-                                        stripColumns: [OverlayControls: Int],
-                                        cols: Int,
-                                        fallbackToTail: Bool) -> OverlayPlacement? {
+    /// And `.raw` is **unlit**, exactly as `nil` is (design D8). §2.3 reads "On = filled accent",
+    /// which a reader takes to mean "a lens is on"; a lit chip reading `Raw` meant "you picked the
+    /// no-op on purpose", which has no user-visible consequence whatever -- the response is raw
+    /// either way, so the two states were one state drawn two ways. `nil` and `.raw` now produce
+    /// the same pill, which is why `block-header-http-lens-raw-*` is byte-identical to
+    /// `block-header-http-lens-*`: that pair *is* the assertion. The ⋯ menu still ticks its `Raw`
+    /// row, because there raw is one of seven choices and the tick says which one you are on
+    /// (`BlockHeader.isChecked`, which reads `lens ?? .raw`).
+    private static func chip(for header: BlockHeader) -> Pill {
+        let lens = header.lens ?? .raw
+        return .lens(name: lens.chipTitle, on: lens != .raw)
+    }
+
+    /// The readout, longest first: the whole sentence → drop the interval and the percentiles →
+    /// drop the timing and the size → drop the run count → **the status or exit code alone, never
+    /// dropped while a strip is drawn at all**.
+    ///
+    /// Dropping only ever removes whole ` · ` groups: §1 protects the vocabulary, so the sentence
+    /// is cut, never re-worded. The one non-positional rule is a finished series' failure count --
+    /// `11 runs` on its own says a series went fine, which is the sentence's whole news.
+    static func readout(_ header: BlockHeader, at width: WidthClass) -> String {
+        switch width {
+        // W3 and W0 never split the sentence, so they never pay for `components(separatedBy:)`.
+        case .w3: return header.summary
+        case .w2:
+            let parts = header.summary.components(separatedBy: " \u{b7} ")
+            if parts.count > 2, let first = parts.first, let last = parts.last, isFailureCount(last) {
+                return first + " \u{b7} " + last
+            }
+            return parts.prefix(2).joined(separator: " \u{b7} ")
+        case .w1: return header.summary.components(separatedBy: " \u{b7} ").first ?? ""
+        case .w0: return ""
+        }
+    }
+
+    private static func isFailureCount(_ part: String) -> Bool {
+        part.hasSuffix(" failure") || part.hasSuffix(" failures")
+    }
+
+    static func stripContent(_ header: BlockHeader, at width: WidthClass) -> StripContent? {
+        let list = pills(header, at: width)
+        guard !list.isEmpty else { return nil }
+        // The timeline is the widest thing on the strip and the least of what it says, so it goes
+        // at the first squeeze -- the sentence beside it still carries the run number and the last
+        // status. Twelve dots on a 10 pt pitch is sixteen columns; thirty was thirty-four, which is
+        // the whole of W3's own promise (`WatchSeries.header(dots:)`).
+        let dots = width == .w3 ? (header.watch?.dots ?? []) : []
+        let hidden = width == .w3 ? (header.watch?.hiddenRuns ?? 0) : 0
+        // `+N` *replaces* the leading dot rather than joining it: twelve circles and a `+36`
+        // beside them would be thirteen marks in the space the cap allows twelve.
+        let visibleDots = hidden > 0 ? Array(dots.dropFirst()) : dots
+        return StripContent(readout: readout(header, at: width), readoutTone: header.tone,
+                            dots: visibleDots, overflowDot: hidden > 0 ? "+\(hidden)" : nil, pills: list)
+    }
+
+    /// Where a measured strip begins, or nil when it may not be drawn on this row at all.
+    ///
+    /// `rightEdge` is where the strip's last column is, exclusive; the pane's own edge unless the
+    /// caller is placing a pills-only strip in the gap an in-grid summary leaves.
+    /// `overlapping` is the caller saying this rung has already earned the command's tail: the last
+    /// two rungs of `stripPlacement`, where nothing fits beside the command and the alternative is
+    /// a hovered block with no controls on it at all. A W0 row is overlapping whatever the caller
+    /// says, because the only content W0 ever produces is the lone `Stop` and stopping a runaway
+    /// watch must always be one click.
+    static func stripPlan(_ content: StripContent, widthClass: WidthClass,
+                          lastUsedColumn: Int, cols: Int, stripColumns: Int,
+                          overlapping: Bool = false, rightEdge: Int? = nil) -> StripPlan? {
+        let edge = rightEdge ?? cols
+        guard stripColumns > 0, stripColumns <= edge, edge <= cols else { return nil }
+        let first = edge - stripColumns
+        let granted = overlapping || widthClass == .w0
+        guard granted || first > lastUsedColumn else { return nil }
+        // And truthfully: a rung that was *granted* the tail but happens to land clear of the last
+        // glyph is not on top of anything, so it does not get the opaque art that says it is.
+        let overlaps = granted && first <= lastUsedColumn
+        // `first` is already `>= 0`: the guard above requires `stripColumns <= edge`.
+        return StripPlan(content: content, firstColumn: first, trailingColumn: edge,
+                         overlapsCommand: overlaps)
+    }
+
+    /// Where the in-grid summary is going and what it says there. Always the whole sentence:
+    /// `summaryPlacement` refuses a row rather than shortening what is on it (§2.4).
+    typealias PlacedSummary = (row: Int, text: String)
+
+    /// Whether the strip on `stripRow` speaks for the summary on `summary.row`, and may therefore
+    /// replace it. Two conditions, and the second is the law of §2.5: **the same row, and the
+    /// same words**.
+    ///
+    /// Two rows of a wrapped command are two different width classes: a watched `curl` whose last
+    /// row is full places its lone `Stop` there (W0, no readout at all) while the summary belongs
+    /// on the roomier row above. Suppressing on "a strip exists somewhere on this block" took
+    /// `run 12 · 200 · 100 ms · every 5 s` off the screen the moment the pointer arrived.
+    ///
+    /// "Something to say" is not enough either. A W2 or W1 readout is a *shortened* sentence, so a
+    /// strip that replaced the summary with one silently dropped `· 1.2 KB · json` -- the same
+    /// defect one class further down. Hovering must never remove a fact, so the readout has to be
+    /// the summary word for word; `stripPlacement` is what makes that reachable, by refusing to
+    /// shorten the sentence on a row that is already showing it.
+    static func suppressesSummary(_ plan: StripPlan, stripRow: Int,
+                                  summary: PlacedSummary?) -> Bool {
+        guard let summary, summary.row == stripRow, !summary.text.isEmpty else { return false }
+        return plan.readout == summary.text
+    }
+
+    static func stripPlacement(_ header: BlockHeader,
+                               commandRows: [(absoluteRow: Int, lastUsedColumn: Int)],
+                               cols: Int,
+                               summary: PlacedSummary?,
+                               measure: (StripContent) -> Int) -> StripPlacement? {
         for row in commandRows.reversed() {
-            let free = cols - row.lastUsedColumn - 1
-            guard free > 0 else { continue }
-            for controls in OverlayControls.allCases {
-                guard let width = stripColumns[controls], width > 0, width <= free else { continue }
-                return OverlayPlacement(row: row.absoluteRow, controls: controls)
+            let free = freeColumns(cols: cols, lastUsedColumn: row.lastUsedColumn)
+            for (width, rung) in rungs(header, freeColumns: free) {
+                var content = rung
+                // On the row that is already showing the sentence, the readout ladder stops at the
+                // sentence: it is the *pills* that keep giving way. A shortened readout on such a
+                // row is the strip removing a fact the moment the pointer arrives (§2.5).
+                if let summary, summary.row == row.absoluteRow, !summary.text.isEmpty,
+                   content.readout != summary.text {
+                    content = StripContent(readout: summary.text, readoutTone: content.readoutTone,
+                                           dots: content.dots, overflowDot: content.overflowDot,
+                                           pills: content.pills)
+                }
+                guard let plan = stripPlan(content, widthClass: width,
+                                           lastUsedColumn: row.lastUsedColumn,
+                                           cols: cols, stripColumns: measure(content)) else { continue }
+                return StripPlacement(row: row.absoluteRow, plan: plan)
             }
         }
-        guard fallbackToTail, let last = commandRows.last, let minimal = stripColumns[.minimal],
-              minimal > 0, minimal <= cols else { return nil }
-        return OverlayPlacement(row: last.absoluteRow, controls: .minimal)
+        // Nothing above fitted, so the sentence is what gives way -- never a pill. The strip carries
+        // the **pills alone**, right-aligned against the in-grid summary's own first column so the
+        // sentence it is making room for stays exactly where it was: nothing on the row moves when
+        // the pointer arrives, controls simply appear in the gap. Refusing the row instead is what
+        // left a running watch with no `Stop` anywhere across a wide middle band of command-line
+        // lengths, and §2.6 says `Stop` and `Actions` are present at *every* width.
+        //
+        // **Only on a row whose in-grid summary is really there.** A readout of `""` is only safe
+        // because the sentence is on the same row in the grid; where it is not, this rung took the
+        // fact off the screen and left the controls, which is the inversion the whole wave exists to
+        // remove -- `composite-strip-w1-watch-running` came out as `[Stop] [⋯]` with no readout at
+        // all while §2.6's own W1 cell reads `run 12 [Stop] [⋯]` (design D2). Such a row falls to
+        // the overlap rung below, which keeps both.
+        for row in commandRows.reversed() where summaryIsOn(row, summary: summary, cols: cols) {
+            let free = freeColumns(cols: cols, lastUsedColumn: row.lastUsedColumn)
+            let edge = rightEdge(cols: cols, row: row, summary: summary)
+            for (width, rung) in rungs(header, freeColumns: free) {
+                // Dots go with the sentence: they are the readout's own picture, and a timeline
+                // with no run number beside it says less than nothing.
+                let pillsOnly = StripContent(readout: "", readoutTone: rung.readoutTone,
+                                             dots: [], overflowDot: nil, pills: rung.pills)
+                guard let plan = stripPlan(pillsOnly, widthClass: width,
+                                           lastUsedColumn: row.lastUsedColumn, cols: cols,
+                                           stripColumns: measure(pillsOnly),
+                                           rightEdge: edge) else { continue }
+                return StripPlacement(row: row.absoluteRow, plan: plan)
+            }
+        }
+        // And when nothing fits *beside* the command, the strip sits **on the command's tail**, on
+        // an opaque ground, which reads as a control on top of text rather than as text colliding
+        // with text (§2.3). The narrowest rung there is and no more: this rung is paid for in
+        // columns of somebody's own command line, so it takes the two pills §2.6 never drops and
+        // nothing else.
+        //
+        // What it carries depends on where the sentence is, and both halves were rulings on the
+        // first picture set:
+        //
+        // - **The sentence is in the grid on this row** -- the pills alone, ending where the
+        //   sentence begins. Until the PM's P1 this rung was granted to `Stop` and to nothing else,
+        //   so a hovered block whose leftover gap was 1-5 columns (a failed block at 14-18 free of
+        //   84, one in sixteen of them; every HTTP block at 29-33) drew **no controls at all**. A
+        //   lone `⋯` is the route to every action on the block and earns the same exception.
+        // - **The sentence is not** -- the pills *and* the narrowest readout, because at this rung
+        //   the strip is the only place the fact can be (design D2). §2.6's floor is "the status or
+        //   exit code alone, never dropped while a strip is drawn at all", and its W1 cells say
+        //   `run 12 [Stop] [⋯]` in as many words.
+        //
+        // A W0 row reaches here carrying only what `pills(_:at: .w0)` allows -- `[Stop]` while a
+        // watch runs, nothing otherwise -- because `rungs` offers a W0 row no fallback: there the
+        // one thing that may cost a column of somebody's command is the control with a running side
+        // effect, which is §2.6's W0 row exactly.
+        for row in commandRows.reversed() {
+            let free = freeColumns(cols: cols, lastUsedColumn: row.lastUsedColumn)
+            let hasSentence = summaryIsOn(row, summary: summary, cols: cols)
+            guard let (width, narrowest) = rungs(header, freeColumns: free).last else { continue }
+            let content = hasSentence
+                ? StripContent(readout: "", readoutTone: narrowest.readoutTone, dots: [],
+                               overflowDot: nil, pills: narrowest.pills)
+                : narrowest
+            guard let plan = stripPlan(content, widthClass: width,
+                                       lastUsedColumn: row.lastUsedColumn, cols: cols,
+                                       stripColumns: measure(content),
+                                       overlapping: true,
+                                       // Against the summary's first column, not the pane's edge:
+                                       // it is the *command's* tail this rung may sit on. Placed at
+                                       // the edge it covered the tail of `run 12 · 200 · 100 ms ·
+                                       // every 5 s` instead, which is the one thing §2.5 forbids --
+                                       // the first take of the pictures read `run 12 · 200 · 100 ms
+                                       // · ev` with a `Stop` on top.
+                                       rightEdge: rightEdge(cols: cols, row: row,
+                                                            summary: summary)) else { continue }
+            return StripPlacement(row: row.absoluteRow, plan: plan)
+        }
+        // The narrowest thing the table has: `Stop` alone, for a pane too narrow even for the rung
+        // above. Nothing else can reach it -- `pills(_:at: .w0)` is empty for every state but a
+        // running watch.
+        for row in commandRows.reversed() {
+            guard let content = stripContent(header, at: .w0),
+                  let plan = stripPlan(content, widthClass: .w0,
+                                       lastUsedColumn: row.lastUsedColumn, cols: cols,
+                                       stripColumns: measure(content), overlapping: true,
+                                       rightEdge: rightEdge(cols: cols, row: row,
+                                                            summary: summary)) else { continue }
+            return StripPlacement(row: row.absoluteRow, plan: plan)
+        }
+        return nil
+    }
+
+    /// Whether the in-grid summary really is on this row -- placed, and with room for the whole
+    /// sentence. The two rungs below the class ladder both turn on it: one may drop the readout
+    /// *because* the grid is carrying it, and the other must keep the readout because the grid is
+    /// not.
+    private static func summaryIsOn(_ row: (absoluteRow: Int, lastUsedColumn: Int),
+                                    summary: PlacedSummary?, cols: Int) -> Bool {
+        guard let summary, summary.row == row.absoluteRow, !summary.text.isEmpty else { return false }
+        return summaryColumns(textCount: summary.text.count, cols: cols,
+                              lastUsedColumn: row.lastUsedColumn) != nil
+    }
+
+    /// Where a strip's last column is, exclusive, on this row: the in-grid summary's first column
+    /// when the summary is on it, the pane's own edge otherwise.
+    private static func rightEdge(cols: Int, row: (absoluteRow: Int, lastUsedColumn: Int),
+                                  summary: PlacedSummary?) -> Int {
+        guard let summary, summary.row == row.absoluteRow, !summary.text.isEmpty,
+              let columns = summaryColumns(textCount: summary.text.count, cols: cols,
+                                           lastUsedColumn: row.lastUsedColumn)
+        else { return cols }
+        return columns.lowerBound
+    }
+
+    /// Every rung a row of this class may fall back to, richest first, paired with the width class
+    /// each one is placed as.
+    ///
+    /// The classes' own contents, and then one more: the two pills §2.6 never drops -- `Stop` while
+    /// a watch is running, and `Actions`, collapsed to the glyph -- carrying the narrowest readout.
+    /// That rung exists because the drop order keeps `Actions` *longer* than the lens chip, so an
+    /// HTTP row with no room for `[Pretty ▾] [⋯]` still gets its `⋯` and keeps the route to every
+    /// action rather than losing the strip altogether. Not offered to a W0 row: there the only thing
+    /// that may cost a column of somebody's command is `Stop`.
+    private static func rungs(_ header: BlockHeader,
+                              freeColumns free: Int) -> [(WidthClass, StripContent)] {
+        let classes = narrowing(from: widthClass(freeColumns: free))
+        var list = classes.compactMap { width in
+            stripContent(header, at: width).map { (width, $0) }
+        }
+        guard classes != [.w0], let (width, narrowest) = list.last else { return list }
+        let minimum = header.watch?.showsStop == true ? [Pill.stop, .actions(.glyph)]
+                                                      : [Pill.actions(.glyph)]
+        if narrowest.pills != minimum {
+            list.append((width, StripContent(readout: narrowest.readout,
+                                             readoutTone: narrowest.readoutTone,
+                                             dots: narrowest.dots,
+                                             overflowDot: narrowest.overflowDot,
+                                             pills: minimum)))
+        }
+        return list
+    }
+
+    /// A row's class and every narrower one it may fall back to, richest first.
+    private static func narrowing(from width: WidthClass) -> [WidthClass] {
+        switch width {
+        case .w3: return [.w3, .w2, .w1]
+        case .w2: return [.w2, .w1]
+        case .w1: return [.w1]
+        case .w0: return [.w0]
+        }
+    }
+
+    /// The mark at the head of the spine: what shape it is, what colour, and whether it can be
+    /// pressed. Shape rather than colour alone, because colour is the one thing a mark cannot say
+    /// on its own (a11y 6.2).
+    struct GutterCap: Equatable {
+        public enum Shape: Equatable {
+            /// A filled 3 pt column, square, inset `markTopInset` from the row's top so it reads as
+            /// **one command's** mark: the command succeeded.
+            case solid
+            /// The same column with **no inset at all**, so it runs from the top of the prompt row
+            /// straight into the rows below and joins whatever mark is above it: failures join up
+            /// down a scrolling screen and carry more ink than successes, which is the state that
+            /// has to be findable (§2.2, over a11y 6.2's half mark). The extra ink *is* the two
+            /// points a success gives up -- the one shape difference that survives being read at
+            /// 3 pt (I1).
+            case bar
+            /// `solid`'s rect, stroked rather than filled: still running.
+            case hollow
+            /// `solid`'s rect at `Palette.fadedMark` -- nominally 40 % of the solid colour, raised
+            /// per theme until it clears 3:1 against the harder of the plain background and the
+            /// hover tint -- and not pressable: a command that printed nothing to fold.
+            case faded
+            case chevronDown, chevronRight
+        }
+        public let shape: Shape
+        public let tone: SummaryTone
+        public let isPressable: Bool
+        public init(shape: Shape, tone: SummaryTone, isPressable: Bool) {
+            self.shape = shape; self.tone = tone; self.isPressable = isPressable
+        }
+    }
+
+    static func gutterCap(_ header: BlockHeader, hasStarted: Bool, hovered: Bool) -> GutterCap? {
+        // The prompt you are typing at carries a prompt mark and no status. Nothing is drawn there:
+        // a mark that appeared the instant you pressed return would be a spinner, and the gutter is
+        // a record.
+        guard hasStarted else { return nil }
+        // The command's own outcome, not the response's: a `curl` that reported 404 exited 0, and
+        // the gutter says what the command did. The strip's tone is where a 404 goes red.
+        let tone: SummaryTone = header.failed ? .failure : (header.isRunning ? .running : .success)
+        // Shape from state first, `hasOutput` second: a failure or a still-running command is news
+        // whether or not it has printed anything yet, and erasing `.bar`/`.hollow` in favour of a
+        // blanket `.faded` the moment output is empty drew a `sleep 10` one second in -- and any
+        // failure with no output -- as a quiet record rather than what it is. The 40 % `faded`
+        // treatment, and the loss of pressability, belong only to a block that has *finished*
+        // cleanly with nothing to fold.
+        guard header.hasOutput else {
+            if header.failed { return GutterCap(shape: .bar, tone: tone, isPressable: false) }
+            if header.isRunning { return GutterCap(shape: .hollow, tone: tone, isPressable: false) }
+            return GutterCap(shape: .faded, tone: tone, isPressable: false)
+        }
+        if hovered {
+            return GutterCap(shape: header.folded ? .chevronRight : .chevronDown, tone: tone,
+                             isPressable: true)
+        }
+        if header.failed { return GutterCap(shape: .bar, tone: tone, isPressable: true) }
+        if header.isRunning { return GutterCap(shape: .hollow, tone: tone, isPressable: true) }
+        return GutterCap(shape: .solid, tone: tone, isPressable: true)
+    }
+
+    /// The mark and the spine are one shape: the renderer and the gutter view read these two
+    /// numbers, so the Metal spine and the AppKit cap cannot drift apart.
+    /// **Replaces `CommandBlock.swift:111-112`**, which declared `spineWidth: Double = 2` beside a
+    /// `spineGap: Double = 4` that the renderer never read (it computed `padding - 3` by hand).
+    /// `spineGap` is deleted outright: it has no callers, and `spineLeadingInset` is the number the
+    /// gap was standing in for.
+    static let spineWidth: Double = 3
+    /// 4 pt at the shipping `padding = 8`, which is outside the window's resize margin; 0 at
+    /// `padding = 0`, where the mark draws over the first text column's leading 3 pt rather than
+    /// off the window (Addendum 2).
+    static func spineLeadingInset(padding: Double) -> Double { min(4, max(0, padding - 3)) }
+
+    /// The mark's rect on one row, in points from the pane's top-left: `(x, y, width, height)`.
+    ///
+    /// **The same rect for every shape.** `.solid`, `.faded`, `.hollow` and `.bar` differ in *ink*
+    /// -- filled, faded, stroked -- and never in geometry, so the cap really is the head of the
+    /// spine (§2.2). It used to be `NSRect(x: markX, y: y + 2, height: cellHeight - 4)` with a
+    /// 1.5 pt corner radius, and the design review measured the result at 10×: the spine ran at
+    /// full strength across device pixels 8-13 with hard edges while the cap ran 9-12 with 86 % at
+    /// 8 and 13 and 10 % at 7 and 14 -- a soft capsule on a half-pixel boundary sitting on a crisp
+    /// stick, with a visible break above *and* below every head. "A green line with beads on it",
+    /// which is the defect §2.2 names in its own first paragraph, at 3 pt instead of 1 (D5).
+    ///
+    /// `.bar` had neither inset nor radius, so a *failed* block's spine was continuous and a
+    /// succeeded one's was not: two states differing in continuity for a reason that is not about
+    /// state. They are one rect now.
+    ///
+    /// The one inset is at the **top**, and it is what separates one block from the next rather
+    /// than a block from its own spine. The design review offered both forms -- "keep a top inset,
+    /// or better, inset the block's last spine row's bottom" -- and the top is the one that needs no
+    /// second opinion: the mark's bottom is the row's bottom, so it meets the first spine row
+    /// exactly, while two adjacent blocks (a command's last output row and the next command's prompt
+    /// row) are held apart by the lower block's own cap. Dropping it for *every* shape would run two
+    /// successive successes into one unbroken green line, which is the other half of what §2.2 means
+    /// by "a green line with beads on it".
+    ///
+    /// **`.bar` is the shape that drops it** (I1). D5 gave all four shapes the same rect, so a
+    /// success and a failure differed only in hue -- and §2.2 gives failure the extra ink ("failed =
+    /// solid cap *plus* a full-row bar") while a11y 6.2 asks for shape, not colour alone. A failed
+    /// block's column therefore runs the whole row and joins its neighbours', and a success, a run
+    /// in flight and a silent command are each a separated cap. `.hollow` and `.faded` share
+    /// `.solid`'s rect on purpose: a ring and a wash are what tell those two apart, and a third and
+    /// fourth height at 3 pt would be four shapes nobody could measure by eye.
+    ///
+    /// A tuple of `Double`s rather than a `CGRect`: `NyxCore` has no CoreGraphics type in it. The
+    /// caller snaps it to the device pixel grid -- `y` is `topPadding + row × cellHeight` and a
+    /// cell height is rarely a whole number of points.
+    static let markTopInset: Double = 2
+    static func markRect(_ shape: GutterCap.Shape, row: Int, cellHeight: Double,
+                         topPadding: Double,
+                         padding: Double) -> (x: Double, y: Double, width: Double, height: Double) {
+        let inset = shape == .bar ? 0 : min(markTopInset, max(0, cellHeight - 1))
+        return (x: spineLeadingInset(padding: padding),
+                y: topPadding + Double(row) * cellHeight + inset,
+                width: spineWidth, height: cellHeight - inset)
+    }
+
+    /// The hover chevron's box: 6 pt, square, right-aligned to the **mark's own trailing edge** and
+    /// extended only leftward into the padding.
+    ///
+    /// 8 pt at `x: markX` put it across 4-12 pt while column 0's ink begins at 8.5, so its right
+    /// vertex sat inside the `$`'s bowl -- and the hover tint's own left edge, then at `x = padding`,
+    /// ran down the middle of the triangle and left a vertical seam through the control (D6, P2).
+    /// Right-aligning it to `markX + spineWidth` keeps it inside the padding at any padding of 3 pt
+    /// or more, and narrows it to the mark's own 3 pt column below that rather than reaching across
+    /// the first glyph: at `padding = 0` the mark is already drawing over column 0's leading 3 pt
+    /// (Addendum 2's stated trade) and the chevron does no worse.
+    ///
+    /// Centred on the row, so at a `line-height` short enough it overhangs the rows either side --
+    /// which is what the *drawn* mark is allowed to do (§2.2) and what the gutter's draw guard box
+    /// already accounts for.
+    static func hoverChevronRect(row: Int, cellHeight: Double, topPadding: Double,
+                                 padding: Double) -> (x: Double, y: Double, width: Double,
+                                                      height: Double) {
+        let mark = spineLeadingInset(padding: padding)
+        let right = min(mark + spineWidth, max(padding, spineWidth))
+        let size = min(hoverChevronSize, right)
+        return (x: max(0, right - size),
+                y: topPadding + (Double(row) + 0.5) * cellHeight - size / 2,
+                width: size, height: size)
+    }
+    /// 6 pt, not the 8 the first take drew: 8 pt right-aligned inside 8 pt of padding leaves no room
+    /// for the mark itself, and 8 pt at the mark's leading edge is what landed on the `$`.
+    static let hoverChevronSize: Double = 6
+
+    /// Which of a block's placed rows the *spine* is drawn on: everything below the row the cap
+    /// owns. `placed` is the block's rows as display slots, `headOnScreen` is
+    /// `CommandBlock.showsHeader`.
+    ///
+    /// The cap and the spine are deliberately the same colour, the same 3 pt width and at the same
+    /// x, which is the whole point of `spineWidth` and `spineLeadingInset` -- and it means a spine
+    /// painted over the prompt row fills in `.hollow`'s ring and paints through `.faded`'s 40 %.
+    /// Both then read as a solid bar, and the *shape* that carries the state (§2.2, a11y 6.2)
+    /// survives only in the isolated view. So the prompt row is the cap's alone: a `.bar` failure
+    /// still shows a full-row mark there, because the cap draws that itself.
+    ///
+    /// With the prompt row scrolled off the top there is no cap on screen, so the first visible row
+    /// is ordinary output and keeps its spine -- a block must not lose its left edge exactly when it
+    /// is long enough to need one.
+    static func spineRows(placed: Range<Int>, headOnScreen: Bool) -> Range<Int>? {
+        let start = headOnScreen ? placed.lowerBound + 1 : placed.lowerBound
+        guard start < placed.upperBound else { return nil }
+        return start..<placed.upperBound
+    }
+    /// Every row-height *hit* target, clamped so `line-height = 0.8` cannot make it 13 pt (§8.4).
+    /// The *drawn* mark stays `cellHeight` tall.
+    static func hitRowHeight(cellHeight: Double) -> Double { max(cellHeight, 16) }
+    static let stripHeight: Double = 20
+    /// The strip's frame: tall enough for its pills and never below the hit floor. Decided here
+    /// rather than from `stack.fittingSize`, which is what `Pane.blockHeaderChanged` used.
+    static func stripFrameHeight(cellHeight: Double) -> Double {
+        max(stripHeight, hitRowHeight(cellHeight: cellHeight))
+    }
+    /// What the strip actually *paints*: one row, whatever its frame is. A 20 pt opaque band on a
+    /// 13 pt grid covers three rows of somebody's output (Addendum 2).
+    static func stripGroundHeight(cellHeight: Double) -> Double { cellHeight }
+    /// An in-grid fold triangle's cell, widened to the same 20 pt the gutter uses, for the same
+    /// reason: one cell is about 8 pt, which is not a target.
+    static let foldColumnWidth: Double = 20
+    /// An in-grid fold triangle's target: 20 pt wide, `hitRowHeight` tall. The same 20 pt the gutter
+    /// uses, so the two fold controls on screen are the same size (§2.4, §8.4).
+    ///
+    /// Which *column* it starts at is the caller's: a fold placeholder's marker is at column 0, and
+    /// a lens line's is wherever `LensBuffer.foldMarkerColumn` says, which for a pretty-printed body
+    /// is past the indent and the key.
+    ///
+    /// A tuple of `Double`s rather than a `CGSize`: `NyxCore` has no CoreGraphics type in it.
+    static func foldTriangleHit(cellHeight: Double) -> (width: Double, height: Double) {
+        (width: foldColumnWidth, height: hitRowHeight(cellHeight: cellHeight))
+    }
+
+    /// Which of `rows` a point at `y` falls on, when each is a `hitHeight`-tall target centred on
+    /// its row. `y` is measured from the top of the pane, padding included.
+    ///
+    /// This exists because `hitRowHeight`'s floor is only real if the *click* honours it. Dividing
+    /// the point by the cell height is right for text and wrong for a target that overhangs its own
+    /// row: at `line-height = 0.8` a row is 13 pt and the target is 16, so 1.5 pt of hand at each
+    /// end of every fold control belonged to the neighbouring row, and a click there moved the caret
+    /// instead of folding. One rule for the hand, the click and the accessibility frame.
+    ///
+    /// Where two targets genuinely overlap -- adjacent rows -- the nearer centre wins, and an exact
+    /// tie goes to the upper row so the answer never depends on the order `rows` arrives in. That is
+    /// `PromptGutter.markedRow`'s rule, and it forwards here so there is one of it.
+    static func hitRow(atY y: Double, cellHeight: Double, padding: Double,
+                       hitHeight: Double, rows: [Int]) -> Int? {
+        guard cellHeight > 0, hitHeight > 0 else { return nil }
+        var best: (row: Int, distance: Double)?
+        for row in rows.sorted() {
+            let centre = padding + (Double(row) + 0.5) * cellHeight
+            let distance = abs(y - centre)
+            guard distance <= hitHeight / 2 else { continue }
+            if best == nil || distance < best!.distance { best = (row, distance) }
+        }
+        return best?.row
     }
 }
 
-/// How much of the hover strip there is room for on a row.
+/// Where a block's summary ended up: which row of the command, and which columns.
 ///
-/// The strip is opaque and its content decides its width, so a strip sized only from itself paints
-/// over whatever the row already holds: in a 28-column split, hovering `git status --short` covered
-/// `--short` and left `~ % git status` on screen -- a different, real command.
-///
-/// The controls give way in the order of what they are worth. Copy goes first: the ⋯ menu still
-/// copies, so nothing becomes unreachable. The summary outlives it because while the strip is up it
-/// is the *only* place the exit status is -- the strip suppresses both the Metal summary and the
-/// duration note on that row, so dropping it first meant hovering a crowded failed command replaced
-/// `exit 1 · 8.8s ▾` with `Copy ⋯ ▾` and the exit code was nowhere on screen. The ⋯ menu, the
-/// chevron and a running watch's **Stop** never go: the first two reach every action the block has,
-/// and Stop is the one control on the strip with a running side effect. Which parts each level
-/// carries is `BlockHeader.showsCopy(at:)` and its neighbours.
-public enum OverlayControls: Equatable, Hashable, CaseIterable {
-    /// Summary, Copy, ⋯, chevron.
-    case full
-    /// Summary, ⋯, chevron.
-    case noCopy
-    /// ⋯, the chevron, and Stop if a watch is running.
-    case minimal
-
-    /// Richest first, which is the order `overlayPlacement` tries them in.
-    public static let allCases: [OverlayControls] = [.full, .noCopy, .minimal]
-}
-
-/// Which row of a command the hover strip goes on, and which controls it carries there.
-public struct OverlayPlacement: Equatable {
-    public let row: Int
-    public let controls: OverlayControls
-
-    public init(row: Int, controls: OverlayControls) {
-        self.row = row; self.controls = controls
-    }
-}
-
-/// Where a block's summary ended up: which row of the command, which columns, and whether the whole
-/// thing fits there or only the chevron does.
+/// It carries no variant any more. There used to be a `chevronOnly` one, because the chevron on the
+/// end of the sentence was a control and had to survive a crowded row; it is a readout now, so a
+/// row either has space for the whole sentence or shows none of it (§2.4).
 public struct SummaryPlacement: Equatable {
-    public enum Variant: Equatable {
-        /// `exit 1 · 8.8s ▾`.
-        case full
-        /// The chevron on its own. The decision was "the chevron is always visible", so when a
-        /// command line crowds the row it is the status that gives way, not the control.
-        case chevronOnly
-    }
-
     /// In whatever space the caller passed its rows in -- absolute rows from the pane, so it can be
     /// mapped back to a display slot through the same map the text went through.
     public let row: Int
     public let columns: Range<Int>
-    public let text: Variant
 
-    public init(row: Int, columns: Range<Int>, text: Variant) {
-        self.row = row; self.columns = columns; self.text = text
+    public init(row: Int, columns: Range<Int>) {
+        self.row = row; self.columns = columns
     }
 }
 
@@ -319,8 +928,8 @@ public enum BlockAction: Equatable {
         case .toggleLens: return "Toggle Pretty Response"
         case .copyBody: return "Copy Body"
         case .copyHeaders: return "Copy Headers"
-        // The same words the header will then show ("watch every 5 s"), so the row a user pressed
-        // and the sentence they end up reading are one plan described once.
+        // The same words the header's own tail will then show ("every 5 s"), so the row a user
+        // pressed and the sentence they end up reading are one plan described once.
         case .runEvery(let seconds): return "Run Every \(WatchPlan.secondsText(seconds)) s"
         case .watch: return "Watch\u{2026}"
         // The same title as the `stop_watch` action in the palette and the menu bar.
@@ -370,7 +979,20 @@ public enum SummaryTone: Equatable {
     /// request's `404 · 12 ms` was drawn at 3.25:1, *worse* than the body text around it, on the
     /// one line that exists to be noticed. Lifting towards the theme's own foreground keeps the
     /// hue as far as the floor allows and only moves a colour that could not be read.
-    public func color(in palette: Palette) -> RGB {
+    /// `on` is the ground the ink is actually painted on. Resolving against `palette.background`
+    /// and then drawing on the hovered block's tint is what the plan-1a pictures measured as
+    /// **4.17:1** for the neutral `8.8s` and **4.13:1** for `… 6 lines hidden` -- hovering a block
+    /// made its own status *less* legible, which is the shape of the defect §2.5 exists to remove
+    /// (design D1). Every other derived ink in the palette (`textOn`, `pillHairline`, `fadedMark`)
+    /// was already pushed against the ground it lands on; this was the one that was not.
+    ///
+    /// The three block-chrome call sites pass `palette.blockHoverBackground` **unconditionally**
+    /// rather than the ground of the frame in hand. The tint is the harder of the two grounds for
+    /// all 35 theme×tone pairs -- it moves `background` toward `accent`, which is the direction
+    /// these inks already sit in -- so one resolution clears both, and the fold placeholder (which
+    /// is drawn as *cells*, through the row cache) does not become a row input that changes with
+    /// hover while `RowKey` knows nothing about it.
+    public func color(in palette: Palette, on ground: RGB? = nil) -> RGB {
         let picked: RGB
         switch self {
         case .plain: picked = palette.noteForeground
@@ -378,7 +1000,7 @@ public enum SummaryTone: Equatable {
         case .success: picked = palette.readable(2)
         case .failure: picked = palette.readable(1)
         }
-        return RGB.readable(picked, on: palette.background, towards: palette.foreground)
+        return RGB.readable(picked, on: ground ?? palette.background, towards: palette.foreground)
     }
 }
 
@@ -420,7 +1042,7 @@ public struct BlockHeader: Equatable {
     /// the group says so instead of offering seven rows that would each do nothing.
     public let lensTooLarge: Bool
     /// Whether the response body is JSON. The `{ }` control promises pretty JSON and nothing else,
-    /// so this is what decides whether it is offered -- see `showsLens(at:)`.
+    /// so this is what decides whether it is offered -- see `CommandBlockChrome.pills(_:at:)`.
     public let bodyIsJSON: Bool
     /// Whether an earlier block ran the same request. Only `Diff with Previous Run` needs it, and
     /// only the pane's cache can answer it -- see `RequestSummaryCache.previousRun`.
@@ -455,8 +1077,8 @@ public struct BlockHeader: Equatable {
         self.hasPreviousRun = hasPreviousRun
         self.watch = watch; self.watchInterval = watchInterval
         // And a watch's own sentence replaces the request's, for the same reason: `200 · 142 ms`
-        // is already the tail of `watch every 5 s · run 12 · 200 · 142 ms`, and showing both puts
-        // the status on the row twice.
+        // is already inside `run 12 · 200 · 142 ms · every 5 s`, and showing both puts the status
+        // on the row twice.
         self.summary = watch?.text ?? httpSummary?.text ?? summary
         self.httpSummary = httpSummary
         // A block that produced a response is a request whatever the caller says: the summary could
@@ -491,60 +1113,6 @@ public struct BlockHeader: Equatable {
     /// pick a colour, kept here rather than re-derived at each call site so a third one cannot
     /// switch on `state` a different way and disagree.
     public var failed: Bool { if case .failed = state { return true } else { return false } }
-
-    public var chevron: String {
-        guard hasOutput else { return "" }
-        return folded ? "\u{25B8}" : "\u{25BE}"
-    }
-
-    /// What the renderer draws at the end of the command row: the summary, a space, the chevron.
-    public var summaryWithChevron: String {
-        switch (summary.isEmpty, chevron.isEmpty) {
-        case (true, true): return ""
-        case (true, false): return chevron
-        case (false, true): return summary
-        case (false, false): return summary + " " + chevron
-        }
-    }
-
-    // MARK: - What the hover strip carries
-    //
-    // One place, because two of them come apart. `BlockHeaderView` both *draws* the strip and
-    // *measures* it for `overlayPlacement`, and when the two lists disagreed the placement rule
-    // reserved room for a control that was not drawn, or drew one it had not reserved room for.
-
-    /// Copy is the first control dropped: the ⋯ menu still copies, so nothing becomes unreachable.
-    public func showsCopy(at controls: OverlayControls) -> Bool { controls == .full }
-
-    /// The summary outlives Copy, because while the strip is up it is the *only* place the exit
-    /// status is -- it suppresses both the drawn summary and the duration note on that row.
-    public func showsSummary(at controls: OverlayControls) -> Bool {
-        controls != .minimal && !summary.isEmpty
-    }
-
-    /// The timeline goes with Copy: thirty circles is the widest thing here and the least of what
-    /// the header says, since the sentence beside it already carries the run number and the last
-    /// status.
-    public func showsTimeline(at controls: OverlayControls) -> Bool {
-        controls == .full && !(watch?.dots.isEmpty ?? true)
-    }
-
-    /// **Stop is never dropped.** It is the only control on the strip with a running side effect,
-    /// and a watch you cannot stop from the strip is the one that matters most -- on a command line
-    /// crowded enough for the narrowest strip, the ⋯ menu is the only other way to reach it.
-    public func showsStop(at controls: OverlayControls) -> Bool { watch?.showsStop ?? false }
-
-    /// The `{ }` needs a request, a body a lens can do something with, JSON to pretty-print, and
-    /// room for more than the two controls every block has.
-    ///
-    /// The JSON clause is the point: on a 301 with an HTML body `.pretty` falls through to the raw
-    /// lines, so a button whose tooltip promises pretty JSON did nothing a user could see. A lens
-    /// already open keeps its control whatever the body is -- the button is also how it is turned
-    /// off, and a control that vanishes when pressed strands the reader inside a lens.
-    public func showsLens(at controls: OverlayControls) -> Bool {
-        guard isHTTP, !lensTooLarge, controls != .minimal else { return false }
-        return bodyIsJSON || lens != nil
-    }
 
     /// The ⋯ menu, in order, each with whether it can do anything right now.
     ///

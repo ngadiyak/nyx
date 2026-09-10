@@ -211,40 +211,24 @@ private func foldedSession() -> (terminal: Terminal, folding: OutputFolding) {
 
 // MARK: - Where the summary actually goes
 
-// A command line long enough to reach the summary's columns used to mean no summary at all, so a
-// pasted `curl` in a 100-column pane lost the one control that folds it. These decide which of the
-// command's rows carries it, and what fits there.
+// A command line long enough to reach the summary's columns means no summary on that row, so a
+// pasted `curl` in a 100-column pane puts it on whichever of its wrapped rows has room -- and on
+// none of them, carries none. Nothing is lost but a nicety: the gutter cap is the control.
 
-@Test func theSummaryGoesOnTheCommandRowWhenItFits() {
+/// The summary is a readout. It keeps its right alignment and loses its chevron, so the only
+/// chevron-shaped things left on screen are controls: the gutter cap under the pointer and the
+/// column-0 triangles.
+@Test func theSummaryIsARowOfTextAndNoLongerAControl() {
     let placement = CommandBlockChrome.summaryPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 9)], textCount: 10, chevronCount: 1, cols: 40)
-    #expect(placement == SummaryPlacement(row: 4, columns: 30..<40, text: .full))
-}
-
-/// One row, filled to the last column: there is nowhere for the summary and nowhere for the
-/// chevron either, and the gutter mark is what folds the block.
-@Test func aCommandFillingItsOnlyRowLeavesNowhereForTheSummary() {
-    let placement = CommandBlockChrome.summaryPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 39)], textCount: 10, chevronCount: 1, cols: 40)
-    #expect(placement == nil)
-}
-
-/// A wrapped command line has several rows and the last is usually the shortest, so that is where
-/// the summary goes rather than nowhere.
-@Test func aWrappedCommandPutsTheSummaryOnItsLastRow() {
-    let placement = CommandBlockChrome.summaryPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 9)], textCount: 10, cols: 40)
+    #expect(placement == SummaryPlacement(row: 4, columns: 30..<40))
+    // A command line that reaches into the summary's columns takes the whole summary with it: there
+    // is no chevron-only fallback any more, because the chevron was the control and the gutter is.
+    #expect(CommandBlockChrome.summaryPlacement(
+        commandRows: [(absoluteRow: 4, lastUsedColumn: 39)], textCount: 10, cols: 40) == nil)
+    #expect(CommandBlockChrome.summaryPlacement(
         commandRows: [(absoluteRow: 4, lastUsedColumn: 39), (absoluteRow: 5, lastUsedColumn: 12)],
-        textCount: 10, chevronCount: 1, cols: 40)
-    #expect(placement == SummaryPlacement(row: 5, columns: 30..<40, text: .full))
-}
-
-/// Both rows reach into the summary's columns, but the last leaves one free cell: the user's rule
-/// is that the chevron is always visible, so the status is what gives way.
-@Test func aLongCommandKeepsItsChevronWhenTheStatusNoLongerFits() {
-    let placement = CommandBlockChrome.summaryPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 39), (absoluteRow: 5, lastUsedColumn: 37)],
-        textCount: 10, chevronCount: 1, cols: 40)
-    #expect(placement == SummaryPlacement(row: 5, columns: 39..<40, text: .chevronOnly))
+        textCount: 10, cols: 40) == SummaryPlacement(row: 5, columns: 30..<40))
 }
 
 /// The overlay belongs on the row the summary was actually placed on -- a wrapped command line puts
@@ -254,131 +238,6 @@ private func foldedSession() -> (terminal: Terminal, folding: OutputFolding) {
     #expect(hover.attachingHeader(to: 3) == BlockHover(id: 7, rows: 2..<6, headerRow: 3))
     #expect(hover.attachingHeader(to: nil).headerRow == nil)
     #expect(hover.attachingHeader(to: nil).rows == 2..<6)
-}
-
-// MARK: - Where the hover strip goes, and how much of it there is room for
-
-// The strip is opaque and 20-odd columns wide. Placed from the summary's row and sized only from
-// its own content, it painted over the end of the command it describes: in a 28-column split,
-// hovering `git status --short` showed `~ % git status`, a different, real command.
-
-private let stripColumns: [OverlayControls: Int] = [.full: 20, .noCopy: 8, .minimal: 4]
-
-@Test func aWideRowCarriesTheWholeStrip() {
-    let placement = CommandBlockChrome.overlayPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 9)], stripColumns: stripColumns, cols: 40,
-        fallbackToTail: true)
-    #expect(placement == OverlayPlacement(row: 4, controls: .full))
-}
-
-/// Eight free columns: Copy is what goes, because the ⋯ menu still copies -- while the summary is
-/// the only place the exit status is left, the strip having suppressed the Metal one and the note.
-@Test func aCrowdedRowDropsCopyBeforeTheSummary() {
-    let placement = CommandBlockChrome.overlayPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 31)], stripColumns: stripColumns, cols: 40,
-        fallbackToTail: true)
-    #expect(placement == OverlayPlacement(row: 4, controls: .noCopy))
-}
-
-/// Four free columns: only the ⋯ menu and the chevron, which between them still reach every action.
-@Test func aVeryCrowdedRowKeepsOnlyTheMenuAndTheChevron() {
-    let placement = CommandBlockChrome.overlayPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 35)], stripColumns: stripColumns, cols: 40,
-        fallbackToTail: true)
-    #expect(placement == OverlayPlacement(row: 4, controls: .minimal))
-}
-
-/// One free column fits no strip anywhere, and the strip goes over the tail of the last row
-/// anyway: hovering is a deliberate act, four covered cells last only while the pointer is there,
-/// and a command with *no* free column is exactly the long pasted `curl` whose ⋯ menu carries the
-/// whole Request group. The static summary still gives way rather than painting over the text.
-@Test func aRowWithNoRoomGetsTheMinimalStripOverItsTail() {
-    let placement = CommandBlockChrome.overlayPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 38)], stripColumns: stripColumns, cols: 40,
-        fallbackToTail: true)
-    #expect(placement == OverlayPlacement(row: 4, controls: .minimal))
-}
-
-/// The last row of the command, not the first: that is where the eye is, and it is the row the
-/// summary would have used if there had been room.
-@Test func theOverlayFallsBackOntoTheLastRowOfALongCommand() {
-    let placement = CommandBlockChrome.overlayPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 39), (absoluteRow: 5, lastUsedColumn: 39),
-                      (absoluteRow: 6, lastUsedColumn: 37)],
-        stripColumns: stripColumns, cols: 40, fallbackToTail: true)
-    #expect(placement == OverlayPlacement(row: 6, controls: .minimal))
-}
-
-/// A pane narrower than the smallest strip is the one case that still gets nothing: a strip wider
-/// than the pane would hang off the left edge, and the gutter mark, ⌘⇧↑ and the right-click menu
-/// all still reach the block.
-@Test func aPaneNarrowerThanTheStripGetsNoStrip() {
-    let placement = CommandBlockChrome.overlayPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 2)], stripColumns: stripColumns, cols: 3,
-        fallbackToTail: true)
-    #expect(placement == nil)
-}
-
-/// And a command with no rows on screen has nowhere to put one.
-@Test func noCommandRowsMeansNoStrip() {
-    #expect(CommandBlockChrome.overlayPlacement(commandRows: [], stripColumns: stripColumns,
-                                                cols: 40, fallbackToTail: true) == nil)
-}
-
-/// A wrapped command whose last row is full: the strip goes up to the row that has room rather than
-/// over the text of the one that has not.
-@Test func aStripMovesToWhicheverRowOfTheCommandHasRoom() {
-    let placement = CommandBlockChrome.overlayPlacement(
-        commandRows: [(absoluteRow: 4, lastUsedColumn: 9), (absoluteRow: 5, lastUsedColumn: 38)],
-        stripColumns: stripColumns, cols: 40, fallbackToTail: true)
-    #expect(placement == OverlayPlacement(row: 4, controls: .full))
-}
-
-/// The chevron and the gutter mark answer to one rule. `OSC 133;C` arrives when a command *begins*,
-/// so a `sleep 10` one second in has an output region made of the blank rows below it; a chevron
-/// there folds nothing but empty lines.
-@Test func aJustStartedCommandHasNoChevron() throws {
-    let t = makeTerminal(cols: 40, rows: 24, scrollback: 100)
-    t.feed(mark("A") + "$ " + mark("B") + "sleep 10\r\n" + mark("C"))
-    let region = try #require(t.command(containingAbsoluteRow: 0))
-    let block = CommandBlock(region: region, visibleRows: 0..<24, showsHeader: true)
-    let quiet = block.header(now: 5, folding: OutputFolding(), notifyArmed: false, anyFolds: false,
-                             hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow))
-    #expect(quiet.isRunning)
-    #expect(!quiet.hasOutput)
-    #expect(quiet.chevron == "")
-    #expect(quiet.actions.first { $0.action == .toggleFold }?.enabled == false)
-
-    t.feed("compiling...\r\n")
-    let loud = block.header(now: 5, folding: OutputFolding(), notifyArmed: false, anyFolds: false,
-                            hasOutput: t.commandHasOutput(atAbsoluteRow: region.promptRow))
-    #expect(loud.chevron == "\u{25BE}")
-}
-
-/// The pill asks with `fallbackToTail: false`, and this is the difference that makes: chrome that
-/// arrives on its own, with no pointer anywhere near it, must never paint over a command somebody
-/// is still typing. No room, no pill.
-@Test func withoutTheTailFallbackAFullRowGetsNothing() {
-    let full = [(absoluteRow: 4, lastUsedColumn: 38)]
-    #expect(CommandBlockChrome.overlayPlacement(commandRows: full, stripColumns: [.minimal: 14],
-                                                cols: 40, fallbackToTail: false) == nil)
-    // The same rows, asked the way the hover strip asks: the strip goes over the tail.
-    #expect(CommandBlockChrome.overlayPlacement(commandRows: full, stripColumns: [.minimal: 14],
-                                                cols: 40, fallbackToTail: true)
-        == OverlayPlacement(row: 4, controls: .minimal))
-}
-
-/// And a row with room answers the same either way -- the flag only ever decides the last resort.
-@Test func theTailFallbackChangesNothingWhereThereIsRoom() {
-    let rows = [(absoluteRow: 4, lastUsedColumn: 9)]
-    let withFallback = CommandBlockChrome.overlayPlacement(commandRows: rows,
-                                                           stripColumns: [.minimal: 14], cols: 40,
-                                                           fallbackToTail: true)
-    let without = CommandBlockChrome.overlayPlacement(commandRows: rows,
-                                                      stripColumns: [.minimal: 14], cols: 40,
-                                                      fallbackToTail: false)
-    #expect(withFallback == OverlayPlacement(row: 4, controls: .minimal))
-    #expect(without == withFallback)
 }
 
 // MARK: - Marks through a reflow

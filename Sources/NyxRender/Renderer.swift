@@ -179,6 +179,9 @@ public final class Renderer {
 
     /// Draws `frame` into the layer's next drawable, unless the application is mid-update.
     ///
+    /// **`padding` is in device pixels**, and is passed straight to `render` -- see the unit note
+    /// there, which is the one thing to read before adding a number to this file.
+    ///
     /// `.noDrawable` and `.held` both mean nothing reached the screen, so the caller keeps the frame
     /// marked stale and tries again on the next tick instead of leaving stale pixels up -- and,
     /// since the per-row cache clears `Row.dirty` only on `.presented`, keeps the rows that were
@@ -196,6 +199,10 @@ public final class Renderer {
 
     /// The same decision against an offscreen texture: the pixels stop changing while the
     /// application is mid-update. Tests render through this to look at what a reader would see.
+    ///
+    /// **`padding` is in device pixels** here too: a test that passes the point padding measures
+    /// every chrome distance at half its size on a 2× fixture, which is the shape of the defect the
+    /// unit note on `render` describes.
     @discardableResult
     public func draw(_ frame: RenderFrame, to texture: MTLTexture, commandBuffer: MTLCommandBuffer,
                      padding: Int, syncOutput: Bool, now: TimeInterval) -> FramePresentation {
@@ -204,6 +211,15 @@ public final class Renderer {
         return .presented
     }
 
+    /// **`padding` is in device pixels, not points.** `Pane` passes `padding * contentsScale`, and
+    /// everything in here is measured in the texture's own pixels: `fonts.metrics` comes from a
+    /// face built at `pointSize * scale`, so `padding + column * m.width` is pixels end to end.
+    ///
+    /// It is documented on the method because the one number that arrives in *points* -- anything
+    /// `NyxCore` hands out, which is `CommandBlockChrome.spineWidth` and `spineLeadingInset` -- has
+    /// to be multiplied by `fonts.scale` before it can be mixed with this one, and used raw it drew
+    /// a half-width spine at half the inset on every Retina Mac. If a Core point number is ever
+    /// added to this file again, that conversion is the thing to copy.
     public func render(_ frame: RenderFrame, to texture: MTLTexture, commandBuffer: MTLCommandBuffer, padding: Int) {
         buildInstances(frame, padding: padding)
         let bytes = max(instances.count * MemoryLayout<Instance>.stride, 64)
@@ -495,8 +511,14 @@ public final class Renderer {
         if let rows = f.highlightedRows, !rows.isEmpty {
             let top = Float(padding + max(0, rows.lowerBound) * m.height)
             let height = Float(min(rows.count, f.rows - max(0, rows.lowerBound)) * m.height)
-            let width = Float(f.cols * m.width)
-            let tint = rect(Float(padding), top, width, height, colors.blockHover)
+            // **From the window's own edge**, both paddings included, not from `padding` to
+            // `padding + cols × width`. The gutter's hover chevron is drawn in the left padding
+            // (`CommandBlockChrome.hoverChevronRect`), and a tint that began at column 0's ink ran
+            // its own edge down the middle of that triangle -- a vertical seam through the control
+            // the row grew to offer (D6). A row highlight that stops short of the window edge also
+            // reads as a band laid over the rows rather than as the rows themselves being lit.
+            let width = Float(f.cols * m.width + padding * 2)
+            let tint = rect(0, top, width, height, colors.blockHover)
             instances.insert(tint, at: 0)
         }
 
@@ -507,13 +529,24 @@ public final class Renderer {
             guard !spine.rows.isEmpty else { continue }
             let top = Float(padding + spine.rows.lowerBound * m.height)
             let height = Float(spine.rows.count * m.height)
-            // Next to the text, not at the very left: the gutter's status pill lives there,
-            // and two indicators sharing four points of padding is one indicator drawn twice.
-            // With no padding to draw in there is no spine -- it would sit on the first column
-            // of output, and the settings window ships a Padding stepper that goes to zero.
-            guard padding >= 4 else { continue }
-            let x = Float(padding - 3)
-            instances.append(rect(x, top, 2, height, spine.color))
+            // The head of this shape is the gutter's cap, drawn by AppKit at the same x and the
+            // same width: `CommandBlockChrome` owns both numbers, so a green line with beads on it
+            // 1.5 pt apart cannot come back. At `padding = 0` the inset is 0 and the spine takes
+            // the first text column's leading 3 pt rather than not being drawn at all -- a block
+            // with no spine is a block with no left edge (Addendum 2). The old
+            // `guard padding >= 4 else { continue }` goes with this: a block with no left edge is
+            // not a quieter block, it is a block with no left edge.
+            //
+            // In points, then back to pixels: `padding` arrives in *device pixels* (`Pane` passes
+            // `padding * contentsScale`), and `spineWidth`/`spineLeadingInset` are the same points
+            // the AppKit cap is drawn in. Used raw they made the spine 1.5 pt wide at 2 pt beside a
+            // 3 pt cap at 4 pt on every Retina Mac -- the two marks drifting apart again, which is
+            // the one thing these two numbers exist to prevent.
+            let scale = Float(fonts.scale)
+            let inset = CommandBlockChrome.spineLeadingInset(padding: Double(padding) / Double(scale))
+            let x = Float(inset) * scale
+            instances.append(rect(x, top, Float(CommandBlockChrome.spineWidth) * scale, height,
+                                  spine.color))
         }
 
         // A block's summary, right-aligned on its command row and in the block's own colour --

@@ -259,9 +259,141 @@ public struct Palette: Equatable {
 
     /// Text to put on a filled shape of `fill` -- a group's name on its pill, a toggle's name on
     /// its chip. Whichever of the theme's two neutrals reads on it; assuming the background always
-    /// does gives dark-on-dark wherever the fill is a dark red.
+    /// does gives dark-on-dark wherever the fill is a dark red. Neither neutral is guaranteed to
+    /// clear 4.5:1 on its own -- gruvbox-dark's cream foreground on its own blue accent measured
+    /// 3.48:1, one-dark's grey foreground on its own blue 4.33:1 -- so the winner is pushed further
+    /// in the direction it already reads better, the same way `accentText` is pushed toward the
+    /// page, until it does.
+    ///
+    /// The push direction is `base`'s own luminance relative to `fill`'s, not which neutral won:
+    /// picking white whenever `background` was the winner sent nyx-light's `colors[3]` chip toward
+    /// *black* -- `background` there is the lighter neutral, so pushing it dark walked it toward
+    /// the fill instead of away, and a pill that read at 4.29:1 unpushed came out at 3.78:1 pushed.
+    /// And a push that ends up worse than where it started is never used: `pushed` can only walk in
+    /// twentieths, and the step that first clears (or fails to clear) `minimum` is not guaranteed
+    /// to beat the colour it started from.
     public func textOn(_ fill: RGB) -> RGB {
-        RGB.contrast(background, fill) >= RGB.contrast(foreground, fill) ? background : foreground
+        let base = RGB.contrast(background, fill) >= RGB.contrast(foreground, fill) ? background : foreground
+        let extreme = base.relativeLuminance >= fill.relativeLuminance ? RGB(255, 255, 255) : RGB(0, 0, 0)
+        let pushed = Palette.pushed(base, toward: extreme, until: fill, reaches: 4.5, from: 0, to: 1)
+        return RGB.contrast(pushed, fill) >= RGB.contrast(base, fill) ? pushed : base
+    }
+
+    /// The hairline that outlines an unlit strip pill, on the ground the pill is actually filled
+    /// with -- `foreground` composited at 0.30 first, the alpha the pill drew unconditionally
+    /// before this, then further in the same twentieths `pushed` walks in until it clears 1.6:1.
+    ///
+    /// A fixed 0.30 is not enough on its own: `ground` already carries some of that same wash (the
+    /// fill itself, 0.14 idle and hovered, 0.26 pressed), so the *gap* the hairline has left to
+    /// work with shrinks as the fill's own alpha rises -- at 0.30 flat, **three** of the seven
+    /// built-ins' pressed states measure under 1.6 (nyx-light 1.51, one-dark 1.55, solarized-dark
+    /// 1.48; the other four sit at 1.75 to 1.84). Walking further towards `foreground` is always available: the ceiling is
+    /// `contrast(foreground, ground)`, which is what a hairline of *pure* foreground would read at,
+    /// and every theme's is comfortably above 1.6 in every state (worst: one-dark pressed, 3.63:1).
+    ///
+    /// `minimum` is where **hover** lives now. The fill alone cannot carry it: measured from the
+    /// pictures, idle → hovered is 1.219:1 on nyx-dark and **1.088:1** on nyx-light, and in
+    /// nyx-light the whole fill range from 0.14 to pure foreground spans about 1.22:1 → 4:1, so no
+    /// alpha step buys much -- the hovered `Copy` could not be told from the unhovered `Fold` 6 pt
+    /// away, and the lone `⋯` at W1, which has no neighbour to compare against, was indistinguishable
+    /// from its own pressed art (D4/F7). The hairline has the headroom the fill does not, so a
+    /// hovered pill asks it for **3:1** and an idle one keeps 1.6. One parameter, both palettes.
+    public func pillHairline(on ground: RGB, minimum: Double = 1.6) -> RGB {
+        Palette.pushed(ground, toward: foreground, until: ground, reaches: minimum,
+                       from: 0.30, to: 1.0)
+    }
+
+    /// A **lit** pill's own two extra states: the accent-filled lens chip, hovered and pressed.
+    ///
+    /// The lit chip had neither (I2): `StripPillView` filled the accent and returned, so the one
+    /// pill in the strip that says "a lens is on" was also the one pill that never confirmed the
+    /// pointer was on it or that a press had landed. The unlit pills got both in D4 and this is the
+    /// same two treatments in the accent's own terms.
+    ///
+    /// `litPillHairline` walks from a tenth of the chip's own ink over its fill toward that ink
+    /// until it clears **3:1** -- the same floor a hovered unlit pill's hairline holds, so hover
+    /// reads the same on both kinds of pill. `textOn(fill)` is the ceiling and is itself ≥ 4.5:1
+    /// by construction, so the floor is always reachable.
+    public func litPillHairline(on fill: RGB) -> RGB {
+        Palette.pushed(fill, toward: textOn(fill), until: fill, reaches: 3, from: 0.10, to: 1.0)
+    }
+
+    /// `pressedFill` moves the chip's fill toward **its own ink** -- `textOn(fill)` -- by whatever
+    /// it takes to separate the two by **1.2:1**, and no further.
+    ///
+    /// Not "the same 0.12 the unlit fill takes": that is the right *step* on a wash of `foreground`
+    /// over a dark ground and the wrong one on the accent, because an accent is already near
+    /// `foreground`. Measured, 0.12 toward `foreground` separated the accent from its pressed fill
+    /// by **1.032:1** on nyx-dark and 1.047 on nyx-light -- five or six of 255 in the strongest
+    /// channel, against the 23 and 19 the unlit fill's 0.14 → 0.26 moves -- and the shipped
+    /// pictures diffed at 7 and 9 where idle → hovered diffed at 101 and 105. A press nobody can
+    /// see is a press the chip does not have.
+    ///
+    /// Toward `textOn(fill)` rather than toward `foreground`, because that is the direction that
+    /// actually moves: reaching 1.2:1 toward `foreground` needs 0.35 to 0.75 in five themes, which
+    /// swamps the accent's own hue, and **cannot be reached at all** in solarized-dark, whose accent
+    /// sits within 1.013:1 of its foreground. Toward the ink it is 0.10 to 0.15 in all seven. It
+    /// also reads as the right thing: a pressed chip moves toward its own label, which is "more
+    /// ink", which is what the unlit press means too.
+    ///
+    /// The separation is never bought with the label. Each candidate has to keep
+    /// `textOn(candidate)` at 4.5:1 and `litPillHairline(on: candidate)` at 3:1 before it is
+    /// accepted; a theme that cannot give 1.2 inside those keeps the loudest step that stays inside
+    /// them, and one that cannot even do that gets its fill back -- no pressed art rather than an
+    /// unreadable one. Measured across the seven built-ins: separation 1.23 to 1.31, label 4.52 to
+    /// 6.36, hairline 3.02 to 3.21.
+    public func pressedFill(of fill: RGB) -> RGB {
+        let ink = textOn(fill)
+        var loudestReadable = fill
+        for step in 1...20 {
+            let candidate = RGB.blend(fill, into: ink, amount: Double(step) / 20)
+            guard RGB.contrast(textOn(candidate), candidate) >= 4.5,
+                  RGB.contrast(litPillHairline(on: candidate), candidate) >= 3 else { continue }
+            loudestReadable = candidate
+            if RGB.contrast(fill, candidate) >= 1.2 { return candidate }
+        }
+        return loudestReadable
+    }
+
+    /// The gutter's faded mark: `solid` at 40 % over this palette's background, raised toward
+    /// `solid` in twentieths until it clears **3:1** against **both** grounds the mark lands on --
+    /// the plain background and the hovered block's tint -- and capped at `solid` itself.
+    ///
+    /// 3 and not 4.5 because §2.2's mark is a *shape*, not text, and it is the only cue that a
+    /// command ran and printed nothing -- no label, no chevron, nothing beside it. 40 % is the
+    /// number §2.2 gives and it is kept wherever it reads; measured from the rendered pixels it did
+    /// not, in either default theme (2.61:1 on nyx-dark, 1.78:1 on nyx-light), because 40 % of a
+    /// green over a near-white ground is a pale grey.
+    ///
+    /// Walked from the **faintest** mark towards the solid one -- the loop's `amount` is how much
+    /// *background* is blended in, so stepping it down strengthens the mark -- and it stops at the
+    /// first step that reads. So the answer is the faintest mark that still clears the floor rather
+    /// than the loudest one that does: the treatment means "less". (The first take of this comment
+    /// said "walked *down* from 40 %", which reads as the mark getting fainter and is the opposite
+    /// of what happens.)
+    ///
+    /// The floor is held against **both grounds** -- `background` and the hovered block's tint --
+    /// because the mark lands on either. The comment here used to say `background` was the harder of
+    /// the two and the only one worth holding: that was true while the tint began at column 0's ink,
+    /// and D6 moved it out to the window's own edge so that it now runs *under* the gutter, where
+    /// `PromptGutterView` paints no ground of its own. Measured after D6 and before this: all 21
+    /// theme×tone cells were **2.71:1 to 3.00:1** on the tint against a floor of 3, while every one
+    /// cleared it on `background` (3.02-3.33). The tint moves `background` toward `accent`, which is
+    /// toward these marks, so it is the harder ground now and `min` is the honest test (S1).
+    ///
+    /// The steps are explicit rather than a `while amount > 0` countdown, whose last iteration
+    /// landed on a floating-point residue of 0.60 - 12 × 0.05 and made the final `return solid` a
+    /// path nothing could reach: the cap is real now, and it is what a theme whose own solid mark
+    /// is under 3:1 gets.
+    public func fadedMark(_ solid: RGB) -> RGB {
+        let hover = blockHoverBackground
+        for step in 0...11 {
+            let amount = 0.60 - Double(step) * 0.05
+            let candidate = RGB.blend(solid, into: background, amount: amount)
+            if min(RGB.contrast(candidate, background),
+                   RGB.contrast(candidate, hover)) >= 3 { return candidate }
+        }
+        return solid
     }
 
     /// One of the sixteen, picked for use as *text* or as a small filled shape: the normal variant

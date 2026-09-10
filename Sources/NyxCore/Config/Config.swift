@@ -59,7 +59,11 @@ public struct Config: Equatable {
     /// people make about terminals more than any other. Off means one empty window, every time.
     public var restoreSession: Bool = true
     public var clipboardRead: Bool = false
-    public var tabBar: TabBarVisibility = .auto
+    /// Always on by default (2026-09-07): with `auto` a fresh install shows no bar at all -- one
+    /// tab, no buttons -- and the bar is the only place the new-button `+`, the tab list and the
+    /// quick actions live, so nothing on screen taught them. `auto` remains for people who know
+    /// what they are giving up.
+    public var tabBar: TabBarVisibility = .always
     public var windowDecorations: Bool = true
     public var wordSeparators: Set<Character> = Set(" ()[]{}'\"`,;:|<>")
     public var openFileCommand: String?
@@ -157,7 +161,7 @@ public extension Config {
         # background-opacity = 1.0
         # background-blur = 0
         # window-decorations = true
-        # tab-bar = auto
+        # tab-bar = always
 
         # --- Shell ---
         # shell =

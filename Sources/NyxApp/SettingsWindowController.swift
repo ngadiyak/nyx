@@ -115,7 +115,7 @@ final class SettingsWindowController: NSWindowController {
             row("Padding", stepperField("padding", min: 0, max: 64, step: 1)),
             row("Opacity", slider("background-opacity", min: 0.3, max: 1, decimals: 2)),
             row("Blur", slider("background-blur", min: 0, max: 60, decimals: 0)),
-            row("Tab bar", popUp("tab-bar", options: ["auto", "always", "never"])),
+            row("Tab bar", popUp("tab-bar", options: ["always", "auto", "never"])),
             row("", checkbox("window-decorations", title: "Show the title bar")),
         ], note: "Themes, padding and opacity apply as soon as you change them.")
     }

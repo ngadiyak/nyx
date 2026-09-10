@@ -35,6 +35,20 @@ public enum ResponseLens: Equatable {
         }
     }
 
+    /// The short head of `title`, for the strip's chip: `Pretty JSON` is a menu row and `Pretty` is
+    /// a 44 pt pill. One value, so a lens cannot end up with a third spelling.
+    public var chipTitle: String {
+        switch self {
+        case .raw: return "Raw"
+        case .pretty: return "Pretty"
+        case .headers: return "Headers"
+        case .body: return "Body"
+        case .filter: return "Filter"
+        case .grep: return "Find"
+        case .diff: return "Diff"
+        }
+    }
+
     /// The fold point the response's headers hang from.
     ///
     /// A `NodePath` like any other, so one `folded` set carries both the headers block and every

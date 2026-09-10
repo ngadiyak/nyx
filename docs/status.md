@@ -16,7 +16,7 @@ same facts.
 | Render | Metal, 3 instanced draw calls, glyph atlas with Core Text fallback and colour emoji, per-row redraw cache with measured 2 % rebuild on a spinner, synchronised output with 150 ms expiry, dirty flags cleared only after a presented frame |
 | Panes and tabs | Split tree with draggable dividers, focus/resize/zoom chords, tabs with groups (band + name chip, collapsible), inherited cwd, close confirmation, rename, duplicate |
 | Shell integration | zsh via a `ZDOTDIR` shim (nothing in `$HOME` modified); OSC 7 + 133 with exit status; bash/fish by a `source` line shown in settings |
-| On prompt marks | ⌘↑/⌘↓, status gutter, blocks with a chevron and a hover header (Copy, ⋯ menu), tail folds keyed by command id, live timer, armed notifications, Markdown export, sticky command line with status, blocks restored with the session |
+| On prompt marks | ⌘↑/⌘↓, status gutter, blocks whose gutter mark folds them and whose hover raises a strip of labelled pills (Fold, Copy, Actions ▾), tail folds keyed by command id, live timer, armed notifications, Markdown export, sticky command line with status, blocks restored with the session |
 | Editing | Click-to-position the shell caret on one line; multi-line paste opens the editor (`multiline-paste`); ⌘⇧V always does |
 | Search | Incremental, per-pane, with an all-tabs scope; visible highlights; current match distinct |
 | Palette | ⌘⇧P over actions, themes, tabs, quick actions; fuzzy ranked |

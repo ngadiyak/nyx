@@ -32,6 +32,23 @@ enum MainMenu {
                 menu.addItem(withTitle: "Hide Nyx", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
                 menu.addItem(.separator())
                 menu.addItem(withTitle: "Quit Nyx", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+            case "Edit":
+                // The items every text field in the app depends on. Nyx's own Copy and Paste are
+                // already `copy:`/`paste:` (see `StandardEditing`), so what is missing is the rest
+                // of the standard set -- and it is placed by finding the items it belongs beside
+                // rather than by counting, so a change to `ActionCatalog.sections` cannot silently
+                // move Cut away from Copy.
+                if let endOfFirstGroup = menu.items.firstIndex(where: { $0.isSeparatorItem }) {
+                    menu.insertItem(standardItem(.selectAll), at: endOfFirstGroup)
+                } else {
+                    menu.addItem(standardItem(.selectAll))
+                }
+                if let copy = menu.items.firstIndex(where: { $0.action == StandardEditing.selector(for: .copy) }) {
+                    menu.insertItem(standardItem(.cut), at: copy)
+                }
+                menu.insertItem(.separator(), at: 0)
+                menu.insertItem(standardItem(.redo), at: 0)
+                menu.insertItem(standardItem(.undo), at: 0)
             case "Window":
                 menu.insertItem(.separator(), at: 0)
                 menu.insertItem(withTitle: "Zoom", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "", at: 0)
@@ -55,13 +72,36 @@ enum MainMenu {
     /// `ActionTarget`. Validation goes the same way, so an item greys out when the action
     /// cannot apply right now.
     private static func item(for action: TerminalAction, bindings: KeyBindingTable) -> NSMenuItem {
+        // Copy and Paste go on AppKit's own selectors instead. `performTerminalAction:` was
+        // resolved up the responder chain past the focused field editor to the `TabController`, so
+        // ⌘V in the search bar pasted onto the shell command line behind it; `paste:` stops at the
+        // field, and at the pane -- which implements `paste(_:)` -- when the pane is focused. The
+        // action, its chord and its palette entry are unchanged.
         let item = NSMenuItem(title: action.title,
-                              action: #selector(TabController.performTerminalAction(_:)),
+                              action: StandardEditing.command(for: action).map(StandardEditing.selector(for:))
+                                  ?? #selector(TabController.performTerminalAction(_:)),
                               keyEquivalent: "")
         item.representedObject = action.rawValue
         if let binding = bindings.binding(for: action),
            let (key, mask) = MenuShortcut.keyEquivalent(for: binding) {
             item.keyEquivalent = key
+            item.keyEquivalentModifierMask = mask
+        }
+        return item
+    }
+
+    /// An item for one of AppKit's editing commands: nil target, its own fixed chord, and no
+    /// `TerminalAction` behind it.
+    private static func standardItem(_ command: StandardEditingCommand) -> NSMenuItem {
+        let item = NSMenuItem(title: command.title,
+                              action: StandardEditing.selector(for: command), keyEquivalent: "")
+        if let chord = command.fixedChord {
+            item.keyEquivalent = String(chord.key)
+            var mask: NSEvent.ModifierFlags = []
+            if chord.modifiers.contains(.cmd) { mask.insert(.command) }
+            if chord.modifiers.contains(.ctrl) { mask.insert(.control) }
+            if chord.modifiers.contains(.alt) { mask.insert(.option) }
+            if chord.modifiers.contains(.shift) { mask.insert(.shift) }
             item.keyEquivalentModifierMask = mask
         }
         return item

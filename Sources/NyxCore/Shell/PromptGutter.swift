@@ -10,26 +10,6 @@ public enum GutterMark: Equatable {
     case failed
 }
 
-public extension GutterMark {
-    /// Whether the dot is drawn for a row carrying this mark.
-    ///
-    /// A finished command's dot is a record and is drawn whatever it printed -- `cd ..` succeeded
-    /// and the gutter says so. `.running` is different: the prompt you are typing at carries a
-    /// prompt mark and no status, so it reads as running, and a ring there would sit beside an idle
-    /// cursor for the rest of the session. What tells the two apart is whether the shell said a
-    /// command actually started -- its `C` mark -- which a prompt waiting for you to type has not.
-    ///
-    /// Deliberately *not* keyed on there being output to fold: a `sleep 10` one second in has
-    /// printed nothing, and the whole point of the ring is that it says something is running.
-    func isDrawn(hasStarted: Bool) -> Bool { self == .running ? hasStarted : true }
-
-    /// Whether pressing the dot can do anything. Pressing folds the command's output, and ⌥ selects
-    /// it; a command with nothing on its output rows has neither, and the click used to beep at the
-    /// user after offering a pointing hand, a tooltip and an accessibility button. A ring can be
-    /// drawn and not pressable, which is exactly a command that has started and not yet printed.
-    func isActionable(hasOutput: Bool) -> Bool { hasOutput }
-}
-
 /// What a gutter mark says to VoiceOver and in its tooltip.
 ///
 /// The words used to promise the wrong thing twice over: every mark read "Select its output." while
@@ -38,6 +18,31 @@ public extension GutterMark {
 /// worse than an unlabelled one, and there is no AppKit test target here, so the wording is decided
 /// in Core and asserted.
 public enum GutterMarkLabel {
+    /// The four facts a mark's sentence is made of, as a value.
+    ///
+    /// `Pane.render` builds one of these per mark inside `withTerminal`, sixty times a second; the
+    /// gutter view turns them into strings only when the set actually changed. Formatting them
+    /// under the PTY lock instead meant four string interpolations per command on screen per frame,
+    /// holding the lock the parser wants, to produce sentences that are identical to last frame's
+    /// unless a command started, finished or was folded.
+    public struct Key: Equatable {
+        public let mark: GutterMark
+        public let folded: Bool
+        public let hasOutput: Bool
+        public let line: Int
+
+        public init(mark: GutterMark, folded: Bool, hasOutput: Bool, line: Int) {
+            self.mark = mark
+            self.folded = folded
+            self.hasOutput = hasOutput
+            self.line = line
+        }
+    }
+
+    public static func text(_ key: Key) -> String {
+        text(mark: key.mark, folded: key.folded, hasOutput: key.hasOutput, line: key.line)
+    }
+
     public static func text(mark: GutterMark, folded: Bool, hasOutput: Bool, line: Int) -> String {
         let outcome: String
         switch mark {
@@ -54,39 +59,44 @@ public enum GutterMarkLabel {
 
 /// The geometry of the status gutter, and the marks to put in it.
 ///
-/// The gutter lives inside the pane's own left padding, so it costs no terminal columns and never
-/// overlaps a glyph. That makes its width a function of the padding setting, which is the sort of
-/// rule that is quietly wrong in a view until someone sets `padding = 0` -- so it is here.
+/// Only the *hit* geometry: what the gutter draws is `CommandBlockChrome.GutterCap` at
+/// `CommandBlockChrome.spineLeadingInset` × `.spineWidth`, which is where the Metal spine is drawn
+/// too. The target and the picture were one number for a long time, and the result was that making
+/// the dots easier to click also made them fatter.
 public enum PromptGutter {
-    /// How much of the padding the gutter may take. This is the **hit area**, not the mark: the
-    /// mark is `markWidth` points wide wherever the gutter is wider than that.
+    /// The **hit area**: 20 points, the same target the fold triangles of §2.4 get, independent of
+    /// `padding` and allowed to overlap the first text column. `PromptGutterView.hitTest` hands
+    /// back every point that is not on a mark, so the columns of text under it keep their clicks;
+    /// what changes is that a pointer reaching for a mark no longer has to find 8 points of padding
+    /// at the window's own resize margin.
     ///
-    /// It was six, which is the width of the capsule plus its inset -- a five-point target for a
-    /// pointer, and the owner's report was exactly that: the dots are hard to click. Fourteen is
-    /// still inside the padding (`width` never returns more than the padding it is given, so a pane
-    /// at the default eight is unchanged in every way but this) and the extra width is empty space
-    /// on the *text* side, which is where a pointer reaching for a dot overshoots to.
-    public static let maximumWidth: Double = 14
-    /// The capsule that is actually drawn, and its inset from the gutter's leading edge. Separate
-    /// from `maximumWidth` so that widening the target cannot move or fatten the picture.
-    public static let markWidth: Double = 4
-    public static let markInset: Double = 1
-    /// Below this there is not enough room to draw a mark without it touching the text.
-    public static let minimumPadding: Double = 4
+    /// The *drawn* mark is `CommandBlockChrome.spineWidth` wide at `spineLeadingInset`, which is
+    /// where the Metal spine is: one shape, one fact.
+    public static let hitWidth: Double = 20
 
-    public static func width(padding: Double) -> Double {
-        padding >= minimumPadding ? min(padding, maximumWidth) : 0
-    }
-
-    /// Where the capsule goes inside a gutter of `gutterWidth` points: always the same place and
-    /// the same size, however much room the hit area has. A gutter too narrow for the whole
-    /// capsule draws what fits rather than overflowing into the first column of text.
-    public static func markRect(gutterWidth: Double) -> (x: Double, width: Double) {
-        (markInset, min(markWidth, max(0, gutterWidth - markInset * 2)))
+    /// The marked row a point falls on, or nil for a point that belongs to the pane.
+    ///
+    /// Each marked row's target is `hitHeight` tall, centred on the row -- `hitRowHeight` clamps it
+    /// to 16 pt, so at `line-height 0.8` it overhangs the rows above and below. Those are usually
+    /// output rows with no mark of their own; where two marks' rects genuinely overlap (two prompts
+    /// with nothing between them) the nearer centre wins, and an exact tie goes to the upper row so
+    /// the answer never depends on the order `markedRows` arrives in.
+    public static func markedRow(atY y: Double, cellHeight: Double, padding: Double,
+                                 hitHeight: Double, markedRows: [Int]) -> Int? {
+        // The gutter cap and the in-grid fold triangles are the same target at the same height, so
+        // they resolve a point the same way -- one implementation, in `CommandBlockChrome`.
+        CommandBlockChrome.hitRow(atY: y, cellHeight: cellHeight, padding: padding,
+                                  hitHeight: hitHeight, rows: markedRows)
     }
 
     /// The visible row a point falls on, measured from the top of the pane including its padding.
     /// nil for a point in the padding above the first row or below the last.
+    ///
+    /// The *text* rule, and `Pane.visibleRow(at:)` is its caller: rows are one cell tall and do not
+    /// overlap, so a point belongs to exactly one of them. A *target* on a row is the other rule --
+    /// `CommandBlockChrome.hitRow`, with `hitRowHeight`'s floor under it and overlapping bands to
+    /// resolve. Everything that turns a click into a control goes through that one; everything that
+    /// turns a click into a caret or a selection comes here.
     public static func row(atY y: Double, cellHeight: Double, padding: Double, rows: Int) -> Int? {
         guard cellHeight > 0, rows > 0 else { return nil }
         let row = Int(((y - padding) / cellHeight).rounded(.down))
@@ -221,15 +231,41 @@ public extension Terminal {
 
     /// Whether the shell has said this command started running -- its `C` mark arrived. True the
     /// instant `sleep 10` begins and false for the prompt you are typing at, which is the one bit
-    /// that decides whether the gutter draws a running ring.
+    /// that decides whether the gutter draws a mark at all.
+    ///
+    /// Its own walk rather than `outputStartRow(ofCommandAt:) != nil`, and the difference between
+    /// the two is the whole point. A command that printed *nothing at all* -- `cd`, `true`,
+    /// `export` -- leaves its `C` on the very row its successor's prompt lands on.
+    /// `outputStartRow` refuses that row, rightly: a region beginning there would take in the next
+    /// prompt, so `outputText` would return it and a fold would hide it. But the command *ran*, and
+    /// the gutter's mark is the block's identity now -- a block that has a hover strip and no mark
+    /// is the pane saying two different things about the same command.
+    ///
+    /// So on a row carrying both marks, the `outputStart` is read first: the `C` is this command's,
+    /// the `A` is the next one's.
     func commandDidStart(atAbsoluteRow row: Int) -> Bool {
-        outputStartRow(ofCommandAt: row) != nil
+        guard let line = absoluteRow(row),
+              PromptMarks(rawValue: line.promptMark).contains(.promptStart) else { return false }
+        var next = row + 1
+        while next < totalRows {
+            let marks = promptMarks(atAbsoluteRow: next)
+            if marks.contains(.outputStart) { return true }
+            if marks.contains(.promptStart) { return false }
+            next += 1
+        }
+        return false
     }
 
     /// Both flags for one row in a single walk. The gutter needs them together on every frame, and
     /// asking separately walks to the output start twice.
     func commandStates(atAbsoluteRow row: Int) -> (started: Bool, hasOutput: Bool) {
-        guard let start = outputStartRow(ofCommandAt: row) else { return (false, false) }
+        // An output region implies it started; no region does *not* imply it did not (see
+        // `commandDidStart`), so that case falls through to the second walk. It costs one or two
+        // rows -- the walk stops at the shared `C`/`A` row -- and only for a command with nothing
+        // on its output rows.
+        guard let start = outputStartRow(ofCommandAt: row) else {
+            return (commandDidStart(atAbsoluteRow: row), false)
+        }
         return (true, hasContent(fromOutputRow: start))
     }
 

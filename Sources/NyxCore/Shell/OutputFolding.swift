@@ -328,10 +328,17 @@ public extension Terminal {
     func foldPlaceholderRow(hiddenRows: Int, status: BlockStatus, dim: RGB? = nil) -> Row {
         var row = Row(cols: cols)
         var cell = Cell()
+        // All three grounds are the block's own row, which is **tinted** whenever the pointer is on
+        // that block -- so all three are resolved against the tint rather than against plain
+        // `background`, where the design review measured `… 6 lines hidden` at 4.13:1 on a hovered
+        // folded block (D1). The tint is the harder of the two grounds, so the same ink reads on an
+        // unhovered row too, and the placeholder's cells do not change with hover -- which they must
+        // not, because they go through the row cache and `RowKey` carries no hover bit.
+        let ground = palette.blockHoverBackground
         let resolved: RGB
         switch status {
-        case .running: resolved = SummaryTone.running.color(in: palette)
-        case .failed: resolved = SummaryTone.failure.color(in: palette)
+        case .running: resolved = SummaryTone.running.color(in: palette, on: ground)
+        case .failed: resolved = SummaryTone.failure.color(in: palette, on: ground)
         case .succeeded: resolved = dim ?? LensPalette.dimColour(in: palette)
         }
         cell.fg = .rgb(resolved.r, resolved.g, resolved.b)

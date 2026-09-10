@@ -24,11 +24,11 @@ so that template and this page are the two places a new key must be added.
 | `cursor-style` | `block` | `block`, `underline`, `bar`. A program's DECSCUSR wins while it runs |
 | `cursor-blink` | `true` | |
 | `scrollback-lines` | `10000` | Per pane. Takes effect for new sessions; the banner says so |
-| `padding` | `8` | Points between the window edge and the grid |
+| `padding` | `8` | Points between the window edge and the grid. **At `0` the block spine is drawn in the first text column's leading 3 pt, so the first glyph of every command and output row of a block is clipped** — the mark moves inward as the padding grows and is clear of the text from 3 pt up |
 | `background-opacity` | `1.0` | 0–1 |
 | `background-blur` | `0` | Blur radius behind a translucent window. A value above 0 implies opacity 0.9 unless `background-opacity` says otherwise |
 | `window-decorations` | `true` | |
-| `tab-bar` | `auto` | `auto` (hidden with one tab and no buttons), `always`, `never` |
+| `tab-bar` | `always` | `always`, `auto` (hidden with one tab and no buttons), `never` |
 | `shell` | `$SHELL`, else `/bin/zsh` | Path to the shell, launched as a login shell |
 | `working-directory` | `inherit` | `inherit` (from the current pane, via OSC 7), `home`, or an absolute path |
 | `copy-on-select` | `false` | |
@@ -58,6 +58,15 @@ so that template and this page are the two places a new key must be added.
 | `http-history` | `50` | How many requests the palette's Requests section remembers. `0` turns the feature off. Clamped to 0–500 |
 
 Booleans accept `true`/`false`, `yes`/`no`, `1`/`0`, `on`/`off`.
+
+**Links open on ⌘-click** — the convention iTerm2 and Ghostty both use. A plain click still means
+selection, hovering underlines what would open and turns the pointer into a hand, and the tooltip
+there says `⌘-click to open`; right-clicking a link offers **Open Link** and **Copy Link**. What
+counts as a link: an `http`/`https`/`mailto`/`ssh`/`sftp`/`ftp`/`irc` URL, an OSC 8 hyperlink (the
+URI the program named, not the label it shows), an e-mail address, and a path that *exists* on disk
+— with the `:line:column` a compiler printed after it, handed to `open-file-command`. A URL that
+wrapped at the right margin opens as one URL, and a URL inside a lens row is clickable like any
+other.
 
 Remote sessions need both `remote = on` and a non-empty `remote-relay-token`: without the token the
 relay closes the socket before the handshake, so connecting would be a guaranteed failure reported
@@ -112,6 +121,40 @@ character (lowercase; add `shift` explicitly), or one of `enter`/`return`, `tab`
 `left`, `right`, `f1`…`f12`. The chord is split at the *last* `=`, so `cmd+,=open_config` works.
 A user binding beats a default for the same chord; the last line in the file wins.
 
+A chord names a **physical key, not a character**. Once ⌘ is held, the key is read from its
+position on the keyboard — the letter on the keycap — so `cmd+c` is the C key on a Russian,
+Greek or Hebrew layout as much as on a US one, and `cmd+shift+d` matches whatever glyph shift
+produces there. Write the key as the unshifted ASCII character it carries (`cmd+shift+=`, not
+`cmd++`) and put `shift` in the modifiers. Without ⌘, a key press is text: it reaches the shell
+as the character the layout makes, so typing Cyrillic sends Cyrillic.
+
+**Control chords are physical too.** ⌃C sends 0x03 — and interrupts — on a Russian, Greek or
+Hebrew layout, where the C key types `с`, `ψ` or `ב`. The rule, in order: **the control byte the
+layout's own character names, and only when it names none, the byte the same physical key gives on
+a US keyboard.** So ⌃Z is 0x1A, ⌃D is 0x04 and ⌃[ is Escape wherever those keycaps are, and ⌃ü on
+a German layout is Escape because `ü` sits on the `[` key.
+
+Which of the two answers a chord gets is worth being concrete about, because both happen on Latin
+layouts:
+
+- German ⌃⇧- is **DEL**, because ⇧- types `?` there and `?` names DEL. The character wins; the
+  keycap's `_` (0x1F) is not consulted.
+- German ⌃⇧6 is **RS** (0x1E), because ⇧6 types `&`, which names nothing, so the `^` on the US
+  keycap answers. This changed: it used to send `&`. The same rule reaches ⌃@ and ⌃? on layouts
+  that put something else on ⇧2 and ⇧/ — RussianWin types `"` and `,` there.
+- With ctrl alone a plain ASCII character is never re-read: on RussianWin the `/` keycap types `.`,
+  and ⌃. is `.`, not 0x1F.
+
+The digit row carries xterm's aliases on every layout: ⌃2 is NUL, ⌃3 to ⌃7 are Escape, FS, GS, RS
+and US, and ⌃8 is DEL, while ⌃1, ⌃9 and ⌃0 send their digit. The numeric keypad is left out of all
+of this — ⌃keypad-2 is `2` — because keypad keys carry no second legend and xterm does not modify
+them either.
+
+Typing and ⌥ chords are untouched: ⌥`с` with `option-as-meta` set sends ESC and the two UTF-8 bytes
+of `с`, not ESC `c`. An application that turns on xterm's `modifyOtherKeys` gets the layout's own
+code point in the report (⌃C on a Cyrillic layout is `CSI 27;5;1089~`, U+0441), which is what
+xterm, Ghostty and iTerm2 all report there.
+
 | Action | Default | What it does |
 |---|---|---|
 | `new_window` | ⌘N | |
@@ -126,7 +169,7 @@ A user binding beats a default for the same chord; the last line in the file win
 | `copy` / `paste` | ⌘C / ⌘V | Paste is bracketed when the program asked for it |
 | `paste_with_editor` | ⌘⇧V | Open the clipboard in the editor first |
 | `clear_screen` | ⌘K | Clears screen and scrollback (`ED 3`) |
-| `font_bigger` / `font_smaller` / `font_reset` | ⌘+ (⌘=) / ⌘- / ⌘0 | |
+| `font_bigger` / `font_smaller` / `font_reset` | ⌘+ / ⌘- / ⌘0 | Zoom in also answers to ⌘= — the same key without shift — and to the keypad's `+` |
 | `open_config` / `reload_config` | ⌘, / ⌘⇧, | ⌘, opens the settings window |
 | `previous_prompt` / `next_prompt` | ⌘↑ / ⌘↓ | Needs shell integration |
 | `select_command_output` / `copy_command_output` | — | The output of the command under the cursor / the last command |
@@ -149,6 +192,13 @@ A user binding beats a default for the same chord; the last line in the file win
 
 The menu is generated from `ActionCatalog.sections`, so every action is discoverable there with
 its current chord, and the settings window's Keys page lists them all.
+
+The Edit menu also carries AppKit's own **Undo ⌘Z**, **Redo ⌘⇧Z**, **Cut ⌘X** and
+**Select All ⌘A**. Those four are not actions and cannot be rebound: they go to whatever has the
+keyboard. In a text field — the search bar, the Rename Tab sheet, the request editor — they edit
+that field; over the terminal grid, Select All selects the whole scrollback and the rest are greyed
+out. `copy` and `paste` travel the same route, which is why ⌘C and ⌘V work inside Nyx's own fields
+instead of reaching the shell behind them.
 
 ## Quick actions
 

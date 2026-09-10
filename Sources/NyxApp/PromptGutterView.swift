@@ -1,12 +1,17 @@
 import AppKit
 import NyxCore
 
-/// The narrow column down the left of a pane carrying one mark per command: green where it
-/// succeeded, red where it failed, nothing while it is still running.
+/// The narrow column down the left of a pane carrying one mark per command: the head of that
+/// command's spine, in the block's own colour, in a shape that says what happened.
 ///
-/// It lives inside the pane's own left padding, so it costs no terminal columns and never overlaps
-/// a glyph -- `PromptGutter.width` decides how much of the padding it may take, and a pane with too
-/// little padding gets no gutter rather than one over its text.
+/// The mark is drawn at `CommandBlockChrome.spineLeadingInset` and is `CommandBlockChrome.spineWidth`
+/// wide -- the two numbers the Metal spine reads for the same block -- so the cap and the spine are
+/// one continuous shape rather than a 4.5 pt capsule beside a 1 pt line, which is what the design
+/// review read as "a green line with beads on it".
+///
+/// The view's own frame is `PromptGutter.hitWidth`, which is wider than the mark and independent of
+/// the pane's padding: it may overlap the first text column, and `hitTest` gives every point that is
+/// not on a mark back to the pane, so the text under it keeps its clicks.
 ///
 /// `otherMouseUp` is deliberately *not* overridden. Middle-click paste happens in the pane's
 /// `otherMouseUp`, which this view reaches through the responder chain; an override here -- even one
@@ -16,39 +21,48 @@ final class PromptGutterView: NSView {
     /// A click on a mark, as a visible row index, and whether ⌥ was held.
     var onSelectRow: ((Int, Bool) -> Void)?
 
-    private var marks: [GutterMark?] = []
-    /// Whether each row's command is folded, so a mark says which way pressing it goes.
-    private var folded: [Bool] = []
-    /// Whether the shell said each row's command started -- what decides whether a running ring is
-    /// drawn at all, as opposed to whether it can be pressed.
-    private var hasStarted: [Bool] = []
-    /// Whether each row's command has anything on its output rows. A mark without it is a record
-    /// and nothing more: no pointing hand and no button, because pressing it can do nothing -- it
-    /// used to offer a hand, a tooltip and a button, and then beep.
-    private var hasOutput: [Bool] = []
+    /// The cap per marked display slot. Every decision about shape, colour and pressability was
+    /// made by `CommandBlockChrome.gutterCap` in the pane; nothing here re-derives one.
+    private var caps: [Int: CommandBlockChrome.GutterCap] = [:]
+    /// What each mark says in its tooltip and to VoiceOver. The pane hands over
+    /// `GutterMarkLabel.Key`s -- the facts, decided where the header is -- and the sentences are
+    /// formatted here, once per change, rather than sixty times a second under the PTY lock.
+    private var keys: [Int: GutterMarkLabel.Key] = [:]
+    private var labels: [Int: String] = [:]
     private var palette = Palette.xtermDefault()
     private var cellHeight: CGFloat = 1
+    private var panePadding: CGFloat = 8
     private var topPadding: CGFloat = 0
 
     override var isFlipped: Bool { true }
 
+    /// The one-row hit floor: 16 pt even when `line-height 0.8` makes a row 13 (§8.4). The *drawn*
+    /// mark stays exactly `cellHeight` tall, so widening the target cannot fatten the picture.
+    private var hitHeight: CGFloat {
+        CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cellHeight)))
+    }
+
+    /// Where the mark is drawn -- the same x the renderer puts the spine at.
+    private var markX: CGFloat {
+        CGFloat(CommandBlockChrome.spineLeadingInset(padding: Double(panePadding)))
+    }
+
     /// The gutter is decoration over the terminal; a point that misses a mark belongs to the pane
     /// underneath, so this view claims only the marks themselves -- every *drawn* mark, not only the
-    /// pressable ones.
+    /// pressable ones. That matters more now that the column is 20 pt wide and overlaps the first
+    /// text column at the shipping padding: everything but the marks is the pane's.
     ///
     /// Drawn rather than pressable because AppKit resolves a tooltip's owner by hit-testing, and a
     /// view that disowns a point cannot be asked about it. A `cd ..` mark has a tooltip saying a
     /// command ran and succeeded, and claiming the point is the only way to be sure it is offered.
-    /// Whether AppKit would have found it anyway could not be shown either way here: a probe with a
-    /// real cursor warp saw no tooltip window even for a control view that *does* own its point, so
-    /// the deterministic route is the one with evidence behind it. What the click means is unchanged
-    /// -- `mouseDown` hands a press on a mark with nothing to fold straight back to the pane.
+    /// What the click means is unchanged -- `mouseDown` hands a press on a mark with nothing to fold
+    /// straight back to the pane.
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         guard bounds.contains(local),
-              let row = PromptGutter.row(atY: Double(local.y), cellHeight: Double(cellHeight),
-                                         padding: Double(topPadding), rows: marks.count),
-              mark(at: row) != nil
+              PromptGutter.markedRow(atY: Double(local.y), cellHeight: Double(cellHeight),
+                                     padding: Double(topPadding), hitHeight: Double(hitHeight),
+                                     markedRows: Array(caps.keys)) != nil
         else { return nil }
         return self
     }
@@ -56,124 +70,164 @@ final class PromptGutterView: NSView {
     /// Returns whether anything that decides where a *cursor rect* goes changed, so the pane can
     /// ask AppKit to rebuild them. Nothing else does: `resetCursorRects` is called when a view is
     /// added, resized or explicitly invalidated, and this view is none of those between frames --
-    /// so after `ls` finished, its new green dot had no pointing hand until the next resize, and
-    /// after a resize a hand could sit over a `cd ..` mark that no longer had one.
+    /// so after `ls` finished, its new mark had no pointing hand until the next resize, and after a
+    /// resize a hand could sit over a `cd ..` mark that no longer had one.
     ///
-    /// A rect is a row index *and* a geometry, so the cell height and the top padding count too:
-    /// after ⌘+ with the same commands on the same rows, the hands stayed the old size.
+    /// A rect is a row index *and* a geometry, so the cell height, the top padding and the pane's
+    /// padding count too: after ⌘+ with the same commands on the same rows, the hands stayed the
+    /// old size.
     @discardableResult
-    func update(marks: [GutterMark?], folded: [Bool], hasStarted: [Bool], hasOutput: [Bool],
-                palette: Palette, cellHeight: CGFloat, topPadding: CGFloat) -> Bool {
-        let changed = marks != self.marks || folded != self.folded
-            || hasStarted != self.hasStarted || hasOutput != self.hasOutput
-            || palette != self.palette
-            || cellHeight != self.cellHeight || topPadding != self.topPadding
+    func update(caps: [Int: CommandBlockChrome.GutterCap], labels: [Int: GutterMarkLabel.Key],
+                palette: Palette, cellHeight: CGFloat, padding: CGFloat, topPadding: CGFloat) -> Bool {
+        let changed = caps != self.caps || labels != self.keys || palette != self.palette
+            || cellHeight != self.cellHeight || padding != self.panePadding
+            || topPadding != self.topPadding
         guard changed else { return false }
-        let previousRects = actionableRows()
+        let previous = pressableRows()
         let geometryMoved = cellHeight != self.cellHeight || topPadding != self.topPadding
-        self.marks = marks
-        self.folded = folded
-        self.hasStarted = hasStarted
-        self.hasOutput = hasOutput
+            || padding != self.panePadding
+        self.caps = caps
+        // Past the guard, so the sentences are built when the marks change and not per frame.
+        if labels != self.keys {
+            self.keys = labels
+            self.labels = labels.mapValues { GutterMarkLabel.text($0) }
+        }
         self.palette = palette
         self.cellHeight = cellHeight
+        self.panePadding = padding
         self.topPadding = topPadding
         needsDisplay = true
         // A tooltip per mark, saying the same sentence VoiceOver reads. Rebuilt rather than edited:
         // the rows shift under the marks on every scroll, so a tooltip left where it was would soon
         // describe a different command.
         removeAllToolTips()
-        for row in marks.indices {
-            // Every drawn mark, pressable or not: a `cd ..` mark still says "Command on line 3
-            // succeeded.", which is the whole reason the gutter exists -- it is a record.
-            guard let mark = mark(at: row) else { continue }
-            let y = topPadding + CGFloat(row) * cellHeight
-            addToolTip(NSRect(x: 0, y: y, width: max(1, bounds.width), height: cellHeight),
-                       owner: label(for: mark, row: row) as NSString, userData: nil)
+        for (row, _) in caps {
+            addToolTip(rect(of: row), owner: (self.labels[row] ?? "") as NSString, userData: nil)
         }
-        return actionableRows() != previousRects || geometryMoved
+        return pressableRows() != previous || geometryMoved
+    }
+
+    /// The target: 20 pt wide, `hitRowHeight` tall, centred on the row. The rect the *tooltip*, the
+    /// *cursor rect* and the *accessibility element* all use, so the three cannot disagree about
+    /// where a mark is.
+    private func rect(of row: Int) -> NSRect {
+        let centre = topPadding + (CGFloat(row) + 0.5) * cellHeight
+        return NSRect(x: 0, y: centre - hitHeight / 2, width: CGFloat(PromptGutter.hitWidth),
+                      height: hitHeight)
     }
 
     /// The rows a pointing hand belongs on. Compared between frames rather than recomputed by
     /// AppKit, which has no way of knowing the gutter changed.
-    private func actionableRows() -> [Int] {
-        marks.indices.filter { isActionable($0) }
+    private func pressableRows() -> [Int] { caps.filter { $0.value.isPressable }.keys.sorted() }
+
+    /// The marked row a point is on, through the one rule in Core: overlapping targets on a short
+    /// row go to the nearer centre rather than to whichever happened to be tested first.
+    private func markedRow(at point: NSPoint) -> Int? {
+        PromptGutter.markedRow(atY: Double(point.y), cellHeight: Double(cellHeight),
+                               padding: Double(topPadding), hitHeight: Double(hitHeight),
+                               markedRows: Array(caps.keys))
     }
 
-    /// The words a mark says, in the tooltip and to VoiceOver. Decided in `GutterMarkLabel`, so a
-    /// control that folds cannot go on claiming it selects -- or promise anything at all on a
-    /// command that printed nothing to fold.
-    private func label(for mark: GutterMark, row: Int) -> String {
-        GutterMarkLabel.text(mark: mark, folded: folded.indices.contains(row) && folded[row],
-                             hasOutput: output(at: row), line: row + 1)
-    }
-
-    private func output(at row: Int) -> Bool {
-        hasOutput.indices.contains(row) && hasOutput[row]
-    }
-
-    private func started(at row: Int) -> Bool {
-        hasStarted.indices.contains(row) && hasStarted[row]
-    }
-
-    /// The mark to draw on a row, or nil for a row with nothing to say. Both rules are Core's:
-    /// a finished command's dot is a record whatever it printed, and a running one appears only
-    /// once it has actually begun printing -- otherwise the prompt you are typing at, which has a
-    /// prompt mark and no status, would wear a ring forever.
-    private func mark(at row: Int) -> GutterMark? {
-        guard marks.indices.contains(row), let mark = marks[row],
-              mark.isDrawn(hasStarted: started(at: row)) else { return nil }
-        return mark
-    }
-
-    /// Whether a press on this row can do anything, which is what the pointing hand, the tooltip
-    /// and the accessibility element are for.
-    private func isActionable(_ row: Int) -> Bool {
-        guard let mark = mark(at: row) else { return false }
-        return mark.isActionable(hasOutput: output(at: row))
+    /// A rect from Core, snapped to whole device pixels.
+    ///
+    /// The spine's own x and width are whole points (4 and 3 at the shipping padding), but `y` is
+    /// `topPadding + row × cellHeight` and a cell height is rarely a whole number: unsnapped, the
+    /// cap rendered soft -- 86 % coverage at the device pixels either side of the mark -- beside a
+    /// spine that rendered hard, which is half of what the design review read as "a bead on a
+    /// stick" (D5). `alignAllEdgesNearest` keeps the height as close to the row's as the grid
+    /// allows, which matters more than an exact height: two marks that each rounded *inwards* would
+    /// leave a hairline between them.
+    private func snapped(_ rect: (x: Double, y: Double, width: Double, height: Double)) -> NSRect {
+        backingAlignedRect(NSRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height),
+                           options: [.alignAllEdgesOutward])
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        guard cellHeight > 0, bounds.width > 0 else { return }
-        // The capsule's geometry is `PromptGutter.markRect`, not the view's bounds: the bounds are
-        // the *hit area*, which is wider than the mark, and drawing to them would have made the
-        // dots fatter every time the target got easier to hit.
-        let capsule = PromptGutter.markRect(gutterWidth: Double(bounds.width))
-        guard capsule.width > 0 else { return }
-        let inset = CGFloat(capsule.x)
-        let width = CGFloat(capsule.width)
-        // The theme's own green and red, so the gutter matches whatever the shell prints, in
-        // whichever of the normal and bright variants reads on this background. Both resolved
-        // before the loop: `readable` compares two contrast ratios, which is not much, and is not
-        // worth doing once per visible row per frame.
-        let failedColor = nsColor(palette.readable(1), alpha: 0.9)
-        let succeededColor = nsColor(palette.readable(2), alpha: 0.9)
-        // The amber the spine and a folded running command's placeholder already use, so one glance
-        // down the gutter says which command is still going.
-        let runningColor = nsColor(palette.readable(3), alpha: 0.9)
-        for row in marks.indices {
-            guard let mark = mark(at: row) else { continue }
+        guard cellHeight > 0 else { return }
+        let width = CGFloat(CommandBlockChrome.spineWidth)
+        for (row, cap) in caps {
             let y = topPadding + CGFloat(row) * cellHeight
-            let rect = NSRect(x: inset, y: y + 1, width: width, height: max(1, cellHeight - 2))
-            guard rect.intersects(dirtyRect) else { continue }
-            let path = NSBezierPath(roundedRect: mark == .running ? rect.insetBy(dx: 0.5, dy: 0.5) : rect,
-                                    xRadius: width / 2, yRadius: width / 2)
-            switch mark {
-            // Hollow, so a command in progress is legible as unfinished at a glance rather than
-            // only by its colour -- the one thing a colour can never say on its own.
-            case .running:
-                runningColor.setStroke()
-                path.lineWidth = 1
-                path.stroke()
-            case .failed:
-                failedColor.setFill()
-                path.fill()
-            case .succeeded:
-                succeededColor.setFill()
-                path.fill()
+            // Only the marks the invalidated rect actually covers. This is not a per-frame saving
+            // -- the gutter redraws when its caps change, not with the grid -- it is for the
+            // *partial exposure* rects AppKit hands `draw` whenever something small over the
+            // gutter is uncovered or composited, where drawing a screenful of caps to repaint two
+            // rows is work nobody asked for.
+            //
+            // At least the chevron's own size in both directions, and centred on the row rather
+            // than hung from its top: the chevron is a 6 pt path centred in the row, so at a row
+            // shorter than that (`line-height` can go that low) it reaches past both edges of the
+            // row itself, and a guard box the height of the row would skip a chevron the rect
+            // really covers. Started 6 pt to the left too, because the chevron is right-aligned to
+            // the mark's trailing edge and reaches back into the padding (D6).
+            let guardSize = max(CGFloat(CommandBlockChrome.hoverChevronSize), cellHeight)
+            guard dirtyRect.intersects(
+                NSRect(x: max(0, markX - CGFloat(CommandBlockChrome.hoverChevronSize)),
+                       y: y - (guardSize - cellHeight) / 2,
+                       width: width + CGFloat(CommandBlockChrome.hoverChevronSize),
+                       height: guardSize)) else { continue }
+            // The faded mark's colour is resolved in Core rather than drawn as an alpha here: 40 %
+            // of the solid mark measured 2.61:1 on nyx-dark and 1.78:1 on nyx-light against the
+            // 3:1 floor a shape that is the only cue has to clear, and every one of the seven
+            // built-ins needed raising. `Palette.fadedMark` keeps the 40 % wherever it reads.
+            let solid = cap.tone.color(in: palette)
+            let colour = nsColor(cap.shape == .faded ? palette.fadedMark(solid) : solid, alpha: 1)
+            // The rect is Core's, per shape, snapped to the pixel grid: the cap *is* the head of
+            // the spine, so every shape is the spine's own 3 pt column (D5) -- and `.bar` is the
+            // one that is also the spine's own height, so a failure joins its neighbours' rows
+            // while a success stays a separated cap (I1).
+            let box = snapped(CommandBlockChrome.markRect(cap.shape, row: row,
+                                                          cellHeight: Double(cellHeight),
+                                                          topPadding: Double(topPadding),
+                                                          padding: Double(panePadding)))
+            switch cap.shape {
+            case .solid, .faded, .bar:
+                // Square ends, filled. `.bar` arrives two points taller than the other two and
+                // starting at the row's own top, which is where a failure's extra ink comes from:
+                // its column runs into the mark above and below it and reads as one continuous
+                // stroke down a scrolling screen (§2.2, over a11y 6.2's half mark).
+                colour.setFill()
+                NSBezierPath(rect: box).fill()
+            case .hollow:
+                // The same rect, stroked: still running. A tall outline against three tall filled
+                // shapes is a shape difference a reader can see, where a 1 pt interior in a
+                // 13 pt capsule was not.
+                colour.setStroke()
+                let ring = NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5))
+                ring.lineWidth = 1
+                ring.stroke()
+            case .chevronDown, .chevronRight:
+                // The only new mark this wave draws, and only under the pointer: a 6 pt path in the
+                // block's own colour, right-aligned to the mark's own trailing edge and extended
+                // only leftward into the padding, so it never touches column 0's ink (D6, P2).
+                colour.setFill()
+                chevron(pointingDown: cap.shape == .chevronDown,
+                        in: snapped(CommandBlockChrome.hoverChevronRect(
+                            row: row, cellHeight: Double(cellHeight),
+                            topPadding: Double(topPadding),
+                            padding: Double(panePadding)))).fill()
             }
         }
+    }
+
+    /// A filled triangle, drawn as a path rather than set as a glyph: the 5 pt `▾` in a 20 pt pill
+    /// is exactly what the design review measured as "weak because of size".
+    ///
+    /// The view is flipped, so `maxY` is the *bottom* of the box: a chevron pointing down has its
+    /// apex there and its base along `minY`.
+    private func chevron(pointingDown: Bool, in box: NSRect) -> NSBezierPath {
+        let path = NSBezierPath()
+        if pointingDown {
+            path.move(to: NSPoint(x: box.minX, y: box.minY))
+            path.line(to: NSPoint(x: box.maxX, y: box.minY))
+            path.line(to: NSPoint(x: box.midX, y: box.maxY))
+        } else {
+            path.move(to: NSPoint(x: box.minX, y: box.minY))
+            path.line(to: NSPoint(x: box.minX, y: box.maxY))
+            path.line(to: NSPoint(x: box.maxX, y: box.midY))
+        }
+        path.close()
+        return path
     }
 
     /// Set while a click that landed on a mark with nothing to fold is being handed to the pane.
@@ -184,10 +238,7 @@ final class PromptGutterView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        guard let row = PromptGutter.row(atY: Double(point.y), cellHeight: Double(cellHeight),
-                                         padding: Double(topPadding), rows: marks.count),
-              isActionable(row)
-        else {
+        guard let row = markedRow(at: point), caps[row]?.isPressable == true else {
             // A mark with nothing to fold is a record, not a button. The click means what it would
             // have meant on the padding beside it: the start of a selection.
             forwardingToPane = true
@@ -218,9 +269,8 @@ final class PromptGutterView: NSView {
 
     // MARK: - Accessibility
     //
-    // The gutter says whether a command worked entirely in colour -- green or red -- which is the
-    // one thing a colour can never say on its own. Every mark becomes an element that says it in
-    // words and performs the same jump a click does.
+    // The gutter says whether a command worked in a colour and a shape. Every mark becomes an
+    // element that says it in words and performs the same fold a click does.
 
     override func isAccessibilityElement() -> Bool { false }
 
@@ -230,28 +280,25 @@ final class PromptGutterView: NSView {
 
     override func accessibilityChildren() -> [Any]? {
         guard cellHeight > 0 else { return [] }
-        return marks.indices.compactMap { row -> NSAccessibilityElement? in
-            guard let mark = mark(at: row) else { return nil }
-            let y = topPadding + CGFloat(row) * cellHeight
+        return caps.keys.sorted().compactMap { row -> NSAccessibilityElement? in
+            guard let cap = caps[row] else { return nil }
             // A mark with nothing to fold is still an element, because a command ran there and
             // VoiceOver has no other way to learn that -- but it is text rather than a button, and
             // `press: nil` is what makes it report as not enabled.
-            let actionable = isActionable(row)
             return DrawnControlElement.make(
-                label: label(for: mark, row: row),
-                role: actionable ? .button : .staticText,
-                frame: NSRect(x: 0, y: y, width: max(1, bounds.width), height: cellHeight),
+                label: labels[row] ?? "",
+                role: cap.isPressable ? .button : .staticText,
+                frame: rect(of: row),
                 in: self,
-                press: actionable ? { [weak self] in self?.onSelectRow?(row, false) } : nil)
+                press: cap.isPressable ? { [weak self] in self?.onSelectRow?(row, false) } : nil)
         }
     }
 
     override func resetCursorRects() {
         super.resetCursorRects()
         guard cellHeight > 0 else { return }
-        for row in marks.indices where isActionable(row) {
-            let y = topPadding + CGFloat(row) * cellHeight
-            addCursorRect(NSRect(x: 0, y: y, width: bounds.width, height: cellHeight), cursor: .pointingHand)
+        for row in pressableRows() {
+            addCursorRect(rect(of: row), cursor: .pointingHand)
         }
     }
 }

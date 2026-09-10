@@ -57,6 +57,16 @@ enum GridSnapshot {
                               named: "composite-strip-\(name(of: width))-\(state.rawValue)-\(suffix)")
                     }
                 }
+                // The same block raised by ⌘↑ instead of by the pointer, at the richest and at a
+                // narrow class. Two, not eight: the width classes are the *strip's* pictures and
+                // already shipped above -- what these add is that the whole presentation comes up
+                // with no pointer in the scene, and one wide and one narrow says that once each
+                // for a strip that fits beside the command and one that barely does.
+                for widthClass in [CommandBlockChrome.WidthClass.w3, .w1] {
+                    write(canvas: canvas, palette: palette, appearance: appearance,
+                          case: .blockCursor(widthClass), into: directory,
+                          named: "composite-block-cursor-\(name(of: widthClass))-\(suffix)")
+                }
                 // The strip while a TUI owns the screen: the pointer is on a block and there is no
                 // strip, no spine and no cap, because there is no block chrome on the alt screen.
                 write(canvas: canvas, palette: palette, appearance: appearance,
@@ -180,6 +190,11 @@ enum GridSnapshot {
         /// measured width, so the picture is of `stripPlacement` choosing this class rather than of
         /// it being told to.
         case hoverStrip(CommandBlockChrome.WidthClass, GridScene.StripState)
+        /// The same finished block at the same width class, raised by ⌘↑ instead of by the pointer:
+        /// `BlockCursor` set, no pointer anywhere in the scene. §2.8 says the cursor's block is
+        /// drawn *exactly* as a hovered one, so this must come out byte-identical to
+        /// `composite-strip-<class>-finished-*` -- which is the assertion, not a coincidence.
+        case blockCursor(CommandBlockChrome.WidthClass)
         /// A block under the pointer with a full-screen program in front of it: every piece of
         /// block chrome stands down, which is the rule that keeps vim behaving as it always did.
         case suppressedTUI
@@ -225,6 +240,14 @@ enum GridSnapshot {
         switch kind {
         case .hoverStrip(let width, let state):
             scene.show(state, at: width)
+        case .blockCursor(let widthClass):
+            // No pointer anywhere in this scene: the strip is up because ⌘↑ put the cursor here.
+            // `show` appends the block and raises it *as the pointer* -- the one thing every other
+            // case wants -- so the id it chose is read back off `hovered` and the pointer is then
+            // taken out of the scene entirely.
+            scene.show(.finished, at: widthClass)
+            scene.keyboardCursor = BlockCursor(commandID: scene.hovered)
+            scene.hovered = nil
         case .suppressedTUI:
             // The pointer parked on a block, and *then* a full-screen program takes the display:
             // `CommandBlockChrome.isAllowed` is false, so the strip, the spines and the caps all go
@@ -693,6 +716,9 @@ struct GridScene {
     var buffers: [UInt32: LensBuffer] = [:]
     var cursor: DisplayCursor
     var hovered: UInt32?
+    /// The block the keyboard is on. A picture of the cursor sets this and leaves `hovered` nil:
+    /// the strip has to come up with no pointer in the scene at all.
+    var keyboardCursor = BlockCursor()
     var showsLensField = false
     var htmlBody = false
     /// A watch on the request block, so the timeline is placed by `stripPlacement` against a real
@@ -1142,6 +1168,18 @@ struct GridScene {
                                                          hasMarks: terminal.shellEmitsPromptMarks)
         let blocks = chromeAllowed ? terminal.visibleBlocks(from: windowTop, through: lastOnScreen)
                                    : []
+        // `hovered` stops being read directly anywhere below: it is the *pointer's* input to
+        // `choose` and nothing else, and `raised` is the answer. Three places read it, and a
+        // picture with only one of them switched over is a picture of a bug.
+        let raised = BlockHover.choose(
+            pointer: hovered.flatMap { id in
+                blocks.first { $0.region.id == id }
+                    .map { BlockHover(id: id, rows: $0.visibleRows,
+                                      headerRow: $0.showsHeader ? $0.visibleRows.lowerBound : nil) }
+            },
+            cursor: BlockHover.resolve(cursor: keyboardCursor, blocks: blocks, allowed: chromeAllowed),
+            pointerInside: hovered != nil,
+            cursorMovedLast: !keyboardCursor.isEmpty)?.id
 
         let failedColor = palette.readable(1)
         let runningColor = palette.readable(3)
@@ -1192,7 +1230,7 @@ struct GridScene {
             if let cap = CommandBlockChrome.gutterCap(
                     header,
                     hasStarted: terminal.commandDidStart(atAbsoluteRow: block.region.promptRow),
-                    hovered: hovered == block.region.id) {
+                    hovered: raised == block.region.id) {
                 gutterCaps[promptSlot] = cap
                 gutterLabels[promptSlot] = GutterMarkLabel.Key(
                     mark: block.failed ? .failed : (block.isRunning ? .running : .succeeded),
@@ -1215,7 +1253,7 @@ struct GridScene {
             let placedSummary: CommandBlockChrome.PlacedSummary? = summaryHere.map {
                 (row: $0.row, text: text)
             }
-            if hovered == block.region.id,
+            if raised == block.region.id,
                let placement = CommandBlockChrome.stripPlacement(
                     header, commandRows: candidates, cols: cols, summary: placedSummary,
                     measure: { Int((probe.width(of: $0, font: overlayFont) / canvas.cell.width)
@@ -1299,7 +1337,7 @@ struct GridScene {
                                 cursorShape: terminal.cursorShape, focused: true, preedit: nil,
                                 searchMatches: matches, currentSearchMatch: current,
                                 rowNotes: notes, blockSpines: spines, blockSummaries: summaries,
-                                highlightedRows: hovered.flatMap { id in
+                                highlightedRows: raised.flatMap { id in
                                     blocks.first { $0.region.id == id }.flatMap {
                                         DisplayRows.slots(coveredBy: $0.visibleRows,
                                                           commandID: id, in: display,

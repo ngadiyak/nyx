@@ -138,6 +138,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// own blocks and display rows -- so it follows the rows when they scroll and disappears when a
     /// TUI takes the screen.
     private(set) var hoveredBlock: BlockHover?
+    /// The block the keyboard is on. Moved by ⌘↑/⌘↓, re-anchored by the frame pass when the
+    /// viewport moved for another reason, and drawn exactly as a hovered block -- a cursor nobody
+    /// can see is a trap. `private(set)` because the rule is `BlockCursor`'s and nothing outside
+    /// this file may set it, but every block-scoped action and the QA hook read it.
+    private(set) var blockCursor = BlockCursor()
+    /// The viewport move ⌘↑/⌘↓ just made, which must not re-anchor the cursor it came from.
+    /// Consumed by the next frame.
+    private var blockCursorScrolledViewport = false
+    /// ⌘↑/⌘↓ was the last thing pressed, so the cursor's block is drawn even with the pointer
+    /// resting inside the pane. Cleared by the next pointer move.
+    private var blockCursorWinsOverPointer = false
     /// The headers built for the last frame, by visible row, so a click on a summary can be resolved
     /// and the overlay can be fed without another walk.
     private var headersOnScreen: [Int: BlockHeader] = [:]
@@ -1975,6 +1986,27 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             let blocks = chromeAllowed ? t.visibleBlocks(from: windowTop, through: lastRowOnScreen) : []
             self.displayBlockRows = Dictionary(blocks.map { ($0.region.id, $0.region.promptRow) },
                                                uniquingKeysWith: { first, _ in first })
+            // The viewport moved for a reason this cursor did not cause -- a scroll, new output, a
+            // fold -- so the cursor re-anchors. Guarded twice on purpose: `BlockCursor` is the rule
+            // and re-checks visibility itself, but `commandToFold()` walks the buffer and must not
+            // be called on a frame where the answer cannot change. In steady state this is one
+            // `contains` over the frame's own ids.
+            let viewportSignature = (t.viewportTopRow, t.totalRows)
+            if viewportSignature != self.lastViewportSignature {
+                self.lastViewportSignature = viewportSignature
+                if self.blockCursorScrolledViewport {
+                    self.blockCursorScrolledViewport = false
+                } else if let id = self.blockCursor.commandID {
+                    // Built here and not above: on a frame where the viewport did not move -- which
+                    // is almost every frame -- this allocates nothing at all.
+                    let visibleIDs = blocks.map(\.region.id)
+                    if !visibleIDs.contains(id) {
+                        self.blockCursor = BlockCursor.afterViewportMove(self.blockCursor,
+                                                                         visible: visibleIDs,
+                                                                         fallback: t.commandToFold()?.id)
+                    }
+                }
+            }
             // Which block the pointer is on, decided here rather than in `mouseMoved`, against the
             // very blocks and display rows this frame is about to draw.
             //
@@ -1984,9 +2016,22 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // slots. Doing it per frame makes the hover follow the rows the way the hovered link
             // does (spec 4.2), and no scroll, fold, search reveal or autoscroll needs to remember
             // to invalidate it.
+            //
+            // The keyboard's block is resolved the same way, against the same blocks, and
+            // `BlockHover.choose` says which of the two is drawn -- so §2.8's "the cursor is
+            // visible or it is a trap" is one Core rule and not a second drawing path.
             let previousHover = self.hoveredBlock
-            self.hoveredBlock = self.resolveBlockHover(in: t, blocks: blocks, allowed: chromeAllowed,
-                                                       viewportTop: windowTop)
+            let pointerHover = self.resolveBlockHover(in: t, blocks: blocks, allowed: chromeAllowed,
+                                                      viewportTop: windowTop)
+            var cursorHover = BlockHover.resolve(cursor: self.blockCursor, blocks: blocks,
+                                                 allowed: chromeAllowed)
+            if !self.foldRowsOnScreen.isEmpty {
+                cursorHover = cursorHover?.placed(onDisplayRows: self.foldRowsOnScreen,
+                                                  viewportTop: windowTop)
+            }
+            self.hoveredBlock = BlockHover.choose(pointer: pointerHover, cursor: cursorHover,
+                                                  pointerInside: self.pointerIsInsidePane,
+                                                  cursorMovedLast: self.blockCursorWinsOverPointer)
             // The three block colours, once per frame. `readable` picks between a colour and its
             // bright variant by contrast against the background -- a handful of Lab conversions --
             // and evaluating it per block, per frame, put that on the render path for nothing: the
@@ -3080,6 +3125,18 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// blocks and display rows of the frame being drawn. See `resolveBlockHover`.
     private var lastPointerPoint: NSPoint?
 
+    /// `(viewportTopRow, totalRows)` as the last frame saw them. The cursor re-anchors when this
+    /// moves and it was not ⌘↑/⌘↓ that moved it. A tuple and not a string: it is compared on every
+    /// frame, and a frame must not allocate to find out that nothing happened.
+    private var lastViewportSignature = (-1, -1)
+
+    /// Whether the pointer is in this pane at all, which is what decides between the pointer's
+    /// hover and the keyboard's.
+    private var pointerIsInsidePane: Bool {
+        guard let point = lastPointerPoint else { return false }
+        return bounds.contains(point)
+    }
+
     /// Which block the pointer sits on -- for the tint and the overlay -- against one frame's
     /// blocks. `resolve` answers in viewport-relative absolute space; `placed` re-expresses that in
     /// the display slots actually on screen, which differ from absolute space only when a fold is
@@ -3123,6 +3180,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // one cell -- the cheap comparison below is about the link hit test, and the block hover
         // costs nothing until the next frame asks for it.
         lastPointerPoint = point
+        // A pointer move hands the presentation back to the pointer; ⌘↑/⌘↓ takes it again. Redrawn
+        // where it actually changes hands, because the cell test below returns early on a move
+        // inside one cell -- and the keyboard's block would stay lit until something else drew.
+        if blockCursorWinsOverPointer {
+            blockCursorWinsOverPointer = false
+            markDirty()
+        }
         // A mouse-move that stays inside one cell cannot change what is under the pointer, and
         // hit-testing is not cheap: it tokenizes the row through five regular expressions and may
         // `stat` a path. Mouse-move events arrive far faster than cells change.
@@ -3161,6 +3225,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // The pointer has left the pane; with no point to resolve against, the next frame finds no
         // block and takes the overlay and the tint down with it.
         lastPointerPoint = nil
+        // A pointer move hands the presentation back to the pointer; ⌘↑/⌘↓ takes it again. Leaving
+        // the pane is one of those moves, and with no point to resolve against the cursor wins on
+        // the next frame either way -- this only keeps the flag meaning what it says.
+        blockCursorWinsOverPointer = false
         let hadBlock = hoveredBlock != nil
         let hadLink = hoveredLink != nil
         hoveredLink = nil
@@ -3589,19 +3657,46 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         session.withTerminal { $0.shellEmitsPromptMarks }
     }
 
-    /// Moves the viewport to the prompt above or below what is on screen, and returns whether it
-    /// moved -- the caller beeps when there is nowhere to go rather than doing nothing silently.
+    /// ⌘↑ / ⌘↓: one block back or forward, and the viewport brought to it.
+    ///
+    /// The block the chord lands on *is* the block cursor, so "where ⌘↑ took me" and "which block
+    /// ⌘⇧A, Copy Output and ⌘. will act on" are one answer. It reports false only when there is
+    /// nowhere to go and nothing moved -- the caller beeps rather than doing nothing silently.
+    ///
+    /// A cursor that is not on the screen in front of the reader is seeded from that screen first,
+    /// so a pane wheeled back two thousand rows still goes *up from where the reader is* rather
+    /// than to the newest block at the bottom -- which is where `previous_prompt` has always gone.
+    /// `displayBlockRows` is the last frame's own blocks, which is exactly "the screen the reader
+    /// is looking at"; `blockCursorIDs` walks the buffer, which is a keystroke's work and not a
+    /// frame's -- the trade `promptRows` documents about itself, and the reason both calls are
+    /// here rather than in `render`.
     @discardableResult
     func jumpToPrompt(forward: Bool) -> Bool {
-        let moved: Bool = session.withTerminal { t in
-            let from = t.viewportTopRow
-            guard let row = forward ? t.nextPrompt(after: from) : t.previousPrompt(before: from)
-            else { return false }
-            _ = t.scrollToAbsoluteRow(row)
-            return true
+        let onScreen = Array(displayBlockRows.keys)
+        let outcome: (moved: Bool, scrolled: Bool, cursor: BlockCursor) = session.withTerminal { t in
+            let ids = t.blockCursorIDs
+            let next = BlockCursor.seed(self.blockCursor, visible: onScreen,
+                                        viewportBlock: t.commandToFold()?.id)
+                ?? BlockCursor.moved(self.blockCursor, by: forward ? .next : .previous, among: ids)
+            guard let id = next.commandID, let row = t.promptRow(ofCommand: id) else {
+                return (false, false, next)
+            }
+            let scrolled = t.scrollToAbsoluteRow(row)
+            return (scrolled || next != self.blockCursor, scrolled, next)
         }
-        if moved { markDirty() }
-        return moved
+        blockCursor = outcome.cursor
+        // Only when this press really moved the viewport. Set unconditionally, a refused press --
+        // ⌘↑ already at the oldest block -- would leave the flag standing until some *later*
+        // scroll changed the signature, and swallow that scroll's re-anchor instead.
+        if outcome.scrolled { blockCursorScrolledViewport = true }
+        // The chord takes the presentation back from a pointer resting in the pane whether or not
+        // it found anywhere to go, and *that* changes the picture on its own: ⌘↑ refused at the
+        // oldest block still has to re-light the cursor's block. So the redraw is not gated on
+        // `moved` alone, or the beep would be the only thing that happened.
+        let tookPresentation = !blockCursorWinsOverPointer
+        blockCursorWinsOverPointer = true
+        if outcome.moved || tookPresentation { markDirty() }
+        return outcome.moved
     }
 
     /// A fixed 20 pt column, whatever the padding is, and never hidden. It is the *target*, not the
@@ -4407,6 +4502,9 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // Cursor home, erase the screen, erase the scrollback -- fed to our own parser rather than
         // written to the PTY, so it works while the shell is busy running something.
         session.withTerminal { $0.feed("\u{1b}[H\u{1b}[2J\u{1b}[3J") }
+        // Every id in the buffer names rows that are gone. A cursor kept across ⌘K would sit on a
+        // stranger's command, exactly as a kept watch header would.
+        blockCursor = BlockCursor()
         // `markDirty`, not `dirty.set()`. On an idle pane the display link is parked -- that is how
         // this terminal holds 0% CPU doing nothing -- and setting the flag without waking it means
         // the screen is cleared in the model and unchanged on screen until something else happens

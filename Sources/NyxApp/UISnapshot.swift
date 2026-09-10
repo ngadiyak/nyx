@@ -239,6 +239,14 @@ enum UISnapshot {
                 write(workbenchHintRow(palette: themePalette, appearance),
                       named: "workbench-hint-\(suffix)", into: directory,
                       background: themePalette.background)
+                // The same pill on a 13 pt row -- `line-height = 0.8`, §8.4's case. The floor is
+                // `hitRowHeight`'s, so the pill stays 16 pt and overhangs the row it is centred on;
+                // this is the only picture in the set where the clamp is visible at all, because at
+                // the default font the cell is 17 pt and the clamped and unclamped pills are the
+                // same pill.
+                write(workbenchHintRow(palette: themePalette, appearance, cellHeight: 13),
+                      named: "workbench-hint-lineheight-08-\(suffix)", into: directory,
+                      background: themePalette.background)
                 // The one strip allowed to sit on the command's own text: a running watch's `Stop`
                 // on a line so long that no row of it has a free column. Stopping a runaway watch
                 // is one click at every width, so this pill is drawn over the tail on an opaque
@@ -649,9 +657,14 @@ enum UISnapshot {
     /// One row of the grid, drawn the way the pane draws it: the terminal's font, the theme's
     /// foreground, one cell row tall and `columns` cells wide. What the floating chrome below sits
     /// on, so the pictures show contrast against the text rather than against nothing.
-    private static func gridRow(palette: Palette, text: String, columns: Int) -> (NSView, CGFloat) {
+    ///
+    /// `cellHeight` overrides the font's own row height for the one thing a font cannot say: what
+    /// the row is at a `line-height` a user chose. §8.4's case is 13 pt, and it is the case every
+    /// one-row hit target's 16 pt floor exists for.
+    private static func gridRow(palette: Palette, text: String, columns: Int,
+                                cellHeight: CGFloat? = nil) -> (NSView, CGFloat) {
         let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        let cell = ceil(font.ascender - font.descender + font.leading)
+        let cell = cellHeight ?? ceil(font.ascender - font.descender + font.leading)
         let advance = ("M" as NSString).size(withAttributes: [.font: font]).width
         let width = advance * CGFloat(columns)
         let row = NSView(frame: NSRect(x: 0, y: 0, width: width, height: cell))
@@ -665,20 +678,35 @@ enum UISnapshot {
     }
 
     /// `⌘E Workbench` where it is really placed: right-aligned on the last row of a command that
-    /// leaves room for it.
-    private static func workbenchHintRow(palette: Palette, _ appearance: NSAppearance.Name) -> NSView {
+    /// leaves room for it, framed at `CommandBlockChrome.hitRowHeight` and centred on its row,
+    /// which is what `Pane.render` does with it.
+    ///
+    /// Framing it at the cell instead is how the 16 pt floor got lost the first time: at the
+    /// default font the cell is already 17 pt, so a picture taken at `height: cell` agreed with a
+    /// picture taken at the floor and nothing in the tree noticed the clamp had gone. Hence
+    /// `cellHeight:` — at 13 pt the pill is 16 and overhangs its row by 1.5 pt each way, and the
+    /// container is as tall as the pill so the picture shows the overhang rather than clipping it.
+    private static func workbenchHintRow(palette: Palette, _ appearance: NSAppearance.Name,
+                                         cellHeight: CGFloat? = nil) -> NSView {
         let (row, cell) = gridRow(palette: palette,
                                   text: "curl -sS https://api.example.com/v1/users?page=2",
-                                  columns: 64)
-        row.appearance = NSAppearance(named: appearance)
-        let pill = WorkbenchHintView(frame: NSRect(x: 0, y: 0, width: 120, height: cell))
+                                  columns: 64, cellHeight: cellHeight)
+        let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cell)))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: row.bounds.width,
+                                             height: max(cell, height)))
+        container.appearance = NSAppearance(named: appearance)
+        row.frame = NSRect(x: 0, y: (container.bounds.height - cell) / 2,
+                           width: row.bounds.width, height: cell)
+        container.addSubview(row)
+        let pill = WorkbenchHintView(frame: NSRect(x: 0, y: 0, width: 120, height: height))
         pill.appearance = NSAppearance(named: appearance)
         pill.update(text: WorkbenchHint.text(chord: "\u{2318}E"), palette: palette)
         let width = pill.intrinsicContentSize.width
-        pill.frame = NSRect(x: row.bounds.width - width, y: 0, width: width, height: cell)
+        pill.frame = NSRect(x: row.bounds.width - width,
+                            y: row.frame.minY + (cell - height) / 2, width: width, height: height)
         pill.layoutSubtreeIfNeeded()
-        row.addSubview(pill)
-        return row
+        container.addSubview(pill)
+        return container
     }
 
     /// The hover strip on a command line with no room anywhere: the W0 `Stop`, alone, over the tail

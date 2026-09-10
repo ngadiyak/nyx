@@ -134,12 +134,19 @@ final class PromptGutterView: NSView {
         let width = CGFloat(CommandBlockChrome.spineWidth)
         for (row, cap) in caps {
             let y = topPadding + CGFloat(row) * cellHeight
-            // Only the marks the invalidated rect actually covers. A pane can carry a screenful of
-            // them, AppKit asks for a partial rect whenever something small over the gutter is
-            // composited, and drawing all of them for a band two rows tall is the kind of per-frame
-            // work that only shows up as a warm fan.
-            guard dirtyRect.intersects(NSRect(x: markX, y: y, width: max(width, 8),
-                                              height: cellHeight)) else { continue }
+            // Only the marks the invalidated rect actually covers. This is not a per-frame saving
+            // -- the gutter redraws when its caps change, not with the grid -- it is for the
+            // *partial exposure* rects AppKit hands `draw` whenever something small over the
+            // gutter is uncovered or composited, where drawing a screenful of caps to repaint two
+            // rows is work nobody asked for.
+            //
+            // At least 8 pt in both directions, and centred on the row rather than hung from its
+            // top: a hover chevron is an 8 pt path centred in the row, so at a row shorter than
+            // 8 pt (`line-height` can go that low) it reaches past both edges of the row itself,
+            // and a guard box the height of the row would skip a chevron the rect really covers.
+            let box = max(CGFloat(8), cellHeight)
+            guard dirtyRect.intersects(NSRect(x: markX, y: y - (box - cellHeight) / 2,
+                                              width: max(width, 8), height: box)) else { continue }
             let colour = nsColor(cap.tone.color(in: palette), alpha: cap.shape == .faded ? 0.4 : 1)
             switch cap.shape {
             case .solid, .faded:

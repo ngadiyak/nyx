@@ -143,7 +143,9 @@ final class WorkbenchHintView: NSView {
         invalidateIntrinsicContentSize()
     }
 
-    /// Rounded like the pill it is: half of one cell row, which is the height the pane gives it.
+    /// Rounded like the pill it is: half of its own height, capped at 8 pt. The pane frames it at
+    /// `CommandBlockChrome.hitRowHeight(cellHeight:)` -- a one-row target's 16 pt floor, not the
+    /// cell -- so at `line-height 0.8` this is 8 and not 6.5.
     override func layout() {
         super.layout()
         layer?.cornerRadius = min(bounds.height, 16) / 2

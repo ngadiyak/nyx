@@ -122,15 +122,23 @@ public struct KeyBinding: Equatable {
     /// menu was rebuilt from this table, it stopped supplying anything that was not in here, and
     /// ⌘C, ⌘V, ⌘N, ⌘+, ⌘- and ⌘0 silently stopped working. They are bindings like everything else.
     ///
-    /// `⌘+` is bound as both `+` and `=`: the key is the same one, and which character it produces
-    /// depends on whether shift is held. Binding only one of them makes the shortcut work for
-    /// half the people who try it.
+    /// **Zoom in is four bindings, and each one is a key a person actually presses.** The comment
+    /// here used to claim `+` and `=` were both bound and that this made the shortcut work; it did
+    /// not. `⌘+` on the ANSI block *is* ⌘⇧=, so the event carries `.shift` and matched neither
+    /// `cmd++` nor `cmd+=`, both of which are written without it -- and only one chord per action
+    /// becomes a menu equivalent, so the layout-independent path was not available to it either.
+    /// ⌘+ did nothing at all on any layout. The four are: `=` with and without shift (the key code
+    /// says `=`, which is what `MacKeyCodes.bindingKey` reports), and `+` with and without it (the
+    /// keypad's `+`, and any layout whose key code is off the ANSI block). `+` with ⌘ alone is last
+    /// because `binding(for:)` advertises the final match, and ⌘+ is what a Mac menu shows.
     public static let defaults: [KeyBinding] = [
         KeyBinding(key: .char("c"), modifiers: [.cmd], action: .copy),
         KeyBinding(key: .char("v"), modifiers: [.cmd], action: .paste),
         KeyBinding(key: .char("n"), modifiers: [.cmd], action: .newWindow),
-        KeyBinding(key: .char("+"), modifiers: [.cmd], action: .fontBigger),
         KeyBinding(key: .char("="), modifiers: [.cmd], action: .fontBigger),
+        KeyBinding(key: .char("="), modifiers: [.cmd, .shift], action: .fontBigger),
+        KeyBinding(key: .char("+"), modifiers: [.cmd, .shift], action: .fontBigger),
+        KeyBinding(key: .char("+"), modifiers: [.cmd], action: .fontBigger),
         KeyBinding(key: .char("-"), modifiers: [.cmd], action: .fontSmaller),
         KeyBinding(key: .char("0"), modifiers: [.cmd], action: .fontReset),
         KeyBinding(key: .char("t"), modifiers: [.cmd], action: .newTab),

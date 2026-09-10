@@ -245,7 +245,19 @@ private let sheetGreyDark = RGB(50, 50, 50)        // windowBackgroundColor, dar
             #expect(RGB.contrast(hairline, fill) <= RGB.contrast(ink, fill) + 0.001,
                     "\(name) \(state) hairline is louder than the label")
         }
-        // The press really moves: the accent and its pressed fill are not the same colour.
-        #expect(palette.pressedFill(of: palette.accent) != palette.accent, "\(name) press")
+        // The press really *moves*, by a measured step and not merely by `!=`. The first take
+        // blended the accent 12 % toward `foreground` -- the step the unlit fill takes -- and an
+        // accent is already near `foreground`, so it separated by **1.032:1** on nyx-dark and
+        // 1.047 on nyx-light: five or six of 255 in the strongest channel, which the shipped
+        // pictures diffed at 7 and 9 against 101 and 105 for idle → hovered. A press nobody can
+        // see is a press the chip does not have.
+        let pressedFill = palette.pressedFill(of: palette.accent)
+        let separation = RGB.contrast(palette.accent, pressedFill)
+        #expect(separation >= 1.2, "\(name) press separation \(separation)")
+        // …and the two floors above still hold on the moved fill, which is what stops the
+        // separation being bought with the label's readability: asserted for `pressed` in the loop.
+        #expect(RGB.contrast(palette.textOn(pressedFill), pressedFill) >= 4.5, "\(name) press label")
+        #expect(RGB.contrast(palette.litPillHairline(on: pressedFill), pressedFill) >= 3,
+                "\(name) press hairline")
     }
 }

@@ -151,7 +151,9 @@ padding no longer folds anything, because the padding is not a control and never
   success's rect at `Palette.fadedMark`. The 40 % is **nominal**: 40 % of a green over a near-white
   ground measured 1.78:1, so `fadedMark` raises it per theme until it clears **3:1 against the harder
   of the plain background and the hover tint** (the tint became the harder one when D6 moved it under
-  the gutter), capped at the solid mark's own colour. Six of seven built-ins end above 40 %.
+  the gutter), capped at the solid mark's own colour. **All seven** built-ins end above 40 %: the
+  nominal step reads in none of them (the success mark at 40 % measures 1.61:1 to 2.61:1 against the
+  harder ground), so 40 % is the direction and 3:1 is the rule.
   *Disagreement:* a11y 6.2 proposed a half-height mark for success; `findings-design` §3.2 gives the
   four shapes above. **Ruling: design §3.2** — failure is the state that must be findable while
   scrolling, so failure gets the extra ink, not success.

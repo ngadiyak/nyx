@@ -285,8 +285,9 @@ public struct Palette: Equatable {
     ///
     /// A fixed 0.30 is not enough on its own: `ground` already carries some of that same wash (the
     /// fill itself, 0.14 idle and hovered, 0.26 pressed), so the *gap* the hairline has left to
-    /// work with shrinks as the fill's own alpha rises -- at 0.30 flat, every theme's pressed state
-    /// measured under 1.6. Walking further towards `foreground` is always available: the ceiling is
+    /// work with shrinks as the fill's own alpha rises -- at 0.30 flat, **three** of the seven
+    /// built-ins' pressed states measure under 1.6 (nyx-light 1.51, one-dark 1.55, solarized-dark
+    /// 1.48; the other four sit at 1.75 to 1.84). Walking further towards `foreground` is always available: the ceiling is
     /// `contrast(foreground, ground)`, which is what a hairline of *pure* foreground would read at,
     /// and every theme's is comfortably above 1.6 in every state (worst: one-dark pressed, 3.63:1).
     ///
@@ -317,17 +318,46 @@ public struct Palette: Equatable {
         Palette.pushed(fill, toward: textOn(fill), until: fill, reaches: 3, from: 0.10, to: 1.0)
     }
 
-    /// `pressedFill` moves the accent toward `foreground` by **0.12** -- exactly the step the unlit
-    /// pill's fill takes from 0.14 to 0.26 (§2.3, Addendum 3), so a press moves the same distance
-    /// whichever pill it lands on. The label stays `textOn(pressedFill(...))`, which re-resolves
-    /// against the moved fill rather than keeping an ink calibrated for the one underneath it.
+    /// `pressedFill` moves the chip's fill toward **its own ink** -- `textOn(fill)` -- by whatever
+    /// it takes to separate the two by **1.2:1**, and no further.
+    ///
+    /// Not "the same 0.12 the unlit fill takes": that is the right *step* on a wash of `foreground`
+    /// over a dark ground and the wrong one on the accent, because an accent is already near
+    /// `foreground`. Measured, 0.12 toward `foreground` separated the accent from its pressed fill
+    /// by **1.032:1** on nyx-dark and 1.047 on nyx-light -- five or six of 255 in the strongest
+    /// channel, against the 23 and 19 the unlit fill's 0.14 → 0.26 moves -- and the shipped
+    /// pictures diffed at 7 and 9 where idle → hovered diffed at 101 and 105. A press nobody can
+    /// see is a press the chip does not have.
+    ///
+    /// Toward `textOn(fill)` rather than toward `foreground`, because that is the direction that
+    /// actually moves: reaching 1.2:1 toward `foreground` needs 0.35 to 0.75 in five themes, which
+    /// swamps the accent's own hue, and **cannot be reached at all** in solarized-dark, whose accent
+    /// sits within 1.013:1 of its foreground. Toward the ink it is 0.10 to 0.15 in all seven. It
+    /// also reads as the right thing: a pressed chip moves toward its own label, which is "more
+    /// ink", which is what the unlit press means too.
+    ///
+    /// The separation is never bought with the label. Each candidate has to keep
+    /// `textOn(candidate)` at 4.5:1 and `litPillHairline(on: candidate)` at 3:1 before it is
+    /// accepted; a theme that cannot give 1.2 inside those keeps the loudest step that stays inside
+    /// them, and one that cannot even do that gets its fill back -- no pressed art rather than an
+    /// unreadable one. Measured across the seven built-ins: separation 1.23 to 1.31, label 4.52 to
+    /// 6.36, hairline 3.02 to 3.21.
     public func pressedFill(of fill: RGB) -> RGB {
-        RGB.blend(fill, into: foreground, amount: 0.12)
+        let ink = textOn(fill)
+        var loudestReadable = fill
+        for step in 1...20 {
+            let candidate = RGB.blend(fill, into: ink, amount: Double(step) / 20)
+            guard RGB.contrast(textOn(candidate), candidate) >= 4.5,
+                  RGB.contrast(litPillHairline(on: candidate), candidate) >= 3 else { continue }
+            loudestReadable = candidate
+            if RGB.contrast(fill, candidate) >= 1.2 { return candidate }
+        }
+        return loudestReadable
     }
 
     /// The gutter's faded mark: `solid` at 40 % over this palette's background, raised toward
-    /// `solid` in twentieths until it clears **3:1** against that background, and capped at `solid`
-    /// itself.
+    /// `solid` in twentieths until it clears **3:1** against **both** grounds the mark lands on --
+    /// the plain background and the hovered block's tint -- and capped at `solid` itself.
     ///
     /// 3 and not 4.5 because §2.2's mark is a *shape*, not text, and it is the only cue that a
     /// command ran and printed nothing -- no label, no chevron, nothing beside it. 40 % is the

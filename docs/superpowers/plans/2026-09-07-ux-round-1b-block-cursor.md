@@ -23,8 +23,7 @@
 - Announcement rule, verbatim (§8.1): the focused pane only, and only when the command ran ≥ 2 s or exited non-zero; the sentence is `BlockHeader.summary`. Wording stays in Core.
 - Every new action goes the whole way (`.claude/skills/nyx-config-keys/SKILL.md`, "Adding an action"): `TerminalAction` case → `ActionCatalog.sections` → `KeyBinding.defaults` → `TabController.perform` **and** `canPerform` → `docs/configuration.md` bindings table → `ActionCatalogTests`/`KeyBindingTests`.
 - Commit trailers on every commit:
-  `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and
-  `Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP`.
+  `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` (the only trailer since 2026-09-09; the earlier `Claude-Session` line is superseded) and
   `git add` by name. Never touch `CLAUDE.md`, `.claude/`, `docs/testing.md`, `docs/workflow.md`, `docs/status.md`, `README.md`.
 
 ---
@@ -479,7 +478,6 @@ returns when it leaves or the next ⌘↑/⌘↓ arrives. `BlockTarget.resolve` 
 actions will target, with the fallback each caller names.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 EOF
 )"
 ```
@@ -719,7 +717,6 @@ pressed again. ⌘K clears it -- every id it could hold names rows that are gone
 anywhere in the scene, which is the check that the two paths really are one drawing.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 EOF
 )"
 ```
@@ -966,7 +963,6 @@ response copies what is on the screen from either route. ⌘. and the strip's `S
 series now, which is the second half of a11y 6.9, and `docs/configuration.md` says so.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 EOF
 )"
 ```
@@ -1250,7 +1246,6 @@ because a menu costs a header and a previous-run search.
 `scroll_to_sticky_prompt` gives the sticky strip's click the keyboard path §2.7 promised it.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 EOF
 )"
 ```
@@ -1424,7 +1419,6 @@ Decided in Core, so the ⋯ button, the right-click menu, ⌘⇧A and the snapsh
 and a test says every action it names is in the menu bar too.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 EOF
 )"
 ```
@@ -1708,7 +1702,6 @@ two presses up rather than the last one, ⌘. refused two blocks away from its r
 the run, and ⌘⇧A popped the block's own menu with its chords in it. The hook is removed.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 EOF
 )"
 ```

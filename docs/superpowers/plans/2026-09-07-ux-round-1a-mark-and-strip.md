@@ -24,8 +24,7 @@
 - Every tinted control resolves through `SummaryTone.color(in:)` / `RGB.readable(_:on:towards:)`; floors are 4.5:1 for text and 3:1 for a shape that is the only cue.
 - **A new piece of chrome gets a snapshot case in the same commit** (`docs/testing.md`), named `<case>-<palette>-<appearance>`.
 - Commit trailers on **every** commit:
-  `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`
-  `Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP`
+  `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` (the only trailer since 2026-09-09; the earlier `Claude-Session` line is superseded)
 - `git add` **by name**; never `git add -A`. Never touch `CLAUDE.md`, `.claude/`, `docs/testing.md`, `docs/workflow.md`, `docs/checklist.md`.
 - Plan 1b (`BlockCursor`, ⌘⇧A, the re-targeted actions) is a **separate plan**. Nothing here adds a `TerminalAction`, and nothing here waits for one.
 
@@ -929,7 +928,6 @@ from the right, and the interval is the first thing a narrow strip can do withou
 gains `hiddenRuns`, so a timeline at 48 runs can say `+18` instead of capping in silence.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```
@@ -1277,7 +1275,6 @@ And a click in the left padding no longer folds anything: `foldBlock(atPointInPa
 The padding is not a control and never said it was.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```
@@ -1716,7 +1713,6 @@ the accent "on" chip are now this view's own state, and the snapshot can render 
 deleted with their last callers.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```
@@ -1850,7 +1846,6 @@ Its trailing `▾` is honest: pressing the chip opens the lens rows of the ⋯ m
 `BlockHeader.actions` so the chip cannot offer a lens the menu does not. ⌘⇧J still toggles.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```
@@ -2017,7 +2012,6 @@ was the only control on that row; the gutter cap folds at every width and costs 
 crowded command line now loses a nicety instead of a control.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```
@@ -2187,7 +2181,6 @@ And it steps aside for a full-screen program. Spines, summaries and the gutter a
 command that started it. Its height goes through `hitRowHeight`, so it is never 13 pt tall.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```
@@ -2319,7 +2312,6 @@ Both extremes are pictured for the strip, the gutter and the pinned band -- unti
 only ever been rendered at its defaults.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```
@@ -2472,7 +2464,6 @@ Rung 6: a temporary `NYX_SMOKE_QA=blockchrome` hook hovered each width class thr
 -- which now does nothing, as designed. The hook is removed; the numbers are in the task report.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```

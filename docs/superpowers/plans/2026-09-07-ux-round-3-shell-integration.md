@@ -34,8 +34,7 @@
 - **The alert, verbatim** (spec §4.3): message `Cannot watch a request in this pane`; informative `A watch sends its next run only when the shell is back at a prompt, and this shell does not tell Nyx where its prompts are. Nyx adds prompt marks to zsh, bash and fish by itself; this pane is running <shell>.`, whose second sentence becomes `Prompt marks are off by your setting.` when `mode == .off` and, for bash < 4.4, `Nyx adds prompt marks to zsh, fish and bash 4.4 or newer by itself; this pane is running bash <version>, whose line has to go into ~/.bashrc by hand — Settings ▸ Shell has it.`; buttons `Shell Settings…` (default) · `OK`.
 - Every new piece of chrome gets its snapshot case **in the same commit** (`docs/testing.md`).
 - Commit trailers on every commit:
-  `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`
-  `Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP`
+  `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` (the only trailer since 2026-09-09; the earlier `Claude-Session` line is superseded)
 - `git add` **by name**, never `-A`. Never commit a QA hook. Never touch `CLAUDE.md`, `.claude/`, `docs/testing.md`, `docs/workflow.md`, `docs/checklist.md`.
 
 ## File map
@@ -609,7 +608,6 @@ user's own value carried in NYX_XDG_DATA_DIRS and the XDG default written out
 when they had none.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```
@@ -1221,7 +1219,6 @@ the automatic path, and /bin/bash sourcing the line the settings page offers for
 the manual one, which is the path most Macs will actually take.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```
@@ -1456,7 +1453,6 @@ by the user's own `function fish_prompt` and the B mark would never appear.
 this one is sourced by every `fish -c` there is.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```
@@ -1882,7 +1878,6 @@ Live marks beat everything: a user who pasted that line is looking at a full
 gutter, and any sentence about missing marks would be a lie about their screen.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```
@@ -2288,7 +2283,6 @@ waiting, bash 3.2, a shell with no hooks, and off -- and bash 3.2 is the one the
 majority of Macs will show.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```
@@ -2549,7 +2543,6 @@ sentences come from ShellIntegrationStatus, so the alert, the banner and the
 settings page cannot say different things about the same pane.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```
@@ -2671,7 +2664,6 @@ git commit -m "$(cat <<'MSG'
 Rung 6 with SHELL=<shell>: <what was printed, and what it should have been>.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01WjDoxfQwvuQVRRjWXbzavP
 MSG
 )"
 ```

@@ -1221,11 +1221,24 @@ public extension CommandBlock {
 /// Which block the pointer is over, and where its chrome goes. Pure so the answer for "pointer on
 /// the row after the last block" or "chrome disallowed while a TUI runs" is a test, not a guess.
 public struct BlockHover: Equatable {
+    /// What raised this hover. The pointer and the keyboard light a block the same way -- the
+    /// cursor would be a trap otherwise -- but only one of them can be answered by moving a mouse,
+    /// so the pane has to know which it is looking at.
+    public enum Source: Equatable { case pointer, cursor }
+
     public let id: UInt32
     /// Visible rows to tint.
     public let rows: Range<Int>
     /// The visible row to attach the overlay to, nil when the command line is above the viewport.
     public let headerRow: Int?
+    public let source: Source
+
+    public init(id: UInt32, rows: Range<Int>, headerRow: Int?, source: Source = .pointer) {
+        self.id = id
+        self.rows = rows
+        self.headerRow = headerRow
+        self.source = source
+    }
 
     /// The same hover with its overlay attached elsewhere, or nowhere.
     ///
@@ -1233,7 +1246,7 @@ public struct BlockHover: Equatable {
     /// move it onto a wrapped continuation of the command line, and can refuse a row altogether,
     /// in which case there is no overlay to show and the tint alone marks the block.
     public func attachingHeader(to row: Int?) -> BlockHover {
-        BlockHover(id: id, rows: rows, headerRow: row)
+        BlockHover(id: id, rows: rows, headerRow: row, source: source)
     }
 
     public static func resolve(pointerRow: Int?, blocks: [CommandBlock], allowed: Bool) -> BlockHover? {
@@ -1241,7 +1254,28 @@ public struct BlockHover: Equatable {
               let block = blocks.first(where: { $0.visibleRows.contains(pointerRow) }),
               block.region.id != 0 else { return nil }
         return BlockHover(id: block.region.id, rows: block.visibleRows,
-                          headerRow: block.showsHeader ? block.visibleRows.lowerBound : nil)
+                          headerRow: block.showsHeader ? block.visibleRows.lowerBound : nil,
+                          source: .pointer)
+    }
+
+    /// The block the keyboard is on, hovered exactly as the pointer would hover it.
+    public static func resolve(cursor: BlockCursor, blocks: [CommandBlock],
+                               allowed: Bool) -> BlockHover? {
+        guard allowed, let id = cursor.commandID, id != 0,
+              let block = blocks.first(where: { $0.region.id == id }) else { return nil }
+        return BlockHover(id: id, rows: block.visibleRows,
+                          headerRow: block.showsHeader ? block.visibleRows.lowerBound : nil,
+                          source: .cursor)
+    }
+
+    /// Which of the two is drawn. The pointer wins while it is inside the pane; the cursor's
+    /// presentation returns when the pointer leaves, and takes precedence for as long as ⌘↑/⌘↓ was
+    /// the last thing pressed -- otherwise a pointer resting anywhere in the pane would make the
+    /// chord look broken.
+    public static func choose(pointer: BlockHover?, cursor: BlockHover?,
+                              pointerInside: Bool, cursorMovedLast: Bool) -> BlockHover? {
+        if let cursor, cursorMovedLast || !pointerInside { return cursor }
+        return pointer
     }
 }
 
@@ -1266,6 +1300,6 @@ public extension BlockHover {
                 break
             }
         }
-        return BlockHover(id: id, rows: slots, headerRow: headerSlot)
+        return BlockHover(id: id, rows: slots, headerRow: headerSlot, source: source)
     }
 }

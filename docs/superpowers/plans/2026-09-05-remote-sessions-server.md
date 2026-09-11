@@ -65,7 +65,7 @@ An `error` that answers a message naming a session echoes that message's `sessio
 
 Close codes: 4400 (protocol violation before auth), 4401 (bad token), 4403 (bad signature), 4000 (replaced by a newer connection of the same device), 1001 (relay shutting down).
 
-An unpaired peer is reported in `presence` with `not_paired: true` rather than as offline; it is set when the other side re-declares a list without this device and cleared when it declares it again.
+An unpaired peer is reported in `presence` with `not_paired: true` rather than as offline; it is set when the other side declares a list without this device and cleared when it declares it again. A device does not have to have been online when it unpaired: the first declaration after a reconnect is compared against the last list the relay knew (the tombstone's), so a Mac that was shut down while its pairing was edited still tells the peer it dropped.
 
 Ownership and limits (added after review): a host may only send `attached` for a session id it currently publishes in its `sessions`; an `attach` naming a session the host does not publish, or an `attached` for a session another host already owns, is answered `no_such_session`. `host_offline` is answered only when the relay can prove the pairing was mutual (it keeps an offline device's last declared peers for one hour), otherwise `not_paired`. Caps per device: 64 paired ids, 256 sessions, 64 hosted attachments, 10 `pair_join` per 5 minutes; a code already joined by another device answers `pair_taken`. Over a cap → `error too_many`. Every connection has a bounded outbound queue (256 frames); a peer that does not drain it is closed.
 

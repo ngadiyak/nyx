@@ -49,6 +49,19 @@ import Testing
     #expect(TerminalAction.stopWatch.title == "Stop Watching")
 }
 
+/// The relay-status palette row and `Settings → Remote` are one destination, so there is one action
+/// for it. `.openConfig` is not it: it opens the settings window without choosing a page, which is
+/// Appearance -- the page with nothing to do with a relay. The three remote verbs sit together in
+/// the menu, because a user hunting for a token looks where the other two are.
+@Test func openingTheRemotePageIsItsOwnAction() {
+    #expect(TerminalAction.openRemoteSettings.configName == "open_remote_settings")
+    #expect(TerminalAction.openRemoteSettings.title == "Remote Settings\u{2026}")
+    let remoteGroup = ActionCatalog.sections
+        .flatMap(\.groups)
+        .first { $0.actions.contains(.remoteSessions) }
+    #expect(remoteGroup?.actions == [.remoteSessions, .remotePair, .openRemoteSettings])
+}
+
 @Test func sectionsAreNamedAndNonEmpty() {
     for section in ActionCatalog.sections {
         #expect(!section.title.isEmpty)

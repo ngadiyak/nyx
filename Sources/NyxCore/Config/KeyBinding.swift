@@ -27,6 +27,11 @@ public enum TerminalAction: String, Equatable, CaseIterable {
     case saveScrollback = "save_scrollback"
     case remoteSessions = "remote_sessions"
     case remotePair = "remote_pair"
+    /// Settings, on the Remote page. Distinct from `open_config`, which opens the window without
+    /// choosing a page: every route into remote sessions that fails -- no token, an unreachable
+    /// relay -- has the field that fixes it on exactly one page, and landing on Appearance instead
+    /// is the dead end those routes exist to avoid.
+    case openRemoteSettings = "open_remote_settings"
     case remoteTakeControl = "remote_take_control"
     case newRequest = "new_request"
     case toggleHTTPLens = "toggle_http_lens"

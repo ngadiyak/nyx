@@ -145,16 +145,19 @@ enum StateSnapshot {
                     }
                 }
 
-                // The remote strip's own button, pressed. Its title is invisible at rest whenever
-                // the theme and the appearance disagree (the 1.7:1 finding); this says whether
-                // pressing it makes it any more visible.
+                // The remote strip's own button, pressed. The title being invisible at rest -- the
+                // 1.7:1 finding, from a system bezel under the wrong appearance -- is fixed, and
+                // this picture's question is now the *press*: whether the pressed fill keeps its
+                // title above the floor and its hairline above 3:1, which is the one state of this
+                // control a person cannot see in any other picture.
                 var state = AttachState(hostName: "Mac mini (office)", title: "swift test")
                 state.phase = .ended("Mac mini (office)")
                 state.role = .writer
                 let strip = RemoteStripView(frame: NSRect(x: 0, y: 0, width: 900, height: cell))
                 strip.appearance = NSAppearance(named: appearance)
                 strip.update(state: state, palette: themePalette,
-                             font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+                             font: .monospacedSystemFont(ofSize: 12, weight: .regular),
+                             cellHeight: cell)
                 strip.layoutSubtreeIfNeeded()
                 press("Close", in: strip)
                 UISnapshot.write(strip, named: "remote-strip-pressed-\(suffix)", into: directory,

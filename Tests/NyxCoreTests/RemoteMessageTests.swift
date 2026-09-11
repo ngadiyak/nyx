@@ -97,3 +97,26 @@ private let sessionIDFixture = String(repeating: "A", count: 22)
 @Test func binaryFrameRejectsTooShort() {
     #expect(BinaryFrame(Array(repeating: 0, count: 23)) == nil)
 }
+
+/// The compatibility promise `RemotePresence`'s hand-written decoder exists for. Every relay older
+/// than 2026-09-11, and every peer that is paired normally, sends a presence entry with no
+/// `not_paired` key at all; a synthesized decoder throws `keyNotFound` on it even when the property
+/// has a default value, and the whole message -- the palette's list of devices -- is lost.
+@Test func decodesAPresenceWithoutNotPairedAsStillPaired() throws {
+    let json = """
+    {"v":1,"t":"presence","devices":[{"device_id":"\(deviceIDFixture)","name":"studio","online":true}]}
+    """
+    let msg = try RemoteMessage.decode(Data(json.utf8))
+    let device = try #require(msg.devices?.first)
+    #expect(device == RemotePresence(deviceID: deviceIDFixture, name: "studio", online: true))
+    #expect(!device.notPaired)
+}
+
+/// And when the relay does send it, it is read.
+@Test func decodesAPresenceCarryingNotPaired() throws {
+    let json = """
+    {"v":1,"t":"presence","devices":[{"device_id":"\(deviceIDFixture)","name":"","online":true,"not_paired":true}]}
+    """
+    let msg = try RemoteMessage.decode(Data(json.utf8))
+    #expect(msg.devices?.first?.notPaired == true)
+}

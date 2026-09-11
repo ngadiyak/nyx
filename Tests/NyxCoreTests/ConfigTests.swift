@@ -209,23 +209,10 @@ private func parse(_ s: String) -> (Config, [ConfigDiagnostic]) { ConfigParser.p
     #expect(c.fontThicken)
 }
 
-/// Config keys whose default-file line is a plain scalar `# key = value`: uncommenting exactly that
-/// one line reproduces `Config.defaults`, because the shown value *is* the compiled default.
-/// `palette` and `keybind` are deliberately excluded -- both are additive (a file can list any
-/// number of either), so their line is necessarily an *example*, not "the default": uncommenting it
-/// always adds an entry, which can never equal `Config.defaults`'s empty collections. Those two are
-/// covered separately, below, for "still parses" rather than "still equals the defaults".
-private let scalarDefaultFileKeys = [
-    "font-family", "font-size", "line-height", "font-thicken", "theme", "cursor-style", "cursor-blink",
-    "scrollback-lines", "padding", "background-opacity", "background-blur", "window-decorations",
-    "tab-bar", "shell", "working-directory", "copy-on-select", "middle-click-paste", "option-as-meta",
-    "mouse-scroll-alt-screen", "bell", "confirm-close-process", "restore-session", "clipboard-read",
-    "word-separators",
-    "open-file-command",
-    "remote", "remote-device-name", "remote-relay", "remote-relay-token", "remote-snapshot-lines",
-    "http-lens", "http-hint", "http-watch-interval", "http-history",
-]
-
+/// Uncommenting every plain-scalar line in the shipped file reproduces `Config.defaults`, because
+/// the value each of those lines shows *is* the compiled default. The list of them is
+/// `ConfigGrammar.scalarKeys`, which documents why the three additive keys (`palette`, `keybind`,
+/// `quick`) are not in it; they are covered below for "still parses" instead.
 @Test func theDefaultFileTextParsesBackToTheDefaults() {
     // Parsing the file exactly as shipped -- every line commented -- only proves the comments are
     // well-formed text: the parser skips every one of them without ever looking at the value that
@@ -234,7 +221,7 @@ private let scalarDefaultFileKeys = [
     // drifted from the real default.
     let lines = Config.defaultFileText.split(separator: "\n", omittingEmptySubsequences: false)
     let uncommented = lines.map { line -> Substring in
-        for key in scalarDefaultFileKeys where line.hasPrefix("# \(key) =") {
+        for key in ConfigGrammar.scalarKeys where line.hasPrefix("# \(key) =") {
             return line.dropFirst(2)
         }
         return line
@@ -471,4 +458,111 @@ private let scalarDefaultFileKeys = [
     let (c3, d3) = parse("http-history = many")
     #expect(c3.httpHistory == 50)
     #expect(d3.count == 1)
+}
+
+/// D13. The reload parses on top of the config in force, which is right for a line that is present
+/// and unparseable -- the field keeps what it had while somebody is mid-edit -- and wrong for a
+/// line that is *gone*. Deleting `remote-relay-token` is the gesture a person makes to take a Mac
+/// off the relay, and it did nothing until the app was restarted, with the settings page still
+/// showing the token as the field's value.
+@Test func aKeyDeletedFromTheFileGoesBackToItsDefault() {
+    let (before, _) = ConfigParser.parse("remote = on\nremote-relay-token = secret\npadding = 20")
+    #expect(before.remoteRelayToken == "secret")
+    #expect(before.padding == 20)
+    // The same file with the token line removed, parsed on top of what is in force.
+    let (after, diagnostics) = ConfigParser.parse("remote = on\npadding = 20", base: before)
+    #expect(after.remoteRelayToken == Config.defaults.remoteRelayToken)
+    #expect(after.padding == 20)                  // the line that is still there still wins
+    #expect(after.remote == .on)
+    #expect(diagnostics.isEmpty)
+}
+
+/// And the rule it must not break, which is why `base` exists at all: a line that is *present* and
+/// unparseable keeps the value in force. A person typing `font-size = 1` and then `font-size = 13`
+/// passes through `font-size = ` and must not lose their font on the way.
+@Test func anUnparseableLineStillKeepsTheValueInForce() {
+    var base = Config.defaults
+    base.fontSize = 18
+    let (after, diagnostics) = ConfigParser.parse("font-size = enormous", base: base)
+    #expect(after.fontSize == 18)
+    #expect(diagnostics.count == 1)
+}
+
+/// An empty file is every key back to its default, which is what an empty file says.
+@Test func anEmptyFileIsTheDefaults() {
+    var base = Config.defaults
+    base.remoteRelayToken = "secret"
+    base.padding = 20
+    // The theme pair is in this base deliberately. `theme` is one key that sets three fields, and
+    // the version of this test that named only scalar-for-scalar keys passed while deleting
+    // `theme = dark:...,light:...` did nothing at all.
+    base.darkThemeName = "nord"
+    base.lightThemeName = "solarized-light"
+    #expect(ConfigParser.parse("", base: base).config == Config.defaults)
+}
+
+/// I1. `theme` is the one key that writes three fields, and it used to assign only the ones its own
+/// branch mentioned. So a user who had `theme = dark:nord,light:solarized-light` and edited it to
+/// plain `theme = gruvbox` kept the pair -- and the pair wins in `Pane.resolvedPalette`, so the
+/// edit did nothing until the app was restarted. Every branch now assigns all three.
+@Test func theThemeKeySetsAllThreeOfItsFieldsOnEveryBranch() {
+    let (pair, dp) = ConfigParser.parse("theme = dark:nord,light:solarized-light")
+    #expect(dp.isEmpty)
+    #expect(pair.darkThemeName == "nord")
+    #expect(pair.lightThemeName == "solarized-light")
+    #expect(pair.themeName == Config.defaults.themeName)
+
+    // The pair replaced by a single theme, parsed on top of the pair that is in force.
+    let (single, ds) = ConfigParser.parse("theme = gruvbox", base: pair)
+    #expect(ds.isEmpty)
+    #expect(single.themeName == "gruvbox")
+    #expect(single.darkThemeName == nil)
+    #expect(single.lightThemeName == nil)
+
+    // And the line deleted altogether goes back to the shipped theme, all three fields.
+    let (gone, dg) = ConfigParser.parse("padding = 12", base: pair)
+    #expect(dg.isEmpty)
+    #expect(gone.themeName == Config.defaults.themeName)
+    #expect(gone.darkThemeName == nil)
+    #expect(gone.lightThemeName == nil)
+    #expect(gone.padding == 12)
+}
+
+/// The additive keys were already handled this way and must stay that way: `keybind`, `palette` and
+/// `quick` start empty on every parse, because parsing *appends* to them.
+@Test func theAdditiveKeysStillStartEmpty() {
+    let (before, _) = ConfigParser.parse("keybind = cmd+t=new_tab\nquick = A | send | echo a")
+    #expect(before.keybinds.count == Config.defaults.keybinds.count + 1)
+    let (after, _) = ConfigParser.parse("padding = 4", base: before)
+    #expect(after.keybinds.count == Config.defaults.keybinds.count)
+    #expect(after.quickActions.isEmpty)
+}
+
+/// The list `defaultsForKeysAbsent` re-applies from is the list the round-trip test uses, and it
+/// now lives in the product rather than in this file -- so the four keys the private copy was
+/// missing (`shell-integration`, `multiline-paste`, `fold-keep-lines`, `fold-long-output`) are
+/// covered by both at once.
+@Test func everyScalarKeyIsDocumentedAtItsCompiledDefault() {
+    for key in ConfigGrammar.scalarKeys {
+        #expect(Config.defaultFileText.contains("# \(key) ="), "no default line for \(key)")
+    }
+    #expect(ConfigGrammar.scalarKeys.contains("shell-integration"))
+    #expect(ConfigGrammar.scalarKeys.contains("fold-keep-lines"))
+    #expect(ConfigGrammar.scalarKeys.contains("fold-long-output"))
+    #expect(ConfigGrammar.scalarKeys.contains("multiline-paste"))
+    // The additive three are deliberately not in it: their line is an example, and uncommenting it
+    // adds an entry, which can never equal `Config.defaults`'s empty collections.
+    for key in ["palette", "keybind", "quick"] {
+        #expect(!ConfigGrammar.scalarKeys.contains(key))
+    }
+}
+
+@Test func aLinesKeyIsReadWhetherOrNotItIsCommented() {
+    #expect(ConfigGrammar.key(ofLine: "font-size = 13") == "font-size")
+    #expect(ConfigGrammar.key(ofLine: "  font-size = 13  ") == "font-size")
+    #expect(ConfigGrammar.key(ofLine: "# font-size = 13") == "font-size")
+    #expect(ConfigGrammar.key(ofLine: "#font-size = 13") == "font-size")
+    #expect(ConfigGrammar.key(ofLine: "# --- Font ---") == nil)
+    #expect(ConfigGrammar.key(ofLine: "# Every setting below is shown at its default") == nil)
+    #expect(ConfigGrammar.key(ofLine: "") == nil)
 }

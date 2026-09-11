@@ -255,9 +255,13 @@ public final class RemoteClient {
         /// session is live is about something else, and must not close a working tab.
         func handleError(code: String) {
             if retryReattach(after: code) { return }
-            report(if: { self.isAwaitingAttach($0.phase) }) {
-                $0.phase = .failed(AttachFailure.text(code: code))
-            }
+            // `not_paired` from a host means that host removed this Mac, which is a different
+            // sentence from `AttachFailure.text(code:)`'s "Not paired with this device" -- that one
+            // reads as this Mac's own list being wrong, and the user's own list still has the host
+            // in it. The one the round wrote for exactly this is `unpaired`.
+            let reason = code == "not_paired" ? AttachFailure.unpaired
+                                              : AttachFailure.text(code: code)
+            report(if: { self.isAwaitingAttach($0.phase) }) { $0.phase = .failed(reason) }
         }
 
         /// Whether this refusal is one to wait out rather than to show.
@@ -272,6 +276,9 @@ public final class RemoteClient {
         /// truth for the whole minute; flashing "Host is offline" between attempts would be a tab
         /// that looks dead five times before it comes back.
         private func retryReattach(after code: String) -> Bool {
+            // `not_paired` is not a race. Waiting it out spends the whole minute to arrive at "No
+            // answer from the host", which is a verdict about a session that was answered plainly
+            // the first time. It falls through to `handleError`, which maps it to the sentence.
             guard code == "host_offline" || code == "no_such_session" else { return false }
             lock.lock()
             guard !finished, isAwaitingAttach(_state.phase), let deadline = reattachDeadline else {
@@ -371,8 +378,25 @@ public final class RemoteClient {
             report(if: { $0.phase == .snapshot }) { $0.phase = .live }
         }
 
-        func handleRole(_ role: String) {
-            report { $0.role = role == "writer" ? .writer : .observer }
+        func handleRole(_ role: String, cols: Int?, rows: Int?) {
+            lock.lock()
+            var moved = false
+            // Checked before it is believed, exactly as `handleAttached` does and for the same
+            // reason: the host signs its ephemeral key and the session id, never the geometry, so
+            // these two numbers are whatever reached the socket. Refused *silently* here, though --
+            // this tab is already live, and ending it on a forged `role` would hand anyone who can
+            // replay one a way to close somebody's session.
+            if let cols, let rows, AttachGeometry.isSane(cols: cols, rows: rows) {
+                moved = cols != _cols || rows != _rows
+                _cols = cols
+                _rows = rows
+            }
+            lock.unlock()
+            // Forced when the size moved and the role did not. `report` drops a state that compares
+            // equal, and the size is not *in* `AttachState` -- the pane reads it off the attachment
+            // -- so without this the one message that says the host resized changes nothing at all
+            // and the mirror keeps its size-at-attach for the life of the tab.
+            report(force: moved) { $0.role = role == "writer" ? .writer : .observer }
         }
 
         func handleSessionEnded() {
@@ -411,7 +435,13 @@ public final class RemoteClient {
             report { $0.phase = .suspended(self.hostName, since: now) }
         }
 
-        /// The relay's word on whether this attachment's host is connected.
+        /// The relay's word on whether this attachment's host is connected -- and, since the relay
+        /// learned to say it, on whether the pairing still exists.
+        ///
+        /// `notPaired` is the one presence answer that is *final*. The host has removed this Mac:
+        /// the session is running and this Mac may not see it, which is neither "offline" (a wait
+        /// that ends when the lid opens) nor "ended" (something that stopped). The sentence has
+        /// existed since the feature shipped and was reachable only when this Mac did the removing.
         ///
         /// Two jobs. It is what makes a suspended tab start believing catalogues again (see
         /// `awaitingHostReturn`), and it is how a tab learns that the host went while *this Mac's*
@@ -420,7 +450,12 @@ public final class RemoteClient {
         /// before the tab gives up with "No answer from the host", which is a verdict about a
         /// session that is merely waiting. Presence says so in one message, so the re-attach stops
         /// there and the tab suspends instead.
-        func handlePresence(online: Bool, now: Date) {
+        func handlePresence(online: Bool, notPaired: Bool, now: Date) {
+            if notPaired {
+                end(reason: AttachFailure.unpaired)
+                client?.forget(key)
+                return
+            }
             lock.lock()
             if online {
                 awaitingHostReturn = false
@@ -579,7 +614,14 @@ public final class RemoteClient {
 
         /// Mutates the state under the lock and reports it outside: `onState` redraws a tab, and
         /// holding a lock across a caller's redraw is how a UI freeze starts.
-        private func report(if condition: ((AttachState) -> Bool)? = nil, _ change: (inout AttachState) -> Void) {
+        ///
+        /// `force` reports a state that did not change. It exists for the one thing a caller can
+        /// move that `AttachState` does not carry -- the host's screen size, which the pane reads
+        /// off the attachment -- so a `role` that announces a resize and nothing else still reaches
+        /// the owner. Everything else leaves it false, because a redraw per unchanged message is a
+        /// redraw per message.
+        private func report(if condition: ((AttachState) -> Bool)? = nil, force: Bool = false,
+                            _ change: (inout AttachState) -> Void) {
             lock.lock()
             guard !finished, condition?(_state) ?? true else {
                 lock.unlock()
@@ -587,7 +629,7 @@ public final class RemoteClient {
             }
             var updated = _state
             change(&updated)
-            guard updated != _state else {
+            guard force || updated != _state else {
                 lock.unlock()
                 return
             }
@@ -692,7 +734,8 @@ public final class RemoteClient {
             let now = clock.now()
             for device in m.devices ?? [] {
                 for attachment in attachments(on: device.deviceID) {
-                    attachment.handlePresence(online: device.online, now: now)
+                    attachment.handlePresence(online: device.online, notPaired: device.notPaired,
+                                              now: now)
                 }
             }
             return
@@ -721,7 +764,7 @@ public final class RemoteClient {
             // The host tells every attached client about every change, so this is only ours if it
             // names this device.
             guard m.deviceID == link.deviceID, let role = m.role else { return }
-            attachment.handleRole(role)
+            attachment.handleRole(role, cols: m.cols, rows: m.rows)
         case "session_ended":
             attachment.handleSessionEnded()
             forget(key)

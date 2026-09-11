@@ -34,6 +34,30 @@ public enum AuditLine {
             return "\(iso)  session ended  \(session)"
         }
     }
+
+    /// One line of `audit.log` as the Remote page shows it: the same words, with the ISO-8601
+    /// timestamp replaced by a relative age.
+    ///
+    /// The file's format is `tail -f`'s and stays that way -- a sortable absolute stamp is right for
+    /// a log somebody greps, and wrong for a box six lines tall on a settings page, where
+    /// `2026-09-01T10:00:00Z  paired  Nik's MacBook Pro` is nine characters of information in
+    /// thirty-one. Only the head is touched; everything after it is preserved byte for byte,
+    /// including the two spaces `text(_:at:)` writes, so the two halves cannot drift into two
+    /// formats. A line whose head is not a timestamp -- a file somebody has edited, an empty line --
+    /// passes through untouched, because a page that swallowed the line it did not recognise would
+    /// be hiding the one line worth reading.
+    public static func display(_ line: String, now: Date) -> String {
+        // `omittingEmptySubsequences: false`, so the head is whatever sits before the first space
+        // *from index 0* -- including nothing at all. Dropping empty subsequences would hand back
+        // the stamp of a line that begins with a space while `dropFirst` counted from the start,
+        // splicing a relative age onto the tail of the timestamp it was meant to replace
+        // (`3 min agoZ  removed  alpha`). An indented line is not one this wrote, and the rule for
+        // a line this did not write is to leave it exactly as it is.
+        guard let head = line.split(separator: " ", maxSplits: 1,
+                                    omittingEmptySubsequences: false).first,
+              let at = ISO8601DateFormatter().date(from: String(head)) else { return line }
+        return RelativeAge.text(from: at, to: now) + line.dropFirst(head.count)
+    }
 }
 
 /// Turns the ids an `AuditLine.Event` arrives with into the names §5.5 promises the file holds.

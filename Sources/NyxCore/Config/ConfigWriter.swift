@@ -22,15 +22,15 @@ public enum ConfigWriter {
 
         if let index = lastActiveLine(for: key, in: lines) {
             lines[index] = replacingValue(in: lines[index], with: value, key: key)
-            return lines.joined(separator: "\n")
+            return joined(lines)
         }
         if let index = commentedLine(for: key, in: lines) {
             lines[index] = replacingValue(in: uncommented(lines[index]), with: value, key: key)
-            return lines.joined(separator: "\n")
+            return joined(lines)
         }
         if lines.last?.isEmpty == false { lines.append("") }
         lines.append("\(key) = \(value)")
-        return lines.joined(separator: "\n")
+        return joined(lines)
     }
 
     /// Applies several settings in one pass, so a window that saves five fields writes the file
@@ -58,7 +58,7 @@ public enum ConfigWriter {
             guard !values.isEmpty else { return text }
             if lines.last?.isEmpty == false { lines.append("") }
             lines.append(contentsOf: values.map { "\(key) = \($0)" })
-            return lines.joined(separator: "\n")
+            return joined(lines)
         }
 
         // Rewrite in place for as many as there are lines for.
@@ -74,7 +74,7 @@ public enum ConfigWriter {
             // neighbouring comments stay attached to the right entries.
             for index in existing[values.count...].sorted(by: >) { lines.remove(at: index) }
         }
-        return lines.joined(separator: "\n")
+        return joined(lines)
     }
 
     /// Every uncommented line setting `key`, in file order.
@@ -83,6 +83,20 @@ public enum ConfigWriter {
             let line = lines[index].trimmingCharacters(in: .whitespaces)
             return !line.hasPrefix("#") && self.key(of: line) == key
         }
+    }
+
+    /// Joins lines back into file text, ending with exactly one newline.
+    ///
+    /// Every result of this type ends the file properly, because the next thing appended to it may
+    /// not be us: `cat ~/projects/nyx-server/token >> ~/.config/nyx/config` is the documented way to
+    /// set the relay token, and against a file the settings window had just written it produced
+    /// `remote = onremote-relay-token = ...` -- one line that parses as one unknown key. Trailing
+    /// blank lines collapse to that one newline, which keeps this idempotent: `settings` applies
+    /// several keys by reducing over `setting`, so a second pass must not grow the file.
+    private static func joined(_ lines: [String]) -> String {
+        var lines = lines
+        while lines.last?.isEmpty == true { lines.removeLast() }
+        return lines.joined(separator: "\n") + "\n"
     }
 
     // MARK: - Finding the line

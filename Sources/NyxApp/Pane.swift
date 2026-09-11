@@ -107,6 +107,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// Which display slot the last frame blanked for the pinned band, so the frame that stops
     /// blanking it can tell the renderer's row cache that the row it has is no longer the row.
     private var blankedStickyRow: Int?
+    /// The same, for the remote strip's own row. Two fields rather than one set, because the two
+    /// bands appear and go independently: a remote tab that pins a prompt blanks both rows, and the
+    /// pinned band coming and going must not tell the row cache anything about the strip's row.
+    private var blankedRemoteRow: Int?
     /// Which commands' output is collapsed. Empty for almost every pane that ever exists, which is
     /// what keeps the render path unchanged: every fold-aware branch is behind `isEmpty`.
     private var folding = OutputFolding()
@@ -2299,6 +2303,13 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // Keyed on the text, not on `sticky != nil`: an empty text hides the band
             // (`StickyPromptView.update`), and blanking a row with nothing drawn over it is one row
             // of somebody's output silently gone.
+            //
+            // Two rows may be covered now, and each of them is covered by an *opaque* band: the
+            // remote strip owns the top one whenever it is showing, and the pinned band owns
+            // `stickyStripRow`. A glyph half-drawn around a sentence is worse than no glyph.
+            let remoteRow: Int? =
+                self.remote != nil && !self.remoteStrip.isHidden && !lines.isEmpty ? 0 : nil
+            if let remoteRow { lines[remoteRow] = Row(cols: t.cols) }
             let blankRow = self.stickyStripRow
             let pinned = !(sticky?.text.isEmpty ?? true)
             if pinned, blankRow < lines.count {
@@ -2310,14 +2321,21 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
             // old glyphs under it, and the frame that unpinned it left the row blank with nothing
             // over it -- one row of somebody's output missing until it was next written to. An
             // empty `dirty` already means "everything changed".
+            //
+            // The remote strip's row is in the same account, and for the same reason on both edges:
+            // the frame a strip appears in has to rebuild the row it hides, and the frame it goes
+            // from has to rebuild the row that is now visible again with nothing in the cache for it.
             let blanked = pinned ? blankRow : nil
-            if blanked != self.blankedStickyRow, !dirty.isEmpty {
-                for row in [blanked, self.blankedStickyRow].compactMap({ $0 })
+            if blanked != self.blankedStickyRow || remoteRow != self.blankedRemoteRow,
+               !dirty.isEmpty {
+                for row in [blanked, self.blankedStickyRow,
+                            remoteRow, self.blankedRemoteRow].compactMap({ $0 })
                 where dirty.indices.contains(row) {
                     dirty[row] = true
                 }
             }
             self.blankedStickyRow = blanked
+            self.blankedRemoteRow = remoteRow
             return RenderFrame(cols: t.cols, rows: t.rows, lines: lines, graphemes: t.graphemes, palette: t.palette,
                                cursor: cursor, cursorShape: t.cursorShape, focused: focused, preedit: preedit,
                                selection: selected, searchMatches: matches, currentSearchMatch: current,
@@ -4008,27 +4026,36 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         return found
     }
 
-    /// Which display slot the pinned band sits on: the top row, or the one below it while the
-    /// remote strip has the top -- two strips over one row would leave whichever was added last
-    /// covering the other, and both are sentences somebody has to read.
+    /// Which display slot the pinned band sits on: the top row, or far enough below the remote strip
+    /// that their two `hitRowHeight` bands do not overlap -- two strips over one row would leave
+    /// whichever was added last covering the other, and both are sentences somebody has to read.
     ///
     /// One property rather than the same expression in two places: `render` blanks this row and
     /// `layoutStickyStrip` puts the band on it, and a band over one row with another one blanked is
     /// two rows of nonsense.
-    private var stickyStripRow: Int { remote != nil && !remoteStrip.isHidden ? 1 : 0 }
+    private var stickyStripRow: Int {
+        guard remote != nil, !remoteStrip.isHidden else { return 0 }
+        return CommandBlockChrome.hitRowSpan(cellHeight: Double(cellSizePoints.height))
+    }
 
     private func layoutStickyStrip() {
         let cell = cellSizePoints
         let left = max(padding, CGFloat(PromptGutter.hitWidth))
         let width = max(0, bounds.width - left - padding)
         let top = bounds.height - padding - cell.height
-        remoteStrip.frame = NSRect(x: left, y: top, width: width, height: cell.height)
-        // `hitRowHeight`, centred on the row it covers, so the band is never 13 pt tall at
-        // `line-height = 0.8` -- the same floor every other one-row target in a pane obeys (§8.4).
-        // It overhangs the rows above and below by up to 1.5 pt, which is a band the mouse can hit
-        // rather than a row of output taken away: the covered row is the only one blanked.
+        // `hitRowHeight`, centred on the row it covers, for the same reason the pinned band uses it
+        // (§8.4): a one-row target is 15.31 pt at the default font and 12.25 pt at `line-height =
+        // 0.8`, and this strip carries a button. The frame overhangs the rows above and below --
+        // what the strip *paints* is `stripGroundHeight`, one row, which is `RemoteStripView`'s own
+        // band subview: a frame the mouse can hit rather than a row of output taken away.
         let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cell.height)))
-        let centre = top + cell.height / 2 - CGFloat(stickyStripRow) * cell.height
+        remoteStrip.frame = NSRect(x: left, y: top + cell.height / 2 - height / 2,
+                                   width: width, height: height)
+        // The pinned band yields, and yields by whole rows: two 16 pt bands one row apart overlap
+        // at every cell under 16 pt -- the **default** 15.31 pt row included -- so it steps down
+        // `hitRowSpan` rows, which is two there and at `line-height 0.8`, and one at a 17 pt font.
+        let rowsDown = CGFloat(stickyStripRow) * cell.height
+        let centre = top + cell.height / 2 - rowsDown
         stickyStrip.frame = NSRect(x: left, y: centre - height / 2, width: width, height: height)
     }
 
@@ -4039,10 +4066,10 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// accepted at all -- is `AttachState` in NyxCore.
     private func showRemote(_ state: AttachState) {
         var shown = state
-        // Added here rather than by the client: how much of the host's screen fits, and how many
-        // panes share this tab, are facts about this window -- which `RemoteClient` neither knows
-        // nor should.
-        shown.geometryNote = remoteGeometryNote()
+        // Added here rather than by the client: how big this window is, and how many panes share
+        // this tab, are facts about this window -- which `RemoteClient` neither knows nor should.
+        shown.hostSize = remote.map { GridSize(cols: $0.attachment.cols, rows: $0.attachment.rows) }
+        shown.paneSize = GridSize(cols: cols, rows: rows)
         shown.closesWholeTab = isSolePaneInTab?() ?? true
         shown.today = AttachState.startOfDay(Date(), in: shown.timeZone)
         let wasHidden = remoteStrip.isHidden
@@ -4052,11 +4079,17 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // of this left the label truncating mid-word at the old width, in the old font.
         // `RemoteStripView.update` has its own guard keyed on exactly those two.
         remoteStrip.update(state: shown, palette: Pane.resolvedPalette(for: config),
-                           font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
+                           font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular),
+                           cellHeight: cellSizePoints.height)
         if wasHidden != remoteStrip.isHidden { layoutStickyStrip() }
         // The *report* is what must not repeat: `updateGrid` calls this on every layout pass, and a
         // tab bar that rebuilt its badge and title on each one would be doing that for nothing.
         guard shown != shownRemoteState else { return }
+        // §8.1: the strip is an announcement site, and the wording is Core's. Before the assignment
+        // below, which is what makes `shownRemoteState` the previous state.
+        if let spoken = RemoteAnnouncement.text(from: shownRemoteState, to: shown) {
+            Announce.say(spoken)
+        }
         shownRemoteState = shown
         onRemoteStateChange?(shown)
         markDirty()
@@ -4064,15 +4097,6 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
 
     /// The last state actually drawn, so an unchanged one is not redrawn or re-reported.
     private var shownRemoteState: AttachState?
-
-    /// The geometry note for this pane, or nil on a local pane and before `attached` has said how
-    /// big the host is.
-    private func remoteGeometryNote() -> String? {
-        guard let remote else { return nil }
-        let host = GridSize(cols: remote.attachment.cols, rows: remote.attachment.rows)
-        guard host.cols > 0, host.rows > 0 else { return nil }
-        return AttachState.geometryNote(host: host, pane: GridSize(cols: cols, rows: rows))
-    }
 
     /// The strip's one button. Which of the two it is, is `AttachState.stripAction` -- the view
     /// dispatches on the decision, never on the words it happens to have drawn.

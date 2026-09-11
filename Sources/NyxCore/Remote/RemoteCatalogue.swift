@@ -9,18 +9,29 @@ public struct RemoteCatalogue: Equatable {
         public let id: String
         public var name: String
         public var online: Bool
+        /// This device is connected and has removed the pairing with this Mac (`presence`'s
+        /// `not_paired`). Deliberately not folded into `online`: "offline" is a wait that ends by
+        /// itself and this one never does, and the row has to say which.
+        public var notPaired: Bool = false
         public var sessions: [RemoteSessionInfo]
     }
 
     private var byID: [String: Device] = [:]
-    /// The devices this Mac has actually paired with, from `setPaired`.
+    /// The devices this Mac has actually paired with, under the names it declared them by, from
+    /// `setPaired`.
     ///
-    /// Every `presence` and `catalogue` message is checked against it. The relay routes; it does
-    /// not vouch (§7.1), so an entry naming a device that is not in `paired.json` is either a bug
-    /// or a relay offering a row that looks like one of the user's own Macs, complete with a name
-    /// and a working directory of its choosing. Attaching to it would fail at the signature check
-    /// -- but the row has no business being in ⌘⇧P at all.
-    private var pairedIDs: Set<String> = []
+    /// Every `presence` and `catalogue` message is checked against its keys. The relay routes; it
+    /// does not vouch (§7.1), so an entry naming a device that is not in `paired.json` is either a
+    /// bug or a relay offering a row that looks like one of the user's own Macs, complete with a
+    /// name and a working directory of its choosing. Attaching to it would fail at the signature
+    /// check -- but the row has no business being in ⌘⇧P at all.
+    ///
+    /// The names, and not only the ids, because they are what a device gets called when this
+    /// catalogue has no row for it yet. A message is not a name: the relay sends `Name: ""` for any
+    /// peer it has no live socket for, which is every peer the `forget` path is about, so a row
+    /// built from the message alone came back blank -- greyed, unpressable, and naming no Mac to go
+    /// and re-pair.
+    private var pairedNames: [String: String] = [:]
 
     /// Shown in the settings page and, when set, as the palette's first Remote row -- so a relay
     /// outage or a bad token is something the user is told, not a list that quietly goes empty.
@@ -28,16 +39,38 @@ public struct RemoteCatalogue: Equatable {
 
     public init() {}
 
-    /// A `presence` message: who is online right now, by name. This is the freshest name Nyx has
-    /// for a device, so it always wins over whatever `setPaired` supplied.
+    /// A `presence` message: who is online right now, by name.
+    ///
+    /// A name presence supplies wins -- it is the one the other Mac is announcing now -- but an
+    /// *empty* one does not. The relay sends `Name: ""` for a peer it has no live socket for, so
+    /// overwriting unconditionally meant every offline Mac lost its name and two sleeping Macs were
+    /// two identical blank rows.
     public mutating func applyPresence(_ devices: [RemotePresence]) {
-        for p in devices where pairedIDs.contains(p.deviceID) {
-            var device = byID[p.deviceID] ?? Device(id: p.deviceID, name: p.name, online: p.online, sessions: [])
-            device.name = p.name
-            device.online = p.online
-            if !p.online { device.sessions = [] } // a host's catalogue is dropped when it disconnects
+        for p in devices {
+            guard let declared = pairedNames[p.deviceID] else { continue }
+            var device = byID[p.deviceID]
+                ?? Device(id: p.deviceID, name: declared, online: p.online, sessions: [])
+            if !p.name.isEmpty { device.name = p.name }
+            device.online = p.online && !p.notPaired
+            device.notPaired = p.notPaired
+            // A host's catalogue is dropped when it disconnects, and a host that has removed this
+            // Mac has nothing to offer it either -- the relay would refuse the attach.
+            if !device.online { device.sessions = [] }
             byID[p.deviceID] = device
         }
+    }
+
+    /// Drops one device's rows without touching `pairedNames`.
+    ///
+    /// For the `not_paired` answer to an *attach*: it is the first thing a Mac whose peer unpaired
+    /// it while its own socket was down ever hears, and until then its rows sat there enabled,
+    /// naming sessions on a Mac that no longer serves it. Not a local unpairing -- this Mac has
+    /// removed nothing, and `paired.json` is still the truth about what it has agreed to -- so the
+    /// next thing the relay says about the device legitimately puts a row back. That is normally a
+    /// `presence` and not a `setPaired`, which is why the name has to outlive the row: rebuilt from
+    /// the message, the row came back with the empty name the relay sends for an unreachable peer.
+    public mutating func forget(deviceID: String) {
+        byID[deviceID] = nil
     }
 
     /// A `catalogue` message: the sessions one host currently publishes. The relay only ever sends
@@ -45,14 +78,16 @@ public struct RemoteCatalogue: Equatable {
     /// no `presence` has arrived yet -- the alternative, showing its sessions under "offline", would
     /// be actively wrong.
     public mutating func applyCatalogue(deviceID: String, sessions: [RemoteSessionInfo]) {
-        guard pairedIDs.contains(deviceID) else { return }
-        var device = byID[deviceID] ?? Device(id: deviceID, name: "", online: true, sessions: [])
+        guard let declared = pairedNames[deviceID] else { return }
+        var device = byID[deviceID]
+            ?? Device(id: deviceID, name: declared, online: true, sessions: [])
         device.sessions = sessions
         byID[deviceID] = device
     }
 
     /// The locally paired devices' names, from `PairedDevices` on disk. Also *the* list of devices
-    /// this catalogue will accept anything about at all -- see `pairedIDs`.
+    /// this catalogue will accept anything about at all, and the name it falls back on for a device
+    /// it has no row for -- see `pairedNames`.
     ///
     /// Only fills in a name for a device Nyx has no live (online) name for yet: a device presence
     /// has already named should keep the name presence gave it, not be second-guessed by a
@@ -60,8 +95,8 @@ public struct RemoteCatalogue: Equatable {
     /// what Remove in the settings page calls: unpairing has to take the Mac out of the palette,
     /// with its live sessions, and not only out of `paired.json`.
     public mutating func setPaired(_ names: [String: String]) {
-        pairedIDs = Set(names.keys)
-        byID = byID.filter { pairedIDs.contains($0.key) }
+        pairedNames = names
+        byID = byID.filter { names[$0.key] != nil }
         for (id, name) in names {
             if var device = byID[id] {
                 if !device.online { device.name = name }
@@ -96,11 +131,26 @@ public struct RemoteCatalogue: Equatable {
     public func paletteItems(now: Date, home: String = "") -> [PaletteItem] {
         var items: [PaletteItem] = []
         if let status = relayStatusText {
-            items.append(.remoteSession(deviceID: "", sessionID: "", title: status, detail: "",
-                                        isEnabled: false))
+            // A verb, not a label. It is the one row in the whole palette that names the user's
+            // actual problem -- a bad token, an unreachable relay -- and as a disabled row it was
+            // the row that beeped: on the wrong-token instance it was the *only* row, so ↓ could
+            // not leave it and ⏎ did nothing with the panel still open. Everything it is about is
+            // on Settings → Remote, which `.openRemoteSettings` opens -- not `.openConfig`, which
+            // opens the window on whichever page it starts on (Appearance) and leaves the user one
+            // click short of the field, which is the dead end this row exists to end.
+            items.append(PaletteItem(title: status, detail: "Settings…",
+                                     searchText: "\(status) remote relay settings",
+                                     kind: .action(.openRemoteSettings)))
         }
         for device in devices {
-            if device.online {
+            if device.notPaired {
+                // Named, because the name is how a person knows which Mac to go and re-pair; and
+                // disabled, because pressing it would open a tab whose attach the relay refuses.
+                items.append(.remoteSession(deviceID: device.id, sessionID: "",
+                                            title: device.name,
+                                            detail: "no longer paired with this Mac",
+                                            isEnabled: false))
+            } else if device.online {
                 guard !device.sessions.isEmpty else {
                     // The machine on the left, what is wrong with it on the right. Saying "iMac —
                     // no sessions" *and* putting the same words in the detail said it twice.
@@ -142,11 +192,24 @@ public struct RemoteCatalogue: Equatable {
         }
         var tail: [String] = []
         if !s.process.isEmpty { tail.append("running: \(s.process)") }
-        if !s.lastCommand.isEmpty { tail.append("last: \(s.lastCommand)") }
+        // The age *before* the last command, which is the one clause that can be any length. "When
+        // was this last touched" is what a person picks a Mac by, and it was what disappeared.
         let rel = relative(s.lastActivity, now: now)
         if !rel.isEmpty { tail.append(rel) }
+        if !s.lastCommand.isEmpty { tail.append("last: \(shortCommand(s.lastCommand))") }
         guard !tail.isEmpty else { return head }
         return head.isEmpty ? tail.joined(separator: " · ") : "\(head) · \(tail.joined(separator: " · "))"
+    }
+
+    /// A last command, cut to something a row can hold.
+    ///
+    /// It is the one clause of the detail with no bound: a `for` loop pasted into a shell is
+    /// eighty characters and pushed everything after it off the row -- including the age, which is
+    /// the field a person actually chooses between two Macs with. Cut here rather than by the
+    /// label, so the row's own text says the command was longer.
+    public static func shortCommand(_ command: String, limit: Int = 40) -> String {
+        guard command.count > limit else { return command }
+        return String(command.prefix(limit - 1)) + "…"
     }
 
     private static func shortenedCwd(_ cwd: String, home: String) -> String {

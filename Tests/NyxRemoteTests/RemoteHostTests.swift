@@ -13,10 +13,13 @@ private final class HostFixture {
     let session: TerminalSession
     let sessionID: [UInt8]
     let key: String
+    /// Driven by hand, so the sixty-second re-attach window is watched in microseconds.
+    let clock = TestClock()
 
     private let lock = NSLock()
     private var pairedIDs: [String] = []
     private var events: [AuditLine.Event] = []
+    private var duringAttach: (() -> Void)?
 
     var hostID: String { identity.deviceID }
 
@@ -38,7 +41,28 @@ private final class HostFixture {
         lock.unlock()
     }
 
-    init(script: String, snapshotLines: Int = 200, debounce: TimeInterval = 0.05) throws {
+    /// Runs once, on the host's own queue, inside the pairing check at the top of the next `attach`.
+    ///
+    /// It is the only place a test can hold that queue open while the PTY reader feeds the terminal,
+    /// which is how the window `attach` reads `withTerminalAndOutputCount` in -- a chunk fed but
+    /// whose tap has not run yet -- is made to happen on purpose rather than by luck.
+    func onceDuringNextAttach(_ body: @escaping () -> Void) {
+        lock.lock()
+        duringAttach = body
+        lock.unlock()
+    }
+
+    private func takeDuringAttach() -> (() -> Void)? {
+        lock.lock()
+        defer {
+            duringAttach = nil
+            lock.unlock()
+        }
+        return duringAttach
+    }
+
+    init(script: String, snapshotLines: Int = 200, debounce: TimeInterval = 0.05,
+         reattachWindow: TimeInterval = 60) throws {
         identity = try testIdentity()
         link = FakeLink(deviceID: identity.deviceID)
         session = try shellSession(script)
@@ -50,9 +74,11 @@ private final class HostFixture {
         host = RemoteHost(link: link, identity: identity,
                           paired: { PairedDevices(devices: pairedBox().map { PairedDevice(id: $0, name: $0, pairedAt: Date()) }) },
                           audit: { auditBox($0) },
-                          snapshotLines: snapshotLines, summaryDebounce: debounce)
+                          snapshotLines: snapshotLines, summaryDebounce: debounce,
+                          reattachWindow: reattachWindow, clock: clock.clock)
         pairedBox = { [weak self] in
             guard let self else { return [] }
+            self.takeDuringAttach()?()
             lock.lock()
             defer { lock.unlock() }
             return self.pairedIDs
@@ -377,13 +403,20 @@ private func waitForShell(_ f: HostFixture, containing needle: String) -> Bool {
 
     #expect(f.link.messages(ofType: "paired").first?.deviceIDs == [peer.deviceID])
     #expect(f.link.messages(ofType: "sessions").first?.sessions?.first?.sessionID == f.key)
-    // The relay dropped every attachment when the socket went; the audit log says so, and the next
-    // client to attach is the writer again rather than an observer behind a client that is gone.
-    #expect(f.audit.contains(.detached(device: peer.deviceID, session: f.key)))
+    // This half was `the relay dropped every attachment, the audit log says so, and the next client
+    // in is the writer`. The relay did drop them, but the clients are re-attaching within the
+    // second, so they are *held*: nothing is audited and the token stays where it was until the
+    // window closes on a client that really has gone.
+    #expect(!f.audit.contains(.detached(device: peer.deviceID, session: f.key)))
     let again = try TestPeer()
     f.pair(again.deviceID)
-    let reattached = try f.attach(again)
-    #expect(reattached?.role == "writer")
+    #expect(try f.attach(again)?.role == "observer")
+
+    f.clock.advance(61)
+    f.host.flush()
+    #expect(f.audit.contains(.detached(device: peer.deviceID, session: f.key)))
+    let promoted = f.link.messages(ofType: "role").last { $0.deviceID == again.deviceID }
+    #expect(promoted?.role == "writer")
 }
 
 @Test func aClientThatAttachesTwiceKeepsTheRoleItAlreadyHad() throws {
@@ -456,7 +489,12 @@ private func waitForShell(_ f: HostFixture, containing needle: String) -> Bool {
     #expect(live == "go\r\nafter:go\r\n")
 }
 
-@Test func aClientThatGoesOfflineLosesItsAttachmentAndItsWriterToken() throws {
+/// Was `aClientThatGoesOfflineLosesItsAttachmentAndItsWriterToken`, which asserted the drop that
+/// this plan removes: `presence(offline)` is a socket closing, not a user leaving, so the
+/// attachment is held and only the sweep ends it. What the sweep must still do is everything the
+/// immediate drop did -- the token moves, the observer is told, the log says so, and nothing is
+/// sealed for a device that is not there.
+@Test func aClientThatGoesOfflineIsHeldAndOnlyLosesItsWriterTokenWhenTheWindowCloses() throws {
     let f = try HostFixture(script: "read x; printf \"got:$x\\n\"; sleep 30")
     defer { f.terminate() }
     let writer = try TestPeer()
@@ -470,15 +508,20 @@ private func waitForShell(_ f: HostFixture, containing needle: String) -> Bool {
     #expect(observerAttached?.role == "observer")
 
     // The relay says nothing else about a client whose socket closed: `presence` is the whole
-    // notification. Without acting on it the writer token stays with a device that has gone, so
-    // nobody left can type, and every chunk of output is still encrypted for it.
+    // notification. It is not yet an answer about the *user*, so nothing moves.
     f.link.reset()
     f.host.handle(RemoteMessage(t: "presence", devices: [
         RemotePresence(deviceID: writer.deviceID, name: "laptop", online: false),
         RemotePresence(deviceID: observer.deviceID, name: "ipad", online: true),
     ]))
     f.host.flush()
+    #expect(f.link.messages(ofType: "role").isEmpty)
+    #expect(!f.audit.contains(.detached(device: writer.deviceID, session: f.key)))
 
+    // A minute later it has not come back, and now the token must move -- otherwise nobody left can
+    // type for the rest of the session.
+    f.clock.advance(61)
+    f.host.flush()
     let roles = f.link.messages(ofType: "role")
     #expect(roles.count == 1)
     #expect(roles.first?.to == observer.deviceID)
@@ -495,7 +538,40 @@ private func waitForShell(_ f: HostFixture, containing needle: String) -> Bool {
     #expect(f.text(observer, f.link.frames) == "go\r\ngot:go\r\n")
 }
 
-@Test func deviceWentOfflineDoesTheSameAsAPresenceMessage() throws {
+/// Nothing is sealed for an attachment while it is held. The chunks still count -- that is what
+/// `heldAtSequence` is compared against -- but ~85 KB per client per cycle must not be encrypted
+/// and handed to a relay that has already dropped this device's socket.
+@Test func outputWhileAClientIsHeldIsCountedButNotSentToIt() throws {
+    let f = try HostFixture(script: "read x; printf \"got:$x\\n\"; sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(try f.attach(peer) != nil)
+
+    f.host.handle(RemoteMessage(t: "presence", devices: [
+        RemotePresence(deviceID: peer.deviceID, name: "laptop", online: false),
+    ]))
+    f.host.flush()
+    f.link.reset()
+    f.session.send(Array("go\n".utf8))
+    #expect(waitForShell(f, containing: "got:go"))
+    f.host.flush()
+    #expect(f.link.frames.isEmpty)
+
+    // Empty frames alone was also true of the drop this replaces, so the half the name claims is
+    // the half worth asserting: the attachment is still there, and it comes back to a snapshot that
+    // closes the hole rather than to nothing at all.
+    peer.rotateEphemeral()
+    #expect(try f.attach(peer) != nil)
+    let text = f.text(peer, f.link.frames)
+    #expect(text.hasPrefix(RemoteSnapshot.reset))
+    #expect(text.contains("got:go"))
+}
+
+/// Was `deviceWentOfflineDoesTheSameAsAPresenceMessage`, and it still does -- the meaning of both
+/// has changed together. The door that drops at once is `deviceRemoved`, which is what Remove uses.
+@Test func deviceWentOfflineHoldsTheAttachmentJustAsAPresenceMessageDoes() throws {
     let f = try HostFixture(script: "sleep 30")
     defer { f.terminate() }
     let peer = try TestPeer()
@@ -507,14 +583,20 @@ private func waitForShell(_ f: HostFixture, containing needle: String) -> Bool {
     f.link.reset()
     f.host.deviceWentOffline(peer.deviceID)
     f.host.flush()
-    #expect(f.audit.contains(.detached(device: peer.deviceID, session: f.key)))
+    #expect(!f.audit.contains(.detached(device: peer.deviceID, session: f.key)))
 
-    // Its writer token went with it, so the next client in is the writer rather than an observer
-    // waiting on a device that will never come back.
+    // Held, so the token is still its own: a client attaching now is an observer behind it, because
+    // the device this host is holding a place for may be a second away from re-attaching.
     let next = try TestPeer()
     f.pair(next.deviceID)
-    let nextAttached = try f.attach(next)
-    #expect(nextAttached?.role == "writer")
+    #expect(try f.attach(next)?.role == "observer")
+
+    // And when the window closes the token moves to the client that is actually here.
+    f.clock.advance(61)
+    f.host.flush()
+    #expect(f.audit.contains(.detached(device: peer.deviceID, session: f.key)))
+    let promoted = f.link.messages(ofType: "role").last { $0.deviceID == next.deviceID }
+    #expect(promoted?.role == "writer")
 }
 
 @Test func aFrameSealedByAnotherClientDoesNotAdvanceTheWritersWindow() throws {
@@ -638,4 +720,407 @@ private func waitForShell(_ f: HostFixture, containing needle: String) -> Bool {
     #expect(waitUntil { !f.link.messages(ofType: "sessions").isEmpty })
     let published = try #require(f.link.messages(ofType: "sessions").last?.sessions)
     #expect(published.map(\.sessionID) == [f.key])
+}
+
+/// The client's socket dropped and came straight back -- which, until the relay was fixed, was
+/// every ninety-one seconds. The attachment it left is the attachment it returns to: same role, no
+/// second snapshot, and nothing in the audit log, because the device never left.
+@Test func aClientThatComesStraightBackResumesWithNoSnapshotAndNoAuditLine() throws {
+    let f = try HostFixture(script: "sleep 30")
+    defer { f.terminate() }
+    let writer = try TestPeer()
+    let observer = try TestPeer()
+    f.pair(writer.deviceID)
+    f.pair(observer.deviceID)
+    f.register()
+    #expect(try f.attach(writer)?.role == "writer")
+    #expect(try f.attach(observer)?.role == "observer")
+
+    // The relay's only word about a socket that closed.
+    f.link.reset()
+    f.host.handle(RemoteMessage(t: "presence", devices: [
+        RemotePresence(deviceID: writer.deviceID, name: "laptop", online: false),
+    ]))
+    f.host.flush()
+    // Nothing yet: the token stays where it was, the observer's strip does not flap, and the log
+    // does not record a departure that may not have happened.
+    #expect(f.link.messages(ofType: "role").isEmpty)
+    #expect(f.audit.filter { $0 == .detached(device: writer.deviceID, session: f.key) }.isEmpty)
+
+    // Back inside the window, with a fresh ephemeral key as every attach has.
+    writer.rotateEphemeral()
+    let again = try f.attach(writer)
+    #expect(again?.role == "writer")                       // the role it left with
+    #expect(f.link.frames.isEmpty)                         // and nothing was re-encrypted for it
+    let order = f.link.sendOrder
+    let attachedIndex = try #require(order.lastIndex(of: "attached"))
+    let endIndex = try #require(order.lastIndex(of: "snapshot_end"))
+    #expect(endIndex == attachedIndex + 1)                 // not one frame between them
+    #expect(f.audit.filter { $0 == .attached(device: writer.deviceID, session: f.key) }.count == 1)
+}
+
+/// The other half: a session that printed while the client was away has a hole in it, and there is
+/// nothing to replay from -- the host buffers nothing. So it re-snapshots, and the snapshot says so
+/// by starting with the reset, which is what stops the client appending a second copy of the
+/// host's screen to the first.
+@Test func aClientThatMissedOutputGetsAFreshSnapshotThatReplacesTheOldOne() throws {
+    let f = try HostFixture(script: "read x; printf \"got:$x\\n\"; sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(try f.attach(peer) != nil)
+
+    f.host.handle(RemoteMessage(t: "presence", devices: [
+        RemotePresence(deviceID: peer.deviceID, name: "laptop", online: false),
+    ]))
+    f.host.flush()
+    f.session.send(Array("go\n".utf8))
+    #expect(waitForShell(f, containing: "got:go"))
+    f.host.flush()
+
+    f.link.reset()
+    peer.rotateEphemeral()
+    let again = try f.attach(peer)
+    #expect(again != nil)
+    let order = f.link.sendOrder
+    let attachedIndex = try #require(order.lastIndex(of: "attached"))
+    let endIndex = try #require(order.lastIndex(of: "snapshot_end"))
+    #expect(endIndex > attachedIndex + 1)                  // there *are* frames this time
+    let text = f.text(peer, f.link.frames)
+    // RIS and ED 3 first, which is what stops the second snapshot being appended to the first.
+    #expect(text.hasPrefix(RemoteSnapshot.reset))
+    // And the hole is closed: what printed while it was away is in the new snapshot.
+    #expect(text.contains("got:go"))
+}
+
+/// The window C1 was about, and the reason `presence(online)` is not a branch. A relay re-registers
+/// a client only when the host answers its `attach` (`relay/hub.go:446-469`), so between "the
+/// client is back online" and "the client has re-attached" every chunk this host sends is dropped
+/// by the relay and counted in `dropped_binary`. If a presence had cleared the hold, this re-attach
+/// would look like a clean resume and the client's mirror would be permanently short -- silently,
+/// which is the same class of defect as B1 itself.
+@Test func outputPrintedAfterTheHostHearsTheClientIsBackStillForcesAReSnapshot() throws {
+    let f = try HostFixture(script: "read x; printf \"got:$x\\n\"; sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(try f.attach(peer) != nil)
+
+    let devices = { (online: Bool) in
+        RemoteMessage(t: "presence",
+                      devices: [RemotePresence(deviceID: peer.deviceID, name: "laptop", online: online)])
+    }
+    f.host.handle(devices(false))
+    f.host.flush()
+    f.host.handle(devices(true))          // the socket is back; the attach has not arrived
+    f.host.flush()
+    f.session.send(Array("go\n".utf8))
+    #expect(waitForShell(f, containing: "got:go"))
+    f.host.flush()
+
+    f.link.reset()
+    peer.rotateEphemeral()
+    #expect(try f.attach(peer) != nil)
+    let text = f.text(peer, f.link.frames)
+    #expect(text.hasPrefix(RemoteSnapshot.reset))
+    #expect(text.contains("got:go"))
+}
+
+/// The second face of the same bug. `acceptAttach` exists in `RemoteClientTests` precisely so "a
+/// test can re-deliver the identical message the way a relay can", and a host that answered a
+/// duplicated `attach` with an empty screen would be handing a client that asked for the session an
+/// empty terminal. Only an attachment that was *held* can resume.
+@Test func aSecondAttachFromADeviceThatNeverDroppedGetsTheWholeSnapshot() throws {
+    let f = try HostFixture(script: "printf 'alpha\\n'; sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(waitForShell(f, containing: "alpha"))
+    #expect(try f.attach(peer) != nil)
+
+    f.link.reset()
+    peer.rotateEphemeral()
+    #expect(try f.attach(peer)?.role == "writer")       // the role it already had
+    let text = f.text(peer, f.link.frames)
+    #expect(text.hasPrefix(RemoteSnapshot.reset))       // the mirror already holds one
+    #expect(text.contains("alpha"))
+}
+
+/// The third face, and the one that arrives through ordinary traffic. `presence` is a snapshot of
+/// *every* peer, re-sent whenever any of them changes, so a held client is named `offline` again and
+/// again while it is away -- once per lid-opening on some other Mac. A `suspend` that re-baselined
+/// on each of those would move `heldAtSequence` past the chunks this client missed and hand it a
+/// resume with no snapshot; it would also arm a fresh sweep timer every time, so a client that never
+/// came back would never be swept.
+@Test func aSecondOfflinePresenceDuringOneHoldDoesNotEraseWhatWasMissed() throws {
+    let f = try HostFixture(script: "read x; printf \"got:$x\\n\"; sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(try f.attach(peer) != nil)
+
+    let offline = RemoteMessage(t: "presence", devices: [
+        RemotePresence(deviceID: peer.deviceID, name: "laptop", online: false),
+    ])
+    f.host.handle(offline)
+    f.host.flush()
+    f.session.send(Array("go\n".utf8))
+    #expect(waitForShell(f, containing: "got:go"))
+    f.host.flush()
+    f.host.handle(offline)          // another Mac's presence changed; this one is still away
+    f.host.flush()
+
+    f.link.reset()
+    peer.rotateEphemeral()
+    #expect(try f.attach(peer) != nil)
+    let text = f.text(peer, f.link.frames)
+    #expect(text.hasPrefix(RemoteSnapshot.reset))
+    #expect(text.contains("got:go"))
+}
+
+/// The device is gone for good -- unpaired, not merely asleep -- so there is nothing to come back
+/// to and holding the attachment would strand the writer token on a Mac that is no longer allowed
+/// to type. This is the one path that drops immediately, and the one that audits it.
+@Test func aRemovedDeviceLosesItsAttachmentAtOnce() throws {
+    let f = try HostFixture(script: "sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(try f.attach(peer) != nil)
+
+    f.link.reset()
+    f.unpair(peer.deviceID)
+    f.host.deviceRemoved(peer.deviceID)
+    f.host.flush()
+    #expect(f.audit.contains(.detached(device: peer.deviceID, session: f.key)))
+    // And a re-attach from it is refused by the pairing check, not answered as a resume.
+    peer.rotateEphemeral()
+    #expect(try f.attach(peer) == nil)
+}
+
+/// The other end of the window. A client that never comes back must not hold the writer token for
+/// the rest of the session: the sweep is what turns a held attachment into a departed one, and it
+/// is the *only* thing that writes the audit line for a device whose socket simply went.
+@Test func aClientThatNeverComesBackIsSweptWhenTheWindowCloses() throws {
+    let f = try HostFixture(script: "sleep 30", reattachWindow: 60)
+    defer { f.terminate() }
+    let writer = try TestPeer()
+    let observer = try TestPeer()
+    f.pair(writer.deviceID)
+    f.pair(observer.deviceID)
+    f.register()
+    #expect(try f.attach(writer)?.role == "writer")
+    #expect(try f.attach(observer)?.role == "observer")
+
+    f.link.reset()
+    f.host.handle(RemoteMessage(t: "presence", devices: [
+        RemotePresence(deviceID: writer.deviceID, name: "laptop", online: false),
+    ]))
+    f.host.flush()
+    #expect(f.audit.filter { $0 == .detached(device: writer.deviceID, session: f.key) }.isEmpty)
+
+    f.clock.advance(61)
+    f.host.flush()
+    #expect(f.audit.contains(.detached(device: writer.deviceID, session: f.key)))
+    // The token moved, and the observer was told -- which is the whole reason the sweep exists.
+    let promoted = f.link.messages(ofType: "role")
+        .last { $0.deviceID == observer.deviceID && $0.to == observer.deviceID }
+    #expect(promoted?.role == "writer")
+}
+
+/// A device that dropped, came back, and dropped again inside one window: the first timer must not
+/// sweep the second suspension's attachment before its own minute is up.
+@Test func aSecondDropRestartsTheWindowRatherThanInheritingIt() throws {
+    let f = try HostFixture(script: "sleep 30", reattachWindow: 60)
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(try f.attach(peer) != nil)
+
+    let offline = RemoteMessage(t: "presence", devices: [
+        RemotePresence(deviceID: peer.deviceID, name: "laptop", online: false),
+    ])
+    f.host.handle(offline)
+    f.host.flush()
+    f.clock.advance(50)
+    peer.rotateEphemeral()
+    #expect(try f.attach(peer) != nil)          // back, inside the window
+    f.host.handle(offline)                      // and gone again
+    f.host.flush()
+    f.clock.advance(20)                         // 70 s since the *first* drop, 20 since this one
+    f.host.flush()
+    #expect(f.audit.filter { $0 == .detached(device: peer.deviceID, session: f.key) }.isEmpty)
+    f.clock.advance(45)
+    f.host.flush()
+    #expect(f.audit.contains(.detached(device: peer.deviceID, session: f.key)))
+}
+
+/// B3, on the host's side of the wire. Attaching while the host is in a full-screen program used to
+/// send one flat transcript of the *active* screen: vim's tildes landed in the client's primary
+/// buffer, where the host's seven blocks should have been, and the program's exit had nothing to
+/// restore. The snapshot now says what it is.
+@Test func aSnapshotTakenInsideAFullScreenProgramCarriesBothBuffers() throws {
+    let f = try HostFixture(script: "printf '\\033]133;A\\007$ \\033]133;B\\007vim x\\n\\033]133;C\\007'; "
+                            + "printf '\\033[?1049h\\033[H~\\r\\n\\\"x\\\" [New]'; sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(waitForShell(f, containing: "[New]"))
+
+    #expect(try f.attach(peer) != nil)
+    let text = f.text(peer, f.link.frames)
+    #expect(text.contains("vim x"))                     // the block the host still has
+    #expect(text.contains("\u{1b}]133;A\u{7}"))         // and the marks its blocks are built from
+    // The switch the program itself made, before the program's screen, and a cursor after it.
+    let switchIndex = try #require(text.range(of: "\u{1b}[?1049h"))
+    let programIndex = try #require(text.range(of: "[New]"))
+    #expect(switchIndex.lowerBound < programIndex.lowerBound)
+    #expect(text.contains("\u{1b}[") && text.hasSuffix("H"))
+}
+
+/// D2: the host resized while somebody was watching. `attached` says the size once and said it
+/// never again, so the mirror stayed the shape the host had at attach and every line wrapped. It
+/// self-healed only because the socket died every ninety-one seconds; fixing that made it
+/// permanent, which is why this is in the same plan.
+@Test func aResizedHostTellsEveryAttachedClientItsNewSize() throws {
+    let f = try HostFixture(script: "sleep 30", debounce: 0.01)
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    let attached = try #require(try f.attach(peer))
+    #expect(attached.cols == 80)
+
+    f.link.reset()
+    f.session.resize(cols: 132, rows: 40)
+    f.host.summaryChanged()
+    #expect(waitUntil { f.link.messages(ofType: "role").contains { $0.cols == 132 } })
+    let role = try #require(f.link.messages(ofType: "role").last { $0.cols != nil })
+    #expect(role.to == peer.deviceID)
+    #expect(role.deviceID == peer.deviceID)             // whose role it is, which is what the client checks
+    #expect(role.role == "writer")                      // unchanged; only the size moved
+    #expect(role.rows == 40)
+
+    // And it is said once per change, not once per publish: a summary that changes nothing about
+    // the size must not put a `role` on the wire for every keystroke of a title.
+    f.link.reset()
+    f.host.summaryChanged()
+    f.host.flush()
+    #expect(waitUntil { !f.link.messages(ofType: "sessions").isEmpty })
+    #expect(f.link.messages(ofType: "role").isEmpty)
+}
+
+/// C1. The *host's* own socket dropped, which is a Wi-Fi blip or this Mac's lid, not the client's.
+///
+/// Nothing suspends when it goes: the coordinator only hears about the status, and `deliver` goes on
+/// sealing every chunk and bumping `sequence` into a socket that is not there. So the baseline
+/// `linkDidReconnect` takes afterwards already counts the chunks nobody received, the client's
+/// re-attach satisfies `heldAtSequence == sequence`, and it is answered as a clean resume with no
+/// frames at all -- a mirror permanently missing everything the host printed during the outage, and
+/// no way for either side to know. A hold taken here has no baseline it can trust: it re-snapshots.
+@Test func aHostWhoseOwnSocketDroppedReSnapshotsRatherThanResuming() throws {
+    let f = try HostFixture(script: "read x; printf \"got:$x\\n\"; sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(try f.attach(peer) != nil)
+
+    // What the host printed while its own socket was down. It was sealed and handed to a link that
+    // had nowhere to put it, and it counted.
+    f.session.send(Array("go\n".utf8))
+    #expect(waitForShell(f, containing: "got:go"))
+    f.host.flush()
+    f.host.linkDidReconnect()
+    f.host.flush()
+
+    f.link.reset()
+    peer.rotateEphemeral()
+    #expect(try f.attach(peer) != nil)
+    let text = f.text(peer, f.link.frames)
+    #expect(text.hasPrefix(RemoteSnapshot.reset))
+    #expect(text.contains("got:go"))
+    // And the role survived the outage even though the snapshot did not: the client comes back to
+    // the tab it left, it is only the screen that has to be redrawn.
+    #expect(f.link.messages(ofType: "attached").last?.role == "writer")
+}
+
+/// I1. A resize is announced from the *debounced* publish, so there is a window of up to
+/// `summaryDebounce` in which the host knows its new size and nobody attached has been told. An
+/// attach landing inside that window is told the new size in its own `attached` -- and must not let
+/// that stand for having told everybody else, or the clients that were already watching keep the
+/// shape the host had when *they* attached and every line wraps. D2, re-opened by a second viewer.
+@Test func anAttachDoesNotSwallowAResizeTheOtherClientsHaveNotBeenToldAbout() throws {
+    let f = try HostFixture(script: "sleep 30", debounce: 0.01)
+    defer { f.terminate() }
+    let first = try TestPeer()
+    let second = try TestPeer()
+    f.pair(first.deviceID)
+    f.pair(second.deviceID)
+    f.register()
+    #expect(try f.attach(first)?.cols == 80)
+
+    f.session.resize(cols: 132, rows: 40)
+    f.link.reset()
+    // The second device attaches before the publish runs, and its `attached` carries 132x40.
+    #expect(try f.attach(second)?.cols == 132)
+    f.host.summaryChanged()
+    #expect(waitUntil { f.link.messages(ofType: "role").contains { $0.to == first.deviceID && $0.cols == 132 } })
+    let role = try #require(f.link.messages(ofType: "role").last { $0.to == first.deviceID })
+    #expect(role.rows == 40)
+    #expect(role.deviceID == first.deviceID)
+    #expect(role.role == "writer")
+    // The device that was just told in `attached` is not told twice.
+    #expect(f.link.messages(ofType: "role").filter { $0.to == second.deviceID }.isEmpty)
+}
+
+/// I2. The chunk that is fed but whose tap has not run yet, at the instant the resume reads the
+/// session's counts.
+///
+/// `withTerminalAndOutputCount` returns the count the *feed* has reached; the tap that turns it into
+/// a `deliver` runs afterwards, off the lock. A full snapshot has that chunk in its text, which is
+/// why `startSequence: fed` is right there. A resume has no text at all, so the same number puts the
+/// cut-off one above the chunk still in flight: it reaches `deliver`, fails `startSequence <=
+/// sequence`, and is dropped -- never snapshotted and never streamed. The resume has already proved
+/// nothing below `registration.sequence` was missed, so that is the number it must start from.
+@Test func aResumeStreamsTheChunkThatWasFedButNotYetTapped() throws {
+    let f = try HostFixture(script: "read x; printf \"got:$x\\n\"; sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(try f.attach(peer) != nil)
+
+    f.host.handle(RemoteMessage(t: "presence", devices: [
+        RemotePresence(deviceID: peer.deviceID, name: "laptop", online: false),
+    ]))
+    f.host.flush()
+
+    // The shell prints while the host's queue is held inside this very attach, so the feed has
+    // counted the chunk and the tap's block is queued *behind* the attach. That is the window.
+    f.link.reset()
+    peer.rotateEphemeral()
+    f.onceDuringNextAttach {
+        f.session.send(Array("go\n".utf8))
+        _ = waitForShell(f, containing: "got:go")
+    }
+    let again = try f.attach(peer)
+    #expect(again != nil)
+    // A resume, because nothing had been *delivered* since the hold: no snapshot frames.
+    let order = f.link.sendOrder
+    let attachedIndex = try #require(order.lastIndex(of: "attached"))
+    let endIndex = try #require(order.lastIndex(of: "snapshot_end"))
+    #expect(endIndex == attachedIndex + 1)
+
+    // And the chunk that was in flight arrives as live bytes rather than vanishing.
+    #expect(waitUntil { !f.link.frames.isEmpty })
+    f.host.flush()
+    #expect(f.text(peer, f.link.frames) == "go\r\ngot:go\r\n")
 }

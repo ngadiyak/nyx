@@ -2,10 +2,14 @@
 
 The file is `~/.config/nyx/config` (override with `NYX_CONFIG=/path/to/config`). Flat
 `key = value`, one per line, `#` comments (a `#` starts a comment only after whitespace, so
-`palette = 1=#ff0000` is a colour, not a comment). The file is watched and reloaded on save. A bad
-line is reported in the banner at the top of the window with its line number, and every other
-setting stays in force. `⌘,` opens the settings window, which edits this file in place;
-`⌘⇧,` reloads it by hand.
+`palette = 1=#ff0000` is a colour, not a comment). Both the file and the directory it is in are
+watched, so a save that replaces the file and a save that rewrites it in place
+(`echo >> ~/.config/nyx/config`) are both reloaded. A bad line is reported in the banner at the top
+of the window with its line number, and every other setting stays in force -- as does the bad line's
+own setting, which keeps the value it had, so a value being half-typed does not reset it. A line
+**removed** from the file is different: that setting goes back to its default straight away, with no
+restart, which is how you take a setting back -- deleting `remote-relay-token` takes this Mac off
+the relay. `⌘,` opens the settings window, which edits this file in place; `⌘⇧,` reloads it by hand.
 
 `Config.defaultFileText` in `Sources/NyxCore/Config/Config.swift` is the commented template Nyx
 writes when the file is missing. `ConfigTests` checks that parsing it yields exactly the defaults,
@@ -188,6 +192,7 @@ xterm, Ghostty and iTerm2 all report there.
 | `new_request` | — | Opens the request workbench on a blank request: method, URL, parameters, headers, body, auth and options as a form |
 | `remote_sessions` | — | Opens the command palette's Remote section. Settings → Remote also gets you there |
 | `remote_pair` | — | Opens the pairing sheet, either side |
+| `open_remote_settings` | — | Opens Settings on the **Remote** page — the relay, the token, the paired devices and the activity log. Distinct from `open_config`, which opens the window without choosing a page. Greyed, like the two above, only when `remote = off` |
 | `remote_take_control` | — | On an observed remote tab, takes over as writer |
 | `toggle_http_lens` | ⌘⇧J | Flips the block the keyboard is on — or the last response in the pane — between `pretty` and `raw`. Greyed when the pane has no request to show |
 | `stop_watch` | ⌘. | Stops the watch running in this pane. Enabled while the block the keyboard is on is **any** run of that series, or the block the watch was armed from — scrolling up a run to compare two answers does not take the chord away — and also when the keyboard is on no request at all. A series that has not run anything yet enables it from anywhere: until the first run there is no **Stop** button either, so the chord is the only way to take one back. Greyed in the menu and absent from the palette when the pane has no unfinished series, and on a request block that belongs to some *other* series or to none, so a chord pressed for something else cannot kill a watch elsewhere in the pane. The strip's **Stop** button stops the series it belongs to, so the chord and the button now agree everywhere the button exists. `⌘K` (clear the pane) also stops a running series and *forgets* it — every run's block id names rows that are gone, so a kept header would sit on a stranger's command |

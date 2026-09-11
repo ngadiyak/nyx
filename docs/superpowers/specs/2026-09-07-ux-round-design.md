@@ -798,7 +798,7 @@ duplicates, so it cannot wait for Wave 5.)
 
 ## 7. Wave 6 — remote strip and pairing (now second in the order)
 
-**Four tasks** (the universal-binary task was struck by the owner on 2026-09-10: Intel builds are
+**Four polish items** (the universal-binary task was struck by the owner on 2026-09-10: Intel builds are
 not being done for now; a Mac builds its own bundle with `make install`), preceded by an end-to-end
 QA of pairing and attach on two local instances so the plan fixes what breaks, not only what the
 pictures showed.
@@ -821,6 +821,82 @@ pictures showed.
    Recent activity stops being a raw ISO-8601 dump and uses a relative date (`RelativeAge`, the
    value the palette's Requests rows already use).
 5. ~~Universal binary~~ — struck 2026-09-10 (owner): not for now.
+
+### 7.6 Addendum (2026-09-10, from the end-to-end QA)
+
+The four items above were written from the pictures. Then two, three and four real instances were
+paired, attached and left alone against the live relay:
+`.superpowers/sdd/2026-09-07-ux-round/qa-remote.md` — **4 BROKEN, 16 DEGRADED**, end-to-end
+encryption verified on the wire. Everything in this addendum is binding on plan 6
+(`docs/superpowers/plans/2026-09-07-ux-round-6-remote.md`, eleven tasks).
+
+**The four polish items are all confirmed, and three are sharper than written.** Item 1's contrast
+range is **1.46–2.26 : 1**, not 1.73–1.82, it is **eight of eleven** pictured states, and the
+button's *bezel* vanishes too — so the fix needs `appearance` **and** an `attributedTitle`, with a
+`cmp` across appearances as the standing gate for those eight, plus a 300-pt strip picture, since
+every `remote-strip-*` PNG is taken at 900. Item 3's two states have different titles *and*
+different sentences and the real transition took **under 400 ms**, so the sheet flickers through
+three looks: one title, one sentence, and a spinner delayed ~300 ms. Item 4 gains four things the
+picture shows: the status sentence must move **beside the buttons it explains**, the two Pair
+buttons need a caption saying which Mac presses which, `Device name`'s placeholder must stop reading
+as a value, and `Snapshot lines` must say what it costs (~85 KB at 2,000 lines, measured).
+
+**B1–B4 are must-fix, and they outrank the four items.** None of the four is why a person would stop
+using this feature; these are.
+
+- **B1.** The relay closes every socket every **91 seconds**, idle or not: `coder/websocket`'s `Read`
+  returns on a data message only, so the 90 s read deadline measures silence rather than death
+  (`server/server.go:327`). With two clients attached the writer silently becomes an observer for
+  ~12 s of every 91, the client's transcript gains a duplicate copy of the host's screen per cycle
+  (3308 rows against the host's 2007), ~85 KB per client per cycle is re-encrypted, and the host's
+  audit log gains two noise lines per client per cycle. **Two fixes, both wanted:** liveness from
+  pongs on the relay, and a reconnect that *resumes* an attachment on the client — no second
+  snapshot, no writer flap, no audit line.
+- **B2.** Unpairing from the host leaves the client's tab saying "beta has been offline since 21:17
+  — waiting for it to come back" for ever, while beta is online. The relay must distinguish a
+  non-mutual peer (`presence.not_paired`), and `AttachFailure.unpaired` — which has existed since
+  the feature shipped — must become reachable.
+- **B3.** Attaching while the host is in a full-screen program costs the client **every block** in
+  that session: one block where the host has seven, and no ⌘↑, folds, Copy Output or sticky prompt
+  for that tab ever again. The snapshot must carry the primary buffer with its marks *and* the alt
+  screen on top of it. §12 has the buffer half; the block loss is new.
+- **B4.** A relay token pasted into Settings → Remote and the window closed is thrown away without a
+  word — the bug that cost the owner a token on 2026-09-07, still present at this HEAD, and it bit
+  during the QA.
+
+**Two Wave-4 items are pulled forward into plan 6** (owner-delegated ruling, `decisions.md`):
+§5.1 item **1** (every field commits on end-editing and on window close) with item 2's trailing
+newline, and §5.1 item **3** / §5.3 (a disabled primary button explains itself beside itself). Nothing
+in Wave 6 can be tested by hand until item 1 lands.
+
+**The 16 DEGRADED are triaged by the plan writer**, task by task, and whatever does not fit is listed
+at the end of the plan as *Deferred to the ledger* with a one-line reason each. The rule: a DEGRADED
+item is in plan 6 if it is a sentence, a threshold, a colour or a row that lies; it is deferred if it
+needs a new product feature, a new surface, or a decision the owner has not been asked.
+
+**One more task, owner 2026-09-11: a right-click on the tab bar offers a remote tab.** A remote
+session can be started two ways today — `Shell → Remote Sessions…` and ⌘⇧P — and neither is where a
+person goes when they want a new tab. Both `+` buttons make a local one, and right-clicking the bar
+does nothing at all — `TabBarView.rightMouseDown` answers the `+` after the last tab and the empty
+strip with `break`, and forwards the *leading* `+` only when it happens to be a quick-action chip —
+so the feature is invisible from the one surface that is *about* opening tabs. Plan 6's Task 10 gives
+the bar a menu, from either `+`, the `≡`, the empty strip and the end of a tab's own menu: New Tab,
+then `New Remote Tab…` routed to the same Remote rows the action opens, then (on the bar, not on a
+tab) the sessions that are open on the other Macs right now, attaching directly. What it offers is
+decided in Core (`TabBarMenu`), a session row reads in the palette's own words on the one line a
+menu row has, and when the remote half cannot work — switched off, no token, or a relay that has
+*refused* this Mac, which is the only socket state that counts, since every other one is a busy
+socket whose explanation is in the list that row opens — the item is greyed and says so in **this
+section's own sentences**: `RemotePageStatus`'s, with the sentence live beneath it as a row that
+opens Settings → Remote. It adds no `TerminalAction`: every row has a keyboard path already, so this
+is a route, not an action.
+
+**§7.5 (the universal binary) is STRUCK** — owner, 2026-09-10: no Intel builds for now.
+
+**§10's VoiceOver gate is WAIVED** — owner, 2026-09-10: they do not use VoiceOver. Accessibility work
+stays exactly as specified (labels, ≥ 16 pt targets, keyboard paths, `Announce`) because it is cheap
+and tested in Core, but nothing waits on a VoiceOver run and none is asked of the owner. §8.3's
+`[verify]` item is unresolved and stays unresolved.
 
 ---
 

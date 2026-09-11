@@ -270,3 +270,60 @@ private func palette(_ titles: [String]) -> CommandPalette {
     #expect(items.first?.kind == .remoteSession(deviceID: "D1", sessionID: ""))
     #expect(items.first?.isEnabled == false)
 }
+
+/// D4, the other half. A greyed row was selectable, drawn highlighted, and the thing ⏎ hit: on the
+/// wrong-token instance the *only* row was disabled, so ↓ could not leave it either and every ⏎
+/// beeped with the panel still open. A palette is a list of verbs; a row that is not one is a
+/// landmark, not a destination.
+@Test func aDisabledRowIsNeverTheSelection() {
+    let items = [
+        PaletteItem(title: "iMac (studio)", detail: "offline", kind: .remoteSession(deviceID: "d1", sessionID: ""),
+                    isEnabled: false),
+        PaletteItem(title: "Mac mini · zsh", detail: "~", kind: .remoteSession(deviceID: "d2", sessionID: "s1")),
+        PaletteItem(title: "Mac pro · zsh", detail: "~", kind: .remoteSession(deviceID: "d3", sessionID: "s2")),
+    ]
+    var p = CommandPalette(items: items)
+    #expect(p.selection == 1)
+    #expect(p.selected?.title == "Mac mini · zsh")
+    p.moveSelection(by: 1)
+    #expect(p.selection == 2)
+    // Wrapping still wraps -- past the end, round the front, and *over* the disabled row.
+    p.moveSelection(by: 1)
+    #expect(p.selection == 1)
+    p.moveSelection(by: -1)
+    #expect(p.selection == 2)
+}
+
+/// A list with nothing runnable in it keeps its selection on the first row rather than inventing
+/// one: the rows are still worth showing (they are the explanation for the section being empty),
+/// and `selected` says there is nothing to run, which is what makes ⏎ a beep instead of an act.
+@Test func aListOfOnlyDisabledRowsSelectsTheFirstAndRunsNothing() {
+    var p = CommandPalette(items: [
+        PaletteItem(title: "Relay rejected this device's token", detail: "",
+                    kind: .remoteSession(deviceID: "", sessionID: ""), isEnabled: false),
+    ])
+    #expect(p.selection == 0)
+    #expect(p.selected == nil)
+    p.moveSelection(by: 1)
+    #expect(p.selection == 0)
+}
+
+/// And typing lands on the best row that can act, not on the best row.
+///
+/// The titles are chosen so the *disabled* row is the better match -- a Mac called `Mac mini` that
+/// is asleep, beside a session on a Mac called `Mac mini (office)` -- because a test where the
+/// runnable row already ranks first passes with `rank` reverted and pins nothing. The first
+/// expectation is the premise: if `FuzzySearch` ever stops preferring the exact title, this says so
+/// instead of quietly going green for the wrong reason.
+@Test func narrowingSkipsToTheFirstRunnableMatch() {
+    var p = CommandPalette(items: [
+        PaletteItem(title: "Mac mini", detail: "offline",
+                    kind: .remoteSession(deviceID: "d1", sessionID: ""), isEnabled: false),
+        PaletteItem(title: "Mac mini (office) · zsh", detail: "~",
+                    kind: .remoteSession(deviceID: "d2", sessionID: "s1")),
+    ])
+    p.setQuery("mac mini")
+    #expect(p.results.first?.item.isEnabled == false)
+    #expect(p.selection == 1)
+    #expect(p.selected?.title == "Mac mini (office) · zsh")
+}

@@ -34,7 +34,7 @@ private func session(id: String = "s1", title: String = "zsh", cwd: String = "/t
     let s = session(cwd: "/home/nik/projects/nyx", branch: "main", process: "swift test",
                     lastCommand: "make test", lastActivity: "2026-09-05T11:58:00Z")
     let text = RemoteCatalogue.detail(for: s, now: now, home: "/home/nik")
-    #expect(text == "~/projects/nyx  main · running: swift test · last: make test · 2 min ago")
+    #expect(text == "~/projects/nyx  main · running: swift test · 2 min ago · last: make test")
 }
 
 @Test func anOfflineDeviceYieldsOnePlaceholderRow() {
@@ -140,18 +140,21 @@ private func iso(secondsAgo: TimeInterval) -> String {
 // MARK: - Rows nothing can be done with
 
 /// Spec §5.3: an offline host is greyed. The three rows that stand for something rather than being
-/// something -- an offline Mac, a Mac with nothing open, the relay's status -- say so in the model,
-/// because a row drawn exactly like an actionable one is a row people press.
+/// something -- a Mac with nothing open, an offline Mac, a Mac that has unpaired this one -- say so
+/// in the model, because a row drawn exactly like an actionable one is a row people press. The
+/// relay's status used to be a fourth; it is a verb now (`theRelayStatusRowOpensSettings`).
 @Test func theThreeNonActionableRowsAreDisabled() {
     var c = RemoteCatalogue()
-    c.relayStatusText = "Relay unreachable (nyx.agentforge.cc)"
-    c.setPaired(["d1": "iMac", "d2": "Mac mini"])
+    c.setPaired(["d1": "iMac", "d2": "Mac mini", "d3": "Mac pro"])
     c.applyPresence([
         RemotePresence(deviceID: "d1", name: "iMac", online: true),
         RemotePresence(deviceID: "d2", name: "Mac mini", online: false),
+        RemotePresence(deviceID: "d3", name: "Mac pro", online: true, notPaired: true),
     ])
     c.applyCatalogue(deviceID: "d1", sessions: [])
-    #expect(c.paletteItems(now: now).allSatisfy { !$0.isEnabled })
+    let items = c.paletteItems(now: now)
+    #expect(items.count == 3)
+    #expect(items.allSatisfy { !$0.isEnabled })
 }
 
 @Test func aSessionRowIsActionable() {
@@ -181,7 +184,8 @@ private func iso(secondsAgo: TimeInterval) -> String {
     c.applyCatalogue(deviceID: "d1", sessions: [])
     let items = c.paletteItems(now: now)
     #expect(items[0].title == "Relay unreachable (nyx.agentforge.cc)")
-    #expect(items[0].detail == "")
+    // The status row's right-hand side is its verb, not its state repeated.
+    #expect(items[0].detail == "Settings…")
     #expect(items[1].title == "iMac")
     #expect(items[1].detail == "no sessions")
     #expect(items[2].title == "Mac mini")
@@ -278,4 +282,164 @@ private func iso(secondsAgo: TimeInterval) -> String {
     palette.setQuery("remote")
 
     #expect(palette.results.count == 1)
+}
+
+// MARK: - An offline name, and a Mac that has removed this one
+
+/// D1. The relay sends `Name: ""` for a peer it has no live socket for, and `applyPresence` wrote
+/// it over the name `setPaired` had put there -- so two sleeping Macs were two identical blank
+/// rows, and §5.3's promise of "its name greyed with 'offline'" was a promise about nothing. The
+/// comment that a presence name "is the freshest name Nyx has, so it always wins" is right for an
+/// online device and wrong for the one case that reaches it every time.
+@Test func anOfflinePresenceDoesNotEraseTheNameWeAlreadyHave() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "", online: false)])
+    #expect(c.devices.first?.name == "Mac mini (office)")
+    let rows = c.paletteItems(now: Date())
+    #expect(rows.first?.title == "Mac mini (office)")
+    #expect(rows.first?.detail == "offline")
+    #expect(rows.first?.isEnabled == false)
+}
+
+/// A name presence *does* supply still wins: it is the one the other Mac is announcing now.
+@Test func anOnlinePresenceNameStillWins() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "old name"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "renamed", online: true)])
+    #expect(c.devices.first?.name == "renamed")
+}
+
+/// D6/B2 in the palette: a Mac that has removed this one is not a Mac that is asleep, and the row
+/// has to stop offering something to press. It keeps the name, because the name is how a person
+/// knows *which* Mac to go and re-pair.
+@Test func anUnpairedPeerReadsAsUnpairedRatherThanOffline() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)"])
+    c.applyCatalogue(deviceID: "d1", sessions: [session()])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "", online: false, notPaired: true)])
+    let rows = c.paletteItems(now: Date())
+    #expect(rows.count == 1)
+    #expect(rows[0].title == "Mac mini (office)")
+    #expect(rows[0].detail == "no longer paired with this Mac")
+    #expect(rows[0].isEnabled == false)
+    // Its sessions go with it: a row you could press was the defect, not the label.
+    #expect(c.devices.first?.sessions.isEmpty == true)
+}
+
+/// And the flag clears, or the row would stay dead through the next pairing.
+@Test func aRepairedPeerComesBackOnline() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "", online: false, notPaired: true)])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "Mac mini (office)", online: true)])
+    #expect(c.devices.first?.notPaired == false)
+    #expect(c.devices.first?.online == true)
+}
+
+/// D6's other half, for the relay that cannot say it: the `not_paired` answer to an *attach* is
+/// the first thing this Mac hears, and the rows have to go on that too.
+@Test func forgettingADeviceTakesItsRowsWithoutUnpairingIt() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)", "d2": "iMac (studio)"])
+    c.applyCatalogue(deviceID: "d1", sessions: [session()])
+    c.forget(deviceID: "d1")
+    #expect(c.devices.count == 1)
+    #expect(c.devices.first?.id == "d2")
+    // And it is not a re-pair: the next `setPaired` from the same `paired.json` puts the row back
+    // as an offline one, which is honest -- this Mac has not removed anything.
+    c.setPaired(["d1": "Mac mini (office)", "d2": "iMac (studio)"])
+    #expect(c.devices.count == 2)
+}
+
+/// D1 again, on the path task 4 itself added. `forget` deletes the row, and the very next `presence`
+/// rebuilt it from the message -- where the name is `""`, because the relay sends an empty one for
+/// any peer it has no live socket for, which is every peer this path is about. The row a person
+/// reaches through the attach refusal came back blank: "" greyed with "no longer paired with this
+/// Mac", naming no Mac to go and re-pair. The name this Mac declared is the one to fall back on.
+@Test func aForgottenDeviceComesBackWithTheNameThisMacDeclared() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)"])
+    c.forget(deviceID: "d1")
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "", online: false, notPaired: true)])
+    let unpaired = c.paletteItems(now: now)
+    #expect(unpaired.first?.title == "Mac mini (office)")
+    #expect(unpaired.first?.detail == "no longer paired with this Mac")
+    // And the same again for the relay that cannot say `not_paired`: its empty name reaches the
+    // offline row through the identical fallback.
+    c.forget(deviceID: "d1")
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "", online: false)])
+    let offline = c.paletteItems(now: now)
+    #expect(offline.first?.title == "Mac mini (office)")
+    #expect(offline.first?.detail == "offline")
+}
+
+/// The other message with the same fallback: a `catalogue` for a device whose row has been
+/// forgotten -- the host re-paired and published again -- created it with no name at all, so every
+/// one of its session rows read " · zsh".
+@Test func aForgottenDeviceThatPublishesAgainIsStillNamed() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)"])
+    c.forget(deviceID: "d1")
+    c.applyCatalogue(deviceID: "d1", sessions: [session()])
+    #expect(c.paletteItems(now: now).first?.title == "Mac mini (office) · zsh")
+}
+
+/// D10. The detail put the unbounded last command in front of the age, so the age -- the field a
+/// person uses to choose between two Macs -- is the one the label cut off. The QA's row read
+/// `~ · running: zsh · last: for i in $(seq 1 2000); do echo "host scrollback line $i of two
+/// thousand"; done · 9 min ago`, and in the picture the age was simply gone.
+@Test func theAgeComesBeforeTheLastCommandAndTheCommandIsCutInCore() throws {
+    let long = "for i in $(seq 1 2000); do echo \"host scrollback line $i of two thousand\"; done"
+    let s = session(cwd: "/home/nik", process: "zsh", lastCommand: long,
+                    lastActivity: "2026-09-05T11:58:00Z")
+    let text = RemoteCatalogue.detail(for: s, now: now, home: "/home/nik")
+    #expect(text == "~ · running: zsh · 2 min ago · last: "
+        + RemoteCatalogue.shortCommand(long))
+    // The age is in front of the one clause that has no length limit, and the command carries the
+    // ellipsis that says it was longer -- so a row cut by the label loses the tail of a command
+    // rather than the answer to "when was this last touched".
+    let age = try #require(text.range(of: "2 min ago"))
+    let command = try #require(text.range(of: "last:"))
+    #expect(age.lowerBound < command.lowerBound)
+    #expect(text.hasSuffix("…"))
+}
+
+@Test func aShortCommandIsNotTouched() {
+    #expect(RemoteCatalogue.shortCommand("make test") == "make test")
+    #expect(RemoteCatalogue.shortCommand(String(repeating: "x", count: 40)).count == 40)
+    #expect(RemoteCatalogue.shortCommand(String(repeating: "x", count: 41)).hasSuffix("…"))
+    #expect(RemoteCatalogue.shortCommand(String(repeating: "x", count: 41)).count == 40)
+}
+
+/// D4. The relay-status row was the one row in the palette that named the user's problem, and it
+/// was disabled -- so searching for the problem gave exactly one row, selected, and ⏎ beeped with
+/// the panel still open. It is a verb now: the field it is about is on Settings → Remote.
+///
+/// `.openRemoteSettings`, and not `.openConfig`, which opens the settings window on whichever page
+/// it happens to start on -- Appearance. A row that names a relay problem and arrives at font size
+/// is the same dead end as the beep it replaced, one click further in.
+@Test func theRelayStatusRowOpensSettings() {
+    var c = RemoteCatalogue()
+    c.setPaired([:])
+    c.relayStatusText = "Relay unreachable (nyx.agentforge.cc)"
+    let rows = c.paletteItems(now: now)
+    #expect(rows.count == 1)
+    #expect(rows[0].title == "Relay unreachable (nyx.agentforge.cc)")
+    #expect(rows[0].detail == "Settings…")
+    #expect(rows[0].isEnabled)
+    #expect(rows[0].kind == .action(.openRemoteSettings))
+    #expect(rows[0].kind != .action(.openConfig))
+    // Still findable by the words a person would type about it.
+    #expect(rows[0].searchText.contains("remote"))
+}
+
+/// And every other Remote row stays what it was: a session to attach to, or a placeholder that
+/// cannot act. Only the status row is a verb about the settings page.
+@Test func aSessionRowIsStillASessionRow() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "iMac"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "iMac", online: true)])
+    c.applyCatalogue(deviceID: "d1", sessions: [session()])
+    #expect(c.paletteItems(now: now)[0].kind == .remoteSession(deviceID: "d1", sessionID: "s1"))
 }

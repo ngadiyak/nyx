@@ -3,11 +3,12 @@ import NyxCore
 
 /// Loads `~/.config/nyx/config` (or `$NYX_CONFIG`) and republishes it on change.
 ///
-/// Watches the config *directory*, not the file: editors replace files by rename (write a temp
-/// file, then rename it over the original), which invalidates a file-descriptor watch on the file
-/// itself after the first save. A directory watch survives that. Multiple filesystem events from
-/// one editor save (the write, then the rename) are coalesced with a short debounce so they produce
-/// exactly one reload.
+/// Watches the config directory **and** the config file: a directory watch survives an editor's
+/// write-then-rename (write a temp file, then rename it over the original, which invalidates a
+/// file-descriptor watch on the file itself), and only a file watch sees a file rewritten through
+/// its existing inode -- which is what `echo >>` does, and what the documented way to set the relay
+/// token is. Multiple filesystem events from one save (the write, then the rename) are coalesced
+/// with a short debounce so they produce exactly one reload.
 ///
 /// A parse error never loses the user's working configuration: `reload()` parses starting from the
 /// `Config` already in force (as `ConfigParser`'s `base`), so a line whose value can't be parsed
@@ -31,9 +32,15 @@ final class ConfigStore {
     }
 
     private var source: DispatchSourceFileSystemObject?
+    private var fileSource: DispatchSourceFileSystemObject?
     private var themeSource: DispatchSourceFileSystemObject?
     private var debounceItem: DispatchWorkItem?
     private let debounceInterval: TimeInterval = 0.1
+    /// `startWatching` has been called and `stopWatching` has not. `reload()` arms the file watch
+    /// when the file has only just appeared, and without this a `reload()` after `stopWatching()`
+    /// -- the settings window's Pair buttons reload by hand -- would resurrect a watch on a store
+    /// that had been told to stop.
+    private var isWatching = false
 
     /// `~/.config/nyx/themes` -- beside the config file, wherever that turned out to be.
     static var themesDirectory: URL {
@@ -100,6 +107,11 @@ final class ConfigStore {
     func reload() {
         (config, diagnostics) = ConfigStore.load(base: config)
         loadThemes()
+        // A config file created after launch (a fresh install, `Edit Config File...`) has no watch
+        // on it yet: the directory watch is what noticed it appearing.
+        if isWatching, fileSource == nil, FileManager.default.fileExists(atPath: ConfigStore.path.path) {
+            fileSource = watch(ConfigStore.path, isFile: true)
+        }
         onChange?(config, diagnostics)
     }
 
@@ -175,6 +187,12 @@ final class ConfigStore {
         let dir = ConfigStore.path.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         source = watch(dir)
+        // And the file itself. The directory watch catches an editor's write-then-rename, and
+        // catches nothing at all when a file is rewritten through its existing inode -- which is
+        // what `echo >> ~/.config/nyx/config` does, and what the documented way to set the relay
+        // token is. Both watches, debounced together, so one save is still one reload; the file
+        // watch is re-armed on `.delete`/`.rename`, which is the case a file watch alone loses.
+        fileSource = watch(ConfigStore.path, isFile: true)
         // A second watch on the themes directory: a change *inside* a subdirectory does not reach
         // the parent's watch, so without this, editing a theme file would need a config save (or a
         // restart) before it was seen -- which is precisely the loop a person is in while they are
@@ -182,37 +200,55 @@ final class ConfigStore {
         try? FileManager.default.createDirectory(at: ConfigStore.themesDirectory,
                                                  withIntermediateDirectories: true)
         themeSource = watch(ConfigStore.themesDirectory)
+        isWatching = true
     }
 
-    private func watch(_ dir: URL) -> DispatchSourceFileSystemObject? {
-        let fd = open(dir.path, O_EVTONLY)
+    private func watch(_ path: URL, isFile: Bool = false) -> DispatchSourceFileSystemObject? {
+        let fd = open(path.path, O_EVTONLY)
         guard fd >= 0 else { return nil }
-        let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete, .extend], queue: .main)
-        src.setEventHandler { [weak self] in self?.handle(src.data) }
+        let src = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd, eventMask: [.write, .rename, .delete, .extend], queue: .main)
+        src.setEventHandler { [weak self] in self?.handle(src.data, isFile: isFile) }
         src.setCancelHandler { close(fd) }
         src.resume()
         return src
     }
 
     func stopWatching() {
+        isWatching = false
         debounceItem?.cancel()
         debounceItem = nil
         source?.cancel()
         source = nil
+        fileSource?.cancel()
+        fileSource = nil
         themeSource?.cancel()
         themeSource = nil
     }
 
-    private func handle(_ event: DispatchSource.FileSystemEvent) {
-        // The watched directory itself was removed or replaced (e.g. `rm -rf ~/.config/nyx`, or an
-        // editor that renames directories): the descriptor is now stale, so reopen it. `~/.config`
-        // itself still exists, so this recreates `nyx/` and picks up whatever appears there next.
+    private func handle(_ event: DispatchSource.FileSystemEvent, isFile: Bool) {
         if event.contains(.delete) || event.contains(.rename) {
-            startWatching()
-            return
+            // The *file* was replaced by a rename, which is every atomic save -- including this
+            // class's own `write`. Its descriptor is now stale, so it is re-armed; and the save
+            // still has to be read, which is why this falls through to the debounce instead of
+            // returning the way the directory case does. Returning here would have been worse than
+            // the bug it fixed: `startWatching()` cancels the *directory* source too, and
+            // cancelling a source before its own pending event has been delivered loses that
+            // event -- so the one reload that used to happen would have stopped happening.
+            if isFile {
+                fileSource?.cancel()
+                fileSource = watch(ConfigStore.path, isFile: true)
+            } else {
+                // The watched directory itself was removed or replaced (`rm -rf ~/.config/nyx`, an
+                // editor that renames directories): every descriptor under it is stale. `~/.config`
+                // itself still exists, so this recreates `nyx/` and picks up what appears next.
+                startWatching()
+                return
+            }
         }
         // `.write`/`.extend` on a directory fires once per entry added, removed or renamed inside
-        // it -- an editor's write-then-rename is two such events for one save, coalesced here.
+        // it, and on the file once per write to it -- an editor's write-then-rename is two or three
+        // such events for one save, coalesced here into one reload.
         debounceItem?.cancel()
         let item = DispatchWorkItem { [weak self] in self?.reload() }
         debounceItem = item

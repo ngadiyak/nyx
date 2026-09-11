@@ -12,7 +12,7 @@ import NyxRemote
 /// `configChanged` pushes the reloaded values back into the controls, which is what keeps the
 /// window honest when the file is edited behind its back. Refreshing is a no-op when the values
 /// already match, so a control does not fight the user who is turning it.
-final class SettingsWindowController: NSWindowController {
+final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
     private let store: ConfigStore
     private var config: Config
     /// Set while `refresh` is writing values into controls, so their actions do not write the file
@@ -55,10 +55,21 @@ final class SettingsWindowController: NSWindowController {
         window.center()
         super.init(window: window)
         window.contentView = buildContent()
+        // NotificationCenter rather than `window.delegate = self`. An `NSWindowController` may
+        // already be its own window's delegate, and quietly replacing a delegate that is answering
+        // other questions is how a window stops remembering where it was. One observer, scoped to
+        // this window, cannot collide with anything.
+        NotificationCenter.default.addObserver(self, selector: #selector(windowIsClosing(_:)),
+                                               name: NSWindow.willCloseNotification, object: window)
         refresh(config, diagnostics: store.diagnostics)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// `UISnapshot.writeSettings` and `StateSnapshot` each build a short-lived controller, so the
+    /// close observer must die with it: a released controller's observer being called on a window
+    /// that outlives it is a crash with no connection to the code that caused it.
+    deinit { NotificationCenter.default.removeObserver(self) }
 
     func configChanged(_ config: Config, diagnostics: [ConfigDiagnostic]) {
         self.config = config
@@ -426,9 +437,14 @@ final class SettingsWindowController: NSWindowController {
         setActivityText(lines: Array(lines.suffix(20)))
     }
 
+    /// The log as a page reads it, not as `tail -f` does: the same words with the ISO-8601 stamp
+    /// swapped for a relative age (`AuditLine.display`), because a box six lines tall spent
+    /// thirty-one characters a line on something a person does not read as a time.
     private func setActivityText(lines: [String]) {
-        activityView.string = lines.isEmpty ? "No remote activity yet" : lines.joined(separator: "\n")
-        activityView.textColor = lines.isEmpty ? .tertiaryLabelColor : .labelColor
+        let now = Date()
+        let shown = lines.map { AuditLine.display($0, now: now) }
+        activityView.string = shown.isEmpty ? "No remote activity yet" : shown.joined(separator: "\n")
+        activityView.textColor = shown.isEmpty ? .tertiaryLabelColor : .labelColor
     }
 
     /// Pictures the page with data that would otherwise mean writing fake devices and log lines
@@ -479,6 +495,16 @@ final class SettingsWindowController: NSWindowController {
     /// is shown, so the sheet reads "Requesting a code from the relay" for as long as that takes --
     /// a code shown before the relay has it is one the other Mac would be told does not exist.
     @objc private func pairAsHost(_ sender: Any?) {
+        // A token typed and then Paired without pressing Return is the same lost value one step
+        // earlier: the pairing would open against the empty token the file still holds, and the
+        // relay would refuse it. `commitEdits` only writes the *file*, though: the coordinator
+        // learns the token through the watcher's debounced reload, a tenth of a second and a
+        // handshake away, so the guard below used to ask the coordinator it started with and answer
+        // the user who had just pasted a token with "Paste the relay token to connect". Reloading
+        // here is the same call `reloadConfig` makes, run by hand; `RemoteCoordinator.start` sets
+        // its connection synchronously, so `isRunning` is true by the time the guard reads it.
+        commitEdits()
+        store.reload()
         guard let coordinator, coordinator.isRunning else {
             reportPairingUnavailable()
             return
@@ -488,6 +514,16 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func pairAsClient(_ sender: Any?) {
+        // A token typed and then Paired without pressing Return is the same lost value one step
+        // earlier: the pairing would open against the empty token the file still holds, and the
+        // relay would refuse it. `commitEdits` only writes the *file*, though: the coordinator
+        // learns the token through the watcher's debounced reload, a tenth of a second and a
+        // handshake away, so the guard below used to ask the coordinator it started with and answer
+        // the user who had just pasted a token with "Paste the relay token to connect". Reloading
+        // here is the same call `reloadConfig` makes, run by hand; `RemoteCoordinator.start` sets
+        // its connection synchronously, so `isRunning` is true by the time the guard reads it.
+        commitEdits()
+        store.reload()
         guard let coordinator, coordinator.isRunning else {
             reportPairingUnavailable()
             return
@@ -765,6 +801,14 @@ final class SettingsWindowController: NSWindowController {
         field.placeholderString = placeholder
         field.target = self
         field.action = #selector(controlChanged(_:))
+        // The action alone fires on Return and on nothing else, so a *pasted* value -- the relay
+        // token, which is the one field of this whole feature that is always pasted -- was thrown
+        // away by closing the window. It cost the owner a token on 2026-09-07 and it was still
+        // doing it at the QA. The flag lives on the *cell*, not the field: `NSTextField` has no
+        // such property, and `NSSecureTextField`'s cell is an `NSSecureTextFieldCell`, which
+        // inherits it like any other.
+        field.cell?.sendsActionOnEndEditing = true
+        field.delegate = self
         field.widthAnchor.constraint(equalToConstant: width).isActive = true
         controls[key] = field
         return field
@@ -800,6 +844,11 @@ final class SettingsWindowController: NSWindowController {
         field.alignment = .right
         field.target = self
         field.action = #selector(controlChanged(_:))
+        // As in `textField`, and on the cell for the same reason: `remote-snapshot-lines` is one of
+        // the fields the QA measured at `sendsActionOnEndEditing = false`, and a number typed into
+        // it and not Returned was lost.
+        field.cell?.sendsActionOnEndEditing = true
+        field.delegate = self
         field.widthAnchor.constraint(equalToConstant: 78).isActive = true
         controls[key] = field
 
@@ -836,12 +885,81 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func controlChanged(_ sender: NSControl) {
         guard !isRefreshing, let key = sender.identifier?.rawValue else { return }
+        // A text field now fires this when it merely loses focus, and a field that lost focus
+        // without being touched has nothing to say. Writing its value anyway materialised a
+        // commented default into the user's own file: opening the settings window and closing it
+        // again left `padding = 8` in a config that had never mentioned padding. `SettingsEdits`
+        // decides it and is tested; this only asks.
+        if sender is NSTextField {
+            guard edits.committing(key) else {
+                // Nothing to write -- but a refresh may have been held while this field had the
+                // caret, and no write means no reload, so nothing else is coming to correct it.
+                releaseHeldText(key)
+                return
+            }
+        }
         guard let value = value(of: sender, for: key) else { return }
         if let stepper = controls[key + ".stepper"] as? NSStepper, sender is NSTextField {
             stepper.doubleValue = Double(value) ?? stepper.doubleValue
         }
         updateReadout(key, sender.doubleValue)
         store.write([(key: key, value: value)])
+    }
+
+    /// The three rules this window keeps about text fields -- what may be committed, what a refresh
+    /// may overwrite, and what a held refresh owes the field afterwards. See `SettingsEdits`, where
+    /// they are decided and tested; nothing here decides anything.
+    private var edits = SettingsEdits()
+
+    /// Every keystroke and every paste in a settings text field. A programmatic `stringValue` fires
+    /// no change notification, so what this records is the user's edits and nothing else.
+    func controlTextDidChange(_ notification: Notification) {
+        guard let key = (notification.object as? NSControl)?.identifier?.rawValue else { return }
+        edits.record(key)
+    }
+
+    /// Assigns a text field's value on `refresh`'s behalf, unless the user is in that field.
+    ///
+    /// `field.currentEditor()` is non-nil exactly while this field owns the window's field editor,
+    /// which is the state in which `stringValue` would replace the text the user is looking at and
+    /// typing into.
+    private func setFieldText(_ key: String, _ text: String) {
+        guard let field = controls[key] as? NSTextField else { return }
+        switch edits.refreshing(key, to: text, beingEdited: field.currentEditor() != nil) {
+        case .write(let text): field.stringValue = text
+        case .hold: break
+        }
+    }
+
+    /// An edit ended with nothing to commit, so a refresh that was held for that field now lands.
+    private func releaseHeldText(_ key: String) {
+        guard let field = controls[key] as? NSTextField, let text = edits.released(key) else { return }
+        field.stringValue = text
+    }
+
+    /// The same event as `sendsActionOnEndEditing`, deliberately kept alongside it: the two are
+    /// belt and braces on the one thing this whole task is about, and AppKit's flag is a property
+    /// somebody can turn off without noticing that a delegate method depended on it. The cost is
+    /// one redundant `controlChanged` per edit, and `ConfigStore.write`'s
+    /// `guard updated != existing else { return true }` makes the second one a file read and
+    /// nothing else -- no write, so no reload, so no loop. (There is no write->reload->write loop
+    /// either way: `controlChanged` guards on `isRefreshing`, and `refresh()` sets values
+    /// programmatically, which fires no action at all.)
+    func controlTextDidEndEditing(_ notification: Notification) {
+        guard let field = notification.object as? NSControl else { return }
+        controlChanged(field)
+    }
+
+    /// The window closing is an end-editing nobody sends: the field still has focus, its value has
+    /// never been committed, and the window is gone. Making the window itself first responder ends
+    /// the edit, which fires the action above before anything is torn down.
+    @objc private func windowIsClosing(_ notification: Notification) {
+        commitEdits()
+    }
+
+    func commitEdits() {
+        guard let window else { return }
+        window.makeFirstResponder(window)
     }
 
     @objc private func stepperChanged(_ sender: NSStepper) {
@@ -966,7 +1084,7 @@ final class SettingsWindowController: NSWindowController {
 
     private func set(_ key: String, _ title: String?) {
         guard let button = controls[key] as? NSPopUpButton else {
-            if let field = controls[key] as? NSTextField { field.stringValue = title ?? "" }
+            if controls[key] is NSTextField { setFieldText(key, title ?? "") }
             return
         }
         if let mapped = popUpTitledValues[key] {
@@ -994,9 +1112,7 @@ final class SettingsWindowController: NSWindowController {
             slider.doubleValue = value
             updateReadout(key, value)
         }
-        if let field = controls[key] as? NSTextField {
-            field.stringValue = format(value, decimals: decimals)
-        }
+        if controls[key] is NSTextField { setFieldText(key, format(value, decimals: decimals)) }
         (controls[key + ".stepper"] as? NSStepper)?.doubleValue = value
     }
 

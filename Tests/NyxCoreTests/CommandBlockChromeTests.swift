@@ -1193,3 +1193,29 @@ private func columns(_ content: CommandBlockChrome.StripContent) -> Int {
     #expect(CommandBlockChrome.menuAnchorY(slot: 2, viewHeight: 400, padding: 8,
                                            cellHeight: 0) == 400)
 }
+
+/// How many whole rows one `hitRowHeight` band occupies, which is how far a *second* band beneath it
+/// has to start.
+///
+/// The remote strip owns a pane's top row and the pinned command band steps below it. "One row
+/// down" was the arithmetic until now, and it is wrong at every cell under 16 pt -- including the
+/// **default** 13 pt font, whose row is 15.31 pt: two 16 pt bands one 15.31 pt row apart overlap by
+/// 0.69 pt, and the lower one covers a row the frame never blanked. It is not a `line-height = 0.8`
+/// edge case, which is how the first version of this read.
+@Test func aSecondBandStepsDownByWholeRowsAndClearsTheFirst() {
+    // 12.25 pt is the default font at `line-height = 0.8`; 15.31 is the default row; 19.79 is a
+    // 17 pt font, the first cell tall enough that one row already clears the floor.
+    #expect(CommandBlockChrome.hitRowSpan(cellHeight: 12.25) == 2)
+    #expect(CommandBlockChrome.hitRowSpan(cellHeight: 15.31) == 2)
+    #expect(CommandBlockChrome.hitRowSpan(cellHeight: 19.79) == 1)
+    #expect(CommandBlockChrome.hitRowSpan(cellHeight: 16) == 1)
+    // The span is always enough room for the band above it, which is the whole point.
+    for cell in [12.25, 13.0, 15.31, 16.0, 19.79, 24.0] {
+        let span = Double(CommandBlockChrome.hitRowSpan(cellHeight: cell))
+        #expect(span * cell >= CommandBlockChrome.hitRowHeight(cellHeight: cell))
+        #expect(span >= 1)
+    }
+    // A pane mid-teardown reports a zero cell; one row is the only answer that is not a crash or an
+    // infinite band.
+    #expect(CommandBlockChrome.hitRowSpan(cellHeight: 0) == 1)
+}

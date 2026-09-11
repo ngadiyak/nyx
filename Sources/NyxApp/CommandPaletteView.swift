@@ -244,18 +244,6 @@ final class CommandPaletteView: NSView, NSTextFieldDelegate {
         window?.makeFirstResponder(field)
     }
 
-    /// Opens the panel with something already typed -- `remote_sessions` opens it filtered to the
-    /// Remote section. The text goes into the field as well as into the model, so backspacing works
-    /// from there rather than from an empty field showing a filtered list.
-    func setQuery(_ query: String) {
-        field.stringValue = query
-        model.setQuery(query)
-        refresh()
-        // The caret goes after what was typed for us, so the next keystroke narrows the list
-        // instead of replacing the word.
-        field.currentEditor()?.selectedRange = NSRange(location: query.count, length: 0)
-    }
-
     override func layout() {
         super.layout()
         let inset: CGFloat = 4

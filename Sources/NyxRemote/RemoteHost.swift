@@ -20,6 +20,37 @@ public final class RemoteHost {
         let deviceID: String
         let e2e: E2ESession
         let startSequence: UInt64
+        /// When the relay said this device's socket had gone, or nil while it is connected.
+        ///
+        /// A held attachment is the whole of the reconnect fix: the relay's word that a socket
+        /// closed is not the user's word that they have finished, and treating the two the same
+        /// cost the writer its token, the client a second snapshot and the log two lines -- every
+        /// ninety-one seconds, because that is how often the relay used to close a quiet socket.
+        var suspendedAt: Date?
+        /// `registration.sequence` at the moment it was held: the chunk number the client's mirror
+        /// is known to be complete up to. **nil when there is no such number**, which is a hold
+        /// that can never resume -- see `suspend(_:baselineIsTrustworthy:)`.
+        ///
+        /// A sequence rather than a "did it miss anything" boolean, because a boolean can only be
+        /// set by code that runs, and the windows in which output reaches nobody are exactly the
+        /// windows in which nothing on this side is watching. `deliver` bumps `sequence` for every
+        /// chunk whether or not anybody is attached, so `sequence == heldAtSequence` at re-attach
+        /// time means, verifiably, that not one chunk was produced *and sent* while this attachment
+        /// was away. Anything else is a re-snapshot, and the cost of being wrong in that direction
+        /// is one snapshot rather than a hole nobody can see (`E2ESession.open` checks that counters
+        /// increase and cannot see a gap).
+        var heldAtSequence: UInt64?
+        /// The screen size this client was last told, so a resize is announced once per client
+        /// rather than on every debounced publish.
+        ///
+        /// Per attachment and not per registration, which is where it started. A resize is
+        /// announced from the *debounced* publish, so for up to `summaryDebounce` the host knows a
+        /// size nobody attached has been told; an `attach` landing in that window carries the new
+        /// size in its own `attached`, and a registration-wide record would have taken that as
+        /// having told everybody. The clients already watching would then keep the shape the host
+        /// had when *they* attached, for the life of the tab -- D2 again, re-opened by a second
+        /// viewer arriving at the wrong moment.
+        var announcedSize: GridSize
     }
 
     /// A published session and everyone attached to it. A class so the queue can mutate one in
@@ -59,6 +90,8 @@ public final class RemoteHost {
     private let audit: (AuditLine.Event) -> Void
     private let snapshotLines: Int
     private let summaryDebounce: TimeInterval
+    private let reattachWindow: TimeInterval
+    private let clock: RemoteClock
     private let queue = DispatchQueue(label: "nyx.remote.host")
 
     private var registrations: [String: Registration] = [:]
@@ -70,15 +103,23 @@ public final class RemoteHost {
     /// `paired` and `summary` are read every time they are needed rather than captured once: the
     /// user pairs a device, renames a session or changes directory while this object lives, and a
     /// snapshot of either taken at construction would be wrong within seconds.
+    ///
+    /// `reattachWindow` is how long an attachment survives its client's socket closing. Sixty
+    /// seconds, the same number `RemoteClient.Attachment.reattachWindow` gives the client to keep
+    /// asking: the two are one race seen from its two ends, and a host that gave up first would
+    /// end a tab that was still trying.
     public init(link: RelayLink, identity: DeviceIdentity, paired: @escaping () -> PairedDevices,
                 audit: @escaping (AuditLine.Event) -> Void, snapshotLines: Int,
-                summaryDebounce: TimeInterval = 2) {
+                summaryDebounce: TimeInterval = 2,
+                reattachWindow: TimeInterval = 60, clock: RemoteClock = .system) {
         self.link = link
         self.identity = identity
         self.paired = paired
         self.audit = audit
         self.snapshotLines = snapshotLines
         self.summaryDebounce = summaryDebounce
+        self.reattachWindow = reattachWindow
+        self.clock = clock
     }
 
     // MARK: - Sessions
@@ -156,23 +197,35 @@ public final class RemoteHost {
         }
     }
 
-    /// The socket came back. The relay keeps nothing across a disconnect: it dropped this device's
-    /// catalogue and sent `session_ended` to everyone who was attached, so the attachments here are
-    /// gone whether this side likes it or not. They are cleared (and audited) rather than kept,
-    /// because a stale arbiter would make the next client to attach an observer behind a writer
-    /// that no longer exists.
+    /// This host's own socket came back. The relay kept nothing: it dropped this device's catalogue
+    /// and sent `session_suspended` to everyone who was attached, so each of them is re-attaching
+    /// as soon as this Mac's catalogue lists the session again.
+    ///
+    /// The attachments are **held**, and the arbiter is left exactly as it was. Clearing both --
+    /// which is what this did -- made every one of those re-attaches a new attachment: a fresh
+    /// snapshot, the writer token handed to whoever asked first, and two audit lines per client.
+    /// With the relay closing quiet sockets every ninety-one seconds, that was the churn the QA
+    /// measured. The sweep is what ends an attachment whose client really has gone.
     public func linkDidReconnect() {
         queue.async { [weak self] in
             guard let self else { return }
             self.link.send(.paired(self.paired().ids))
-            for key in self.order {
-                guard let registration = self.registrations[key] else { continue }
-                for deviceID in registration.attachments.keys.sorted() {
-                    self.audit(.detached(device: deviceID, session: key))
-                }
-                registration.attachments.removeAll()
-                registration.arbiter = WriterArbiter()
-            }
+            let devices = Set(self.order.compactMap { self.registrations[$0] }
+                .flatMap { $0.attachments.keys })
+            // **With no baseline**, so every one of these re-attaches is answered with a fresh
+            // snapshot. Nothing suspends when this Mac's own socket goes -- the relay tells this
+            // host about *other* devices, and its own status arrives too late and only as a status
+            // -- so `deliver` went on sealing each chunk and bumping `sequence` into a link with
+            // nowhere to put it. A baseline taken now would count exactly the chunks nobody
+            // received, the re-attach would satisfy `heldAtSequence == sequence`, and the client
+            // would resume onto a mirror permanently missing everything this host printed during
+            // the outage, silently. There is no number here that means "delivered", so there is no
+            // number.
+            //
+            // `suspend` is idempotent by its own guard, which matters here: a client whose socket
+            // dropped before this host's did is already held, with a baseline that *is* trustworthy
+            // -- it was taken before either socket went -- and re-holding it would throw that away.
+            for deviceID in devices.sorted() { self.suspend(deviceID, baselineIsTrustworthy: false) }
             self.publishSessions()
         }
     }
@@ -207,14 +260,25 @@ public final class RemoteHost {
         }
     }
 
-    /// A device this host was talking to has gone. The relay says so once, in `presence`, and says
-    /// nothing else -- there is no `detach` from a socket that closed -- so without this its
-    /// attachment lives on: the writer token is stranded on a Mac that is not there (nobody left
-    /// can type), and every chunk of output is still encrypted and sent for it.
+    /// A device this host was talking to has gone *quiet*: the relay's socket for it closed. Its
+    /// attachments are **held** for `reattachWindow`, because a closed socket is not a closed tab
+    /// -- the client is already re-attaching -- and dropping them is what made every reconnect a
+    /// new attachment.
     ///
-    /// Public as well as reachable through `presence` because the app knows things the relay does
-    /// not: the connection this host itself is on has dropped, or the user removed a pairing.
+    /// Reachable through `presence` and kept public for the one caller that is not the relay: a
+    /// test that drives a departure without a wire message. The app's own reason for calling it
+    /// directly is gone -- `RemoteCoordinator.removePairing` now calls `deviceRemoved`, which is a
+    /// different answer to a different question.
     public func deviceWentOffline(_ deviceID: String) {
+        queue.async { [weak self] in
+            self?.suspend(deviceID)
+        }
+    }
+
+    /// The user removed this device. Its attachments go at once: there is nothing to come back to,
+    /// the pairing check would refuse the re-attach anyway, and a held attachment would leave the
+    /// writer token on a Mac that is no longer allowed to type.
+    public func deviceRemoved(_ deviceID: String) {
         queue.async { [weak self] in
             self?.dropAttachments(of: deviceID)
         }
@@ -248,23 +312,82 @@ public final class RemoteHost {
         // A client that reconnects re-sends `attach` for a session it never really left. It keeps
         // the role it had: appending it to the arbiter again would both demote it behind observers
         // that arrived while it was away and leave a duplicate entry that breaks promotion later.
+        let existing = registration.attachments[from]
         let role: AttachState.Role
-        if registration.attachments[from] != nil, let existing = registration.arbiter.role(of: from) {
-            role = existing
+        if existing != nil, let held = registration.arbiter.role(of: from) {
+            role = held
         } else {
             role = registration.arbiter.attached(from)
         }
+        // A resume, and only under both halves of the proof: the attachment was actually **held**
+        // (a socket that closed, not a second `attach` from a device that never went), and not one
+        // chunk was produced while it was away. Then its mirror is still exactly this host's
+        // screen, and it gets `attached` and `snapshot_end` with nothing between them -- no ~85 KB
+        // re-encrypted, no second copy of the transcript appended to the first, no writer/observer
+        // flap, no line in the log. This is the whole client-side half of B1.
+        //
+        // `existing != nil` alone is **not** enough, and was the first draft of this line: a
+        // duplicated or replayed `attach` from a device that never dropped would have been answered
+        // with an empty screen where it used to get the snapshot.
+        //
+        // One residual window, named because a reader must not believe there is none: a chunk
+        // delivered in the milliseconds between the client's socket closing and this host being
+        // told (`offlineLocked` removes the client from `h.attached` and broadcasts presence under
+        // one lock, so it is a relay-to-host trip, tens of milliseconds) is sealed, sent, dropped
+        // by the relay, and *counted* -- so it lands below `heldAtSequence` and the resume believes
+        // the mirror is whole. Closing it needs the client to say how much it actually received,
+        // which is a wire field and a byte-accounting handshake on both sides; it is in the ledger,
+        // and the cost of the residual is whatever this host produced in that window -- usually
+        // nothing, one chunk on a quiet session, several on a printing one, since `deliver` runs
+        // once per PTY read -- after a socket drop that the fixed relay makes rare.
+        let resuming = existing?.suspendedAt != nil
+            && existing?.heldAtSequence == registration.sequence
 
         // The snapshot and the cut-off come out of the session under one lock, so the text and the
         // point in the byte stream it corresponds to cannot disagree.
         let (snapshot, cols, rows, fed) = registration.session.withTerminalAndOutputCount { terminal, count in
-            let top = max(0, terminal.totalRows - snapshotLines)
-            let text = terminal.transcript(rows: top..<terminal.totalRows, options: .forRestoring)
+            guard !resuming else { return ("", terminal.cols, terminal.rows, count) }
+            // The *primary* buffer, always: `absoluteRow` is the scrollback followed by whichever
+            // screen is active, so while a full-screen program is up the rows this host's command
+            // history lives on are in no transcript at all -- which cost an attaching client seven
+            // blocks and gave it vim's tildes in their place (B3).
+            let primaryRows = terminal.rowCount(of: .primary)
+            let top = max(0, primaryRows - snapshotLines)
             // Without the trim, the blank rows under the host's cursor arrive as newlines and
             // scroll the host's screen off the top of the client's grid; see `RemoteSnapshot`.
-            return (RemoteSnapshot.trimmingTrailingBlankLines(text), terminal.cols, terminal.rows, count)
+            let primary = RemoteSnapshot.trimmingTrailingBlankLines(
+                terminal.transcript(rows: top..<primaryRows, options: .forRestoring, buffer: .primary))
+            // And the program on top of it, when there is one, with the host's cursor after it.
+            let alternate = terminal.modes.altScreen
+                ? RemoteSnapshot.trimmingTrailingBlankLines(
+                    terminal.transcript(rows: 0..<terminal.rowCount(of: .alternate),
+                                        options: .forRestoring, buffer: .alternate))
+                : nil
+            let cursor = terminal.modes.altScreen
+                ? (row: terminal.cursor.y, col: terminal.cursor.x)
+                : nil
+            let text = RemoteSnapshot.compose(primary: primary, alternate: alternate, cursor: cursor)
+            // A *second* snapshot into a mirror that already holds one used to be appended: 3308
+            // rows against this host's 2007, and rows reading `nik@nik-newmac ~ % nik@nik-newmac ~
+            // % …`. A re-snapshot replaces.
+            return ((existing != nil ? RemoteSnapshot.reset : "") + text,
+                    terminal.cols, terminal.rows, count)
         }
-        registration.attachments[from] = Attachment(deviceID: from, e2e: e2e, startSequence: fed)
+        // `fed` for a snapshot, `registration.sequence` for a resume, and the difference is the one
+        // chunk that has been fed but whose tap has not run yet (`withTerminalAndOutputCount`
+        // documents that window: the count moves with the feed, the tap runs after the lock is
+        // dropped). A snapshot has that chunk inside its text, so `fed` is what must not be sent
+        // again. A resume has no text at all, so `fed` would put the cut-off one *above* a chunk
+        // still in flight: it would reach `deliver`, fail `startSequence <= sequence`, and be
+        // dropped -- never snapshotted and never streamed. The resume has already proved that
+        // nothing below `registration.sequence` was missed, so that is where it starts.
+        //
+        // `announcedSize` is the size `attached` is about to carry, so the next publish does not
+        // repeat it to this client -- and, being per client, does not skip it for anybody else.
+        registration.attachments[from] = Attachment(deviceID: from, e2e: e2e,
+                                                    startSequence: resuming ? registration.sequence : fed,
+                                                    suspendedAt: nil, heldAtSequence: nil,
+                                                    announcedSize: GridSize(cols: cols, rows: rows))
 
         // Sealed before anything is sent, because half a snapshot is worse than none: the client
         // would draw a screen missing its middle and never know. A seal that fails here cannot
@@ -273,29 +396,114 @@ public final class RemoteHost {
         guard let frames = chunked(Array(snapshot.utf8), sealedBy: e2e) else {
             registration.attachments[from] = nil
             announce(registration.arbiter.detached(from), in: registration, key: key)
-            audit(.detached(device: from, session: key))
+            // Only if this device was ever announced as attached. A seal that fails on a *resume*
+            // must not write the second half of a pair whose first half was never written.
+            if existing == nil { audit(.detached(device: from, session: key)) }
             return
         }
         link.send(.attached(to: from, sessionID: key, ephemeralPubkey: signed.pubkey, sig: signed.sig,
                             role: Self.name(role), cols: cols, rows: rows))
         for frame in frames { link.send(frame) }
         link.send(.snapshotEnd(to: from, sessionID: key))
-        audit(.attached(device: from, session: key))
+        // One line per attachment, not one per reconnect. A device whose socket blinked never left
+        // -- nothing was written when it went -- so writing "attached" when it comes back would be
+        // half of a pair whose other half does not exist. The QA counted two such lines per client
+        // per ninety-one seconds.
+        if existing == nil { audit(.attached(device: from, session: key)) }
     }
 
-    /// The relay's only word about a client that went away. Every device it lists as offline is
-    /// dropped from every session it was attached to, exactly as if it had detached from every one
-    /// of them -- the plural matters, because a single `detach` names one session and this names
-    /// all of them at once.
+    /// The relay's word about the devices this host is paired with.
+    ///
+    /// Two answers, not three. Offline is a socket that closed -- hold. `not_paired` is the peer
+    /// saying it has removed this Mac, which is settled and immediate.
+    ///
+    /// **Online is deliberately not an answer.** A hold is released by the `attach` that replaces
+    /// the `Attachment`, and by nothing else. Clearing it on a presence would open a window --
+    /// from the broadcast until the client's `attach` actually lands, which is a relay round trip
+    /// plus the client's own re-attach backoff -- in which `deliver` believes it has a live
+    /// attachment, seals every chunk, and sends them to a relay that has not re-registered this
+    /// client yet (`relay/hub.go:446-469` adds it back only when the host answers `attached`), so
+    /// they are counted in `dropped_binary` and lost. The re-attach would then look like a clean
+    /// resume and the mirror would be silently short. The sweep does not need this branch either:
+    /// it guards on `suspendedAt` identity, and a re-attach replaces the whole `Attachment`.
     private func presence(_ m: RemoteMessage) {
-        for device in m.devices ?? [] where !device.online {
-            dropAttachments(of: device.deviceID)
+        for device in m.devices ?? [] {
+            if device.notPaired {
+                dropAttachments(of: device.deviceID)
+            } else if !device.online {
+                suspend(device.deviceID)
+            }
+        }
+    }
+
+    /// Marks every attachment of `deviceID` as held, and arms the sweep that ends them if it does
+    /// not come back. One timer per suspension, not one per session: a device is offline from all
+    /// of them at once.
+    ///
+    /// **An attachment that is already held is left exactly as it is.** `presence` is a *snapshot*,
+    /// not an event: `presenceFor` lists every peer the device declared, offline ones included
+    /// (`relay/hub.go:161-172`), and `broadcastPresence` rebuilds and sends it whenever **any**
+    /// mutually paired peer's presence changes (`:178-184`). So with three or more paired Macs --
+    /// which is the feature's premise -- a *different* Mac opening its lid twenty seconds into this
+    /// client's hold delivers another snapshot that still says this one is offline. Re-baselining on
+    /// it would move `heldAtSequence` forward over the chunks the client actually missed and turn
+    /// its re-attach into a resume with no snapshot: C1's defect again, reached through ordinary
+    /// presence traffic. It would also arm a fresh timer with a fresh `suspendedAt` each time, so a
+    /// client that never comes back but whose *peers* keep changing presence would never be swept
+    /// and would hold the writer token for as long as the traffic lasted.
+    ///
+    /// Hold once. The first `suspendedAt` and the first `heldAtSequence` are the record, and the
+    /// first timer is still pending with an identity check that still matches.
+    ///
+    /// `baselineIsTrustworthy` is whether `registration.sequence` still means "the client's mirror
+    /// is complete up to here". It is true for a hold taken because the *client's* socket closed,
+    /// which is what `sequence` counts deliveries to. It is false for the one caller whose own
+    /// socket is the one that went: see `linkDidReconnect`. A hold with no baseline can never
+    /// resume, which is exactly what it is for.
+    private func suspend(_ deviceID: String, baselineIsTrustworthy: Bool = true) {
+        let now = clock.now()
+        var held = false
+        for key in order {
+            guard let registration = registrations[key],
+                  let attachment = registration.attachments[deviceID],
+                  attachment.suspendedAt == nil else { continue }
+            registration.attachments[deviceID]?.suspendedAt = now
+            // Per registration, because `sequence` is: a device attached to two of this Mac's
+            // sessions is held on both, and each one remembers its own session's chunk number.
+            registration.attachments[deviceID]?.heldAtSequence =
+                baselineIsTrustworthy ? registration.sequence : nil
+            held = true
+        }
+        // False when everything was already held, and then no second timer is armed -- which is the
+        // whole point of the guard above.
+        guard held else { return }
+        // One tick past the window, so the sweep and a re-attach that arrives at the last second
+        // cannot both believe they were first.
+        clock.after(reattachWindow + 1) { [weak self] in
+            self?.queue.async { self?.sweep(deviceID, suspendedAt: now) }
+        }
+    }
+
+    /// The window closed and the device did not come back, so now it really has gone: the
+    /// attachment ends, the token moves, and *this* is where the audit line is written.
+    ///
+    /// `suspendedAt` is the identity check. A device that dropped, returned and dropped again has a
+    /// newer suspension, and this timer belongs to the older one -- without the comparison the
+    /// first drop's minute would end the second drop's attachment twenty seconds into its own.
+    private func sweep(_ deviceID: String, suspendedAt: Date) {
+        for key in order {
+            guard let registration = registrations[key],
+                  registration.attachments[deviceID]?.suspendedAt == suspendedAt else { continue }
+            registration.attachments[deviceID] = nil
+            announce(registration.arbiter.detached(deviceID), in: registration, key: key)
+            audit(.detached(device: deviceID, session: key))
         }
     }
 
     /// Removes a device from *every* session it is attached to, which is right for the two callers
-    /// that have it: a device that has gone offline, or been unpaired, is gone from all of them at
-    /// once, and there will be no `detach` for any of them. `detach` itself is per session.
+    /// that have it: a device the user has removed, or one the peer says has removed this Mac, is
+    /// gone from all of them at once, and there will be no `detach` for any of them. `detach` itself
+    /// is per session.
     private func dropAttachments(of deviceID: String) {
         for key in order {
             guard let registration = registrations[key],
@@ -351,6 +559,11 @@ public final class RemoteHost {
         for deviceID in registration.attachments.keys.sorted() {
             guard let attachment = registration.attachments[deviceID],
                   attachment.startSequence <= sequence else { continue }
+            // A held attachment has no socket: the relay dropped it when the device's own socket
+            // went, so sealing and sending would be ~85 KB per client per cycle into nothing.
+            // Nothing is recorded here -- `registration.sequence` was already incremented above,
+            // which is what `heldAtSequence` is compared against at the re-attach.
+            guard attachment.suspendedAt == nil else { continue }
             guard let frames = chunked(bytes, sealedBy: attachment.e2e) else {
                 broken.append(deviceID)
                 continue
@@ -385,6 +598,34 @@ public final class RemoteHost {
             info.sessionID = key
             return info
         }))
+        announceSizes()
+    }
+
+    /// This host's window size, resent to everyone attached when it changes.
+    ///
+    /// `attached` carries it once and nothing carried it again, so a host resized while a client
+    /// watched went on sending output laid out for its new width into a mirror still shaped like
+    /// the old one, and every line wrapped (D2). `role` is what carries it: it already goes to
+    /// every attached client of a session, it already names which device's role it is, and the
+    /// relay already forwards it -- a message of its own would be a fifth thing to keep in step
+    /// across two repositories. A held attachment is skipped: it has no socket, and its resume
+    /// will carry the size in `attached`.
+    ///
+    /// Asked per attachment rather than per session, because "who has been told" is a fact about a
+    /// client and not about a terminal: see `Attachment.announcedSize`.
+    private func announceSizes() {
+        for key in order {
+            guard let registration = registrations[key] else { continue }
+            let size = registration.session.withTerminal { GridSize(cols: $0.cols, rows: $0.rows) }
+            for deviceID in registration.attachments.keys.sorted() {
+                guard let attachment = registration.attachments[deviceID],
+                      attachment.suspendedAt == nil, attachment.announcedSize != size else { continue }
+                registration.attachments[deviceID]?.announcedSize = size
+                let role = registration.arbiter.role(of: deviceID) ?? .observer
+                link.send(.role(to: deviceID, sessionID: key, deviceID: deviceID,
+                                role: Self.name(role), cols: size.cols, rows: size.rows))
+            }
+        }
     }
 
     /// nil if any part failed to seal, never a partial answer: a caller that sent what it got would

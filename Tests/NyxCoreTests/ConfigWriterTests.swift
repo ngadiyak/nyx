@@ -38,7 +38,7 @@ private func roundTrip(_ key: String, _ value: String, in text: String) -> Confi
 
 @Test func settingAnAbsentKeyAppendsIt() {
     let out = write("padding", "16", into: "font-size = 13")
-    #expect(out.hasSuffix("padding = 16"))
+    #expect(out.hasSuffix("padding = 16\n"))
     #expect(out.contains("font-size = 13"))
     #expect(ConfigParser.parse(out).config.padding == 16)
 }
@@ -85,7 +85,7 @@ private func roundTrip(_ key: String, _ value: String, in text: String) -> Confi
 
 @Test func indentationAndSpacingAroundTheEqualsAreLeftAlone() {
     #expect(write("font-size", "18", into: "  font-size = 13").hasPrefix("  font-size = 18"))
-    #expect(write("font-size", "18", into: "font-size=13") == "font-size=18")
+    #expect(write("font-size", "18", into: "font-size=13") == "font-size=18\n")
 }
 
 @Test func writingIntoAnEmptyFileProducesAParseableLine() {
@@ -220,7 +220,7 @@ private func quickLines(_ text: String) -> [String] {
         let old = key == "quick" ? "Note | send | echo '#1'" : "abc#123"
         let new = key == "quick" ? "Note | send | echo new #2 value" : "xyz#456 with spaces"
         let out = write(key, new, into: "\(key) = \(old)")
-        #expect(out == "\(key) = \(new)", "\(key): got \(out)")
+        #expect(out == "\(key) = \(new)\n", "\(key): got \(out)")
     }
 }
 
@@ -237,5 +237,33 @@ private func quickLines(_ text: String) -> [String] {
 /// the old value -- `replacingValue`'s existing behaviour, not something this fix changes.)
 @Test func aNonExemptKeyStillKeepsItsTrailingComment() {
     let out = write("font-size", "18", into: "font-size = 13  # bumped for the big monitor")
-    #expect(out == "font-size = 18 # bumped for the big monitor")
+    #expect(out == "font-size = 18 # bumped for the big monitor\n")
+}
+
+/// The owner's config file gained `remote = onremote-relay-token = …` on 2026-09-07. The writer
+/// returned text with no trailing newline, so the very next thing appended to that file by any
+/// other means -- `cat token >> ~/.config/nyx/config`, which is the documented way to set the
+/// token -- glued itself onto the last line. One newline, exactly one, on every result.
+@Test func everyWrittenFileEndsWithExactlyOneNewline() {
+    for text in ["", "font-size = 13", "font-size = 13\n", "font-size = 13\n\n\n",
+                 Config.defaultFileText] {
+        let out = ConfigWriter.setting("padding", to: "16", in: text)
+        #expect(out.hasSuffix("\n"), "no trailing newline for \(text.debugDescription)")
+        #expect(!out.hasSuffix("\n\n"), "more than one for \(text.debugDescription)")
+        // Idempotent, because `settings` reduces over `setting`: a second pass must not grow it.
+        #expect(ConfigWriter.setting("padding", to: "16", in: out) == out)
+    }
+}
+
+@Test func aListWriteEndsTheSameWay() {
+    let out = ConfigWriter.settingList("quick", values: ["A | send | echo a"], in: "padding = 4")
+    #expect(out.hasSuffix("\n"))
+    #expect(!out.hasSuffix("\n\n"))
+}
+
+/// And the parser does not need one, which is the other half of the finding: a file somebody else
+/// wrote, or an older Nyx wrote, still parses.
+@Test func aFileWithNoTrailingNewlineParses() {
+    #expect(ConfigParser.parse("remote = on\nremote-relay = wss://r/v1/ws").config.remote == .on)
+    #expect(ConfigParser.parse("padding = 12").config.padding == 12)
 }

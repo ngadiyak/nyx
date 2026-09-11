@@ -91,6 +91,12 @@ enum GridSnapshot {
                 }
                 write(canvas: canvas, palette: palette, appearance: appearance,
                       case: .sticky, into: directory, named: "composite-sticky-\(suffix)")
+                // The two bands in one pane, which is the only picture that can say whether either
+                // of them paints a row it did not blank: the attach strip on the top row and the
+                // pinned command band `hitRowSpan` rows below it.
+                write(canvas: canvas, palette: palette, appearance: appearance,
+                      case: .remoteStrip(GridSnapshot.observing()), into: directory,
+                      named: "composite-remote-strip-\(suffix)")
                 write(canvas: canvas, palette: palette, appearance: appearance,
                       case: .gutter, into: directory, named: "composite-gutter-\(suffix)")
                 write(canvas: canvas, palette: palette, appearance: appearance,
@@ -157,11 +163,25 @@ enum GridSnapshot {
             // under its hit box cannot make the triangle itself any easier to see at a 13 pt row,
             // so whether it is still findable there is a question only a picture answers.
             for (name, kind) in [("strip", Case.hoverStrip(.w3, .finished)), ("gutter", Case.gutter),
-                                 ("sticky", Case.sticky), ("lens", Case.lens(.pretty))] {
+                                 ("sticky", Case.sticky), ("lens", Case.lens(.pretty)),
+                                 // At `line-height = 0.8` a 16 pt band is 3.75 pt taller than the
+                                 // row it covers, which is the configuration this band's ground and
+                                 // the pinned band's step-down were both written for.
+                                 ("remote-strip", Case.remoteStrip(GridSnapshot.observing()))] {
                 write(canvas: canvas, palette: dark, appearance: .darkAqua, case: kind,
                       into: directory, named: "composite-\(label)-\(name)-nyx-dark-dark")
             }
         }
+    }
+
+    /// The strip's everyday state: live, observing, with a button to press. Not a geometry note --
+    /// the host's grid is this pane's grid in a composite, and a note invented for the picture would
+    /// be a sentence `AttachState` never produced.
+    private static func observing() -> AttachState {
+        var state = AttachState(hostName: "Mac mini (office)", title: "swift test")
+        state.phase = .live
+        state.role = .observer
+        return state
     }
 
     /// Exactly `w3`, `w2`, `w1`, `w0`: §8.5's picture names and plan 1b's `cmp` both spell the
@@ -211,6 +231,10 @@ enum GridSnapshot {
         case hoverStripTail(GridScene.StripState, freeColumns: Int)
         /// Scrolled deep into a long build, so the command that produced it is pinned at the top.
         case sticky
+        /// A remote pane's attach strip on the top row, with the pinned band under it: the two-band
+        /// case, which is the only one where either band's height is visibly wrong. `AttachState`
+        /// decides what it says; the scene only says that a strip is up.
+        case remoteStrip(AttachState)
         /// The four gutter marks beside the rows they belong to, nothing else up.
         case gutter
         /// The same, with a command that finished silently and one still running appended: the
@@ -265,6 +289,11 @@ enum GridSnapshot {
             scene.hovered = scene.requestID
         case .sticky:
             scene.scrollIntoBuild()
+        case .remoteStrip(let state):
+            // Both bands at once: scrolled into the build so a prompt is pinned, and a remote strip
+            // over the top row. One picture, because the question is the gap between them.
+            scene.scrollIntoBuild()
+            scene.remote = state
         case .gutter:
             break
         case .gutterStates:
@@ -294,6 +323,9 @@ enum GridSnapshot {
             chrome.append(gutter)
         }
         if let strip = canvas.stickyStrip(built, palette: palette, appearance: appearance) {
+            chrome.append(strip)
+        }
+        if let strip = canvas.remoteStrip(built, palette: palette, appearance: appearance) {
             chrome.append(strip)
         }
         if let header = canvas.hoverStrip(built, palette: palette, appearance: appearance,
@@ -566,6 +598,31 @@ extension GridCanvas {
         return view
     }
 
+    /// The remote attach strip, on the top row -- `Pane.layoutStickyStrip`'s frame for it, which is
+    /// `hitRowHeight` tall and centred on the row it covers.
+    ///
+    /// This is the one piece of pane chrome that had no composite at all: every `remote-strip-*`
+    /// picture is the view alone on a flat ground, so nothing showed the band over real rows, the
+    /// row it blanks, or the gap it leaves for the pinned band underneath -- which is exactly where
+    /// a one-row band painted across a 16 pt frame goes wrong.
+    func remoteStrip(_ built: GridScene.Built, palette: Palette,
+                     appearance: NSAppearance.Name) -> NSView? {
+        guard let state = built.remote else { return nil }
+        let left = max(padding, CGFloat(PromptGutter.hitWidth))
+        let width = max(0, bounds.width - left - padding)
+        let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cell.height)))
+        let centre = bounds.height - padding - cell.height / 2
+        let view = RemoteStripView(frame: NSRect(x: left, y: centre - height / 2,
+                                                 width: width, height: height))
+        view.appearance = NSAppearance(named: appearance)
+        view.update(state: state, palette: palette,
+                    font: Pane.terminalFont(family: config.fontFamily, fonts: fonts,
+                                            size: CGFloat(config.fontSize)),
+                    cellHeight: cell.height)
+        view.layoutSubtreeIfNeeded()
+        return view
+    }
+
     /// The pinned command line, `hitRowHeight` tall and centred on the row it covers, clear of the
     /// gutter -- the frame `Pane.layoutStickyStrip` gives it, including the padding and cell width
     /// that put its text on a column boundary.
@@ -575,7 +632,12 @@ extension GridCanvas {
         let left = max(padding, CGFloat(PromptGutter.hitWidth))
         let width = max(0, bounds.width - left - padding)
         let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cell.height)))
-        let centre = bounds.height - padding - cell.height / 2
+        // The same step down the pane takes, and the same one the frame pass blanked: with a remote
+        // strip on the top row this band starts `hitRowSpan` rows below it, or the two 16 pt bands
+        // overlap and the lower one paints a row nothing blanked.
+        let rowsDown = built.remote == nil
+            ? 0 : CommandBlockChrome.hitRowSpan(cellHeight: Double(cell.height))
+        let centre = bounds.height - padding - cell.height / 2 - CGFloat(rowsDown) * cell.height
         let view = StickyPromptView(frame: NSRect(x: left, y: centre - height / 2,
                                                   width: width, height: height))
         view.appearance = NSAppearance(named: appearance)
@@ -728,6 +790,12 @@ struct GridScene {
     var cursorMovedLast = false
     var showsLensField = false
     var htmlBody = false
+    /// The remote attach strip over the top row, or nil for an ordinary pane.
+    ///
+    /// A state rather than a flag, because the strip draws from one: `AttachState` decides the
+    /// sentence, the button and the band's colour, and a composite that passed a flag would be a
+    /// picture of a strip this scene invented.
+    var remote: AttachState?
     /// A watch on the request block, so the timeline is placed by `stripPlacement` against a real
     /// command row rather than measured in isolation.
     var watch: WatchHeader?
@@ -746,6 +814,7 @@ struct GridScene {
         var sticky: (text: String, summary: String, tone: SummaryTone)?
         var lensField: (slot: Int, caption: String, text: String, message: String?, offersJq: Bool)?
         var search: (query: String, readout: String)?
+        var remote: AttachState?
     }
 
     init(canvas: GridCanvas, palette: Palette) {
@@ -1303,11 +1372,18 @@ struct GridScene {
             // The row the band covers is blanked in the frame, as `Pane.render` does it, so a
             // composite of the pinned band is a picture of what the band actually sits on.
             //
-            // Slot 0 outright, where the pane asks `stickyStripRow`: that property answers 1 while
-            // a remote pane's attach strip has the top row, and no composite has a remote strip in
-            // it. A scene that grows one has to grow this with it.
-            if !lines.isEmpty { lines[0] = Row(cols: cols) }
+            // The slot is the pane's `stickyStripRow`: the top row, or `hitRowSpan` rows down while
+            // a remote pane's attach strip has the top one -- two rows for every cell under 16 pt,
+            // the default row included, because two 16 pt bands one row apart overlap.
+            let slot = remote == nil
+                ? 0 : CommandBlockChrome.hitRowSpan(cellHeight: Double(canvas.cell.height))
+            if lines.indices.contains(slot) { lines[slot] = Row(cols: cols) }
         }
+
+        // The attach strip's own row, blanked exactly as `Pane.render` blanks it and whether or not
+        // anything is pinned below it: the band is opaque, so the row under it was unreadable
+        // already, and a glyph half-drawn around a sentence is worse than no glyph.
+        if remote != nil, !lines.isEmpty { lines[0] = Row(cols: cols) }
 
         var matches = [[Range<Int>]](repeating: [], count: rows)
         var current = [Range<Int>?](repeating: nil, count: rows)
@@ -1353,7 +1429,7 @@ struct GridScene {
                                     }
                                 })
         return Built(frame: frame, gutterCaps: gutterCaps, gutterLabels: gutterLabels,
-                     strip: strip, sticky: sticky, lensField: field, search: search)
+                     strip: strip, sticky: sticky, lensField: field, search: search, remote: remote)
     }
 
     /// The response the lens cases are of: nested objects, an array long enough to fold to a

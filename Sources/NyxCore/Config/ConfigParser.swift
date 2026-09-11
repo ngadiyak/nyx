@@ -10,7 +10,45 @@ public enum ConfigParser {
     /// it was rather than resetting it to the compiled default -- the user keeps everything that
     /// still parses plus everything that used to work. A first load, with nothing in force yet,
     /// omits `base` and gets `Config.defaults`.
-    public static func parse(_ text: String, base: Config = .defaults) -> (config: Config, diagnostics: [ConfigDiagnostic]) {
+    ///
+    /// A key the file no longer mentions at all is a different thing from a key whose line will not
+    /// parse, and goes back to its default: see `defaultsForKeysAbsent`.
+    public static func parse(_ text: String,
+                             base: Config = .defaults) -> (config: Config, diagnostics: [ConfigDiagnostic]) {
+        applying(text, to: defaultsForKeysAbsent(from: text, in: base))
+    }
+
+    /// `base` with every key the file does not mention put back to its default.
+    ///
+    /// Starting from `base` alone is right for a line that is present and unparseable -- the field
+    /// keeps what it had while somebody is typing -- and wrong for a line that is *gone*: deleting
+    /// `remote-relay-token` is how a person takes a Mac off the relay, and it did nothing while Nyx
+    /// ran, with the settings page still showing the token as the field's value.
+    ///
+    /// The defaults are re-applied as *text*, from the commented line each key has in
+    /// `Config.defaultFileText`, rather than from a second copy of every field: a copy would be a
+    /// list to keep in step with the switch below, and the list that drifts is the one nobody
+    /// notices. `applying`, not `parse`, or this would recurse through its own synthesised text.
+    private static func defaultsForKeysAbsent(from text: String, in base: Config) -> Config {
+        guard base != .defaults else { return base }
+        let present = Set(ConfigGrammar.lines(text).compactMap { line -> String? in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.hasPrefix("#") else { return nil }   // a commented key is not set
+            return ConfigGrammar.key(ofLine: trimmed)
+        })
+        let missing = ConfigGrammar.scalarKeys.filter { !present.contains($0) }
+        guard !missing.isEmpty else { return base }
+        let lines = Config.defaultFileText.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { line in missing.contains { line.hasPrefix("# \($0) =") } }
+            .map { $0.dropFirst(2) }
+        guard !lines.isEmpty else { return base }
+        return applying(lines.joined(separator: "\n"), to: base).config
+    }
+
+    /// Applies the file's lines on top of `base`. Split out of `parse` so that
+    /// `defaultsForKeysAbsent` can apply its synthesised default lines without recursing.
+    private static func applying(_ text: String,
+                                 to base: Config) -> (config: Config, diagnostics: [ConfigDiagnostic]) {
         var config = base
         // `base` carries the settings currently in force so that a typo on one line cannot silently
         // revert every *other* setting to its compiled default. That reasoning holds only for scalar

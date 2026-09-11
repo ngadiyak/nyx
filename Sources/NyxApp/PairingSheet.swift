@@ -1,6 +1,17 @@
 import AppKit
 import NyxCore
 
+/// The sheet's own window, which exists as a class only so that ⎋ dismisses a state whose Cancel
+/// button has gone (`.paired`, `.failed`). AppKit answers ⎋ by looking for a *visible* button with
+/// that key equivalent first, and only then sends `cancelOperation` down the responder chain -- whose
+/// last stop is the window. The content view cannot do this job: to receive `cancelOperation` it
+/// would have to accept first responder, and then it takes the ring away from the code field, so the
+/// client's sheet opens with nowhere to type (measured: typing a character reached nothing at all).
+private final class PairingPanel: NSPanel {
+    var onCancel: (() -> Void)?
+    override func cancelOperation(_ sender: Any?) { onCancel?() }
+}
+
 /// The sheet that carries a pairing (spec §5.2) from a code, through a fingerprint both people read
 /// aloud, to "paired". One sheet for both roles -- host, showing a code; client, typing one -- and
 /// for every step after, because the states differ only in which parts show, not in the shape.
@@ -14,17 +25,6 @@ import NyxCore
 /// `.paired`) would otherwise sit inside the same tall box as `.confirming`, all dead space. Width
 /// is fixed at 360; height is `content`'s `fittingSize` at that width, recomputed and applied to the
 /// panel on every `update(state:)`.
-/// The sheet's own window, which exists as a class only so that ⏋ dismisses a state whose Cancel
-/// button has gone (`.paired`, `.failed`). AppKit answers ⏋ by looking for a *visible* button with
-/// that key equivalent first, and only then sends `cancelOperation` down the responder chain -- whose
-/// last stop is the window. The content view cannot do this job: to receive `cancelOperation` it
-/// would have to accept first responder, and then it takes the ring away from the code field, so the
-/// client's sheet opens with nowhere to type (measured: typing a character reached nothing at all).
-private final class PairingPanel: NSPanel {
-    var onCancel: (() -> Void)?
-    override func cancelOperation(_ sender: Any?) { onCancel?() }
-}
-
 final class PairingSheet: NSObject {
     let panel: NSPanel
     let side: PairingFlow.Side

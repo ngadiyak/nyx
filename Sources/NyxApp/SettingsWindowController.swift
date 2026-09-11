@@ -433,7 +433,8 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
         // The same gate the sentence under the buttons states, recomputed rather than cached, so the
         // reason shown and the buttons' enabled state cannot disagree. It is `shouldRun`'s answer in
         // every case `shouldRun` covers and the right one in the case it does not: a token with no
-        // relay address left both buttons live and opened a sheet against the empty string.
+        // relay address left both buttons live, so pressing one beeped instead of naming the
+        // missing field.
         let gate = RemotePageStatus.text(mode: config.remote, relay: config.remoteRelay,
                                          token: config.remoteRelayToken)
         for control in remotePairControls { control.isEnabled = !gate.blocksPairing }

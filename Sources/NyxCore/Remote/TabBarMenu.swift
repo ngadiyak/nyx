@@ -99,10 +99,11 @@ public enum TabBarMenu {
     /// A function of its own rather than a loop inside `items`, and the reason is measured: with
     /// the body inlined into `items`, `make bench` fell from 185 MB/s to 177 -- below this
     /// project's 180 floor -- for a file the parser never calls. The package builds release with
-    /// `-cross-module-optimization` (`Package.swift`), so a second caller of
-    /// `RemoteCatalogue.detail` relaid out `nyx-bench`'s copy of `Terminal.feed`; three bisecting
-    /// builds put the whole 5% on that one call site. Keeping the loop behind its own symbol puts
-    /// the bench back at 185. Nothing here is hot; do not "simplify" it back inline without
+    /// `-cross-module-optimization` (`Package.swift`); six bisecting builds put the whole 5% on
+    /// that one call site. The working hypothesis the measurement supports, not confirmed further
+    /// than that: a second caller of `RemoteCatalogue.detail` relaid out `nyx-bench`'s copy of
+    /// `Terminal.feed` under cross-module optimization. Keeping the loop behind its own symbol
+    /// puts the bench back at 185. Nothing here is hot; do not "simplify" it back inline without
     /// running `make bench` first.
     private static func sessionRows(catalogue: RemoteCatalogue, now: Date,
                                     home: String) -> [TabBarMenuItem] {

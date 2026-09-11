@@ -46,13 +46,13 @@ final class TabBarView: NSView {
     var onToggleGroup: ((Int) -> Void)?
     /// A right-click on either of those.
     var onGroupContextMenu: ((Int, NSEvent) -> Void)?
-    /// The `+` at the far left.
+    /// The trailing `+`.
     var onNewTab: (() -> Void)?
     /// The list button beside it: the command palette, showing only the open tabs.
     var onShowTabList: (() -> Void)?
     /// One of the configured quick actions, by its index in `config.quickActions`.
     var onQuickAction: ((Int) -> Void)?
-    /// The trailing `+`.
+    /// The `+` at the far left.
     var onAddQuickAction: (() -> Void)?
     /// Right-click on a quick-action chip: its index and the event, for a menu.
     var onQuickActionContextMenu: ((Int, NSEvent) -> Void)?

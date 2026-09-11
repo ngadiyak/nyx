@@ -37,7 +37,7 @@ WebSocket at `wss://<host>/v1/ws`. Text frames are JSON control messages; binary
 | `welcome` | relay → device | `server_time` (RFC 3339) | device is now online |
 | `error` | relay → device | `code`, `message` | codes below |
 | `paired` | device → relay | `device_ids: [..]` | the devices this one trusts; a pairing is mutual only when both lists contain each other |
-| `presence` | relay → device | `devices: [{device_id, name, online, not_paired}]` | sent after `welcome` and whenever a mutually paired device's presence changes; lists the device's own `paired` entries |
+| `presence` | relay → device | `devices: [{device_id, name, online, not_paired}]` | sent after `welcome`, whenever a mutually paired device's presence changes, and to a device whose peer has just stopped declaring it (the one delivery that is *not* to a mutual pair); lists the device's own `paired` entries |
 | `sessions` | host → relay | `sessions: [Session]` | stored as the host's catalogue; forwarded as `catalogue` to every online mutually paired device |
 | `catalogue` | relay → device | `device_id` (the host), `sessions: [Session]` | also sent after `welcome` for every online mutually paired host |
 | `pair_open` | host → relay | `code` (6 chars `[A-HJ-NP-Z2-9]`, host-generated) | stores `code → host` for 5 minutes; a second `pair_open` from the same host replaces its code; a code in use by another host → `error pair_taken` |

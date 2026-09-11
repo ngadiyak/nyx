@@ -426,9 +426,14 @@ final class SettingsWindowController: NSWindowController {
         setActivityText(lines: Array(lines.suffix(20)))
     }
 
+    /// The log as a page reads it, not as `tail -f` does: the same words with the ISO-8601 stamp
+    /// swapped for a relative age (`AuditLine.display`), because a box six lines tall spent
+    /// thirty-one characters a line on something a person does not read as a time.
     private func setActivityText(lines: [String]) {
-        activityView.string = lines.isEmpty ? "No remote activity yet" : lines.joined(separator: "\n")
-        activityView.textColor = lines.isEmpty ? .tertiaryLabelColor : .labelColor
+        let now = Date()
+        let shown = lines.map { AuditLine.display($0, now: now) }
+        activityView.string = shown.isEmpty ? "No remote activity yet" : shown.joined(separator: "\n")
+        activityView.textColor = shown.isEmpty ? .tertiaryLabelColor : .labelColor
     }
 
     /// Pictures the page with data that would otherwise mean writing fake devices and log lines

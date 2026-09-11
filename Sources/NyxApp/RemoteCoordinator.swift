@@ -27,14 +27,16 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
     private var config: Config
     private var identity: DeviceIdentity?
     private var paired = PairedDevices()
-    /// The names of devices the user has removed, by id.
+    /// Names of devices unpaired in this run, kept so an audit line raised *by* the unpairing still
+    /// has one.
     ///
-    /// Removing a pairing tears down that device's attachments, and every detach it raises is
-    /// audited on the main queue *after* `removePairing` has already taken the device out of
-    /// `paired` -- so the log, which resolves an id to a name through that list, would write the
-    /// raw base64 id for the last lines a removed device ever produces. The name is recorded here
-    /// at the moment of removal; `appendAudit` is taught to look in it by the task that fixes the
-    /// log's naming, which is why nothing reads it yet.
+    /// `AuditNames` falls back to an eight-character id prefix, which is right for a device nobody
+    /// ever named and wrong for the one path that reaches it every single time: Remove takes the
+    /// name out of `paired`, and the detach it raises is audited on the main queue afterwards --
+    /// `RemoteHost` hops it there deliberately, so no amount of reordering inside `removePairing`
+    /// can make the name still be there. The QA's log says `detached  8hgFMxB9 → zsh — ~` one
+    /// second after `removed  alpha`, about the same Mac. It grows by one entry per Remove, which
+    /// is a pairing a person made by hand: not a cache that needs evicting.
     private var namesOfRemovedDevices: [String: String] = [:]
     private var connection: RelayConnection?
     private(set) var host: RemoteHost?
@@ -494,7 +496,12 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
     /// into the names of §5.5. Only the write itself goes to the audit queue.
     private func appendAudit(_ event: AuditLine.Event) {
         refreshSessionTitles()
-        let named = AuditNames.naming(event, names: paired.namesByID, titles: sessionTitles)
+        // The names of devices Remove has taken out, behind the live list: `AuditNames` falls back
+        // to an eight-character id prefix, which is right for a device nobody ever named and wrong
+        // for the one path that reaches it every single time -- the detach an unpairing raises is
+        // audited on the main queue afterwards, when `paired` no longer holds the name.
+        let names = paired.namesByID.merging(namesOfRemovedDevices) { current, _ in current }
+        let named = AuditNames.naming(event, names: names, titles: sessionTitles)
         let line = AuditLine.text(named, at: Date()) + "\n"
         let url = RemoteFiles.auditLog(in: RemoteFiles.directory(besideConfigAt: ConfigStore.path))
         auditQueue.async {

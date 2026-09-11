@@ -861,9 +861,8 @@ final class TabController: NSViewController, NSMenuItemValidation {
             closeCommandPalette()
             return
         }
-        let bindings = KeyBindingTable(user: config.keybinds)
         let items = PaletteSource.items(actions: ActionCatalog.allMenuActions,
-                                        chord: { bindings.binding(for: $0)?.displayName },
+                                        chord: { self.chord(for: $0) },
                                         // The same answer the menu bar gets. A row that would beep
                                         // is *absent* here rather than greyed: `PaletteSource`
                                         // filters on this rather than carrying it.
@@ -878,13 +877,31 @@ final class TabController: NSViewController, NSMenuItemValidation {
         openPalette(items: items)
     }
 
-    /// `remote_sessions`: the same palette, opened with "remote" already typed, so the section is
-    /// the whole list rather than something to scroll to. The rows carry "remote" in their search
-    /// text (`PaletteItem.remoteSession`), which is what makes one word find all of them.
+    /// The chord a palette row advertises for an action, from the bindings in force.
+    ///
+    /// One spelling for both panels: `showRemoteSessions` builds an action row the same way
+    /// `toggleCommandPalette` does, and a second answer to "which chord is this action on" is how a
+    /// palette ends up disagreeing with the menu bar about the same key.
+    private func chord(for action: TerminalAction) -> String? {
+        KeyBindingTable(user: config.keybinds).binding(for: action)?.displayName
+    }
+
+    /// `remote_sessions`: the palette showing **only** the Remote section.
+    ///
+    /// It used to open the whole palette with "remote" typed into it, and the action's own row --
+    /// `Remote Sessions…`, whose search text contains the word -- outranked every session for that
+    /// query. So the keyboard route to a remote session was menu, ↓, ⏎, and pressing ⏎ first (the
+    /// obvious thing) re-opened the same panel with the same query. There is nothing to rank here:
+    /// the list is what the action is named after, plus the one thing to do when it is empty.
     func showRemoteSessions() {
         closeCommandPalette()
-        toggleCommandPalette()
-        paletteOverlay?.setQuery("remote")
+        var items = appDelegate?.remote?.paletteItems() ?? []
+        // Pairing is the honest next row for a Mac with no paired devices yet, and harmless
+        // otherwise: it is the other half of what this feature needs before it works at all.
+        if canPerform(.remotePair) {
+            items.append(PaletteItem.action(.remotePair, chord: chord(for: .remotePair)))
+        }
+        openPalette(items: items)
     }
 
     private func openPalette(items: [PaletteItem]) {
@@ -912,6 +929,11 @@ final class TabController: NSViewController, NSMenuItemValidation {
         // A row that cannot act does not close the panel either: the palette is open because the
         // user is looking for something, and closing it under them for a row that does nothing
         // makes them open it again to carry on.
+        //
+        // Not what ⏎ hits any more: `CommandPalette.selected` is nil for a disabled row, so
+        // `CommandPaletteView` beeps a line earlier and the keyboard never reaches here. A *click*
+        // still does -- `run(rowAt:)` hands over whatever row was under the mouse, selected or not
+        // -- so this is the guard for the pointer, not a leftover.
         guard item.isEnabled else {
             NSSound.beep()
             return

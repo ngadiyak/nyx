@@ -33,10 +33,11 @@ public struct PaletteItem: Equatable {
     /// Whether pressing this row does anything.
     ///
     /// A palette is a list of verbs, and until the Remote section existed every row was one. Three
-    /// of its rows are not: a Mac that is offline, a Mac with nothing open, and the line saying the
-    /// relay cannot be reached. They belong in the list -- a paired Mac that vanished from it reads
-    /// as a broken pairing -- but drawn like the rest they are rows people press and get a beep
-    /// from. The view greys them (spec §5.3) and `TabController.run` beeps rather than acting.
+    /// of its rows are not: a Mac that is offline, a Mac with nothing open, and a Mac that has
+    /// unpaired this one. They belong in the list -- a paired Mac that vanished from it reads as a
+    /// broken pairing -- but drawn like the rest they are rows people press and get a beep from.
+    /// The view greys them (spec §5.3), `CommandPalette` will not select one, and
+    /// `TabController.run` beeps rather than acting.
     public let isEnabled: Bool
 
     public init(title: String, detail: String, searchText: String? = nil, kind: PaletteItemKind,
@@ -114,7 +115,9 @@ public struct CommandPalette: Equatable {
     public private(set) var query = ""
     public private(set) var results: [PaletteResult] = []
     /// Index into `results`, never out of range: it is 0 for an empty list, so `selected` is the
-    /// only thing a caller has to nil-check.
+    /// only thing a caller has to nil-check. It is what the view draws highlighted, which is why it
+    /// lands on a row that can act whenever there is one -- a highlight over a greyed row is the
+    /// list telling the user to press it.
     public private(set) var selection = 0
 
     public init(items: [PaletteItem]) {
@@ -122,9 +125,12 @@ public struct CommandPalette: Equatable {
         rank()
     }
 
-    /// The row `⏎` runs, or nil when nothing matched.
+    /// The row `⏎` runs, or nil when nothing matched -- or when nothing that matched can act.
     public var selected: PaletteItem? {
-        results.indices.contains(selection) ? results[selection].item : nil
+        guard results.indices.contains(selection), results[selection].item.isEnabled else {
+            return nil
+        }
+        return results[selection].item
     }
 
     public mutating func setQuery(_ newQuery: String) {
@@ -132,15 +138,29 @@ public struct CommandPalette: Equatable {
         rank()
     }
 
-    /// ↑/↓. Wraps at both ends, so holding ↓ walks the list round rather than sticking at the
-    /// bottom, and ↑ from the first row reaches the last without scrolling through everything.
+    /// ↑/↓. Wraps at both ends, and steps over rows that cannot act.
+    ///
+    /// A palette is a list of verbs. The Remote section has three rows that are not -- a Mac that
+    /// is asleep, a Mac with nothing open, a Mac that unpaired this one -- and they belong in the
+    /// list, because a paired Mac missing from it reads as a broken pairing. Drawn like the rest and
+    /// *selectable* like the rest, they were rows people pressed and got a beep from, and the
+    /// highlight told them to.
     public mutating func moveSelection(by delta: Int) {
         guard !results.isEmpty else {
             selection = 0
             return
         }
         let count = results.count
-        selection = ((selection + delta) % count + count) % count
+        var next = ((selection + delta) % count + count) % count
+        let step = delta >= 0 ? 1 : -1
+        // At most one lap: a list with nothing runnable in it keeps the selection it had rather
+        // than spinning.
+        for _ in 0..<count {
+            if results[next].item.isEnabled { break }
+            next = ((next + step) % count + count) % count
+        }
+        guard results[next].item.isEnabled else { return }
+        selection = next
     }
 
     private mutating func rank() {
@@ -149,8 +169,8 @@ public struct CommandPalette: Equatable {
             PaletteResult(item: item, positions: match.positions.filter { $0 < item.title.count })
         }
         // Typing narrows the list under whatever was selected, so the selection goes back to the
-        // best answer rather than to whichever row happens to now sit at the old index.
-        selection = 0
+        // best answer -- the best *runnable* answer, since ⏎ is what it is for.
+        selection = results.firstIndex { $0.item.isEnabled } ?? 0
     }
 }
 

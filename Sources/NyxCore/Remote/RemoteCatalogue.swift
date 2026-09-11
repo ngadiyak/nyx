@@ -131,8 +131,14 @@ public struct RemoteCatalogue: Equatable {
     public func paletteItems(now: Date, home: String = "") -> [PaletteItem] {
         var items: [PaletteItem] = []
         if let status = relayStatusText {
-            items.append(.remoteSession(deviceID: "", sessionID: "", title: status, detail: "",
-                                        isEnabled: false))
+            // A verb, not a label. It is the one row in the whole palette that names the user's
+            // actual problem -- a bad token, an unreachable relay -- and as a disabled row it was
+            // the row that beeped: on the wrong-token instance it was the *only* row, so ↓ could
+            // not leave it and ⏎ did nothing with the panel still open. Everything it is about is
+            // on Settings → Remote, which `.openConfig` opens.
+            items.append(PaletteItem(title: status, detail: "Settings…",
+                                     searchText: "\(status) remote relay settings",
+                                     kind: .action(.openConfig)))
         }
         for device in devices {
             if device.notPaired {
@@ -184,11 +190,24 @@ public struct RemoteCatalogue: Equatable {
         }
         var tail: [String] = []
         if !s.process.isEmpty { tail.append("running: \(s.process)") }
-        if !s.lastCommand.isEmpty { tail.append("last: \(s.lastCommand)") }
+        // The age *before* the last command, which is the one clause that can be any length. "When
+        // was this last touched" is what a person picks a Mac by, and it was what disappeared.
         let rel = relative(s.lastActivity, now: now)
         if !rel.isEmpty { tail.append(rel) }
+        if !s.lastCommand.isEmpty { tail.append("last: \(shortCommand(s.lastCommand))") }
         guard !tail.isEmpty else { return head }
         return head.isEmpty ? tail.joined(separator: " · ") : "\(head) · \(tail.joined(separator: " · "))"
+    }
+
+    /// A last command, cut to something a row can hold.
+    ///
+    /// It is the one clause of the detail with no bound: a `for` loop pasted into a shell is
+    /// eighty characters and pushed everything after it off the row -- including the age, which is
+    /// the field a person actually chooses between two Macs with. Cut here rather than by the
+    /// label, so the row's own text says the command was longer.
+    public static func shortCommand(_ command: String, limit: Int = 40) -> String {
+        guard command.count > limit else { return command }
+        return String(command.prefix(limit - 1)) + "…"
     }
 
     private static func shortenedCwd(_ cwd: String, home: String) -> String {

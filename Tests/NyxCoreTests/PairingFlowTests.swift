@@ -212,7 +212,8 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
 
     var host = PairingFlow(side: .host)
     _ = host.handle(.open(code: "ABCDEF", now: t0), selfID: "id")
-    #expect(host.sheetText == ("Pairing…", "Requesting a code from the relay", nil))
+    // Word for word what `.idle` said: see `theHostsTwoWaitingStatesReadIdentically`.
+    #expect(host.sheetText == ("Pair with another device", "Getting a code from the relay", nil))
     _ = host.handle(.opened(code: "ABCDEF"), selfID: "id")
     // The code is deliberately absent from the body: the sheet's own 28-point label is where it is
     // read from, and having it in both put the same seven characters on screen twice.
@@ -349,4 +350,52 @@ private let t0 = Date(timeIntervalSince1970: 1_757_000_000)
 
     _ = client.handle(.tick(now: t0.addingTimeInterval(3600)), selfID: "id")
     #expect(client.state == .paired(peerID: "host-id", peerName: "iMac"))
+}
+
+// MARK: - The sheet's words
+
+/// The host's first half-second was three sheets: "Pair with another device / Getting a code from
+/// the relay", then "Pairing… / Requesting a code from the relay", then the code -- and the middle
+/// two are the same wait said twice, in under 400 ms. One title and one sentence, so the transition
+/// is invisible, and a spinner so the wait looks like one.
+@Test func theHostsTwoWaitingStatesReadIdentically() {
+    let idle = PairingFlow.sheetText(for: .idle, side: .host)
+    let opening = PairingFlow.sheetText(for: .opening("K7M4QZ", expires: Date()), side: .host)
+    #expect(idle.title == "Pair with another device")
+    #expect(idle.body == "Getting a code from the relay")
+    #expect(idle == opening)
+    #expect(idle.primary == nil)
+}
+
+@Test func aWaitingStateShowsProgressAndAnActionableOneDoesNot() {
+    #expect(PairingFlow.showsProgress(for: .idle, side: .host))
+    #expect(PairingFlow.showsProgress(for: .opening("K7M4QZ", expires: Date()), side: .host))
+    #expect(PairingFlow.showsProgress(for: .joining(code: "K7M4QZ"), side: .client))
+    #expect(PairingFlow.showsProgress(for: .confirming(peerID: "p", peerName: "beta",
+                                                        fingerprint: "a-b-c-d", mine: true,
+                                                        theirs: false), side: .client))
+    // The client's idle sheet is a field waiting for a person, not a wait for the relay.
+    #expect(!PairingFlow.showsProgress(for: .idle, side: .client))
+    #expect(!PairingFlow.showsProgress(for: .showingCode("K7M4QZ", expires: Date()), side: .host))
+    #expect(!PairingFlow.showsProgress(for: .requested(peerID: "p", peerName: "beta"), side: .host))
+    #expect(!PairingFlow.showsProgress(for: .paired(peerID: "p", peerName: "beta"), side: .host))
+    #expect(!PairingFlow.showsProgress(for: .failed("That code is wrong or has expired"), side: .client))
+}
+
+/// Every state still renders something: the reason `sheetText` exists is a host `.idle` that once
+/// drew a 75-point empty box with a Cancel button in it.
+@Test func noStateRendersBlankOnEitherSide() {
+    let states: [PairingFlow.State] = [
+        .idle, .opening("K7M4QZ", expires: Date()), .showingCode("K7M4QZ", expires: Date()),
+        .joining(code: "K7M4QZ"), .requested(peerID: "p", peerName: "beta"),
+        .confirming(peerID: "p", peerName: "beta", fingerprint: "a-b-c-d", mine: false, theirs: false),
+        .confirming(peerID: "p", peerName: "beta", fingerprint: "a-b-c-d", mine: true, theirs: false),
+        .paired(peerID: "p", peerName: "beta"), .failed("That code is wrong or has expired"),
+    ]
+    for side in [PairingFlow.Side.host, .client] {
+        for state in states {
+            let text = PairingFlow.sheetText(for: state, side: side)
+            #expect(!text.title.isEmpty, "\(state) on \(side) has no title")
+        }
+    }
 }

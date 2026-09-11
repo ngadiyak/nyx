@@ -78,6 +78,14 @@ as an outage. Changing any of the five keys rebuilds the connection and ends eve
 with a reason. The device identity, the paired list and the audit log live in `remote/` beside the
 config file; see the README's "Remote sessions".
 
+**Right-clicking the tab bar** — anywhere on the tab bar that is not a tab — offers `New Remote
+Tab…`, which opens the same list `Shell → Remote Sessions…` does, with the sessions that are open on
+your other Macs listed under it; each says which Mac, what the tab there calls itself and how long
+ago it was touched, and attaches when pressed. With remote sessions off, with no relay token, or
+with a relay that has refused this Mac, the item is greyed and says which; the sentence beneath it
+opens Settings → Remote. Right-clicking **a tab** ends that tab's own menu with the same
+`New Remote Tab…`, but only while `remote = on` — with the feature off the tab menu is unchanged.
+
 ## Themes
 
 Built in: `nyx-dark` (default), `nyx-light`, `solarized-dark`, `gruvbox-dark`, `dracula`,

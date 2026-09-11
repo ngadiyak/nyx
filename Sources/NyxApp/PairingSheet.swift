@@ -1,6 +1,17 @@
 import AppKit
 import NyxCore
 
+/// The sheet's own window, which exists as a class only so that ⎋ dismisses a state whose Cancel
+/// button has gone (`.paired`, `.failed`). AppKit answers ⎋ by looking for a *visible* button with
+/// that key equivalent first, and only then sends `cancelOperation` down the responder chain -- whose
+/// last stop is the window. The content view cannot do this job: to receive `cancelOperation` it
+/// would have to accept first responder, and then it takes the ring away from the code field, so the
+/// client's sheet opens with nowhere to type (measured: typing a character reached nothing at all).
+private final class PairingPanel: NSPanel {
+    var onCancel: (() -> Void)?
+    override func cancelOperation(_ sender: Any?) { onCancel?() }
+}
+
 /// The sheet that carries a pairing (spec §5.2) from a code, through a fingerprint both people read
 /// aloud, to "paired". One sheet for both roles -- host, showing a code; client, typing one -- and
 /// for every step after, because the states differ only in which parts show, not in the shape.
@@ -25,10 +36,18 @@ final class PairingSheet: NSObject {
     /// standing at a different keyboard, so it has to be legible across a room, not just on screen.
     private let codeLabel = NSTextField(labelWithString: "")
     private let codeField = NSTextField()
+    /// The example a person needs *before* typing, as a caption rather than as placeholder text
+    /// inside the field -- see `codeField.placeholderString` in `init`.
+    private let codeHintLabel = NSTextField(labelWithString: "")
     /// "A code is six letters and digits, like K7M-4QZ" -- shown under the field when submitting
     /// doesn't normalise; cleared the moment the person edits the field again, not just on retry.
     private let codeErrorLabel = NSTextField(wrappingLabelWithString: "")
     private let fingerprintLabel = NSTextField(labelWithString: "")
+    private let progress = NSProgressIndicator()
+    /// A spinner that appears the instant a sheet does is a flicker, not a signal: the relay
+    /// answers in about 400 ms, so anything shorter than this was never a wait worth drawing.
+    private static let progressDelay: TimeInterval = 0.3
+    private var progressItem: DispatchWorkItem?
     private let primaryButton: NSButton
     private let secondaryButton: NSButton
     private let content: NSView
@@ -45,8 +64,10 @@ final class PairingSheet: NSObject {
 
     init(side: PairingFlow.Side) {
         self.side = side
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: PairingSheet.width, height: 100),
-                        styleMask: [.titled], backing: .buffered, defer: false)
+        let sheetPanel = PairingPanel(contentRect: NSRect(x: 0, y: 0,
+                                                          width: PairingSheet.width, height: 100),
+                                      styleMask: [.titled], backing: .buffered, defer: false)
+        panel = sheetPanel
         panel.isFloatingPanel = true
 
         primaryButton = NSButton(title: "", target: nil, action: nil)
@@ -62,14 +83,31 @@ final class PairingSheet: NSObject {
 
         codeLabel.font = .monospacedSystemFont(ofSize: 28, weight: .semibold)
         codeLabel.alignment = .center
+        // Selectable, so the code can be dragged over and copied. Reading it aloud is the case this
+        // sheet was built for, but both Macs on one desk is just as common, and a label you cannot
+        // select makes a person retype six characters they are looking at.
+        codeLabel.isSelectable = true
         codeLabel.describeForAccessibility("Pairing code", role: .staticText)
 
         codeField.font = .monospacedSystemFont(ofSize: 16, weight: .regular)
         codeField.alignment = .center
-        codeField.placeholderString = "K7M-4QZ"
+        // No placeholder. A grey, centred `K7M-4QZ` inside the box reads as a filled value, so
+        // people pressed Pair and were told "A code is six letters and digits, like K7M-4QZ" --
+        // the message restating the thing that had misled them. The example is a caption instead.
+        codeField.placeholderString = nil
+        codeHintLabel.stringValue = "Six characters, like K7M-4QZ"
+        codeHintLabel.font = .systemFont(ofSize: 11)
+        codeHintLabel.textColor = .secondaryLabelColor
+        codeHintLabel.alignment = .center
         codeField.describeForAccessibility(PairingSheet.codeFieldAccessibilityLabel)
         codeField.widthAnchor.constraint(equalToConstant: 160).isActive = true
         codeField.delegate = self
+
+        progress.style = .spinning
+        progress.controlSize = .small
+        progress.isDisplayedWhenStopped = false
+        progress.isHidden = true
+        progress.setAccessibilityLabel("Waiting for the relay")
 
         codeErrorLabel.font = .systemFont(ofSize: 11)
         codeErrorLabel.alignment = .center
@@ -92,7 +130,8 @@ final class PairingSheet: NSObject {
         // alignment (which reliably pins the leading edge regardless of a sibling's width), avoids
         // the interaction entirely.
         let rowWidth = PairingSheet.width - 40   // the 20pt margin on each side
-        let variableStack = NSStackView(views: [codeLabel, codeField, codeErrorLabel, fingerprintLabel])
+        let variableStack = NSStackView(views: [codeLabel, progress, codeField, codeHintLabel,
+                                               codeErrorLabel, fingerprintLabel])
         variableStack.orientation = .vertical
         variableStack.alignment = .centerX
         variableStack.spacing = 6
@@ -133,6 +172,7 @@ final class PairingSheet: NSObject {
         secondaryButton.action = #selector(secondaryPressed)
         codeField.target = self
         codeField.action = #selector(codeSubmitted)
+        sheetPanel.onCancel = { [weak self] in self?.onEvent?(.cancel) }
 
         update(state: .idle)
     }
@@ -147,6 +187,22 @@ final class PairingSheet: NSObject {
         bodyLabel.stringValue = text.body
         bodyLabel.isHidden = text.body.isEmpty
 
+        // Delayed, and cancelled by any state change: a sheet that reaches `showingCode` inside the
+        // delay never spins.
+        progressItem?.cancel()
+        progress.stopAnimation(nil)
+        progress.isHidden = true
+        if PairingFlow.showsProgress(for: state, side: side) {
+            let item = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.progress.isHidden = false
+                self.progress.startAnimation(nil)
+                self.resizeToFitContent()
+            }
+            progressItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + PairingSheet.progressDelay, execute: item)
+        }
+
         // A stale "that code isn't valid" from a previous attempt has no place once the state has
         // actually moved on (e.g. `.idle` -> `.joining`); only editing the field clears it mid-state.
         setCodeError(hidden: true)
@@ -156,10 +212,12 @@ final class PairingSheet: NSObject {
             codeLabel.stringValue = PairCode.display(code)
             codeLabel.isHidden = false
             codeField.isHidden = true
+            codeHintLabel.isHidden = true
             fingerprintLabel.isHidden = true
         case .idle where side == .client:
             codeLabel.isHidden = true
             codeField.isHidden = false
+            codeHintLabel.isHidden = false
             codeField.stringValue = ""
             fingerprintLabel.isHidden = true
         case .confirming(_, _, let fingerprint, _, _):
@@ -167,24 +225,35 @@ final class PairingSheet: NSObject {
             fingerprintLabel.isHidden = false
             codeLabel.isHidden = true
             codeField.isHidden = true
+            codeHintLabel.isHidden = true
         default:
             codeLabel.isHidden = true
             codeField.isHidden = true
+            codeHintLabel.isHidden = true
             fingerprintLabel.isHidden = true
         }
 
-        // A terminal state (paired/failed) has nothing left to accept or confirm, so the primary
-        // button -- "Accept"/"Confirm" -- steps aside and the dismiss button carries the state's
-        // own word ("Done"/"Close") instead of the generic "Cancel".
         switch state {
         case .paired, .failed:
-            primaryButton.isHidden = true
-            secondaryButton.title = text.primary ?? "Close"
+            // The word goes on the *primary* button, not onto Cancel. Cancel carries ⎋, so moving
+            // "Done"/"Close" there left Return doing nothing at all on the two states where it is
+            // the only thing a person wants to press. There is nothing to cancel here either way.
+            primaryButton.isHidden = false
+            primaryButton.title = text.primary ?? "Close"
+            secondaryButton.isHidden = true
         default:
             primaryButton.isHidden = text.primary == nil
             primaryButton.title = text.primary ?? ""
+            secondaryButton.isHidden = false
             secondaryButton.title = "Cancel"
         }
+        // Re-asserted on every update rather than set once in `init`. The sheet is presented with
+        // `beginSheet` while it is still `.idle`, which on the host hides the primary button -- and
+        // presenting a sheet whose default button is hidden makes AppKit clear that button's
+        // `keyEquivalent` outright, for good. Measured in the built app: `[13]` after `init`, `[]`
+        // immediately after `beginSheet`. Every later state's primary button -- "Pair", "Accept",
+        // "Confirm", "Done", "Close" -- therefore had no Return on it at all.
+        primaryButton.keyEquivalent = primaryButton.isHidden ? "" : "\r"
         primaryButton.describeForAccessibility(primaryButton.title)
         secondaryButton.describeForAccessibility(secondaryButton.title)
 
@@ -227,6 +296,11 @@ final class PairingSheet: NSObject {
     private func setCodeError(hidden: Bool) {
         codeErrorLabel.textColor = PairingSheet.readableErrorColor
         codeErrorLabel.isHidden = hidden
+        // One example, not two. The error carries the same "like K7M-4QZ" with the reason attached,
+        // so the caption steps aside while it is up rather than stacking a grey copy above a red
+        // one. Restored only when the field is on screen -- `update(state:)` clears the error before
+        // it decides which controls this state shows, and owns the answer for every other state.
+        codeHintLabel.isHidden = hidden ? codeField.isHidden : true
         codeField.setAccessibilityLabel(hidden
             ? PairingSheet.codeFieldAccessibilityLabel
             : "\(PairingSheet.codeFieldAccessibilityLabel). \(codeErrorLabel.stringValue)")
@@ -236,6 +310,9 @@ final class PairingSheet: NSObject {
         switch state {
         case .requested: onEvent?(.accept)
         case .confirming: onEvent?(.confirmMine)
+        // "Done" and "Close": the sheet is finished either way, and dismissing it is all that is
+        // left, which is what `.cancel` does to a flow already in a terminal state.
+        case .paired, .failed: onEvent?(.cancel)
         // The client's idle sheet: "Pair" submits the field, which is the same act as Return in it.
         case .idle where side == .client: codeSubmitted()
         default: break

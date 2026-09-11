@@ -281,6 +281,14 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
         pairButtons.spacing = 10
         pairButtons.translatesAutoresizingMaskIntoConstraints = false
 
+        // Two buttons and nothing saying which Mac presses which was a fifty-fifty guess in the one
+        // flow where guessing wrong shows the other person an error.
+        let pairCaption = NSTextField(wrappingLabelWithString:
+            "On one Mac press Pair with another device\u{2026}; on the other press Enter a code\u{2026}.")
+        pairCaption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        pairCaption.textColor = .secondaryLabelColor
+        pairCaption.translatesAutoresizingMaskIntoConstraints = false
+
         let activityLabel = NSTextField(labelWithString: "Recent activity")
         activityLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
         activityLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -322,7 +330,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
 
         let view = NSView()
         for subview in [grid, remoteStatusLabel, pairedLabel, pairedScroll, removePairedButton,
-                       pairButtons, activityLabel, activityScroll, note] as [NSView] {
+                       pairButtons, pairCaption, activityLabel, activityScroll, note] as [NSView] {
             view.addSubview(subview)
         }
         NSLayoutConstraint.activate([
@@ -348,7 +356,11 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
             pairButtons.topAnchor.constraint(equalTo: removePairedButton.bottomAnchor, constant: 10),
             pairButtons.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
 
-            activityLabel.topAnchor.constraint(equalTo: pairButtons.bottomAnchor, constant: 12),
+            pairCaption.topAnchor.constraint(equalTo: pairButtons.bottomAnchor, constant: 8),
+            pairCaption.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
+            pairCaption.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
+
+            activityLabel.topAnchor.constraint(equalTo: pairCaption.bottomAnchor, constant: 12),
             activityLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
 
             activityScroll.topAnchor.constraint(equalTo: activityLabel.bottomAnchor, constant: 4),

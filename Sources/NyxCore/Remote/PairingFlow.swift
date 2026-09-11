@@ -325,7 +325,11 @@ public struct PairingFlow: Equatable {
             return ("Enter the code shown on the other Mac",
                     "Settings → Remote → Pair with another device… shows it", "Pair")
         case .opening:
-            return ("Pairing…", "Requesting a code from the relay", nil)
+            // The same words as `.idle`, deliberately. They are the same wait -- the sheet is up and
+            // the relay has not answered -- and saying it twice, with a different title each time,
+            // made the first four hundred milliseconds of pairing a flicker through three looks.
+            // What the user needs there is not a third sentence but a spinner: `showsProgress`.
+            return ("Pair with another device", "Getting a code from the relay", nil)
         case .showingCode:
             // The code itself is not here. The sheet shows it once, in the 28-point label under
             // this text -- the size it has to be for somebody to read it across a room -- and
@@ -351,6 +355,20 @@ public struct PairingFlow: Equatable {
             return ("Paired with \(peerName)", "", "Done")
         case .failed(let message):
             return ("Pairing failed", message, "Close")
+        }
+    }
+
+    /// Whether this state is waiting on something and has nothing to show for it.
+    ///
+    /// The sheet's own indicator is delayed (see `PairingSheet.progressDelay`) so a relay that
+    /// answers in 400 ms -- as the local one does -- never spins at all. This decides *which*
+    /// states may spin, in Core, so the sheet cannot spin on one a person is meant to be reading.
+    public static func showsProgress(for state: State, side: Side) -> Bool {
+        switch state {
+        case .idle: return side == .host
+        case .opening, .joining: return true
+        case .confirming(_, _, _, let mine, let theirs): return mine && !theirs
+        case .showingCode, .requested, .paired, .failed: return false
         }
     }
 }

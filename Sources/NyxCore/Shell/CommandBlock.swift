@@ -817,6 +817,25 @@ public extension CommandBlockChrome {
     /// Every row-height *hit* target, clamped so `line-height = 0.8` cannot make it 13 pt (§8.4).
     /// The *drawn* mark stays `cellHeight` tall.
     static func hitRowHeight(cellHeight: Double) -> Double { max(cellHeight, 16) }
+    /// How many whole rows one `hitRowHeight` band occupies -- so a second band beneath it knows how
+    /// far down to start.
+    ///
+    /// A pane can carry two: the remote attach strip owns the top row and the pinned command band
+    /// steps below it. "One row down" was the arithmetic, and it is short at every cell under 16 pt
+    /// -- including the **default** 13 pt font, whose row is 15.31 pt: two 16 pt bands one row apart
+    /// overlap by 0.69 pt, and the lower band then paints over a row the frame never blanked.
+    ///
+    /// Whole rows, because the thing below is not free to sit anywhere: it covers a row of the grid
+    /// and that row is blanked by index, so half a row down would be a band between two rows with
+    /// the wrong one missing.
+    ///
+    /// A cell of zero or less answers one row, not sixteen: `hitRowHeight / max(cell, 1)` -- which
+    /// is what the view did before this moved here -- reads a pane mid-teardown as a band sixteen
+    /// rows deep, and there is no grid there to step down through at all.
+    static func hitRowSpan(cellHeight: Double) -> Int {
+        guard cellHeight > 0 else { return 1 }
+        return max(1, Int(ceil(hitRowHeight(cellHeight: cellHeight) / cellHeight)))
+    }
     static let stripHeight: Double = 20
     /// The strip's frame: tall enough for its pills and never below the hit floor. Decided here
     /// rather than from `stack.fittingSize`, which is what `Pane.blockHeaderChanged` used.

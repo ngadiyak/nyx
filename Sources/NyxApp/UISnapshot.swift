@@ -1128,7 +1128,7 @@ enum UISnapshot {
         host.addSubview(view)
         view.appearance = NSAppearance(named: appearance)
         view.update(state: state, palette: palette,
-                    font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+                    font: .monospacedSystemFont(ofSize: 12, weight: .regular), cellHeight: height)
         host.layoutSubtreeIfNeeded()
         return host
     }

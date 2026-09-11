@@ -4035,8 +4035,7 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
     /// two rows of nonsense.
     private var stickyStripRow: Int {
         guard remote != nil, !remoteStrip.isHidden else { return 0 }
-        let cell = Double(cellSizePoints.height)
-        return max(1, Int(ceil(CommandBlockChrome.hitRowHeight(cellHeight: cell) / max(cell, 1))))
+        return CommandBlockChrome.hitRowSpan(cellHeight: Double(cellSizePoints.height))
     }
 
     private func layoutStickyStrip() {
@@ -4045,14 +4044,16 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         let width = max(0, bounds.width - left - padding)
         let top = bounds.height - padding - cell.height
         // `hitRowHeight`, centred on the row it covers, for the same reason the pinned band uses it
-        // (§8.4): at `line-height = 0.8` a cell is 13 pt and this strip carries a button. It
-        // overhangs the rows above and below by up to 1.5 pt, which is a band the mouse can hit
-        // rather than a row of output taken away: the covered row is the only one blanked.
+        // (§8.4): a one-row target is 15.31 pt at the default font and 12.25 pt at `line-height =
+        // 0.8`, and this strip carries a button. The frame overhangs the rows above and below --
+        // what the strip *paints* is `stripGroundHeight`, one row, which is `RemoteStripView`'s own
+        // band subview: a frame the mouse can hit rather than a row of output taken away.
         let height = CGFloat(CommandBlockChrome.hitRowHeight(cellHeight: Double(cell.height)))
         remoteStrip.frame = NSRect(x: left, y: top + cell.height / 2 - height / 2,
                                    width: width, height: height)
-        // The pinned band yields, and yields by whole rows: two 16 pt bands one 13 pt row apart
-        // would overlap, so at `line-height 0.8` it steps down two rows rather than one.
+        // The pinned band yields, and yields by whole rows: two 16 pt bands one row apart overlap
+        // at every cell under 16 pt -- the **default** 15.31 pt row included -- so it steps down
+        // `hitRowSpan` rows, which is two there and at `line-height 0.8`, and one at a 17 pt font.
         let rowsDown = CGFloat(stickyStripRow) * cell.height
         let centre = top + cell.height / 2 - rowsDown
         stickyStrip.frame = NSRect(x: left, y: centre - height / 2, width: width, height: height)
@@ -4078,7 +4079,8 @@ final class Pane: NSView, NSTextInputClient, NSMenuItemValidation {
         // of this left the label truncating mid-word at the old width, in the old font.
         // `RemoteStripView.update` has its own guard keyed on exactly those two.
         remoteStrip.update(state: shown, palette: Pane.resolvedPalette(for: config),
-                           font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular))
+                           font: .monospacedSystemFont(ofSize: effectiveFontSize, weight: .regular),
+                           cellHeight: cellSizePoints.height)
         if wasHidden != remoteStrip.isHidden { layoutStickyStrip() }
         // The *report* is what must not repeat: `updateGrid` calls this on every layout pass, and a
         // tab bar that rebuilt its badge and title on each one would be doing that for nothing.

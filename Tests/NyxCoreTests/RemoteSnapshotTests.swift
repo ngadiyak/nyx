@@ -18,6 +18,18 @@ import Testing
     #expect(RemoteSnapshot.trimmingTrailingBlankLines("first\r\n\r\nsecond\r\n\r\n") == "first\r\n\r\nsecond")
 }
 
+/// An *odd* number of trailing line endings, which every test above happened not to have.
+///
+/// `"\r\n"` is one `Character`, so the `removeLast(2)` this used to do removed two line endings at
+/// a time and, on an odd count, finished by removing one line ending and the last character of the
+/// host's screen. A 24-row screen with two written rows has 23 blank endings after them: an
+/// attaching client was shown `got:g` where the host had `got:go`.
+@Test func anOddNumberOfTrailingLineEndingsDoesNotEatTheLastCharacter() {
+    let screen = "go\r\ngot:go\r\n" + String(repeating: "\r\n", count: 22)
+    #expect(RemoteSnapshot.trimmingTrailingBlankLines(screen) == "go\r\ngot:go")
+    #expect(RemoteSnapshot.trimmingTrailingBlankLines("alpha\r\n") == "alpha")
+}
+
 @Test func anEmptyBufferStaysEmpty() {
     #expect(RemoteSnapshot.trimmingTrailingBlankLines(String(repeating: "\r\n", count: 24)) == "")
     #expect(RemoteSnapshot.trimmingTrailingBlankLines("") == "")

@@ -27,6 +27,15 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
     private var config: Config
     private var identity: DeviceIdentity?
     private var paired = PairedDevices()
+    /// The names of devices the user has removed, by id.
+    ///
+    /// Removing a pairing tears down that device's attachments, and every detach it raises is
+    /// audited on the main queue *after* `removePairing` has already taken the device out of
+    /// `paired` -- so the log, which resolves an id to a name through that list, would write the
+    /// raw base64 id for the last lines a removed device ever produces. The name is recorded here
+    /// at the moment of removal; `appendAudit` is taught to look in it by the task that fixes the
+    /// log's naming, which is why nothing reads it yet.
+    private var namesOfRemovedDevices: [String: String] = [:]
     private var connection: RelayConnection?
     private(set) var host: RemoteHost?
     private var client: RemoteClient?
@@ -272,14 +281,20 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
     /// disowned.
     func removePairing(deviceID: String) {
         let name = paired.devices.first { $0.id == deviceID }?.name ?? deviceID
-        paired.remove(id: deviceID)
-        savePaired()
-        catalogue.setPaired(paired.namesByID)
-        host?.deviceWentOffline(deviceID)
+        // `deviceRemoved`, not `deviceWentOffline`: the attachments go now rather than being held
+        // for a minute against a device that is never coming back.
+        host?.deviceRemoved(deviceID)
         // Both directions. The line above stops serving this Mac's sessions to the device; this one
         // ends the tabs this Mac has open *on* it, which would otherwise go on showing the screen
         // of a device the user has just said they no longer trust.
         client?.endAll(matching: deviceID, reason: AttachFailure.unpaired)
+        // *After* the teardown above, and the name is kept anyway: the audit line for the detach
+        // those raise is written on the main queue, later, so ordering alone cannot save the name
+        // once `paired.remove` has taken it out of the list the log looks devices up in.
+        namesOfRemovedDevices[deviceID] = name
+        paired.remove(id: deviceID)
+        savePaired()
+        catalogue.setPaired(paired.namesByID)
         connection?.send(.paired(paired.ids))
         appendAudit(.removed(name))
         onChange?()

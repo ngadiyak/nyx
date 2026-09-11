@@ -39,21 +39,43 @@ public struct RemoteSessionInfo: Codable, Equatable {
     }
 }
 
-/// One entry of a `presence` message: a paired device and whether it is online right now.
+/// One entry of a `presence` message: a paired device, whether it is online right now, and whether
+/// the pairing is still mutual.
 public struct RemotePresence: Codable, Equatable {
     public var deviceID: String
     public var name: String
     public var online: Bool
+    /// The peer is connected and no longer declares this device: it removed the pairing.
+    ///
+    /// The Go side carries it as `not_paired,omitempty`, so it is simply **absent** from every
+    /// relay older than 2026-09-11's deploy and from every peer that is paired normally. Absent must
+    /// read as `false`, which is what it meant before the field existed.
+    public var notPaired: Bool
 
     private enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
         case name, online
+        case notPaired = "not_paired"
     }
 
-    public init(deviceID: String, name: String, online: Bool) {
+    public init(deviceID: String, name: String, online: Bool, notPaired: Bool = false) {
         self.deviceID = deviceID
         self.name = name
         self.online = online
+        self.notPaired = notPaired
+    }
+
+    /// Hand-written for one field. A property's default value does **not** satisfy the synthesized
+    /// decoder -- `var notPaired = false` still emits `decode(_:forKey:)` and throws
+    /// `keyNotFound` on a message that omits the key, which is every presence message the deployed
+    /// relay has ever sent. Verified on this toolchain (Swift 6.0.3), because getting it wrong
+    /// fails only at run time, against a real relay, as "the palette went empty".
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        deviceID = try c.decode(String.self, forKey: .deviceID)
+        name = try c.decode(String.self, forKey: .name)
+        online = try c.decode(Bool.self, forKey: .online)
+        notPaired = try c.decodeIfPresent(Bool.self, forKey: .notPaired) ?? false
     }
 }
 
@@ -206,8 +228,14 @@ public struct RemoteMessage: Codable, Equatable {
         RemoteMessage(t: "take_control", to: to, sessionID: sessionID)
     }
 
-    public static func role(to: String, sessionID: String, deviceID: String, role: String) -> RemoteMessage {
-        RemoteMessage(t: "role", to: to, deviceID: deviceID, sessionID: sessionID, role: role)
+    /// `cols`/`rows` are the host's current screen, present only on a `role` that is announcing a
+    /// resize. Optional rather than always sent: an old relay strips them (it copies the fields its
+    /// own wire table lists), and a client that required them would break on the day the container
+    /// is restarted rather than on the day the field was added.
+    public static func role(to: String, sessionID: String, deviceID: String, role: String,
+                            cols: Int? = nil, rows: Int? = nil) -> RemoteMessage {
+        RemoteMessage(t: "role", to: to, deviceID: deviceID, sessionID: sessionID, role: role,
+                      cols: cols, rows: rows)
     }
 
     public static func detach(to: String, sessionID: String) -> RemoteMessage {

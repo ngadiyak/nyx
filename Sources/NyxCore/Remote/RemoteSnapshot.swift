@@ -21,9 +21,16 @@ public enum RemoteSnapshot {
     ///
     /// `\r\n` only, because a snapshot is transcribed with `Transcript.Options.forRestoring`, whose
     /// whole point is that a bare `\n` would come back as a staircase.
+    ///
+    /// `removeLast()` and not `removeLast(2)`: `"\r\n"` is **one** `Character` -- CRLF is a single
+    /// extended grapheme cluster -- so removing two took the line ending *and the character before
+    /// it*. It went unnoticed because it only bites on an odd number of trailing line endings, and
+    /// a screen whose last written row is its first (one prompt on a fresh window) has an even one;
+    /// a host with two written rows loses the last character of its screen, which on a real attach
+    /// read as `got:g` for `got:go` and `"x" [New` for `"x" [New]`.
     public static func trimmingTrailingBlankLines(_ transcript: String) -> String {
         var text = transcript
-        while text.hasSuffix("\r\n") { text.removeLast(2) }
+        while text.hasSuffix("\r\n") { text.removeLast() }
         return text
     }
 

@@ -63,9 +63,12 @@ struct RelayOutbox {
 ///
 /// **Liveness** is the relay's job, not this class's. The relay pings every 30 s and
 /// `URLSessionWebSocketTask` answers those itself, which keeps the socket warm through NAT and
-/// proxies; the relay closes a socket that has been silent for 90 s, and that close is what this
-/// side sees. A socket that has gone half-open in between is noticed by the next receive or send
-/// that fails -- there is deliberately no client-side ping, because one would only duplicate the
+/// proxies *and* is what the relay's own liveness watchdog reads: a socket with nothing to say
+/// stays open, and one that stops answering pings is closed within 90 s. (Until 2026-09-11 the
+/// relay measured *silence* instead -- `coder/websocket`'s Read returns on a data message only --
+/// so it closed every idle session every ninety-one seconds, and this comment described that as
+/// the contract.) A socket that has gone half-open is noticed by the next receive or send that
+/// fails -- there is deliberately no client-side ping, because one would only duplicate the
 /// relay's timer while adding a second way for a healthy connection to be declared dead.
 public final class RelayConnection {
     public enum Status: Equatable {

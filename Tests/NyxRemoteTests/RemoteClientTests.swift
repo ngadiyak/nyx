@@ -770,7 +770,7 @@ private final class Recorder {
 }
 
 /// Remove in the settings page is about this Mac in both directions. The host side stops serving
-/// the device (`RemoteHost.deviceWentOffline`), and this is the other half: the tabs *this* Mac has
+/// the device (`RemoteHost.deviceRemoved`), and this is the other half: the tabs *this* Mac has
 /// open on the device it has just disowned are ended too. Leaving them live would go on decrypting
 /// somebody's screen into a window after the user said they no longer trust it.
 @Test func unpairingEndsThisMacsOwnTabsOnThatHostAndNoOthers() throws {
@@ -1225,4 +1225,43 @@ private final class Recorder {
     #expect(attachment.state.phase == .attaching)
     f.client.handle(f.error("host_offline"))
     #expect(attachment.state.phase == .failed("Host is offline"))
+}
+
+/// The mirror follows the host. A `role` that carries a size is the only message that says the
+/// host's window changed shape, and the size is not part of `AttachState` -- the pane reads it off
+/// the attachment -- so the state has to be *re*-reported even though nothing in it moved, or
+/// `RemoteSession.applyHostSize` is never called and the grid keeps its size-at-attach for ever.
+@Test func aRoleCarryingASizeResizesTheMirrorAndReportsIt() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer", cols: 80, rows: 24)
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    #expect(attachment.cols == 80)
+    let recorder = Recorder()
+    recorder.watch(attachment)
+    f.client.handle(f.host.message(.role(to: f.deviceID, sessionID: f.key,
+                                         deviceID: f.deviceID, role: "writer",
+                                         cols: 132, rows: 40)))
+    #expect(attachment.cols == 132)
+    #expect(attachment.rows == 40)
+    // Reported even though the phase and the role are exactly what they were: that report is what
+    // `RemoteSession.applyHostSize` rides on.
+    #expect(recorder.phases == [.live])
+    #expect(attachment.state.role == .writer)
+}
+
+/// The geometry on a `role` is as unsigned as the geometry on an `attached`, and this one arrives
+/// at a tab that is already live. An impossible size is *ignored* rather than ending the tab:
+/// ending it would hand anyone who can replay a `role` a way to close somebody's session.
+@Test func anImpossibleSizeOnARoleIsIgnoredAndTheTabLivesOn() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach(role: "writer", cols: 80, rows: 24)
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    f.client.handle(f.host.message(.role(to: f.deviceID, sessionID: f.key,
+                                         deviceID: f.deviceID, role: "observer",
+                                         cols: 2_000_000_000, rows: 1)))
+    #expect(attachment.cols == 80)
+    #expect(attachment.state.phase == .live)
+    #expect(attachment.state.role == .observer)     // the role still applies; only the size did not
 }

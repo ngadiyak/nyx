@@ -175,6 +175,16 @@ enum UISnapshot {
                           named: "remote-strip-\(stateName)-\(paletteName)-\(name)", into: directory,
                           background: themePalette.background)
                 }
+                // Every `remote-strip-*` picture is 900 pt wide, so no picture in 811 showed a strip
+                // on a narrow pane -- which is the width at which the label has to choose between
+                // its clauses (D9c). Two states at 300: the one with both clauses and the one whose
+                // note is the whole sentence.
+                for (stateName, state) in remoteStripStates()
+                where stateName == "clipped" || stateName == "suspended-clipped" {
+                    write(remoteStrip(state: state, palette: themePalette, appearance, width: 300),
+                          named: "remote-strip-\(stateName)-narrow-\(paletteName)-\(name)",
+                          into: directory, background: themePalette.background)
+                }
             }
         }
         write(tabBar(palette: palette, config: config, tabs: 3, quickActions: quickActions(),
@@ -1067,8 +1077,8 @@ enum UISnapshot {
         // The live *writer* with a geometry note is the one picture of that state there can be: it
         // is the only thing that puts a strip on a tab which otherwise has none.
         var clipped = state(.live, .writer)
-        clipped.geometryNote = AttachState.geometryNote(host: GridSize(cols: 132, rows: 40),
-                                                        pane: GridSize(cols: 96, rows: 30))
+        clipped.hostSize = GridSize(cols: 132, rows: 40)
+        clipped.paneSize = GridSize(cols: 96, rows: 30)
         // A fixed clock, so the picture is the same every run rather than "since <now>".
         let offlineAt = Date(timeIntervalSince1970: 1_757_082_720)
         var suspended = state(.suspended("Mac mini (office)", since: offlineAt), .writer)
@@ -1086,7 +1096,8 @@ enum UISnapshot {
         suspendedSplit.closesWholeTab = false
         // Both clauses at once, which is the case the strip has to choose between when it is narrow.
         var suspendedClipped = suspended
-        suspendedClipped.geometryNote = clipped.geometryNote
+        suspendedClipped.hostSize = clipped.hostSize
+        suspendedClipped.paneSize = clipped.paneSize
         return [
             ("attaching", state(.attaching, .observer)),
             ("observer", state(.live, .observer)),
@@ -1103,15 +1114,23 @@ enum UISnapshot {
     }
 
     private static func remoteStrip(state: AttachState, palette: Palette,
-                                    _ appearance: NSAppearance.Name) -> NSView {
+                                    _ appearance: NSAppearance.Name,
+                                    width: CGFloat = 900) -> NSView {
         let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         let height = ceil(font.ascender - font.descender + font.leading)
-        let view = RemoteStripView(frame: NSRect(x: 0, y: 0, width: 900, height: height))
+        // Inside a parent with a frame, which is how the pane holds it. A strip's own width is a
+        // *required* constraint only while it has a superview: on its own, Auto Layout resolved a
+        // label too long for the strip by making the strip wider, and at 300 pt that put 672 pt of
+        // label and the Close button at x=682 inside a 300 pt picture -- a picture that would have
+        // said the narrow case is fine when it is the case these two pictures exist to show.
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        let view = RemoteStripView(frame: host.bounds)
+        host.addSubview(view)
         view.appearance = NSAppearance(named: appearance)
         view.update(state: state, palette: palette,
                     font: .monospacedSystemFont(ofSize: 12, weight: .regular))
-        view.layoutSubtreeIfNeeded()
-        return view
+        host.layoutSubtreeIfNeeded()
+        return host
     }
 
     /// The palette showing what the Remote section actually looks like: an online Mac with two

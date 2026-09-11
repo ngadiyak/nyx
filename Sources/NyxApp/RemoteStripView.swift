@@ -38,6 +38,13 @@ final class RemoteStripView: NSView {
         super.init(frame: frame)
         wantsLayer = true
         label.lineBreakMode = .byTruncatingTail
+        // The label yields; the button never does. A truncating label still defends its intrinsic
+        // width at 750, and the strip's own width is only as fixed as its superview's slack allows
+        // -- so a sentence too long for a narrow pane was resolved by moving the button *right*,
+        // out past the band that is its background: at 300 pt the Close button sat at x=294 in a
+        // 300 pt strip. There is nothing to the right of the strip but the terminal grid, and a
+        // button with no ground under it is the thing this strip is for.
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
 
@@ -86,6 +93,13 @@ final class RemoteStripView: NSView {
             return
         }
         shown = (text, state.stripButton, palette, state.severity, bounds.width, font)
+        // The pane's theme decides the band, and anything AppKit draws inside it follows the
+        // *window's* appearance instead -- so on a light theme under Dark Mode the button's title
+        // measured 1.46:1 against its own fill and its bezel disappeared altogether, leaving "Take
+        // control" reading as a label. It is the same trap `BlockHeaderView` documents, and the
+        // remote strip is the one place it costs a *control*: `remote_take_control` has no chord,
+        // so this button is the only pointer route to it.
+        appearance = NSAppearance(named: palette.isLight ? .aqua : .darkAqua)
         // `stripLabelOptions`, not `stripText`: with the button beside it the whole sentence would
         // say "Take control" twice on one row, and on a narrow window the geometry clause goes
         // rather than the sentence in front of it being cut off mid-word. The full sentence is what
@@ -135,7 +149,14 @@ final class RemoteStripView: NSView {
                                minimum: RemoteStripView.contrastFloor)
 
         label.textColor = nsColor(ink, alpha: 1)
-        button.contentTintColor = nsColor(palette.accentText, alpha: 1)
+        // `contentTintColor` recolours a symbol image, not a title: a *titled* NSButton paints in
+        // the system's `labelColor` unless the title is an attributed string. Eight of the twelve
+        // strip states differed between appearances because of those two lines; the same ink as the
+        // label, which is the colour measured against this exact ground.
+        button.attributedTitle = NSAttributedString(
+            string: state.stripButton ?? "",
+            attributes: [.foregroundColor: nsColor(ink, alpha: 1),
+                         .font: button.font ?? NSFont.systemFont(ofSize: 10, weight: .medium)])
         layer?.backgroundColor = nsColor(ground, alpha: 1).cgColor
 
         // A strip, not a decoration: a screen reader gets the whole sentence including the state
@@ -170,9 +191,22 @@ final class RemoteStripView: NSView {
         onButton?()
     }
 
-    override func isAccessibilityElement() -> Bool { !isHidden }
+    /// Leaf or container, per state -- never both, and never neither.
+    ///
+    /// It used to answer *both*: an element, role `AXGroup`, vending one child, which is a control a
+    /// screen reader can reach twice and describe differently each time. Answering "container,
+    /// always" is the other mistake and is worse: three of the eleven strip states have no button
+    /// (`attaching`, `reconnecting`, and the live writer carrying only a geometry note), so a view
+    /// that is never an element would take "Attaching…", "Reconnecting…" and the geometry note out
+    /// of the accessibility tree altogether -- and those are the only three sentences on this strip
+    /// that are not also written on a button.
+    ///
+    /// So: a leaf carrying the whole sentence when there is nothing to press, a container vending
+    /// the button when there is. `WorkbenchHintView` is a fair precedent for the
+    /// second half only (`WorkbenchHintView.swift:161-165`), because it always has a button.
+    override func isAccessibilityElement() -> Bool { !isHidden && button.isHidden }
 
     override func accessibilityChildren() -> [Any]? {
-        button.isHidden ? [] : [button]
+        isHidden || button.isHidden ? [] : [button]
     }
 }

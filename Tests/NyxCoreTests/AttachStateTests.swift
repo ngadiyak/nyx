@@ -278,8 +278,10 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
 @Test func theNoteIsTheWholeStripWhenThePhaseHasNothingToSay() {
     var writer = state(phase: .live, role: .writer)
     #expect(writer.stripText == nil)
-    writer.geometryNote = "Host is 132×40"
-    #expect(writer.stripText == "Host is 132×40")
+    writer.hostSize = GridSize(cols: 132, rows: 40)
+    writer.paneSize = GridSize(cols: 96, rows: 30)
+    #expect(writer.stripText
+        == "Host is 132×40 — the prompt and cursor may be off screen; enlarge the window")
     #expect(writer.stripLabel == writer.stripText)
     #expect(writer.severity == .info)
     #expect(writer.stripButton == nil)
@@ -287,9 +289,12 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
 
 @Test func theNoteJoinsThePhasesOwnSentenceRatherThanReplacingIt() {
     var observing = state(phase: .live, role: .observer)
-    observing.geometryNote = "Host is 132×40"
-    #expect(observing.stripText == "Observing — Take control · Host is 132×40")
-    #expect(observing.stripLabel == "Observing · Host is 132×40")
+    observing.hostSize = GridSize(cols: 132, rows: 40)
+    observing.paneSize = GridSize(cols: 96, rows: 30)
+    #expect(observing.stripText == "Observing — Take control · Host is 132×40"
+        + " — the prompt and cursor may be off screen; enlarge the window")
+    #expect(observing.stripLabel == "Observing · Host is 132×40"
+        + " — the prompt and cursor may be off screen; enlarge the window")
     #expect(observing.stripButton == "Take control")
 }
 
@@ -298,12 +303,15 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
 /// "Mac mini has been offline since 14:3…" would lose the part that cannot be seen any other way.
 @Test func aNarrowStripDropsTheGeometryNoteBeforeItTruncates() {
     var s = suspendedState("Mac mini")
-    s.geometryNote = "Host is 132×40 — the prompt and cursor may be off screen; enlarge the window"
+    s.hostSize = GridSize(cols: 132, rows: 40)
+    s.paneSize = GridSize(cols: 96, rows: 30)
     let options = s.stripLabelOptions
-    #expect(options.count == 2)
+    // The note shortens twice before it goes: four rungs, and the sentence in front of it is on
+    // every one of them.
+    #expect(options.count == 4)
     #expect(options[0] == s.stripText)
-    #expect(options[1] == "Mac mini has been offline since 14:32 — waiting for it to come back · ⌘W to close")
-    #expect(options[0].count > options[1].count)
+    #expect(options.last == "Mac mini has been offline since 14:32 — waiting for it to come back · ⌘W to close")
+    #expect(options.map(\.count) == options.map(\.count).sorted(by: >))
 }
 
 /// Nothing to choose between when there is no note: one option, and the view draws it.
@@ -369,4 +377,78 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
     #expect(state(phase: .live, role: .writer).badge == "writer")
     #expect(state(phase: .live, role: .observer).badge == "observer")
     #expect(state(phase: .reconnecting, role: .writer).badge == "writer")
+}
+
+// MARK: - The note's threshold, its ladder, and who is a leaf
+
+/// §12 called the threshold a product decision and it was one row: a host one row taller than the
+/// pane bought a permanent 74-character warning that itself covers a row -- two rows lost to warn
+/// about one.
+@Test func oneMissingRowIsNotWorthAWarning() {
+    #expect(AttachState.geometryNote(host: GridSize(cols: 54, rows: 16),
+                                     pane: GridSize(cols: 54, rows: 15)) == nil)
+    #expect(AttachState.geometryNote(host: GridSize(cols: 56, rows: 15),
+                                     pane: GridSize(cols: 54, rows: 15)) == nil)
+    // Three rows or four columns is where a prompt starts genuinely going missing.
+    #expect(AttachState.geometryNote(host: GridSize(cols: 54, rows: 18),
+                                     pane: GridSize(cols: 54, rows: 15)) != nil)
+    #expect(AttachState.geometryNote(host: GridSize(cols: 58, rows: 15),
+                                     pane: GridSize(cols: 54, rows: 15)) != nil)
+}
+
+/// And when the note is the only clause there was nothing shorter to fall back to, so at 27 columns
+/// the reader got "Host is 54×16 — the promp…" and lost the remedy. The note has its own ladder.
+@Test func theNoteHasAShortFormSoItNeverTruncatesAwayItsOwnRemedy() {
+    var writer = state(phase: .live, role: .writer)
+    writer.hostSize = GridSize(cols: 132, rows: 40)
+    writer.paneSize = GridSize(cols: 96, rows: 30)
+    let options = writer.stripLabelOptions
+    #expect(options == [
+        "Host is 132×40 — the prompt and cursor may be off screen; enlarge the window",
+        "Host is 132×40 — enlarge the window",
+        "Host is 132×40",
+    ])
+    #expect(writer.stripText == options[0])
+    #expect(writer.geometryNote == options[0])
+}
+
+@Test func theNoteJoinsThePhasesOwnSentenceAndGoesBeforeItTruncates() {
+    var observing = state(phase: .live, role: .observer)
+    observing.hostSize = GridSize(cols: 132, rows: 40)
+    observing.paneSize = GridSize(cols: 96, rows: 30)
+    let options = observing.stripLabelOptions
+    #expect(options.first == "Observing · Host is 132×40 — the prompt and cursor may be off screen; enlarge the window")
+    #expect(options.last == "Observing")
+    #expect(options.count == 4)
+    #expect(observing.stripButton == "Take control")
+}
+
+/// The same answer through the stored sizes rather than the static function -- a different route to
+/// `aPaneBigEnoughForTheHostGetsNoNote` (`:270`), which stays where it is and keeps its name.
+@Test func aPaneBigEnoughForTheHostGetsNoNoteOnTheStrip() {
+    var writer = state(phase: .live, role: .writer)
+    writer.hostSize = GridSize(cols: 80, rows: 24)
+    writer.paneSize = GridSize(cols: 80, rows: 24)
+    #expect(writer.geometryNote == nil)
+    #expect(writer.stripText == nil)
+    #expect(writer.stripLabelOptions.isEmpty)
+}
+
+/// The a11y rule the strip draws from, stated where a test can reach it: the strip is a leaf
+/// exactly when there is nothing on it to press. Three of the eleven pictured states are leaves --
+/// and they carry the only three sentences on the strip that are not also a button's title.
+@Test func theStripIsALeafExactlyWhenItHasNoButton() {
+    #expect(state(phase: .attaching, role: .observer).stripButton == nil)
+    #expect(state(phase: .snapshot, role: .observer).stripButton == nil)
+    #expect(state(phase: .reconnecting, role: .writer).stripButton == nil)
+    var noteOnly = state(phase: .live, role: .writer)
+    noteOnly.hostSize = GridSize(cols: 132, rows: 40)
+    noteOnly.paneSize = GridSize(cols: 96, rows: 30)
+    #expect(noteOnly.stripButton == nil)
+    #expect(noteOnly.stripText != nil)                 // a strip with words and no button
+    // And the eight that have one, which is the set the `cmp` gate in Step 7 is about.
+    #expect(state(phase: .live, role: .observer).stripButton == "Take control")
+    #expect(state(phase: .ended("iMac"), role: .writer).stripButton == "Close")
+    #expect(state(phase: .failed("Host is offline"), role: .observer).stripButton == "Close")
+    #expect(suspendedState().stripButton == "Close")
 }

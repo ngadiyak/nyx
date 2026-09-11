@@ -58,12 +58,26 @@ public struct AttachState: Equatable {
     public var role: Role
     public var hostName: String
     public var title: String
-    /// "Host's screen is 160×74 — showing 96×30", or nil when the host's grid fits.
+    /// The host's grid, from `attached` and from any `role` since, and this pane's own.
     ///
-    /// Set by the pane, not by the client: it is the one thing on the strip that depends on how big
-    /// *this* window is, which nothing in `NyxRemote` knows or should. `AttachState.geometryNote`
-    /// computes it; this carries it, so the strip stays one value to draw from.
-    public var geometryNote: String?
+    /// Set by the pane, not by the client: how big *this* window is, is not something anything in
+    /// `NyxRemote` knows or should.
+    ///
+    /// Two sizes rather than a formatted sentence, because the *threshold* and the note's short
+    /// forms are decisions -- and a sentence handed in already made cannot be shortened when the
+    /// window is too narrow to hold it, which is how a 27-column pane came to read
+    /// "Host is 54×16 — the promp…" and lose the remedy.
+    public var hostSize: GridSize?
+    public var paneSize: GridSize?
+
+    /// What the strip says when the host's screen is meaningfully bigger than the pane showing it.
+    public var geometryNote: String? { geometryNoteOptions.first }
+
+    /// The note, longest first. Empty when the host fits.
+    public var geometryNoteOptions: [String] {
+        guard let hostSize, let paneSize else { return [] }
+        return AttachState.geometryNoteOptions(host: hostSize, pane: paneSize)
+    }
     /// Whether ⌘W on this pane closes the tab this strip is in -- true when the pane is its tab's
     /// only one, which is the ordinary case for a remote tab.
     ///
@@ -198,17 +212,27 @@ public struct AttachState: Equatable {
 
     /// What the strip may draw, longest first: the view takes the first that fits its width.
     ///
-    /// There is only ever one alternative, and it is the geometry note that goes. It is the least
-    /// urgent clause on the strip -- a window that is too small is a thing the user can also simply
-    /// see -- and truncating the sentence in front of it ("Mac mini has been offline since 14:3…")
-    /// would lose the part that cannot be seen any other way.
+    /// The note is what shortens and then goes, in that order, because the sentence in front of it
+    /// is the part that cannot be seen any other way -- and when the note *is* the sentence it
+    /// still shortens twice before anything is cut off mid-word.
     public var stripLabelOptions: [String] {
-        guard let full = stripLabel else { return [] }
-        guard geometryNote != nil else { return [full] }
-        var withoutNote = self
-        withoutNote.geometryNote = nil
-        guard let shorter = withoutNote.stripLabel, shorter != full else { return [full] }
-        return [full, shorter]
+        let base = phaseLabelWithoutNote
+        let notes = geometryNoteOptions
+        var out: [String] = []
+        for note in notes {
+            if let base { out.append("\(base) · \(note)") } else { out.append(note) }
+        }
+        if let base { out.append(base) }
+        var seen: Set<String> = []
+        return out.filter { seen.insert($0).inserted }
+    }
+
+    /// The label's own sentence, before the note is joined to it: `stripLabel` minus the note.
+    private var phaseLabelWithoutNote: String? {
+        var bare = self
+        bare.hostSize = nil
+        bare.paneSize = nil
+        return bare.stripLabel
     }
 
     /// What the strip's one button does, if it has one. The *title* is `stripButton`; this is what
@@ -286,9 +310,29 @@ public struct AttachState: Equatable {
     /// prompt they cannot find is down there somewhere. This says what has happened to them and the
     /// one thing that fixes it.
     public static func geometryNote(host: GridSize, pane: GridSize) -> String? {
-        guard host.cols > pane.cols || host.rows > pane.rows else { return nil }
-        return "Host is \(host.cols)×\(host.rows) — the prompt and cursor may be off screen;"
-            + " enlarge the window"
+        geometryNoteOptions(host: host, pane: pane).first
+    }
+
+    /// How much smaller the pane may be before it is worth a sentence.
+    ///
+    /// §12 left the threshold as a product decision and the code had it at one: a host one row
+    /// taller than the pane bought a permanent 74-character warning which itself covers a row, so
+    /// warning about one missing row cost two. A few columns of a wrapped line and a couple of rows
+    /// below the prompt are things a person can see; four columns or three rows is where the prompt
+    /// and the cursor actually go missing.
+    public static let noteColumnSlack = 4
+    public static let noteRowSlack = 3
+
+    /// Three forms of the same note: what has happened and what fixes it, the remedy alone, and the
+    /// numbers alone. The shortest is 14 characters, so even a 27-column strip keeps a whole clause
+    /// rather than half of one.
+    public static func geometryNoteOptions(host: GridSize, pane: GridSize) -> [String] {
+        guard host.cols - pane.cols >= noteColumnSlack || host.rows - pane.rows >= noteRowSlack
+        else { return [] }
+        let size = "Host is \(host.cols)×\(host.rows)"
+        return ["\(size) — the prompt and cursor may be off screen; enlarge the window",
+                "\(size) — enlarge the window",
+                size]
     }
 
     /// The word beside this tab's title, or nil when there is none.

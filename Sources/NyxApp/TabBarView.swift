@@ -56,9 +56,11 @@ final class TabBarView: NSView {
     var onAddQuickAction: (() -> Void)?
     /// Right-click on a quick-action chip: its index and the event, for a menu.
     var onQuickActionContextMenu: ((Int, NSEvent) -> Void)?
-    /// A right-click on the bar itself -- the `≡` at the leading edge, the `+` after the last tab,
-    /// or the empty stretch between them. All three used to do nothing at all, which is the wrong
-    /// answer three times: the tab bar is where a person looks for the kinds of new tab there are.
+    /// A right-click on the bar itself -- **anywhere that is not a tab**: the `≡` at the leading
+    /// edge, the dashed `+` and the overflow `≡` beside it, the `+` after the last tab, and the
+    /// empty stretch between them. All of it used to do nothing at all, and the last two silent
+    /// buttons were 4 pt from one that answered: the tab bar is where a person looks for the kinds
+    /// of new tab there are, and a bar with two dead spans in it teaches them it is not.
     var onBarContextMenu: ((NSEvent) -> Void)?
     /// The system switched between light and dark; the controller decides whether the theme cares.
     var onAppearanceChange: (() -> Void)?
@@ -522,15 +524,18 @@ final class TabBarView: NSView {
             switch buttons.indices.contains(index) ? buttons[index] : nil {
             case .quick(let action)?:
                 onQuickActionContextMenu?(action, event)
-            // The `≡`, which is the bar's own control rather than any tab's: a right-click on it is
-            // a right-click on the bar. `.addQuickAction` -- the dashed `+` drawn beside it -- and
-            // `.overflow` keep their silence: the first has a sheet of its own and the second is
-            // already a menu, and neither is about opening a tab. `.newTab` is listed for
-            // completeness only; `rebuildLeadingButtons` never lays one out, and the `+` a user
-            // right-clicks is the one after the last tab, which arrives as `Hit.newTab` below.
-            case .newTab?, .tabList?:
+            // Every bar control that is not a quick-action chip: the `≡`, the dashed `+` beside it
+            // (`.addQuickAction`) and the `≡`-overflow of buttons that did not fit. None of them is
+            // a tab and none has a context menu of its own -- a left-click on the first two opens a
+            // list and a sheet, which is not the same gesture -- so a right-click on any of them is
+            // a right-click on the bar. They used to fall to `default: break`, and the dashed `+`
+            // sits 4 pt from the `≡` that answers: two adjacent pixels, one of which was silent.
+            // `.newTab` is listed for completeness only; `rebuildLeadingButtons` never lays one
+            // out, and the `+` a user right-clicks is the one after the last tab, which arrives as
+            // `Hit.newTab` below.
+            case .newTab?, .tabList?, .addQuickAction?, .overflow?:
                 onBarContextMenu?(event)
-            default:
+            case nil:
                 break
             }
         case .newTab, nil:

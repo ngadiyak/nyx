@@ -83,6 +83,10 @@ final class PairingSheet: NSObject {
 
         codeLabel.font = .monospacedSystemFont(ofSize: 28, weight: .semibold)
         codeLabel.alignment = .center
+        // Selectable, so the code can be dragged over and copied. Reading it aloud is the case this
+        // sheet was built for, but both Macs on one desk is just as common, and a label you cannot
+        // select makes a person retype six characters they are looking at.
+        codeLabel.isSelectable = true
         codeLabel.describeForAccessibility("Pairing code", role: .staticText)
 
         codeField.font = .monospacedSystemFont(ofSize: 16, weight: .regular)

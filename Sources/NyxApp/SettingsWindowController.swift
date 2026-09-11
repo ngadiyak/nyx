@@ -437,7 +437,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
         // missing field.
         let gate = RemotePageStatus.text(mode: config.remote, relay: config.remoteRelay,
                                          token: config.remoteRelayToken)
-        for control in remotePairControls { control.isEnabled = !gate.blocksPairing }
+        applyPairGate(gate)
         // The stepper is a second control beside its field, registered under its own key by
         // `stepperField`; a subview scan would break the first time the row's layout changed.
         controls["remote-snapshot-lines.stepper"]?.isEnabled = on
@@ -480,15 +480,62 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
                                             configured: config.remoteDeviceName,
                                             hostName: SettingsWindowController.localHostName))
         }
-        // Guarded, because `remoteChanged()` calls this on every presence message and a page that
-        // repeats itself is a page nobody listens to. `Announce.say` ignores an empty string.
+        showRemoteStatus(text)
+        applyPairGate(gate)
+    }
+
+    /// The one place the gate reaches the two Pair buttons, so their enabled state and the reason
+    /// they give for being dead cannot come from two different readings of it.
+    ///
+    /// §5.3: the same sentence on both buttons, so the reason is reachable from the control that is
+    /// refusing rather than only from the label beside it.
+    private func applyPairGate(_ gate: (sentence: String, blocksPairing: Bool)) {
+        for control in remotePairControls {
+            control.isEnabled = !gate.blocksPairing
+            control.setAccessibilityHelp(gate.sentence)
+        }
+    }
+
+    /// The line under the Pair buttons. Guarded, because `remoteChanged()` drives it on every
+    /// presence message and a page that repeats itself is a page nobody listens to; `Announce.say`
+    /// ignores an empty string.
+    private func showRemoteStatus(_ text: String) {
         if text != remoteStatusLabel.stringValue { Announce.say(text) }
         remoteStatusLabel.stringValue = text
         remoteStatusLabel.setAccessibilityValue(text)
-        // §5.3: the same sentence on both buttons, so the reason is reachable from the control that
-        // is refusing rather than only from the label beside it.
-        for control in remotePairControls { control.setAccessibilityHelp(gate.sentence) }
     }
+
+    /// The Pair buttons and the sentence under them, recomputed from the controls **as they are
+    /// now** rather than from the config file.
+    ///
+    /// A first-time user pastes the relay token and reaches straight for "Pair with another
+    /// device…". Every other route to the gate runs off `config`, i.e. the committed file, and is
+    /// reached only by `refresh()` after a store reload -- so the button was still disabled, and a
+    /// disabled button is not hit-tested, so the click did not even end the field edit: no commit,
+    /// no reload, no enable. The page sat there saying "Pairing needs a relay token — set Relay
+    /// token above." with the token visible in the field above the sentence. Tab or Return rescued
+    /// you; the button the user actually aimed at did not. `pairAsHost`'s `commitEdits()` is what
+    /// makes the press itself work, and it was unreachable.
+    ///
+    /// The sentence shown here is the gate's own, "Ready to pair…" included, and not the
+    /// connection's: the socket is still dialling with whatever the *file* holds, so a word about
+    /// it would be a word about a different token. The moment the edit commits, the reload lands
+    /// and `refreshRemoteStatus` takes the line back with what the connection is really doing.
+    private func refreshPairGateFromControls() {
+        let ticked = (controls["remote"] as? NSButton)?.state == .on
+        let gate = RemotePageStatus.text(
+            mode: ticked ? .on : .off,
+            relay: (controls["remote-relay"] as? NSTextField)?.stringValue ?? "",
+            token: (controls["remote-relay-token"] as? NSTextField)?.stringValue ?? "")
+        applyPairGate(gate)
+        showRemoteStatus(gate.sentence)
+    }
+
+    /// The two *typed* values the Pair gate is computed from. Named rather than tested for by
+    /// prefix: `remote-device-name` and `remote-snapshot-lines` share that prefix and say nothing
+    /// about whether pairing can work. The switch is the third input and is not here -- a checkbox
+    /// has no text to change.
+    private static let pairGateKeys: Set<String> = ["remote-relay", "remote-relay-token"]
 
     /// Reads the real `paired.json` and the last 20 lines of `audit.log` from beside the config
     /// file in force -- the same files `RemoteHost`/`RemoteClient` read and write.
@@ -978,6 +1025,13 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
             stepper.doubleValue = Double(value) ?? stepper.doubleValue
         }
         updateReadout(key, sender.doubleValue)
+        // The switch only, and before the write: a checkbox fires this on the click and the reload
+        // that re-derives everything from the file is a debounce away, so the tick and the buttons
+        // beneath it have to agree within the same click. The two *fields* are deliberately not
+        // here -- this fires for them on Return, which writes, which reloads, which brings
+        // `refreshRemoteStatus` and the connection's own sentence a moment later; saying "Ready to
+        // pair." in between would be one more thing announced for nothing.
+        if key == "remote" { refreshPairGateFromControls() }
         store.write([(key: key, value: value)])
     }
 
@@ -991,6 +1045,9 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
     func controlTextDidChange(_ notification: Notification) {
         guard let key = (notification.object as? NSControl)?.identifier?.rawValue else { return }
         edits.record(key)
+        // The one thing on this window that a *typed* value has to change before it is committed:
+        // the button the user is about to press. See `refreshPairGateFromControls`.
+        if SettingsWindowController.pairGateKeys.contains(key) { refreshPairGateFromControls() }
     }
 
     /// Assigns a text field's value on `refresh`'s behalf, unless the user is in that field.

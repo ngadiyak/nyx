@@ -248,8 +248,15 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
     /// a test says so, because a two-row menu looks perfectly reasonable to a reader.
     func tabBarMenuItems(now: Date = Date()) -> [TabBarMenuItem] {
         TabBarMenu.items(catalogue: catalogue, remote: config.remote, relay: config.remoteRelay,
-                         token: config.remoteRelayToken, refusal: relayRefusal,
-                         now: now, home: NSHomeDirectory())
+                         token: config.remoteRelayToken, refusal: relayRefusal, now: now)
+    }
+
+    /// What a **tab's** menu gains at its end -- empty until the user has enabled remote sessions.
+    /// The rule is `TabBarMenu.tabMenuTail`'s and is tested there; this only hands it the
+    /// configuration and the one socket state that counts as final.
+    func tabMenuTail() -> [TabBarMenuItem] {
+        TabBarMenu.tabMenuTail(remote: config.remote, relay: config.remoteRelay,
+                               token: config.remoteRelayToken, refusal: relayRefusal)
     }
 
     /// The sentence for a relay that has refused this device, or nil for every other state of the

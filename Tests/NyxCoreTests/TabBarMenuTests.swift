@@ -15,7 +15,12 @@ private func session(_ id: String, title: String, process: String = "zsh",
 private func items(_ c: RemoteCatalogue, remote: RemoteMode = .on, relay: String = "wss://r/v1/ws",
                    token: String = "t", refusal: String? = nil) -> [TabBarMenuItem] {
     TabBarMenu.items(catalogue: c, remote: remote, relay: relay, token: token,
-                     refusal: refusal, now: now, home: "/home/nik")
+                     refusal: refusal, now: now)
+}
+
+private func tail(remote: RemoteMode = .on, relay: String = "wss://r/v1/ws",
+                  token: String = "t", refusal: String? = nil) -> [TabBarMenuItem] {
+    TabBarMenu.tabMenuTail(remote: remote, relay: relay, token: token, refusal: refusal)
 }
 
 /// Nothing but a dead `New Remote Tab…` is ever greyed. Stated once, here, and asserted by name
@@ -102,7 +107,7 @@ private func disabledTitles(_ rows: [TabBarMenuItem]) -> [String] {
     let rows = items(c, refusal: nil)
     #expect(rows[2] == .newRemoteTab(reason: nil))
     #expect(rows.count == 4)                         // …and row 3 is the session, not a sentence
-    #expect(rows[3].title.hasPrefix("Mac mini (office) · zsh — "))
+    #expect(rows[3].title == "Mac mini (office) \u{b7} zsh \u{b7} 2 min ago")
     #expect(disabledTitles(rows).isEmpty)
 }
 
@@ -135,36 +140,75 @@ private func disabledTitles(_ rows: [TabBarMenuItem]) -> [String] {
     ])
     let rows = items(c)
     #expect(rows.count == 5)
-    let firstDetail = RemoteCatalogue.detail(for: session("s1", title: "zsh", process: "swift test",
-                                                          lastCommand: "make test"),
-                                             now: now, home: "/home/nik")
-    #expect(rows[3] == .session(deviceID: "d1", sessionID: "s1", sessionTitle: "Mac mini (office) · zsh",
-                                detail: firstDetail))
     // One line, because a menu row is one line: `NSMenuItem.subtitle` is macOS 14.4 and this
-    // package's floor is 14.0. The words on either side of the dash are the palette's.
-    #expect(rows[3].title == "Mac mini (office) · zsh — \(firstDetail)")
-    #expect(rows[4].title.hasPrefix("Mac mini (office) · vim Pane.swift — "))
+    // package's floor is 14.0. Three facts, in the palette's own separator: which Mac, what the
+    // tab there calls itself, and when it was last touched.
+    #expect(rows[3] == .session(deviceID: "d1", sessionID: "s1",
+                                sessionTitle: "Mac mini (office) \u{b7} zsh", age: "2 min ago"))
+    #expect(rows[3].title == "Mac mini (office) \u{b7} zsh \u{b7} 2 min ago")
+    #expect(rows[4].title == "Mac mini (office) \u{b7} vim Pane.swift \u{b7} 1 h ago")
     #expect(disabledTitles(rows).isEmpty)
     // No row for the sleeping Mac and none for the one that unpaired this one.
     #expect(!rows.contains { $0.title.contains("iMac") })
     #expect(!rows.contains { $0.title.contains("MacBook") })
 }
 
-/// The cut is the palette's, because the wording is: a menu row is no more able to hold a pasted
-/// `for` loop than a palette row was (D10).
-@Test func aSessionRowsDetailIsCutTheSameWayThePalettesIs() {
-    let long = String(repeating: "echo hello; ", count: 20)
+/// The **default** session title, which is the one the fixtures never had. `TabTitle.fallback`
+/// publishes `"\(process) \u{2014} \(place)"` whenever the shell has not set an OSC title -- plain
+/// zsh on macOS, i.e. most sessions -- so an ordinary title already contains an em dash. Joining
+/// device, title and the palette's whole detail with a *second* em dash produced, on a live relay,
+/// `beta \u{b7} zsh \u{2014} ~ \u{2014} ~ \u{b7} running: zsh \u{b7} just now`: two dashes, the
+/// directory twice, and the tab's own words lost in the middle. The row is three `\u{b7}`-separated
+/// facts and the title passes through untouched, so the only em dash in the row is the title's own.
+@Test func aSessionRowIsTheDeviceTheTabsOwnTitleAndItsAge() {
+    let s = session("s1", title: "zsh \u{2014} ~/projects/nyx", process: "swift test",
+                    lastCommand: "make test")
     var c = RemoteCatalogue()
-    c.setPaired(["d1": "iMac"])
-    c.applyPresence([RemotePresence(deviceID: "d1", name: "iMac", online: true)])
-    c.applyCatalogue(deviceID: "d1", sessions: [session("s1", title: "zsh", lastCommand: long)])
+    c.setPaired(["d1": "Mac mini (office)"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "Mac mini (office)", online: true)])
+    c.applyCatalogue(deviceID: "d1", sessions: [s])
     let rows = items(c)
-    guard case .session(_, _, _, let detail) = rows[3] else {
-        Issue.record("no session row: \(rows)")
-        return
-    }
-    #expect(detail.hasSuffix("\u{2026}"))
-    #expect(detail.contains("2 min ago"))
-    #expect(detail.contains(RemoteCatalogue.shortCommand(long)))
-    #expect(rows[3].title.hasSuffix(detail))        // the row is the title and this, joined
+    #expect(rows[3] == .session(deviceID: "d1", sessionID: "s1",
+                                sessionTitle: "Mac mini (office) \u{b7} zsh \u{2014} ~/projects/nyx",
+                                age: "2 min ago"))
+    #expect(rows[3].title == "Mac mini (office) \u{b7} zsh \u{2014} ~/projects/nyx \u{b7} 2 min ago")
+    #expect(rows[3].title.filter { $0 == "\u{2014}" }.count == 1)
+    // Nothing the palette one row above already says on its second line. `running:`, the branch and
+    // the last command are its detail's, not this row's.
+    #expect(!rows[3].title.contains("running:"))
+    #expect(!rows[3].title.contains("make test"))
+    #expect(!rows[3].title.contains("main"))
+    // And the age is the palette's own piece, not a second spelling of "2 minutes": the two rows
+    // describe one moment, so they are the same function.
+    #expect(rows[3].title.hasSuffix(RemoteCatalogue.relative(s.lastActivity, now: now)))
+    #expect(RemoteCatalogue.detail(for: s, now: now, home: "/home/nik").contains("2 min ago"))
+}
+
+/// A tab's own menu, with remote sessions never switched on -- the default configuration and most
+/// users. Measured: the nine-row tab menu is 228 pt wide, and appending the 62-character sentence
+/// more than doubles it, for a feature that user has not asked for. Nothing is appended at all.
+@Test func aTabsMenuGainsNothingWhenRemoteSessionsAreOff() {
+    #expect(tail(remote: .off) == [])
+    #expect(tail(remote: .off, relay: "", token: "") == [])
+    // Not even a relay that has refused this Mac: with the switch off there is nothing connecting
+    // for it to have refused.
+    #expect(tail(remote: .off, refusal: "Relay refused this device (replaced)") == [])
+}
+
+/// Opted in and misconfigured. The greyed row **and** its sentence, the same pair the bar's menu
+/// shows: a user who ticked the box is owed the reason it does not work where they right-clicked.
+@Test func aTabsMenuCarriesTheGreyedRowAndItsSentenceOnceRemoteIsOn() {
+    let reason = "Pairing needs a relay token — set Relay token above."
+    #expect(tail(token: " ") == [.newRemoteTab(reason: reason), .openRemoteSettings(reason)])
+    #expect(disabledTitles(tail(token: " ")) == ["New Remote Tab\u{2026}"])
+    let refusal = "Relay refused this device (replaced)"
+    #expect(tail(refusal: refusal) == [.newRemoteTab(reason: refusal),
+                                       .openRemoteSettings(refusal)])
+}
+
+/// Opted in and working: the live row alone. The sessions stay off a tab's menu -- it is nine rows
+/// about *that tab* already, and `New Remote Tab…` opens the list.
+@Test func aTabsMenuCarriesTheLiveRowAloneWhenRemoteIsReady() {
+    #expect(tail() == [.newRemoteTab(reason: nil)])
+    #expect(disabledTitles(tail()).isEmpty)
 }

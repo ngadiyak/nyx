@@ -594,8 +594,13 @@ final class TabController: NSViewController, NSMenuItemValidation {
         menu.addItem(tabMenuItem("Rename Tab…", #selector(menuRenameTab(_:)), index))
         menu.addItem(tabMenuItem("Reset Title", #selector(menuResetTabTitle(_:)), index,
                                  enabled: tabs[index].customTitle != nil))
-        menu.addItem(.separator())
-        for item in remoteTabMenuItems() { menu.addItem(item) }
+        // The rule and the separator together: with remote sessions off the tail is empty, and an
+        // unconditional rule would leave the menu ending in a hairline with nothing under it.
+        let tail = remoteTabMenuItems()
+        if !tail.isEmpty {
+            menu.addItem(.separator())
+            for item in tail { menu.addItem(item) }
+        }
         NSMenu.popUpContextMenu(menu, with: event, for: tabBar)
     }
 
@@ -617,10 +622,9 @@ final class TabController: NSViewController, NSMenuItemValidation {
         NSMenu.popUpContextMenu(menu, with: event, for: tabBar)
     }
 
-    /// `New Remote Tab…` and, when it is dead, the sentence saying why: the **tail** of the bar's
-    /// own rows, from `.newRemoteTab` onward, through the same builder and the same
-    /// row-to-`NSMenuItem` loop. One spelling, so a tab's menu and the bar's cannot disagree about
-    /// whether it is dead or why.
+    /// `New Remote Tab…` and, when it is dead, the sentence saying why -- and **nothing at all**
+    /// while `remote` is off. Which of those, and why, is `TabBarMenu.tabMenuTail` in NyxCore,
+    /// where it is tested; this only hands it the coordinator's answer and turns rows into items.
     ///
     /// One row was the first draft of this, and it was the D4 defect rebuilt: the bar's menu showed
     /// the greyed item *and* the live sentence beneath it, and a tab's menu showed the greyed item
@@ -629,11 +633,15 @@ final class TabController: NSViewController, NSMenuItemValidation {
     ///
     /// The session rows are deliberately **not** here: a tab's menu is nine rows about that tab
     /// already, and `New Remote Tab…` opens the list. The bar's own menu is where the sessions are.
+    ///
+    /// With no coordinator -- a window built before the application has one, and every snapshot run
+    /// -- the same rule is applied to the configuration in force, so the menu a picture shows is the
+    /// menu the product builds rather than a hard-coded live row.
     private func remoteTabMenuItems() -> [NSMenuItem] {
-        let rows = appDelegate?.remote?.tabBarMenuItems() ?? [.newRemoteTab(reason: nil)]
-        let tail = rows.drop { if case .newRemoteTab = $0 { return false } else { return true } }
-        let kept = tail.filter { if case .session = $0 { return false } else { return true } }
-        return menuItems(for: Array(kept), bindings: KeyBindingTable(user: config.keybinds))
+        let rows = appDelegate?.remote?.tabMenuTail()
+            ?? TabBarMenu.tabMenuTail(remote: config.remote, relay: config.remoteRelay,
+                                      token: config.remoteRelayToken, refusal: nil)
+        return menuItems(for: rows, bindings: KeyBindingTable(user: config.keybinds))
     }
 
     /// Turns the Core rows into `NSMenuItem`s, which is the only thing either caller does with
@@ -662,9 +670,9 @@ final class TabController: NSViewController, NSMenuItemValidation {
                 item.toolTip = reason
                 item.setAccessibilityHelp(reason)
             case .session(let deviceID, let sessionID, _, _):
-                // The title already carries the palette's detail -- `TabBarMenuItem.title` joins
-                // them, because `NSMenuItem.subtitle` is macOS 14.4 and this package's floor is
-                // 14.0. Nothing to set here but the two ids.
+                // The title already carries the Mac, the tab's own title and the age --
+                // `TabBarMenuItem.title` joins them, because `NSMenuItem.subtitle` is macOS 14.4
+                // and this package's floor is 14.0. Nothing to set here but the two ids.
                 item.representedObject = RemoteRow(deviceID: deviceID, sessionID: sessionID)
             case .openRemoteSettings, .separator:
                 break

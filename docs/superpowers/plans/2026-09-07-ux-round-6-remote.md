@@ -3227,7 +3227,7 @@ Expected: PASS. If `theDefaultFileTextParsesBackToTheDefaults` now fails for one
   sees a file rewritten through its existing inode -- which is what `echo >>` does, and what the
   documented way to set the relay token is."
 
-  A file watch is I/O, not a decision, and there is nothing here for a unit test to hold: it is proved at rung 6 in Task 10, with the QA's own two commands (`printf '…' >> $NYX_CONFIG/config` and an `os.replace`), and both must now be noticed within a second.
+  A file watch is I/O, not a decision, and there is nothing here for a unit test to hold: it is proved at rung 6 in Task 11, with the QA's own two commands (`printf '…' >> $NYX_CONFIG/config` and an `os.replace`), and both must now be noticed within a second.
 
 - [ ] **Step 7: Run the ladder's first three rungs**
 
@@ -3983,7 +3983,7 @@ cmp /tmp/nyx-6-pairing/pairing-host-idle-dark.png /tmp/nyx-6-pairing/pairing-hos
 ```
 Expected: `0` warnings, PASS, and the two host waiting pictures **byte-identical** — which is what "one title and one sentence" means, and what stops the flicker. Then **look at** `pairing-client-idle-{light,dark}.png` (the field is empty with a caption under it, not a grey code inside it) and `pairing-{host,client}-{paired,failed}-*.png` (one button, carrying the state's own word).
 
-  Note: the delayed spinner is not in any picture — `UISnapshot` renders a state synchronously, 300 ms before the indicator appears. That is deliberate: the pictures show the sheet a person actually sees when the relay is quick. The spinner is verified at rung 6 in Task 10, by pairing against a relay and watching it.
+  Note: the delayed spinner is not in any picture — `UISnapshot` renders a state synchronously, 300 ms before the indicator appears. That is deliberate: the pictures show the sheet a person actually sees when the relay is quick. The spinner is verified at rung 6 in Task 11, by pairing against a relay and watching it.
 
 - [ ] **Step 7: Commit**
 
@@ -4334,7 +4334,567 @@ EOF
 
 ---
 
-### Task 10: The ladder, and the QA run that found all of this, run again
+### Task 10: The tab bar offers a remote tab, where a person looks for a new one
+
+**Owner ruling, 2026-09-11.** A remote session can be opened two ways today: `Shell → Remote
+Sessions…` (⌘⇧P's Remote rows, Task 5) and the `+` button, which opens a *local* tab. The tab bar is
+where a person goes when they want a new tab, and right-clicking it is where they look for the kinds
+of new tab there are — and right-clicking it does nothing at all: `TabBarView.rightMouseDown`
+(`Sources/NyxApp/TabBarView.swift:512-523`) answers `.newTab` and `nil` with `break`. This task makes
+both of them a menu, and puts the remote sessions in it.
+
+**Files:**
+- Create: `Sources/NyxCore/Remote/TabBarMenu.swift` — what the bar's menu offers, and why an item is dead
+- Modify: `Sources/NyxApp/TabBarView.swift` — `onBarContextMenu`, and the two silent cases of `rightMouseDown`
+- Modify: `Sources/NyxApp/TabController.swift` — the bar menu built from the Core items, and the same item at the end of a tab's own menu
+- Modify: `Sources/NyxApp/RemoteCoordinator.swift` — `tabBarMenuItems(now:)`, the gate `paletteItems` already has
+- Modify: `Sources/NyxApp/MenuSnapshot.swift` — two pictures, built from the Core items
+- Modify: `docs/configuration.md` — one sentence in the remote paragraph
+- Test: `Tests/NyxCoreTests/TabBarMenuTests.swift` (new)
+
+**Interfaces:**
+- Consumes (Task 5): `RemoteCatalogue.devices`, `RemoteCatalogue.detail(for:now:home:)` and the
+  `shortCommand` cut inside it — the menu's session rows are the palette's rows, word for word, so
+  the two places a session is offered cannot describe it two ways. Also `TabController.showRemoteSessions`,
+  which is where "New Remote Tab…" goes: one spelling of "the Remote rows", not a second list.
+- Consumes (Task 9): `RemotePageStatus.text(mode:relay:token:)` — the same four sentences the Remote
+  page shows beneath its Pair buttons are what a dead "New Remote Tab…" says here. A fifth wording
+  for "you have not set a token" is a fifth thing to keep true.
+- **Not** consumed, deliberately: `RemoteCoordinatorPolicy.menuOutcome(config:)`. It answers the
+  same question (`disabled` / `openSettings` / `act`) without the sentence, and the sentence is the
+  whole point of this item — a greyed row that does not say why is the defect, not the fix. The two
+  agree by construction: `menuOutcome` is `disabled` exactly when `remote != .on` and
+  `openSettings` exactly when the token is empty, which are two of `blocksPairing`'s three
+  branches; the third (a configured token with no relay URL) is the case `shouldRun` never looked at
+  and Task 9 Step 5 fixes on the Remote page for the same reason.
+- Consumes (already in the tree):
+  `KeyBindingTable.binding(for:)`, `Key.menuKeyEquivalent` / `MenuShortcut.keyEquivalent(for:)`
+  (`Sources/NyxApp/Actions.swift:46`, the helper `MainMenu` uses at `:85-89`), `TerminalAction.newTab`,
+  `NSMenu.popUpContextMenu` (already used at `TabController.swift:596`), `NSMenuItem.subtitle`
+  (macOS 14, which is this package's floor — `Package.swift:23`).
+- Produces:
+
+```swift
+/// One row of the tab bar's context menu.
+public enum TabBarMenuItem: Equatable {
+    case newTab
+    case separator
+    /// Opens the Remote rows (`TabController.showRemoteSessions`). `reason` is nil when it can act,
+    /// and otherwise the sentence saying why it cannot -- `RemotePageStatus`'s, or the relay's.
+    case newRemoteTab(reason: String?)
+    /// The sentence from the case above, as a row that *does* something: it opens Settings → Remote.
+    /// Present only when `newRemoteTab` is dead.
+    case openRemoteSettings(String)
+    /// Attach to this session directly. `title` and `detail` are the palette's own row wording.
+    case session(deviceID: String, sessionID: String, title: String, detail: String)
+
+    public var title: String { get }
+    public var isEnabled: Bool { get }
+}
+
+public enum TabBarMenu {
+    public static func items(catalogue: RemoteCatalogue, remote: RemoteMode, relay: String,
+                             token: String, relayStatus: String?, now: Date,
+                             home: String = "") -> [TabBarMenuItem]
+}
+```
+
+- [ ] **Step 1: Write the failing Core tests** — `Tests/NyxCoreTests/TabBarMenuTests.swift`:
+
+```swift
+import Foundation
+import Testing
+@testable import NyxCore
+
+private let now = ISO8601DateFormatter().date(from: "2026-09-11T12:00:00Z")!
+
+private func session(_ id: String, title: String, process: String = "zsh",
+                     lastCommand: String = "", minutesAgo: Int = 2) -> RemoteSessionInfo {
+    let at = ISO8601DateFormatter().string(from: now.addingTimeInterval(TimeInterval(-60 * minutesAgo)))
+    return RemoteSessionInfo(sessionID: id, title: title, cwd: "/home/nik/projects/nyx", repo: "nyx",
+                             branch: "main", process: process, lastCommand: lastCommand,
+                             lastActivity: at, cols: 80, rows: 24)
+}
+
+private func items(_ c: RemoteCatalogue, remote: RemoteMode = .on, relay: String = "wss://r/v1/ws",
+                   token: String = "t", relayStatus: String? = nil) -> [TabBarMenuItem] {
+    TabBarMenu.items(catalogue: c, remote: remote, relay: relay, token: token,
+                     relayStatus: relayStatus, now: now, home: "/home/nik")
+}
+
+/// The shape every state shares: a new tab, a rule, and the way to a remote one. The bar's menu is
+/// not a second command palette -- it is the two kinds of tab there are.
+@Test func theMenuAlwaysOffersANewTabAndAWayToARemoteOne() {
+    let rows = items(RemoteCatalogue())
+    #expect(rows[0] == .newTab)
+    #expect(rows[1] == .separator)
+    #expect(rows[2] == .newRemoteTab(reason: nil))
+    #expect(rows[0].title == "New Tab")
+    #expect(rows[2].title == "New Remote Tab\u{2026}")
+    #expect(rows.allSatisfy { $0.isEnabled || $0 == .separator })
+}
+
+/// Remote switched off. The item is dead and says the sentence the Remote page says, not a fifth
+/// spelling of it -- and the sentence itself is a row that opens the page it names.
+@Test func remoteSwitchedOffKillsTheItemInTheRemotePagesOwnWords() {
+    let rows = items(RemoteCatalogue(), remote: .off)
+    let reason = "Remote sessions are off — tick Enable remote sessions to pair."
+    #expect(rows[2] == .newRemoteTab(reason: reason))
+    #expect(!rows[2].isEnabled)
+    #expect(rows[3] == .openRemoteSettings(reason))
+    #expect(rows[3].isEnabled)                       // the reason is the one thing left to press
+    #expect(rows[3].title == reason)
+    #expect(rows.count == 4)                         // and nothing to attach to below it
+    #expect(reason == RemotePageStatus.text(mode: .off, relay: "", token: "").sentence)
+}
+
+@Test func anEmptyTokenKillsItWithTheTokensOwnSentence() {
+    let rows = items(RemoteCatalogue(), token: "  ")
+    let reason = "Pairing needs a relay token — set Relay token above."
+    #expect(rows[2] == .newRemoteTab(reason: reason))
+    #expect(rows[3] == .openRemoteSettings(reason))
+}
+
+/// A relay that is configured and unreachable is a different sentence, and it is the catalogue's:
+/// `RemotePageStatus` describes the *configuration*, and there is nothing wrong with this one.
+@Test func anUnreachableRelayKillsItWithTheRelaysOwnSentence() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "Mac mini (office)", online: true)])
+    c.applyCatalogue(deviceID: "d1", sessions: [session("s1", title: "zsh")])
+    let rows = items(c, relayStatus: "Relay unreachable (nyx.agentforge.cc)")
+    #expect(rows[2] == .newRemoteTab(reason: "Relay unreachable (nyx.agentforge.cc)"))
+    #expect(rows[3] == .openRemoteSettings("Relay unreachable (nyx.agentforge.cc)"))
+    // And no session rows: what the catalogue still remembers about a relay it cannot reach is a
+    // list of tabs that would each fail to attach.
+    #expect(rows.count == 4)
+}
+
+/// Configured, connected, and nothing published. The item lives -- it opens the Remote rows, which
+/// is where "no sessions" and "offline" are explained -- and there is nothing under it.
+@Test func aWorkingRelayWithNothingOpenStillOffersTheWayIn() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "Mac mini (office)", online: true)])
+    let rows = items(c)
+    #expect(rows == [.newTab, .separator, .newRemoteTab(reason: nil)])
+}
+
+/// The everyday case: one Mac with two sessions, one asleep, one that unpaired this Mac. Only the
+/// sessions a person can actually open get a row. The palette shows the other two as placeholders
+/// because a paired Mac missing from a *search result* reads as a broken pairing; a context menu is
+/// a list of verbs, and "iMac (studio) — offline" is not one.
+@Test func onlyReachableSessionsGetARowAndTheyReadLikeThePalettesRows() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)", "d2": "iMac (studio)", "d3": "MacBook"])
+    c.applyPresence([
+        RemotePresence(deviceID: "d1", name: "Mac mini (office)", online: true),
+        RemotePresence(deviceID: "d2", name: "iMac (studio)", online: false),
+        RemotePresence(deviceID: "d3", name: "MacBook", online: false, notPaired: true),
+    ])
+    c.applyCatalogue(deviceID: "d1", sessions: [
+        session("s1", title: "zsh", process: "swift test", lastCommand: "make test"),
+        session("s2", title: "vim Pane.swift", process: "vim", lastCommand: "git status",
+                minutesAgo: 60),
+    ])
+    let rows = items(c)
+    #expect(rows.count == 5)
+    #expect(rows[3] == .session(deviceID: "d1", sessionID: "s1", title: "Mac mini (office) · zsh",
+                                detail: RemoteCatalogue.detail(for: session("s1", title: "zsh",
+                                                                            process: "swift test",
+                                                                            lastCommand: "make test"),
+                                                               now: now, home: "/home/nik")))
+    #expect(rows[4].title == "Mac mini (office) · vim Pane.swift")
+    #expect(rows.allSatisfy { $0.isEnabled || $0 == .separator })
+    // No row for the sleeping Mac and none for the one that unpaired this one.
+    #expect(!rows.contains { $0.title.contains("iMac") })
+    #expect(!rows.contains { $0.title.contains("MacBook") })
+}
+
+/// The cut is the palette's, because the wording is: a menu row is no more able to hold a pasted
+/// `for` loop than a palette row was (D10).
+@Test func aSessionRowsDetailIsCutTheSameWayThePalettesIs() {
+    let long = String(repeating: "echo hello; ", count: 20)
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "iMac"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "iMac", online: true)])
+    c.applyCatalogue(deviceID: "d1", sessions: [session("s1", title: "zsh", lastCommand: long)])
+    let rows = items(c)
+    guard case .session(_, _, _, let detail) = rows[3] else {
+        Issue.record("no session row: \(rows)")
+        return
+    }
+    #expect(detail.hasSuffix("\u{2026}"))
+    #expect(detail.contains("2 min ago"))
+    #expect(detail.contains(RemoteCatalogue.shortCommand(long)))
+}
+```
+
+- [ ] **Step 2: Run them and watch them fail**
+
+Run: `pkill -9 -f swiftpm-testing-helper; swift test --no-parallel --filter TabBarMenu 2>&1 | tail -8`
+Expected: `cannot find 'TabBarMenu' in scope`.
+
+- [ ] **Step 3: The Core builder.** `Sources/NyxCore/Remote/TabBarMenu.swift`:
+
+```swift
+import Foundation
+
+/// One row of the tab bar's context menu.
+public enum TabBarMenuItem: Equatable {
+    case newTab
+    case separator
+    /// Opens the Remote rows -- the same list `Shell → Remote Sessions…` opens, which is the one
+    /// place the offline Macs, the Macs with nothing open and the relay's own status line are
+    /// explained. `reason` is nil when it can act, and otherwise the sentence saying why not.
+    case newRemoteTab(reason: String?)
+    /// That sentence again, as a row that *does* something: it opens Settings → Remote, where the
+    /// field it names lives. Present only when `newRemoteTab` is dead.
+    ///
+    /// A disabled row and nothing else was the defect the palette's relay-status row had (D4): the
+    /// one row that names the user's problem was the one row that refused to act on it. The
+    /// sentence is on the dead item as well, as help and as a tooltip, so a pointer resting on the
+    /// thing that will not work is answered there.
+    case openRemoteSettings(String)
+    /// Attach to this session directly, without the palette in between: the bar's menu is where a
+    /// person who knows which Mac they want goes.
+    case session(deviceID: String, sessionID: String, title: String, detail: String)
+
+    public var title: String {
+        switch self {
+        case .newTab: return "New Tab"
+        case .separator: return ""
+        case .newRemoteTab: return "New Remote Tab\u{2026}"
+        case .openRemoteSettings(let sentence): return sentence
+        case .session(_, _, let title, _): return title
+        }
+    }
+
+    /// What a menu draws greyed. The separator answers `true` so a caller can say
+    /// `item.isEnabled = row.isEnabled` without a special case; `NSMenuItem.separator()` has no
+    /// enabled state to set.
+    public var isEnabled: Bool {
+        if case .newRemoteTab(let reason) = self { return reason == nil }
+        return true
+    }
+}
+
+/// What a right-click on the tab bar offers.
+///
+/// In Core because every decision in it is one: which of two sentences says why the remote half is
+/// dead, whether a Mac's sessions are worth listing, and what a session row reads as. `NyxApp` has
+/// no test target, and a menu assembled in a view controller is a menu nothing can ask a question
+/// about -- which is how the bar came to have no menu at all for two of the four things a
+/// right-click can land on.
+public enum TabBarMenu {
+    /// `relayStatus` is the catalogue's own status line (`RemoteCatalogue.relayStatusText`): the
+    /// socket's answer, as distinct from `RemotePageStatus`'s, which is the *configuration's*. They
+    /// are different complaints and neither can be said in the other's words -- "set Relay token
+    /// above" is wrong about a relay that is simply unreachable, and "Relay unreachable" is wrong
+    /// about a Mac that has never been given a token.
+    public static func items(catalogue: RemoteCatalogue, remote: RemoteMode, relay: String,
+                             token: String, relayStatus: String?, now: Date,
+                             home: String = "") -> [TabBarMenuItem] {
+        var rows: [TabBarMenuItem] = [.newTab, .separator]
+        // The configuration first: a feature that is switched off has nothing to fail at, which is
+        // the same ordering `RemotePageStatus` itself applies.
+        let gate = RemotePageStatus.text(mode: remote, relay: relay, token: token)
+        let reason = gate.blocksPairing ? gate.sentence : relayStatus
+        rows.append(.newRemoteTab(reason: reason))
+        if let reason {
+            rows.append(.openRemoteSettings(reason))
+            // And nothing below it. What the catalogue still holds about a relay it cannot reach is
+            // a list of tabs that would each spend a minute failing to attach.
+            return rows
+        }
+        // Only what can actually be opened. The palette lists a sleeping Mac and a Mac with nothing
+        // published as greyed placeholders, because in a list you produce by *typing* a paired Mac
+        // that is simply missing reads as a broken pairing. A context menu is a list of verbs, and
+        // it has "New Remote Tab…" above it for the rest.
+        for device in catalogue.devices where device.online && !device.notPaired {
+            for session in device.sessions {
+                rows.append(.session(deviceID: device.id, sessionID: session.sessionID,
+                                     title: "\(device.name) · \(session.title)",
+                                     detail: RemoteCatalogue.detail(for: session, now: now,
+                                                                    home: home)))
+            }
+        }
+        return rows
+    }
+}
+```
+
+- [ ] **Step 4: The bar's two silent cases become a menu.** In `TabBarView`, one callback beside the
+      three it already has (`:44-58`):
+
+```swift
+    /// A right-click on the bar itself -- the `+` button, or the empty stretch after the last tab.
+    /// Both used to do nothing at all, which is the wrong answer twice: the tab bar is where a
+    /// person looks for the kinds of new tab there are.
+    var onBarContextMenu: ((NSEvent) -> Void)?
+```
+
+  and `rightMouseDown` (`:512-523`) stops answering two of its five cases with `break`:
+
+```swift
+        case .newTab, nil:
+            onBarContextMenu?(event)
+```
+
+  Nothing else in the view changes: `hit(at:)` already tells the two apart from a tab, a group
+  header and a quick-action chip, and each of those keeps the menu it has.
+
+- [ ] **Step 5: The controller builds it, and a tab's own menu gains the row.** In
+      `RemoteCoordinator`, the accessor that mirrors `paletteItems` (`:229-234`) — the same gate,
+      because it is the same question asked by a different surface:
+
+```swift
+    /// The tab bar's context menu, from the same catalogue and the same connection state the
+    /// palette's Remote rows come from.
+    func tabBarMenuItems(now: Date = Date()) -> [TabBarMenuItem] {
+        TabBarMenu.items(catalogue: catalogue, remote: config.remote, relay: config.remoteRelay,
+                         token: config.remoteRelayToken,
+                         relayStatus: isConnected ? nil : statusText,
+                         now: now, home: NSHomeDirectory())
+    }
+```
+
+  In `TabController`, the wiring beside the others (`:129-138`):
+
+```swift
+        tabBar.onBarContextMenu = { [weak self] event in self?.showBarMenu(event) }
+```
+
+  and the builder, beside `showTabMenu` (`:577`):
+
+```swift
+    /// The tab bar's own menu: the two kinds of tab there are, and the remote sessions that are
+    /// open right now.
+    ///
+    /// Built from `TabBarMenu.items`, not assembled here: which row is dead and what it says
+    /// instead are decisions, and `NyxApp` has no test target. A coordinator that is nil -- a
+    /// window built before the application has one, and every snapshot run -- gets the local half,
+    /// which is the honest answer rather than a menu that is missing while something loads.
+    private func showBarMenu(_ event: NSEvent) {
+        let rows = appDelegate?.remote?.tabBarMenuItems()
+            ?? [.newTab, .separator, .newRemoteTab(reason: nil)]
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let bindings = KeyBindingTable(user: config.keybinds)
+        for row in rows {
+            guard row != .separator else {
+                menu.addItem(.separator())
+                continue
+            }
+            let item = NSMenuItem(title: row.title, action: selector(for: row), keyEquivalent: "")
+            item.target = self
+            item.isEnabled = row.isEnabled
+            switch row {
+            case .newTab:
+                if let binding = bindings.binding(for: .newTab),
+                   let (key, mask) = MenuShortcut.keyEquivalent(for: binding) {
+                    item.keyEquivalent = key
+                    item.keyEquivalentModifierMask = mask
+                }
+            case .newRemoteTab(let reason):
+                // On the item, so a pointer resting on the thing that will not work is answered
+                // there rather than only by the row underneath it.
+                item.toolTip = reason
+                item.setAccessibilityHelp(reason)
+            case .session(let deviceID, let sessionID, _, let detail):
+                // The palette's second line, in the place a menu keeps one. `subtitle` is macOS 14,
+                // which is this package's floor.
+                item.subtitle = detail
+                item.representedObject = RemoteRow(deviceID: deviceID, sessionID: sessionID)
+            case .openRemoteSettings, .separator:
+                break
+            }
+            menu.addItem(item)
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: tabBar)
+    }
+
+    /// One selector per kind of row. `openRemoteSettings` and the dead `newRemoteTab` share the
+    /// page they are about; the dead one is simply not enabled.
+    private func selector(for row: TabBarMenuItem) -> Selector? {
+        switch row {
+        case .newTab: return #selector(menuNewTab(_:))
+        case .newRemoteTab: return #selector(menuNewRemoteTab(_:))
+        case .openRemoteSettings: return #selector(menuOpenRemoteSettings(_:))
+        case .session: return #selector(menuAttachRemote(_:))
+        case .separator: return nil
+        }
+    }
+
+    @objc private func menuNewTab(_ sender: Any?) { newTab() }
+
+    /// The Remote rows, which is exactly what `Shell → Remote Sessions…` opens: one spelling of
+    /// "the list of remote sessions", so the menu route and the keyboard route cannot drift.
+    @objc private func menuNewRemoteTab(_ sender: Any?) { showRemoteSessions() }
+
+    @objc private func menuOpenRemoteSettings(_ sender: Any?) {
+        appDelegate?.openRemoteSettings(nil)
+    }
+
+    @objc private func menuAttachRemote(_ sender: Any?) {
+        guard let row = (sender as? NSMenuItem)?.representedObject as? RemoteRow,
+              let coordinator = appDelegate?.remote else {
+            NSSound.beep()
+            return
+        }
+        let described = coordinator.describe(deviceID: row.deviceID, sessionID: row.sessionID)
+        openRemote(deviceID: row.deviceID, sessionID: row.sessionID,
+                   hostName: described.hostName, title: described.title)
+    }
+
+    /// The two ids a session row carries. A box rather than the two strings on
+    /// `representedObject`, for the same reason `TabAndGroup` exists: a menu stays open while the
+    /// world moves, and an index would be stale by the time it is pressed. Ids are not.
+    private final class RemoteRow: NSObject {
+        let deviceID: String
+        let sessionID: String
+        init(deviceID: String, sessionID: String) {
+            self.deviceID = deviceID
+            self.sessionID = sessionID
+        }
+    }
+```
+
+  `openRemote(deviceID:sessionID:hostName:title:)` is the method the palette's own
+  `.remoteSession` row already goes through (`TabController.run`, `:955-965`), so the dedupe, the
+  "already open in another window" answer and the tab's title all come for free.
+
+  And the same offer at the end of a **tab's** menu, so a right-click anywhere on the bar reaches
+  it. In `showTabMenu`, after the last item (`:594-595`, `Reset Title`) and before the `popUpContextMenu` at `:596`:
+
+```swift
+        menu.addItem(.separator())
+        menu.addItem(remoteTabMenuItem())
+```
+
+  where `remoteTabMenuItem()` builds the one `.newRemoteTab` row through exactly the same path —
+  read it out of `tabBarMenuItems()` rather than writing a second one, so a tab's menu and the bar's
+  cannot disagree about whether it is dead or why.
+
+- [ ] **Step 6: The pictures.** In `MenuSnapshot.run`, beside `menu-tab-*` (`:56-57`):
+
+```swift
+            for (caseName, menu) in tabBarMenus() {
+                write(menu: menu, caption: "right-click the tab bar \u{2014} \(caseName)",
+                      appearance: appearance, named: "menu-tab-bar-\(caseName)-\(name)",
+                      into: directory)
+            }
+```
+
+  with the two states, built **from the Core items** rather than retyped — `MenuSnapshot`'s other
+  menus are reconstructions because their builders need a live controller, and this one does not:
+
+```swift
+    /// Two states, which are the two a person meets: a relay that is working with sessions on it,
+    /// and the feature switched off. The rows come from `TabBarMenu.items`, so a picture cannot
+    /// show a menu the product would not build.
+    private static func tabBarMenus() -> [(String, NSMenu)] {
+        var live = RemoteCatalogue()
+        live.setPaired(["d1": "Mac mini (office)", "d2": "iMac (studio)"])
+        live.applyPresence([
+            RemotePresence(deviceID: "d1", name: "Mac mini (office)", online: true),
+            RemotePresence(deviceID: "d2", name: "iMac (studio)", online: false),
+        ])
+        live.applyCatalogue(deviceID: "d1", sessions: [ /* the two `remotePalettePanel` uses */ ])
+        return [
+            ("sessions", menu(rows: TabBarMenu.items(catalogue: live, remote: .on,
+                                                     relay: "wss://nyx.agentforge.cc/v1/ws",
+                                                     token: "t", relayStatus: nil, now: Date(),
+                                                     home: NSHomeDirectory()))),
+            ("off", menu(rows: TabBarMenu.items(catalogue: RemoteCatalogue(), remote: .off,
+                                                relay: "", token: "", relayStatus: nil,
+                                                now: Date(), home: NSHomeDirectory()))),
+        ]
+    }
+```
+
+  `menu(rows:)` is the two-line loop from Step 5 without the targets and the chord (a picture needs
+  neither), and it sets `subtitle` — check the picture actually shows the second line, because
+  `MenuSheetView` measures its own height against `NSMenu.size` and a subtitle is a row that is
+  taller than the `24` the reconstruction assumes (`MenuSnapshot.swift:346-348`). If the assertion
+  it already prints to stderr fires, that arithmetic is what needs the subtitle's height, not the
+  picture that needs trimming.
+
+  Use the same two sessions `remotePalettePanel` builds (`UISnapshot.swift`), so the palette's
+  picture and this one describe the same fixture Macs.
+
+- [ ] **Step 7: Say it in the documentation, and say what the keyboard does**
+
+  In `docs/configuration.md`, in the remote-sessions paragraph (the one beginning "Remote sessions
+  need both `remote = on`"), one sentence:
+
+  > **Right-clicking the tab bar** — the `+` button, the strip after the last tab, or a tab itself —
+  > offers `New Remote Tab…`, which opens the same list `Shell → Remote Sessions…` does, with the
+  > sessions that are open right now listed under it. With remote sessions off, or with no relay
+  > token, the item is greyed and says which; the sentence beneath it opens Settings → Remote.
+
+  **The keyboard path already exists and no new action is needed**: every row of this menu is
+  reachable without a mouse — `Shell → Remote Sessions…` (`remote_sessions`, also in ⌘⇧P) opens the
+  same Remote rows, `New Tab` is ⌘T, and Settings → Remote is ⌘,. §8.2's rule is that a
+  mouse-reachable action needs a keyboard path, not that every *route* needs a second one; this task
+  adds a route, not an action, which is why it adds no `TerminalAction` and no row to
+  `docs/configuration.md`'s bindings table.
+
+- [ ] **Step 8: Tests, pictures, ladder**
+
+Run:
+```bash
+swift build 2>&1 | grep -c "warning:"
+pkill -9 -f swiftpm-testing-helper; swift test --no-parallel 2>&1 | tail -5
+make bench
+./scripts/bundle.sh && NYX_UI_SNAPSHOT=/tmp/nyx-6-barmenu ./build/Nyx.app/Contents/MacOS/Nyx
+```
+Expected: `0` warnings, PASS, bench ≥ 180 MB/s (nothing here is in the render path). Then **look at**
+`menu-tab-bar-sessions-{light,dark}.png` and `menu-tab-bar-off-{light,dark}.png`: the chord on
+`New Tab`, the two session rows with their second lines, and — in the `off` pair — a greyed
+`New Remote Tab…` with the Remote page's own sentence live beneath it.
+
+  This is chrome on the tab bar, so it is also a **rung 6** item and Task 11 Step 4 carries it: a
+  right-click on the `+` button, on the empty strip and on a tab, each through the real
+  `rightMouseDown`, with the menu's titles printed — a menu built in a view controller is exactly
+  the kind of thing that compiles, tests green, and puts nothing on screen.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add Sources/NyxCore/Remote/TabBarMenu.swift Sources/NyxApp/TabBarView.swift \
+        Sources/NyxApp/TabController.swift Sources/NyxApp/RemoteCoordinator.swift \
+        Sources/NyxApp/MenuSnapshot.swift Tests/NyxCoreTests/TabBarMenuTests.swift \
+        docs/configuration.md
+git commit -m "$(cat <<'EOF'
+A right-click on the tab bar offers the other kind of tab
+
+There were two ways to open a remote session and neither was where a person looks for a new tab:
+`Shell → Remote Sessions…` and the palette. The `+` button makes a local one, and right-clicking the
+bar -- the button, or the empty strip after the last tab -- did nothing whatsoever: `rightMouseDown`
+answered both of those cases with `break`. Both open a menu now, and so does the end of a tab's own
+menu: New Tab with its chord, then `New Remote Tab…`, then the sessions that are open on the other
+Macs right now, each attaching directly.
+
+What the menu offers is `TabBarMenu` in Core, because all of it is a decision: a session row reads in
+the palette's own words (the same `detail`, the same cut command), only sessions that can actually be
+opened get a row -- a menu is a list of verbs, where the palette's greyed "offline" placeholders
+belong because a paired Mac missing from a *search result* reads as a broken pairing -- and when the
+remote half is dead it says why in the sentence the Remote page says, with that sentence live
+underneath as a row that opens the page it names. A disabled row that names the problem and refuses
+to act on it is the defect the palette's relay-status row had, and it is not being rebuilt here.
+
+Nothing new is reachable only by mouse: every row has a keyboard route already (⌘T, `remote_sessions`
+from the Shell menu and ⌘⇧P, ⌘, for the settings), so this adds a route rather than an action.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 11: The ladder, and the QA run that found all of this, run again
 
 **Nothing in this task changes the product.** It is the evidence, and it is a task rather than a
 paragraph because every defect in `qa-remote.md` reached a shipped build through "it compiles" and
@@ -4347,7 +4907,7 @@ paragraph because every defect in `qa-remote.md` reached a shipped build through
   task that introduced it: go back and fix it there, in that task's own commit.
 
 **Interfaces:**
-- Consumes: everything Tasks 1–9 produced, through the product's own entry points only —
+- Consumes: everything Tasks 1–10 produced, through the product's own entry points only —
   `Pane.keyDown`, `Pane.paste`, `NSMenuItem` validation and action, `CommandPalette.moveSelection`
   and its run, `TabController.perform`, `SettingsWindowController`'s real fields and buttons.
 - Produces: the task report. No code.
@@ -4450,6 +5010,15 @@ Remote (not a beep); `Shell → Remote Sessions…` → ⏎ opens the top sessio
 and the pairing sheet's spinner, which is in no picture because `UISnapshot` renders a state
 synchronously 300 ms before it appears — pair against the local relay and watch whether it appears
 at all (it should not: the local relay answers in ~400 ms, and 300 of those are the delay).
+
+And Task 10's menu, which is the one piece of this plan that is *only* reachable with a pointer and
+therefore cannot be checked any other way. Post a right-click through the real `rightMouseDown` at
+three places — the `+` button, the empty strip after the last tab, and a tab itself — and print the
+titles, the enabled flags and the subtitles of what comes back. Three things to see: a menu appears
+at all in each of the three (it appeared in none of the first two before this plan); the session
+rows are the sessions the palette is showing at that moment, in the same words; and with
+`remote = off` in the instance's config the `New Remote Tab…` row is greyed with the Remote page's
+own sentence live beneath it. Then press the session row and watch the tab open and attach.
 
 - [ ] **Step 5: Rung 6 — the live relay, with the fix deployed**
 
@@ -4558,6 +5127,14 @@ Wave 4's items **1** and **3** (§5.1, §5.3) are pulled forward by ruling (3): 
 `RemotePageStatus`'s four exact sentences, drawn beneath the buttons, with the same sentence as both
 buttons' accessibility help, and the buttons kept *disabled* per the spec's ruling rather than
 enabled-and-routing).
+
+**One task is not from the spec.** Task 10 — the tab bar's context menu — is an owner ruling of
+2026-09-11, recorded in §7.6's addendum. It adds no `TerminalAction` and no wire field: every row it
+draws is a route to something that already has a keyboard path (⌘T, `remote_sessions`, ⌘,), which is
+why §8.2's rule is satisfied without one. What it does add is a fifth place a remote session is
+described, so the wording is Task 5's `RemoteCatalogue.detail` and the dead item's sentence is Task
+9's `RemotePageStatus` — the two values this round already made the single answer to those two
+questions.
 
 §8's edges: §8.1's announcement sites gain two — the strip's phase and role changes
 (`RemoteAnnouncement`, Task 7) and the Remote page's status sentence (Task 9) — with the wording in

@@ -828,7 +828,7 @@ The four items above were written from the pictures. Then two, three and four re
 paired, attached and left alone against the live relay:
 `.superpowers/sdd/2026-09-07-ux-round/qa-remote.md` — **4 BROKEN, 16 DEGRADED**, end-to-end
 encryption verified on the wire. Everything in this addendum is binding on plan 6
-(`docs/superpowers/plans/2026-09-07-ux-round-6-remote.md`, ten tasks).
+(`docs/superpowers/plans/2026-09-07-ux-round-6-remote.md`, eleven tasks).
 
 **The four polish items are all confirmed, and three are sharper than written.** Item 1's contrast
 range is **1.46–2.26 : 1**, not 1.73–1.82, it is **eight of eleven** pictured states, and the
@@ -873,6 +873,18 @@ in Wave 6 can be tested by hand until item 1 lands.
 at the end of the plan as *Deferred to the ledger* with a one-line reason each. The rule: a DEGRADED
 item is in plan 6 if it is a sentence, a threshold, a colour or a row that lies; it is deferred if it
 needs a new product feature, a new surface, or a decision the owner has not been asked.
+
+**One more task, owner 2026-09-11: a right-click on the tab bar offers a remote tab.** A remote
+session can be started two ways today — `Shell → Remote Sessions…` and ⌘⇧P — and neither is where a
+person goes when they want a new tab. The `+` button makes a local one and right-clicking the bar
+does nothing at all (`TabBarView.rightMouseDown` answers the `+` button and the empty strip with
+`break`), so the feature is invisible from the one surface that is *about* opening tabs. Plan 6's
+Task 10 gives the bar a menu: New Tab, then `New Remote Tab…` routed to the same Remote rows the
+action opens, then the sessions that are open on the other Macs right now, attaching directly. What
+it offers is decided in Core (`TabBarMenu`), a session row reads in the palette's own words, and when
+the remote half cannot work the item is greyed and says so in **this section's own sentences** —
+`RemotePageStatus`'s, with the sentence live beneath it as a row that opens Settings → Remote. It
+adds no `TerminalAction`: every row has a keyboard path already, so this is a route, not an action.
 
 **§7.5 (the universal binary) is STRUCK** — owner, 2026-09-10: no Intel builds for now.
 

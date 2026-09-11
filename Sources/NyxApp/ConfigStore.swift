@@ -36,6 +36,11 @@ final class ConfigStore {
     private var themeSource: DispatchSourceFileSystemObject?
     private var debounceItem: DispatchWorkItem?
     private let debounceInterval: TimeInterval = 0.1
+    /// `startWatching` has been called and `stopWatching` has not. `reload()` arms the file watch
+    /// when the file has only just appeared, and without this a `reload()` after `stopWatching()`
+    /// -- the settings window's Pair buttons reload by hand -- would resurrect a watch on a store
+    /// that had been told to stop.
+    private var isWatching = false
 
     /// `~/.config/nyx/themes` -- beside the config file, wherever that turned out to be.
     static var themesDirectory: URL {
@@ -104,7 +109,7 @@ final class ConfigStore {
         loadThemes()
         // A config file created after launch (a fresh install, `Edit Config File...`) has no watch
         // on it yet: the directory watch is what noticed it appearing.
-        if fileSource == nil, FileManager.default.fileExists(atPath: ConfigStore.path.path) {
+        if isWatching, fileSource == nil, FileManager.default.fileExists(atPath: ConfigStore.path.path) {
             fileSource = watch(ConfigStore.path, isFile: true)
         }
         onChange?(config, diagnostics)
@@ -195,6 +200,7 @@ final class ConfigStore {
         try? FileManager.default.createDirectory(at: ConfigStore.themesDirectory,
                                                  withIntermediateDirectories: true)
         themeSource = watch(ConfigStore.themesDirectory)
+        isWatching = true
     }
 
     private func watch(_ path: URL, isFile: Bool = false) -> DispatchSourceFileSystemObject? {
@@ -209,6 +215,7 @@ final class ConfigStore {
     }
 
     func stopWatching() {
+        isWatching = false
         debounceItem?.cancel()
         debounceItem = nil
         source?.cancel()

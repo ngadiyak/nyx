@@ -2,10 +2,14 @@
 
 The file is `~/.config/nyx/config` (override with `NYX_CONFIG=/path/to/config`). Flat
 `key = value`, one per line, `#` comments (a `#` starts a comment only after whitespace, so
-`palette = 1=#ff0000` is a colour, not a comment). The file is watched and reloaded on save. A bad
-line is reported in the banner at the top of the window with its line number, and every other
-setting stays in force. `⌘,` opens the settings window, which edits this file in place;
-`⌘⇧,` reloads it by hand.
+`palette = 1=#ff0000` is a colour, not a comment). Both the file and the directory it is in are
+watched, so a save that replaces the file and a save that rewrites it in place
+(`echo >> ~/.config/nyx/config`) are both reloaded. A bad line is reported in the banner at the top
+of the window with its line number, and every other setting stays in force -- as does the bad line's
+own setting, which keeps the value it had, so a value being half-typed does not reset it. A line
+**removed** from the file is different: that setting goes back to its default straight away, with no
+restart, which is how you take a setting back -- deleting `remote-relay-token` takes this Mac off
+the relay. `⌘,` opens the settings window, which edits this file in place; `⌘⇧,` reloads it by hand.
 
 `Config.defaultFileText` in `Sources/NyxCore/Config/Config.swift` is the commented template Nyx
 writes when the file is missing. `ConfigTests` checks that parsing it yields exactly the defaults,

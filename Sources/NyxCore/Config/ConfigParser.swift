@@ -92,13 +92,22 @@ public enum ConfigParser {
             case "line-height":
                 if let d = Double(value) { config.lineHeight = min(max(d, 0.5), 3) } else { badValue() }
             case "theme":
+                // One key, three fields, and every branch assigns all three. A branch that set only
+                // the fields it mentioned meant editing `theme = dark:nord,light:solarized-light`
+                // down to plain `theme = gruvbox` left the pair in force -- and the pair wins in
+                // `Pane.resolvedPalette` -- so the edit did nothing until the app was restarted.
+                // Deleting the line has the same shape and is handled by `defaultsForKeysAbsent`
+                // re-applying the documented `# theme = ...` line through here.
                 if let (dark, light) = parseThemePair(value) {
+                    config.themeName = Config.defaults.themeName
                     config.darkThemeName = dark
                     config.lightThemeName = light
                 } else if value.contains(":") {
                     badValue()
                 } else {
                     config.themeName = value
+                    config.darkThemeName = nil
+                    config.lightThemeName = nil
                 }
             case "cursor-style":
                 switch value.lowercased() {

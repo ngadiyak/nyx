@@ -497,8 +497,14 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
     @objc private func pairAsHost(_ sender: Any?) {
         // A token typed and then Paired without pressing Return is the same lost value one step
         // earlier: the pairing would open against the empty token the file still holds, and the
-        // relay would refuse it.
+        // relay would refuse it. `commitEdits` only writes the *file*, though: the coordinator
+        // learns the token through the watcher's debounced reload, a tenth of a second and a
+        // handshake away, so the guard below used to ask the coordinator it started with and answer
+        // the user who had just pasted a token with "Paste the relay token to connect". Reloading
+        // here is the same call `reloadConfig` makes, run by hand; `RemoteCoordinator.start` sets
+        // its connection synchronously, so `isRunning` is true by the time the guard reads it.
         commitEdits()
+        store.reload()
         guard let coordinator, coordinator.isRunning else {
             reportPairingUnavailable()
             return
@@ -510,8 +516,14 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
     @objc private func pairAsClient(_ sender: Any?) {
         // A token typed and then Paired without pressing Return is the same lost value one step
         // earlier: the pairing would open against the empty token the file still holds, and the
-        // relay would refuse it.
+        // relay would refuse it. `commitEdits` only writes the *file*, though: the coordinator
+        // learns the token through the watcher's debounced reload, a tenth of a second and a
+        // handshake away, so the guard below used to ask the coordinator it started with and answer
+        // the user who had just pasted a token with "Paste the relay token to connect". Reloading
+        // here is the same call `reloadConfig` makes, run by hand; `RemoteCoordinator.start` sets
+        // its connection synchronously, so `isRunning` is true by the time the guard reads it.
         commitEdits()
+        store.reload()
         guard let coordinator, coordinator.isRunning else {
             reportPairingUnavailable()
             return
@@ -876,11 +888,15 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
         // A text field now fires this when it merely loses focus, and a field that lost focus
         // without being touched has nothing to say. Writing its value anyway materialised a
         // commented default into the user's own file: opening the settings window and closing it
-        // again left `padding = 8` in a config that had never mentioned padding. Caught by the
-        // rung-6 smoke hook, not by any test.
+        // again left `padding = 8` in a config that had never mentioned padding. `SettingsEdits`
+        // decides it and is tested; this only asks.
         if sender is NSTextField {
-            guard editedTextFields.contains(key) else { return }
-            editedTextFields.remove(key)
+            guard edits.committing(key) else {
+                // Nothing to write -- but a refresh may have been held while this field had the
+                // caret, and no write means no reload, so nothing else is coming to correct it.
+                releaseHeldText(key)
+                return
+            }
         }
         guard let value = value(of: sender, for: key) else { return }
         if let stepper = controls[key + ".stepper"] as? NSStepper, sender is NSTextField {
@@ -890,19 +906,35 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
         store.write([(key: key, value: value)])
     }
 
-    /// The keys whose text field the user has actually typed or pasted into. `refresh` sets values
-    /// programmatically, which fires no change notification at all, so this holds the user's edits
-    /// and nothing else -- which is what `controlChanged` needs in order to tell a field that was
-    /// edited from one that was only focused.
-    private var editedTextFields: Set<String> = []
+    /// The three rules this window keeps about text fields -- what may be committed, what a refresh
+    /// may overwrite, and what a held refresh owes the field afterwards. See `SettingsEdits`, where
+    /// they are decided and tested; nothing here decides anything.
+    private var edits = SettingsEdits()
 
-    /// Every keystroke and every paste in a settings text field. It is not cleared by `refresh`: a
-    /// reload landing while somebody is mid-edit must not throw that edit away, and re-committing a
-    /// value the file already holds costs one file read (`ConfigStore.write` compares before it
-    /// writes) and nothing else.
+    /// Every keystroke and every paste in a settings text field. A programmatic `stringValue` fires
+    /// no change notification, so what this records is the user's edits and nothing else.
     func controlTextDidChange(_ notification: Notification) {
         guard let key = (notification.object as? NSControl)?.identifier?.rawValue else { return }
-        editedTextFields.insert(key)
+        edits.record(key)
+    }
+
+    /// Assigns a text field's value on `refresh`'s behalf, unless the user is in that field.
+    ///
+    /// `field.currentEditor()` is non-nil exactly while this field owns the window's field editor,
+    /// which is the state in which `stringValue` would replace the text the user is looking at and
+    /// typing into.
+    private func setFieldText(_ key: String, _ text: String) {
+        guard let field = controls[key] as? NSTextField else { return }
+        switch edits.refreshing(key, to: text, beingEdited: field.currentEditor() != nil) {
+        case .write(let text): field.stringValue = text
+        case .hold: break
+        }
+    }
+
+    /// An edit ended with nothing to commit, so a refresh that was held for that field now lands.
+    private func releaseHeldText(_ key: String) {
+        guard let field = controls[key] as? NSTextField, let text = edits.released(key) else { return }
+        field.stringValue = text
     }
 
     /// The same event as `sendsActionOnEndEditing`, deliberately kept alongside it: the two are
@@ -1052,7 +1084,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
 
     private func set(_ key: String, _ title: String?) {
         guard let button = controls[key] as? NSPopUpButton else {
-            if let field = controls[key] as? NSTextField { field.stringValue = title ?? "" }
+            if controls[key] is NSTextField { setFieldText(key, title ?? "") }
             return
         }
         if let mapped = popUpTitledValues[key] {
@@ -1080,9 +1112,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
             slider.doubleValue = value
             updateReadout(key, value)
         }
-        if let field = controls[key] as? NSTextField {
-            field.stringValue = format(value, decimals: decimals)
-        }
+        if controls[key] is NSTextField { setFieldText(key, format(value, decimals: decimals)) }
         (controls[key + ".stepper"] as? NSStepper)?.doubleValue = value
     }
 

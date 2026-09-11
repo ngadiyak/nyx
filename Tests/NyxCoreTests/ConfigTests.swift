@@ -209,12 +209,10 @@ private func parse(_ s: String) -> (Config, [ConfigDiagnostic]) { ConfigParser.p
     #expect(c.fontThicken)
 }
 
-/// Config keys whose default-file line is a plain scalar `# key = value`: uncommenting exactly that
-/// one line reproduces `Config.defaults`, because the shown value *is* the compiled default.
-/// `palette` and `keybind` are deliberately excluded -- both are additive (a file can list any
-/// number of either), so their line is necessarily an *example*, not "the default": uncommenting it
-/// always adds an entry, which can never equal `Config.defaults`'s empty collections. Those two are
-/// covered separately, below, for "still parses" rather than "still equals the defaults".
+/// Uncommenting every plain-scalar line in the shipped file reproduces `Config.defaults`, because
+/// the value each of those lines shows *is* the compiled default. The list of them is
+/// `ConfigGrammar.scalarKeys`, which documents why the three additive keys (`palette`, `keybind`,
+/// `quick`) are not in it; they are covered below for "still parses" instead.
 @Test func theDefaultFileTextParsesBackToTheDefaults() {
     // Parsing the file exactly as shipped -- every line commented -- only proves the comments are
     // well-formed text: the parser skips every one of them without ever looking at the value that
@@ -495,7 +493,39 @@ private func parse(_ s: String) -> (Config, [ConfigDiagnostic]) { ConfigParser.p
     var base = Config.defaults
     base.remoteRelayToken = "secret"
     base.padding = 20
+    // The theme pair is in this base deliberately. `theme` is one key that sets three fields, and
+    // the version of this test that named only scalar-for-scalar keys passed while deleting
+    // `theme = dark:...,light:...` did nothing at all.
+    base.darkThemeName = "nord"
+    base.lightThemeName = "solarized-light"
     #expect(ConfigParser.parse("", base: base).config == Config.defaults)
+}
+
+/// I1. `theme` is the one key that writes three fields, and it used to assign only the ones its own
+/// branch mentioned. So a user who had `theme = dark:nord,light:solarized-light` and edited it to
+/// plain `theme = gruvbox` kept the pair -- and the pair wins in `Pane.resolvedPalette`, so the
+/// edit did nothing until the app was restarted. Every branch now assigns all three.
+@Test func theThemeKeySetsAllThreeOfItsFieldsOnEveryBranch() {
+    let (pair, dp) = ConfigParser.parse("theme = dark:nord,light:solarized-light")
+    #expect(dp.isEmpty)
+    #expect(pair.darkThemeName == "nord")
+    #expect(pair.lightThemeName == "solarized-light")
+    #expect(pair.themeName == Config.defaults.themeName)
+
+    // The pair replaced by a single theme, parsed on top of the pair that is in force.
+    let (single, ds) = ConfigParser.parse("theme = gruvbox", base: pair)
+    #expect(ds.isEmpty)
+    #expect(single.themeName == "gruvbox")
+    #expect(single.darkThemeName == nil)
+    #expect(single.lightThemeName == nil)
+
+    // And the line deleted altogether goes back to the shipped theme, all three fields.
+    let (gone, dg) = ConfigParser.parse("padding = 12", base: pair)
+    #expect(dg.isEmpty)
+    #expect(gone.themeName == Config.defaults.themeName)
+    #expect(gone.darkThemeName == nil)
+    #expect(gone.lightThemeName == nil)
+    #expect(gone.padding == 12)
 }
 
 /// The additive keys were already handled this way and must stay that way: `keybind`, `palette` and

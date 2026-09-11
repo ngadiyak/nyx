@@ -876,15 +876,20 @@ needs a new product feature, a new surface, or a decision the owner has not been
 
 **One more task, owner 2026-09-11: a right-click on the tab bar offers a remote tab.** A remote
 session can be started two ways today — `Shell → Remote Sessions…` and ⌘⇧P — and neither is where a
-person goes when they want a new tab. The `+` button makes a local one and right-clicking the bar
-does nothing at all (`TabBarView.rightMouseDown` answers the `+` button and the empty strip with
-`break`), so the feature is invisible from the one surface that is *about* opening tabs. Plan 6's
-Task 10 gives the bar a menu: New Tab, then `New Remote Tab…` routed to the same Remote rows the
-action opens, then the sessions that are open on the other Macs right now, attaching directly. What
-it offers is decided in Core (`TabBarMenu`), a session row reads in the palette's own words, and when
-the remote half cannot work the item is greyed and says so in **this section's own sentences** —
-`RemotePageStatus`'s, with the sentence live beneath it as a row that opens Settings → Remote. It
-adds no `TerminalAction`: every row has a keyboard path already, so this is a route, not an action.
+person goes when they want a new tab. Both `+` buttons make a local one, and right-clicking the bar
+does nothing at all — `TabBarView.rightMouseDown` answers the `+` after the last tab and the empty
+strip with `break`, and forwards the *leading* `+` only when it happens to be a quick-action chip —
+so the feature is invisible from the one surface that is *about* opening tabs. Plan 6's Task 10 gives
+the bar a menu, from either `+`, the `≡`, the empty strip and the end of a tab's own menu: New Tab,
+then `New Remote Tab…` routed to the same Remote rows the action opens, then (on the bar, not on a
+tab) the sessions that are open on the other Macs right now, attaching directly. What it offers is
+decided in Core (`TabBarMenu`), a session row reads in the palette's own words on the one line a
+menu row has, and when the remote half cannot work — switched off, no token, or a relay that has
+*refused* this Mac, which is the only socket state that counts, since every other one is a busy
+socket whose explanation is in the list that row opens — the item is greyed and says so in **this
+section's own sentences**: `RemotePageStatus`'s, with the sentence live beneath it as a row that
+opens Settings → Remote. It adds no `TerminalAction`: every row has a keyboard path already, so this
+is a route, not an action.
 
 **§7.5 (the universal binary) is STRUCK** — owner, 2026-09-10: no Intel builds for now.
 

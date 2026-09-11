@@ -44,3 +44,22 @@ swift test --no-parallel
 ```
 
 Never wait on a background test run — kill the helper and re-run in the foreground.
+
+## Map
+
+- `docs/architecture.md` — modules, data flow, invariants, and a "where to add things" table.
+- `docs/configuration.md` — every config key, action, key binding, theme rule and env var.
+- `docs/testing.md` — the verification ladder: build, tests, bench, UI snapshots, pixel tests,
+  the temporary env-var hook that drives a real path in the built app.
+- `docs/workflow.md` — definition of done, the review loop, roles, commit style.
+- `docs/status.md` — what is done, what is not, and how Nyx compares to the competition.
+- `.claude/skills/nyx-*` — a checklist per kind of change. Use the matching one *before* starting.
+- `.claude/agents/` — `product-manager` (the last gate), `nyx-engineer`, `code-reviewer`,
+  `qa-adversary`, `vt-conformance`, `render-performance`, `design-reviewer`.
+
+## Definition of done
+
+Nothing counts as done until it has been exercised the way a user reaches it. Compiling and
+passing tests are not that. Before saying "done", "fixed" or "works": run the ladder in
+`docs/testing.md`, look at the PNGs, and if the change has an AppKit edge, drive it through a
+temporary env-var hook in the built app and remove the hook. Then ask the `product-manager` agent.

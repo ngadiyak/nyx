@@ -17,14 +17,21 @@ public struct RemoteCatalogue: Equatable {
     }
 
     private var byID: [String: Device] = [:]
-    /// The devices this Mac has actually paired with, from `setPaired`.
+    /// The devices this Mac has actually paired with, under the names it declared them by, from
+    /// `setPaired`.
     ///
-    /// Every `presence` and `catalogue` message is checked against it. The relay routes; it does
-    /// not vouch (§7.1), so an entry naming a device that is not in `paired.json` is either a bug
-    /// or a relay offering a row that looks like one of the user's own Macs, complete with a name
-    /// and a working directory of its choosing. Attaching to it would fail at the signature check
-    /// -- but the row has no business being in ⌘⇧P at all.
-    private var pairedIDs: Set<String> = []
+    /// Every `presence` and `catalogue` message is checked against its keys. The relay routes; it
+    /// does not vouch (§7.1), so an entry naming a device that is not in `paired.json` is either a
+    /// bug or a relay offering a row that looks like one of the user's own Macs, complete with a
+    /// name and a working directory of its choosing. Attaching to it would fail at the signature
+    /// check -- but the row has no business being in ⌘⇧P at all.
+    ///
+    /// The names, and not only the ids, because they are what a device gets called when this
+    /// catalogue has no row for it yet. A message is not a name: the relay sends `Name: ""` for any
+    /// peer it has no live socket for, which is every peer the `forget` path is about, so a row
+    /// built from the message alone came back blank -- greyed, unpressable, and naming no Mac to go
+    /// and re-pair.
+    private var pairedNames: [String: String] = [:]
 
     /// Shown in the settings page and, when set, as the palette's first Remote row -- so a relay
     /// outage or a bad token is something the user is told, not a list that quietly goes empty.
@@ -39,9 +46,10 @@ public struct RemoteCatalogue: Equatable {
     /// overwriting unconditionally meant every offline Mac lost its name and two sleeping Macs were
     /// two identical blank rows.
     public mutating func applyPresence(_ devices: [RemotePresence]) {
-        for p in devices where pairedIDs.contains(p.deviceID) {
+        for p in devices {
+            guard let declared = pairedNames[p.deviceID] else { continue }
             var device = byID[p.deviceID]
-                ?? Device(id: p.deviceID, name: p.name, online: p.online, sessions: [])
+                ?? Device(id: p.deviceID, name: declared, online: p.online, sessions: [])
             if !p.name.isEmpty { device.name = p.name }
             device.online = p.online && !p.notPaired
             device.notPaired = p.notPaired
@@ -52,13 +60,15 @@ public struct RemoteCatalogue: Equatable {
         }
     }
 
-    /// Drops one device's rows without touching `pairedIDs`.
+    /// Drops one device's rows without touching `pairedNames`.
     ///
     /// For the `not_paired` answer to an *attach*: it is the first thing a Mac whose peer unpaired
     /// it while its own socket was down ever hears, and until then its rows sat there enabled,
     /// naming sessions on a Mac that no longer serves it. Not a local unpairing -- this Mac has
     /// removed nothing, and `paired.json` is still the truth about what it has agreed to -- so the
-    /// next `setPaired` legitimately puts the device back as an offline row.
+    /// next thing the relay says about the device legitimately puts a row back. That is normally a
+    /// `presence` and not a `setPaired`, which is why the name has to outlive the row: rebuilt from
+    /// the message, the row came back with the empty name the relay sends for an unreachable peer.
     public mutating func forget(deviceID: String) {
         byID[deviceID] = nil
     }
@@ -68,14 +78,16 @@ public struct RemoteCatalogue: Equatable {
     /// no `presence` has arrived yet -- the alternative, showing its sessions under "offline", would
     /// be actively wrong.
     public mutating func applyCatalogue(deviceID: String, sessions: [RemoteSessionInfo]) {
-        guard pairedIDs.contains(deviceID) else { return }
-        var device = byID[deviceID] ?? Device(id: deviceID, name: "", online: true, sessions: [])
+        guard let declared = pairedNames[deviceID] else { return }
+        var device = byID[deviceID]
+            ?? Device(id: deviceID, name: declared, online: true, sessions: [])
         device.sessions = sessions
         byID[deviceID] = device
     }
 
     /// The locally paired devices' names, from `PairedDevices` on disk. Also *the* list of devices
-    /// this catalogue will accept anything about at all -- see `pairedIDs`.
+    /// this catalogue will accept anything about at all, and the name it falls back on for a device
+    /// it has no row for -- see `pairedNames`.
     ///
     /// Only fills in a name for a device Nyx has no live (online) name for yet: a device presence
     /// has already named should keep the name presence gave it, not be second-guessed by a
@@ -83,8 +95,8 @@ public struct RemoteCatalogue: Equatable {
     /// what Remove in the settings page calls: unpairing has to take the Mac out of the palette,
     /// with its live sessions, and not only out of `paired.json`.
     public mutating func setPaired(_ names: [String: String]) {
-        pairedIDs = Set(names.keys)
-        byID = byID.filter { pairedIDs.contains($0.key) }
+        pairedNames = names
+        byID = byID.filter { names[$0.key] != nil }
         for (id, name) in names {
             if var device = byID[id] {
                 if !device.online { device.name = name }

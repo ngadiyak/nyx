@@ -347,3 +347,36 @@ private func iso(secondsAgo: TimeInterval) -> String {
     c.setPaired(["d1": "Mac mini (office)", "d2": "iMac (studio)"])
     #expect(c.devices.count == 2)
 }
+
+/// D1 again, on the path task 4 itself added. `forget` deletes the row, and the very next `presence`
+/// rebuilt it from the message -- where the name is `""`, because the relay sends an empty one for
+/// any peer it has no live socket for, which is every peer this path is about. The row a person
+/// reaches through the attach refusal came back blank: "" greyed with "no longer paired with this
+/// Mac", naming no Mac to go and re-pair. The name this Mac declared is the one to fall back on.
+@Test func aForgottenDeviceComesBackWithTheNameThisMacDeclared() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)"])
+    c.forget(deviceID: "d1")
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "", online: false, notPaired: true)])
+    let unpaired = c.paletteItems(now: now)
+    #expect(unpaired.first?.title == "Mac mini (office)")
+    #expect(unpaired.first?.detail == "no longer paired with this Mac")
+    // And the same again for the relay that cannot say `not_paired`: its empty name reaches the
+    // offline row through the identical fallback.
+    c.forget(deviceID: "d1")
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "", online: false)])
+    let offline = c.paletteItems(now: now)
+    #expect(offline.first?.title == "Mac mini (office)")
+    #expect(offline.first?.detail == "offline")
+}
+
+/// The other message with the same fallback: a `catalogue` for a device whose row has been
+/// forgotten -- the host re-paired and published again -- created it with no name at all, so every
+/// one of its session rows read " · zsh".
+@Test func aForgottenDeviceThatPublishesAgainIsStillNamed() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)"])
+    c.forget(deviceID: "d1")
+    c.applyCatalogue(deviceID: "d1", sessions: [session()])
+    #expect(c.paletteItems(now: now).first?.title == "Mac mini (office) · zsh")
+}

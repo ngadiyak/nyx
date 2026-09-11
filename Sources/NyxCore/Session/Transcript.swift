@@ -39,6 +39,21 @@ public enum Transcript {
     }
 }
 
+/// Which of a terminal's two screens a transcript is taken from.
+///
+/// `absoluteRow` -- and therefore `transcript(rows:)` -- is the scrollback followed by whichever
+/// screen is *active*, which is the right answer for a selection and the wrong one for a snapshot:
+/// while a full-screen program is up, the rows a person's command history lives on are in the
+/// inactive screen and appear in no transcript at all.
+public enum TranscriptBuffer: Equatable {
+    /// What the user is looking at: scrollback plus the active screen.
+    case active
+    /// The shell's own buffer: scrollback plus the primary screen, whichever screen is showing.
+    case primary
+    /// A full-screen program's screen, with no scrollback (`DECSET 1049` gives it none).
+    case alternate
+}
+
 public extension Terminal {
     /// The transcript of a range of absolute rows.
     ///
@@ -46,12 +61,47 @@ public extension Terminal {
     /// the text itself -- which matters when a 10,000-line scrollback is being written on every
     /// quit.
     func transcript(rows: Range<Int>, options: Transcript.Options = .forRestoring) -> String {
+        transcript(rows: rows, options: options, row: { self.absoluteRow($0) }, total: totalRows)
+    }
+
+    /// How many rows that buffer has.
+    func rowCount(of buffer: TranscriptBuffer) -> Int {
+        switch buffer {
+        case .active, .primary: return scrollback.count + rows
+        case .alternate: return rows
+        }
+    }
+
+    /// One row of a buffer, by index from its own top, or nil when out of range.
+    func row(_ absolute: Int, in buffer: TranscriptBuffer) -> Row? {
+        guard absolute >= 0, absolute < rowCount(of: buffer) else { return nil }
+        switch buffer {
+        case .active:
+            return absoluteRow(absolute)
+        case .primary:
+            let screenRows = modes.altScreen ? inactiveScreen.rows : screen.rows
+            return absolute < scrollback.count ? scrollback[absolute]
+                                               : screenRows[absolute - scrollback.count]
+        case .alternate:
+            return (modes.altScreen ? screen.rows : inactiveScreen.rows)[absolute]
+        }
+    }
+
+    /// The transcript of a range of rows of one buffer. `.active` is `transcript(rows:options:)`.
+    func transcript(rows range: Range<Int>, options: Transcript.Options = .forRestoring,
+                    buffer: TranscriptBuffer) -> String {
+        transcript(rows: range, options: options, row: { self.row($0, in: buffer) },
+                   total: rowCount(of: buffer))
+    }
+
+    private func transcript(rows: Range<Int>, options: Transcript.Options,
+                            row rowAt: (Int) -> Row?, total: Int) -> String {
         var out = ""
         var pen = Pen()
         var penIsDefault = true
 
-        for absolute in rows.clamped(to: 0..<totalRows) {
-            guard let row = absoluteRow(absolute) else { continue }
+        for absolute in rows.clamped(to: 0..<total) {
+            guard let row = rowAt(absolute) else { continue }
             var lastContentColumn = row.cells.count - 1
             if options.trimTrailingBlanks {
                 while lastContentColumn >= 0 && isBlank(row.cells[lastContentColumn]) { lastContentColumn -= 1 }

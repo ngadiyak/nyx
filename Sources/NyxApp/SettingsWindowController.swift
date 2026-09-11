@@ -435,9 +435,15 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
         // every case `shouldRun` covers and the right one in the case it does not: a token with no
         // relay address left both buttons live, so pressing one beeped instead of naming the
         // missing field.
-        let gate = RemotePageStatus.text(mode: config.remote, relay: config.remoteRelay,
-                                         token: config.remoteRelayToken)
-        applyPairGate(gate)
+        // The file, unless the user is in one of the two fields it is about -- see
+        // `refreshRemoteStatus`, which this must not contradict two lines later in `refresh`.
+        if isEditingPairGateField {
+            refreshPairGateFromControls()
+        } else {
+            let gate = RemotePageStatus.text(mode: config.remote, relay: config.remoteRelay,
+                                             token: config.remoteRelayToken)
+            applyPairGate(gate)
+        }
         // The stepper is a second control beside its field, registered under its own key by
         // `stepperField`; a subview scan would break the first time the row's layout changed.
         controls["remote-snapshot-lines.stepper"]?.isEnabled = on
@@ -459,6 +465,17 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
     /// the one the configuration alone supports: "Connecting…" when nothing here has reached
     /// anything yet.
     private func refreshRemoteStatus() {
+        // The file is not the truth while the user is typing into one of the fields the gate reads,
+        // and this method runs on **every** presence and status callback (`remoteChanged`). Without
+        // this, clearing the token field to paste a new one greyed Pair correctly and then the next
+        // Mac to come online un-greyed it under the empty field, with the connection's sentence
+        // instead of the field's. Pressing it there runs `pairAsHost`, which commits: the empty
+        // token is written and the working relay is torn down by the page that was refusing to let
+        // that happen.
+        guard !isEditingPairGateField else {
+            refreshPairGateFromControls()
+            return
+        }
         // Why the buttons are dead comes first, and names the remedy. What the connection is doing
         // is only interesting once there can be one.
         let gate = RemotePageStatus.text(mode: config.remote, relay: config.remoteRelay,
@@ -521,6 +538,10 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
     /// connection's: the socket is still dialling with whatever the *file* holds, so a word about
     /// it would be a word about a different token. The moment the edit commits, the reload lands
     /// and `refreshRemoteStatus` takes the line back with what the connection is really doing.
+    ///
+    /// Also called *by* `refreshRemoteStatus` and `refreshRemoteEnabled` while an edit is open, so
+    /// that a presence message arriving mid-edit cannot re-enable Pair from the file under a field
+    /// the user has just emptied.
     private func refreshPairGateFromControls() {
         let ticked = (controls["remote"] as? NSButton)?.state == .on
         let gate = RemotePageStatus.text(
@@ -529,6 +550,19 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
             token: (controls["remote-relay-token"] as? NSTextField)?.stringValue ?? "")
         applyPairGate(gate)
         showRemoteStatus(gate.sentence)
+    }
+
+    /// The caret is in one of the fields the Pair gate reads, so the file and the field disagree and
+    /// the field is the one the user is looking at.
+    ///
+    /// `currentEditor() != nil` is exactly "this field owns the window's field editor", the same
+    /// test `setFieldText` uses to decide whether a refresh may overwrite what is being typed. The
+    /// gate needs it for the same reason: a refresh arriving mid-edit must not describe a value the
+    /// user has already replaced on screen.
+    private var isEditingPairGateField: Bool {
+        SettingsWindowController.pairGateKeys.contains { key in
+            (controls[key] as? NSTextField)?.currentEditor() != nil
+        }
     }
 
     /// The two *typed* values the Pair gate is computed from. Named rather than tested for by

@@ -141,7 +141,9 @@ private func p(_ s: String) -> KeyBinding? { KeyBinding.parse(s) }
         // chord: they act on a tab's grouping, which is not something anybody does hourly.
         .ungroupTab, .toggleTabGroup,
         // Remote actions ship with no default chord (spec §5.3/§5.4): menu and palette only.
-        .remoteSessions, .remotePair, .remoteTakeControl,
+        // `.openRemoteSettings` least of all -- it is a destination the palette's relay-status row
+        // and two failing menu routes hand you, not something anybody presses a chord for.
+        .remoteSessions, .remotePair, .remoteTakeControl, .openRemoteSettings,
         // Task 9 gives this its own editor; a bare "new request" chord competing with ⌘E and ⌘N
         // for a feature the palette and menu already reach is not worth a default yet.
         .newRequest,

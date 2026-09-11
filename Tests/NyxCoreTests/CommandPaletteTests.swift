@@ -309,12 +309,21 @@ private func palette(_ titles: [String]) -> CommandPalette {
 }
 
 /// And typing lands on the best row that can act, not on the best row.
+///
+/// The titles are chosen so the *disabled* row is the better match -- a Mac called `Mac mini` that
+/// is asleep, beside a session on a Mac called `Mac mini (office)` -- because a test where the
+/// runnable row already ranks first passes with `rank` reverted and pins nothing. The first
+/// expectation is the premise: if `FuzzySearch` ever stops preferring the exact title, this says so
+/// instead of quietly going green for the wrong reason.
 @Test func narrowingSkipsToTheFirstRunnableMatch() {
     var p = CommandPalette(items: [
-        PaletteItem(title: "relay unreachable", detail: "", kind: .remoteSession(deviceID: "", sessionID: ""),
-                    isEnabled: false),
-        PaletteItem(title: "relay settings", detail: "", kind: .action(.openConfig)),
+        PaletteItem(title: "Mac mini", detail: "offline",
+                    kind: .remoteSession(deviceID: "d1", sessionID: ""), isEnabled: false),
+        PaletteItem(title: "Mac mini (office) · zsh", detail: "~",
+                    kind: .remoteSession(deviceID: "d2", sessionID: "s1")),
     ])
-    p.setQuery("relay")
-    #expect(p.selected?.title == "relay settings")
+    p.setQuery("mac mini")
+    #expect(p.results.first?.item.isEnabled == false)
+    #expect(p.selection == 1)
+    #expect(p.selected?.title == "Mac mini (office) · zsh")
 }

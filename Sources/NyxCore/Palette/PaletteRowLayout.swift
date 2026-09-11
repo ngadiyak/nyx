@@ -5,7 +5,7 @@ import Foundation
 /// The row is a title on the left and a detail on the right, and until the Remote section existed
 /// every detail was two or three characters -- "Theme", "Tab", `⌘⇧P` -- so nothing ever collided
 /// and the view simply drew both at their natural widths. A remote session's detail is a sentence
-/// (`~/projects/nyx  main · running: swift test · last: make test · 2 min ago`), and drawn that way
+/// (`~/projects/nyx  main · running: swift test · 2 min ago · last: make test`), and drawn that way
 /// it ran straight through the title: two strings on top of each other, neither readable.
 ///
 /// The rule keeps the title, because the title is what the row *is* and the detail is what it is

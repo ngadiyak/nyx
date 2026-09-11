@@ -135,10 +135,12 @@ public struct RemoteCatalogue: Equatable {
             // actual problem -- a bad token, an unreachable relay -- and as a disabled row it was
             // the row that beeped: on the wrong-token instance it was the *only* row, so ↓ could
             // not leave it and ⏎ did nothing with the panel still open. Everything it is about is
-            // on Settings → Remote, which `.openConfig` opens.
+            // on Settings → Remote, which `.openRemoteSettings` opens -- not `.openConfig`, which
+            // opens the window on whichever page it starts on (Appearance) and leaves the user one
+            // click short of the field, which is the dead end this row exists to end.
             items.append(PaletteItem(title: status, detail: "Settings…",
                                      searchText: "\(status) remote relay settings",
-                                     kind: .action(.openConfig)))
+                                     kind: .action(.openRemoteSettings)))
         }
         for device in devices {
             if device.notPaired {

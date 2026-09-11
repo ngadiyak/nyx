@@ -56,6 +56,13 @@ private let now = ISO8601DateFormatter().date(from: "2026-09-10T18:20:00Z")!
 @Test func aLineWithoutATimestampIsLeftAlone() {
     #expect(AuditLine.display("not a log line at all", now: now) == "not a log line at all")
     #expect(AuditLine.display("", now: now) == "")
+    // Including a line that begins with a space. "Everything after the head is preserved byte for
+    // byte" only holds while the head is measured from index 0: dropping empty subsequences found
+    // the stamp *past* the space while `dropFirst` still counted from the start, and the line came
+    // back as `3 min agoZ  removed  alpha` -- an age spliced onto the tail of the timestamp it was
+    // supposed to replace.
+    #expect(AuditLine.display(" 2026-09-10T18:16:12Z  removed  alpha", now: now)
+        == " 2026-09-10T18:16:12Z  removed  alpha")
 }
 
 /// The round trip, so the two halves cannot drift: whatever `text` writes, `display` reads.

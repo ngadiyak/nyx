@@ -62,6 +62,7 @@ public extension TerminalAction {
         case .saveScrollback: return "Save Scrollback\u{2026}"
         case .remoteSessions: return "Remote Sessions\u{2026}"
         case .remotePair: return "Pair with Another Device\u{2026}"
+        case .openRemoteSettings: return "Remote Settings\u{2026}"
         case .remoteTakeControl: return "Take Control of This Session"
         case .newRequest: return "New Request\u{2026}"
         case .toggleHTTPLens: return "Toggle Pretty Response"
@@ -103,7 +104,7 @@ public enum ActionCatalog {
             Group([.splitRight, .splitDown]),
             Group([.saveScrollback]),
             Group([.newRequest]),
-            Group([.remoteSessions, .remotePair]),
+            Group([.remoteSessions, .remotePair, .openRemoteSettings]),
             Group([.closePane]),
         ]),
         Section(title: "Edit", groups: [

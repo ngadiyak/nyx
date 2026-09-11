@@ -1569,6 +1569,11 @@ extension TabController: ActionTarget {
             } else {
                 appDelegate?.pairRemoteDevice(nil)
             }
+        // The page itself, with no condition on it: the two above open it when they cannot do
+        // their own job, and this is the one that means it. `openRemoteSettings`, not `openConfig`
+        // -- the window's own first page is Appearance, and a relay problem does not live there.
+        case .openRemoteSettings:
+            appDelegate?.openRemoteSettings(nil)
         case .remoteTakeControl:
             // Beeps on a local pane and on one that is already writing: there is nothing to take,
             // and the menu item is greyed out for exactly this reason.
@@ -1653,6 +1658,11 @@ extension TabController: ActionTarget {
         case .remoteSessions, .remotePair:
             // Greyed out only when the feature is switched off. On with no token they still work:
             // they open Settings → Remote, which is where the token goes.
+            return RemoteCoordinatorPolicy.menuOutcome(config: config) != .disabled
+        case .openRemoteSettings:
+            // Greyed out by the same rule as its neighbours, so the remote group is available or
+            // not as a whole: a page of settings for a feature the user has switched off is a menu
+            // item that answers a question nobody asked.
             return RemoteCoordinatorPolicy.menuOutcome(config: config) != .disabled
         case .remoteTakeControl:
             // Only on a remote pane that is observing. On a local pane, or one already writing,

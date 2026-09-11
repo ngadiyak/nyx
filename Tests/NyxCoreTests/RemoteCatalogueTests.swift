@@ -415,6 +415,10 @@ private func iso(secondsAgo: TimeInterval) -> String {
 /// D4. The relay-status row was the one row in the palette that named the user's problem, and it
 /// was disabled -- so searching for the problem gave exactly one row, selected, and ⏎ beeped with
 /// the panel still open. It is a verb now: the field it is about is on Settings → Remote.
+///
+/// `.openRemoteSettings`, and not `.openConfig`, which opens the settings window on whichever page
+/// it happens to start on -- Appearance. A row that names a relay problem and arrives at font size
+/// is the same dead end as the beep it replaced, one click further in.
 @Test func theRelayStatusRowOpensSettings() {
     var c = RemoteCatalogue()
     c.setPaired([:])
@@ -424,7 +428,8 @@ private func iso(secondsAgo: TimeInterval) -> String {
     #expect(rows[0].title == "Relay unreachable (nyx.agentforge.cc)")
     #expect(rows[0].detail == "Settings…")
     #expect(rows[0].isEnabled)
-    #expect(rows[0].kind == .action(.openConfig))
+    #expect(rows[0].kind == .action(.openRemoteSettings))
+    #expect(rows[0].kind != .action(.openConfig))
     // Still findable by the words a person would type about it.
     #expect(rows[0].searchText.contains("remote"))
 }

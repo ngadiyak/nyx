@@ -47,7 +47,14 @@ public enum AuditLine {
     /// passes through untouched, because a page that swallowed the line it did not recognise would
     /// be hiding the one line worth reading.
     public static func display(_ line: String, now: Date) -> String {
-        guard let head = line.split(separator: " ", maxSplits: 1).first,
+        // `omittingEmptySubsequences: false`, so the head is whatever sits before the first space
+        // *from index 0* -- including nothing at all. Dropping empty subsequences would hand back
+        // the stamp of a line that begins with a space while `dropFirst` counted from the start,
+        // splicing a relative age onto the tail of the timestamp it was meant to replace
+        // (`3 min agoZ  removed  alpha`). An indented line is not one this wrote, and the rule for
+        // a line this did not write is to leave it exactly as it is.
+        guard let head = line.split(separator: " ", maxSplits: 1,
+                                    omittingEmptySubsequences: false).first,
               let at = ISO8601DateFormatter().date(from: String(head)) else { return line }
         return RelativeAge.text(from: at, to: now) + line.dropFirst(head.count)
     }

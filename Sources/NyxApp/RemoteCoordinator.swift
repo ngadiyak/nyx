@@ -256,6 +256,10 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         guard let client, let bytes = RemoteID.bytes(base64url: sessionID), bytes.count == 16 else {
             return nil
         }
+        // A relay that has refused this device will not carry the `attach`. nil is what the palette
+        // treats as "this row cannot act" -- it beeps and stays open, which is the honest answer --
+        // rather than opening a tab that spends a minute waiting and then names the wrong Mac.
+        if case .failed = connection?.status { return nil }
         return client.attach(hostID: deviceID, hostName: hostName, sessionID: bytes, title: title)
     }
 
@@ -566,6 +570,16 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         // reconnect.
         if case .failed(let code) = status {
             client?.endAll(reason: AttachFailure.relayRefused(code))
+            // The same two lines the `.offline` branch has, and for a stronger reason: `.failed`
+            // does not come back without a `connect()`, so everything the other Macs told us is
+            // not merely stale, it is the last thing we will ever hear. Two copies of Nyx sharing
+            // one config directory reach this by accident -- the second takes the identity, the
+            // first is `replaced` -- and the first went on offering enabled rows for the other
+            // Mac's sessions, then opened a tab that sat at "Attaching…" for sixty seconds and
+            // blamed the host: "No answer from the host", about a Mac that answered nothing
+            // because *this* one has no socket.
+            catalogue = RemoteCatalogue()
+            catalogue.setPaired(paired.namesByID)
         }
         if case .offline = status {
             // Everything the other Macs told us is now a guess. Emptying it is the honest answer,
@@ -610,6 +624,15 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         case "pair_confirm":
             handlePairing(.confirmTheirs)
         case "error":
+            // A host that has removed this Mac answers every attach the same way for ever, and its
+            // rows sat in ⌘⇧P enabled the whole time: the relay only broadcasts presence to
+            // *mutually* paired peers, so the removed side is the one side that is never told.
+            // Task 1 makes the relay say it; this is what a Mac hears from a relay that cannot, and
+            // from a host that unpaired it while this Mac's socket was down.
+            if message.code == "not_paired", let hostID = message.to {
+                catalogue.forget(deviceID: hostID)
+                onChange?()
+            }
             // A pairing error carries no session id; an attach error does, and belongs to the tab
             // that is waiting on it rather than to a sheet that may not even be open.
             if message.sessionID == nil, pairing != nil {

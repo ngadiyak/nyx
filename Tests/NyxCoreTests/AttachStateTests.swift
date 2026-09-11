@@ -348,3 +348,25 @@ private func state(phase: AttachState.Phase, role: AttachState.Role) -> AttachSt
     #expect(AttachFailure.hostWentOfflineDuringAttach
         == "Host went offline before the session attached")
 }
+
+/// D11. `badge` was `role == .writer ? "writer" : "observer"` whatever the phase, so a tab that had
+/// ended, failed or been suspended wore a badge that reads as a live one -- the QA found a
+/// `phase=ended` tab labelled `observer` and a `phase=suspended` one labelled `writer`, both
+/// refusing input. The badge is a tab-bar word about what this tab *is*, so a tab that is nothing
+/// says nothing.
+@Test func aDeadTabWearsNoRoleBadge() {
+    #expect(state(phase: .ended("beta"), role: .writer).badge == nil)
+    #expect(state(phase: .failed("Host is offline"), role: .observer).badge == nil)
+    // Suspended is not dead -- it is waiting -- and "offline" is the useful word there: the role it
+    // will come back with is not what a person wants from a tab whose host has gone.
+    #expect(state(phase: .suspended("beta", since: Date()), role: .writer).badge == "offline")
+    // And no role has been granted yet while it is attaching, so "observer" there would be the
+    // default value showing through rather than an answer.
+    #expect(state(phase: .attaching, role: .observer).badge == nil)
+    #expect(state(phase: .snapshot, role: .observer).badge == nil)
+    // The two that were always right, and the one B1 made worth keeping: a reconnecting tab is
+    // coming back to the role it left with (Task 3), so it keeps the word.
+    #expect(state(phase: .live, role: .writer).badge == "writer")
+    #expect(state(phase: .live, role: .observer).badge == "observer")
+    #expect(state(phase: .reconnecting, role: .writer).badge == "writer")
+}

@@ -62,9 +62,9 @@ final class TabController: NSViewController, NSMenuItemValidation {
             return TabTitle.resolve(custom: customTitle, osc: oscTitle, fallback: fallbackTitle)
         }
 
-        /// The chip the bar draws after the title: "observer" or "writer", and nothing at all on an
-        /// ordinary tab.
-        var badge: String? { remoteState?.badge }
+        /// The chip the bar draws after the title: "observer", "writer" or "offline", and nothing
+        /// at all on an ordinary tab -- or on a remote tab whose phase has no word to say.
+        var badge: String? { remoteState.flatMap(\.badge) }
     }
 
     private var config: Config

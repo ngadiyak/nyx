@@ -9,6 +9,10 @@ public struct RemoteCatalogue: Equatable {
         public let id: String
         public var name: String
         public var online: Bool
+        /// This device is connected and has removed the pairing with this Mac (`presence`'s
+        /// `not_paired`). Deliberately not folded into `online`: "offline" is a wait that ends by
+        /// itself and this one never does, and the row has to say which.
+        public var notPaired: Bool = false
         public var sessions: [RemoteSessionInfo]
     }
 
@@ -28,16 +32,35 @@ public struct RemoteCatalogue: Equatable {
 
     public init() {}
 
-    /// A `presence` message: who is online right now, by name. This is the freshest name Nyx has
-    /// for a device, so it always wins over whatever `setPaired` supplied.
+    /// A `presence` message: who is online right now, by name.
+    ///
+    /// A name presence supplies wins -- it is the one the other Mac is announcing now -- but an
+    /// *empty* one does not. The relay sends `Name: ""` for a peer it has no live socket for, so
+    /// overwriting unconditionally meant every offline Mac lost its name and two sleeping Macs were
+    /// two identical blank rows.
     public mutating func applyPresence(_ devices: [RemotePresence]) {
         for p in devices where pairedIDs.contains(p.deviceID) {
-            var device = byID[p.deviceID] ?? Device(id: p.deviceID, name: p.name, online: p.online, sessions: [])
-            device.name = p.name
-            device.online = p.online
-            if !p.online { device.sessions = [] } // a host's catalogue is dropped when it disconnects
+            var device = byID[p.deviceID]
+                ?? Device(id: p.deviceID, name: p.name, online: p.online, sessions: [])
+            if !p.name.isEmpty { device.name = p.name }
+            device.online = p.online && !p.notPaired
+            device.notPaired = p.notPaired
+            // A host's catalogue is dropped when it disconnects, and a host that has removed this
+            // Mac has nothing to offer it either -- the relay would refuse the attach.
+            if !device.online { device.sessions = [] }
             byID[p.deviceID] = device
         }
+    }
+
+    /// Drops one device's rows without touching `pairedIDs`.
+    ///
+    /// For the `not_paired` answer to an *attach*: it is the first thing a Mac whose peer unpaired
+    /// it while its own socket was down ever hears, and until then its rows sat there enabled,
+    /// naming sessions on a Mac that no longer serves it. Not a local unpairing -- this Mac has
+    /// removed nothing, and `paired.json` is still the truth about what it has agreed to -- so the
+    /// next `setPaired` legitimately puts the device back as an offline row.
+    public mutating func forget(deviceID: String) {
+        byID[deviceID] = nil
     }
 
     /// A `catalogue` message: the sessions one host currently publishes. The relay only ever sends
@@ -100,7 +123,14 @@ public struct RemoteCatalogue: Equatable {
                                         isEnabled: false))
         }
         for device in devices {
-            if device.online {
+            if device.notPaired {
+                // Named, because the name is how a person knows which Mac to go and re-pair; and
+                // disabled, because pressing it would open a tab whose attach the relay refuses.
+                items.append(.remoteSession(deviceID: device.id, sessionID: "",
+                                            title: device.name,
+                                            detail: "no longer paired with this Mac",
+                                            isEnabled: false))
+            } else if device.online {
                 guard !device.sessions.isEmpty else {
                     // The machine on the left, what is wrong with it on the right. Saying "iMac —
                     // no sessions" *and* putting the same words in the detail said it twice.

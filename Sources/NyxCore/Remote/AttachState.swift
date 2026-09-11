@@ -291,7 +291,19 @@ public struct AttachState: Equatable {
             + " enlarge the window"
     }
 
-    public var badge: String { role == .writer ? "writer" : "observer" }
+    /// The word beside this tab's title, or nil when there is none.
+    ///
+    /// It was the role and nothing else, so an ended, failed or suspended tab wore `writer` or
+    /// `observer` -- a live-looking word on a tab that refuses every keystroke. The badge answers
+    /// what this tab *is*: a role while there is one, "offline" while its host is away, and nothing
+    /// at all before a role has been granted or after there is nothing left to have one in.
+    public var badge: String? {
+        switch phase {
+        case .live, .reconnecting: return role == .writer ? "writer" : "observer"
+        case .suspended: return "offline"
+        case .attaching, .snapshot, .ended, .failed: return nil
+        }
+    }
 }
 
 /// Why an attach did not happen, in the words the strip shows.

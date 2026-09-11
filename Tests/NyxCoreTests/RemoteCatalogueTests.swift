@@ -279,3 +279,71 @@ private func iso(secondsAgo: TimeInterval) -> String {
 
     #expect(palette.results.count == 1)
 }
+
+// MARK: - An offline name, and a Mac that has removed this one
+
+/// D1. The relay sends `Name: ""` for a peer it has no live socket for, and `applyPresence` wrote
+/// it over the name `setPaired` had put there -- so two sleeping Macs were two identical blank
+/// rows, and §5.3's promise of "its name greyed with 'offline'" was a promise about nothing. The
+/// comment that a presence name "is the freshest name Nyx has, so it always wins" is right for an
+/// online device and wrong for the one case that reaches it every time.
+@Test func anOfflinePresenceDoesNotEraseTheNameWeAlreadyHave() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "", online: false)])
+    #expect(c.devices.first?.name == "Mac mini (office)")
+    let rows = c.paletteItems(now: Date())
+    #expect(rows.first?.title == "Mac mini (office)")
+    #expect(rows.first?.detail == "offline")
+    #expect(rows.first?.isEnabled == false)
+}
+
+/// A name presence *does* supply still wins: it is the one the other Mac is announcing now.
+@Test func anOnlinePresenceNameStillWins() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "old name"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "renamed", online: true)])
+    #expect(c.devices.first?.name == "renamed")
+}
+
+/// D6/B2 in the palette: a Mac that has removed this one is not a Mac that is asleep, and the row
+/// has to stop offering something to press. It keeps the name, because the name is how a person
+/// knows *which* Mac to go and re-pair.
+@Test func anUnpairedPeerReadsAsUnpairedRatherThanOffline() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)"])
+    c.applyCatalogue(deviceID: "d1", sessions: [session()])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "", online: false, notPaired: true)])
+    let rows = c.paletteItems(now: Date())
+    #expect(rows.count == 1)
+    #expect(rows[0].title == "Mac mini (office)")
+    #expect(rows[0].detail == "no longer paired with this Mac")
+    #expect(rows[0].isEnabled == false)
+    // Its sessions go with it: a row you could press was the defect, not the label.
+    #expect(c.devices.first?.sessions.isEmpty == true)
+}
+
+/// And the flag clears, or the row would stay dead through the next pairing.
+@Test func aRepairedPeerComesBackOnline() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)"])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "", online: false, notPaired: true)])
+    c.applyPresence([RemotePresence(deviceID: "d1", name: "Mac mini (office)", online: true)])
+    #expect(c.devices.first?.notPaired == false)
+    #expect(c.devices.first?.online == true)
+}
+
+/// D6's other half, for the relay that cannot say it: the `not_paired` answer to an *attach* is
+/// the first thing this Mac hears, and the rows have to go on that too.
+@Test func forgettingADeviceTakesItsRowsWithoutUnpairingIt() {
+    var c = RemoteCatalogue()
+    c.setPaired(["d1": "Mac mini (office)", "d2": "iMac (studio)"])
+    c.applyCatalogue(deviceID: "d1", sessions: [session()])
+    c.forget(deviceID: "d1")
+    #expect(c.devices.count == 1)
+    #expect(c.devices.first?.id == "d2")
+    // And it is not a re-pair: the next `setPaired` from the same `paired.json` puts the row back
+    // as an offline one, which is honest -- this Mac has not removed anything.
+    c.setPaired(["d1": "Mac mini (office)", "d2": "iMac (studio)"])
+    #expect(c.devices.count == 2)
+}

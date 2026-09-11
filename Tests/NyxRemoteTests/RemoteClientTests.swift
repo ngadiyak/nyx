@@ -48,11 +48,12 @@ private final class ClientFixture {
         return m
     }
 
-    /// A `presence` naming this fixture's host, the way the relay sends one.
-    func presence(hostOnline: Bool) -> RemoteMessage {
+    /// A `presence` naming this fixture's host, the way the relay sends one. `notPaired` is the
+    /// answer a relay gives about a peer that is connected and has removed this device.
+    func presence(hostOnline: Bool, notPaired: Bool = false) -> RemoteMessage {
         RemoteMessage(t: "presence",
                       devices: [RemotePresence(deviceID: host.deviceID, name: "studio",
-                                               online: hostOnline)])
+                                               online: hostOnline, notPaired: notPaired)])
     }
 
     /// The relay's refusal of an attach, carrying the session id it answers.
@@ -529,7 +530,9 @@ private final class Recorder {
 }
 
 @Test func eachRelayErrorCodeReachesTheStripAsItsOwnSentence() throws {
-    for (code, sentence) in [("not_paired", "Not paired with this device"),
+    // `not_paired` is deliberately not `AttachFailure.text(code:)`'s sentence: that one reads as
+    // this Mac's own list being wrong, and the list still has the host in it. See `handleError`.
+    for (code, sentence) in [("not_paired", AttachFailure.unpaired),
                              ("no_such_session", "That session no longer exists"),
                              ("too_many", "The host has too many viewers")] {
         let f = try ClientFixture()
@@ -1005,7 +1008,7 @@ private final class Recorder {
 
     f.client.handle(f.error("not_paired"))
 
-    #expect(attachment.state.phase == .failed("Not paired with this device"))
+    #expect(attachment.state.phase == .failed(AttachFailure.unpaired))
 }
 
 /// The *first* attach of all has no race to lose: nothing was ever attached, so `host_offline`
@@ -1264,4 +1267,57 @@ private final class Recorder {
     #expect(attachment.cols == 80)
     #expect(attachment.state.phase == .live)
     #expect(attachment.state.role == .observer)     // the role still applies; only the size did not
+}
+
+// MARK: - A host that removed this Mac
+
+/// B2, the whole of it. The host pressed Remove; the relay says so; the tab must say so. Until the
+/// relay could tell the two apart, "beta has been offline since 21:17 — waiting for it to come
+/// back" was what a person read while beta sat online two windows away -- a sentence they could
+/// check and find false, on the one screen they had no other way to check. `AttachFailure.unpaired`
+/// has existed since the feature shipped and was reachable only when *this* Mac did the removing.
+@Test func aHostThatUnpairedUsEndsTheTabInsteadOfSuspendingIt() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach()
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    #expect(attachment.state.phase == .live)
+
+    f.client.handle(f.presence(hostOnline: false, notPaired: true))
+    #expect(attachment.state.phase == .failed(AttachFailure.unpaired))
+    #expect(!attachment.state.acceptsInput)
+    #expect(!attachment.state.isAttached)
+}
+
+/// And it outranks the wait a suspended tab is already in: the QA's tab had been suspended for
+/// ninety-five seconds by the time anyone looked at it, still saying it was waiting.
+@Test func aSuspendedTabLearnsItWasUnpairedRatherThanWaitingForEver() throws {
+    let f = try ClientFixture()
+    let attachment = f.attach()
+    try f.acceptAttach()
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    f.client.handle(f.suspended())
+    #expect(isSuspended(attachment.state.phase))            // waiting, as it should be
+    f.client.handle(f.presence(hostOnline: false, notPaired: true))
+    #expect(attachment.state.phase == .failed(AttachFailure.unpaired))
+}
+
+/// The belt to that braces, for the relay that has not been deployed yet and for the host that
+/// unpaired us while this Mac's socket was down: the re-attach is answered `not_paired`, and that
+/// answer is settled. `retryReattach` waits out `host_offline` and `no_such_session` for a minute
+/// because those are races; this one is a decision, and waiting it out spends the whole minute to
+/// arrive at "No answer from the host", which is a verdict about the wrong session.
+@Test func aReattachRefusedAsNotPairedEndsAtOnceRatherThanRetryingForAMinute() throws {
+    let clock = TestClock()
+    let f = try ClientFixture(clock: clock)
+    let attachment = f.attach()
+    try f.acceptAttach()
+    f.client.handle(f.host.message(.snapshotEnd(to: f.deviceID, sessionID: f.key)))
+    f.client.linkDidDisconnect()
+    _ = clock.takeDelays()
+    f.client.linkDidReconnect()
+    #expect(attachment.state.phase == .reconnecting)
+
+    f.client.handle(f.error("not_paired"))
+    #expect(attachment.state.phase == .failed(AttachFailure.unpaired))
 }

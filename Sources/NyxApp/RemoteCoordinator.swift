@@ -308,9 +308,9 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
 
     // MARK: - Pairing
 
-    /// This Mac shows a code. The sheet stays in "Pairing…" until the relay confirms the code is
-    /// live, because a code shown before the relay knows it is a code the other Mac would be told
-    /// does not exist.
+    /// This Mac shows a code. The sheet stays in "Getting a code from the relay" until the relay
+    /// confirms the code is live, because a code shown before the relay knows it is a code the
+    /// other Mac would be told does not exist.
     func pairAsHost() {
         guard let identity, connection != nil else {
             NSSound.beep()

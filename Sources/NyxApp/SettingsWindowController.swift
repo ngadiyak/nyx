@@ -221,9 +221,21 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
     }
 
     private func remotePage() -> NSView {
+        // What `Snapshot lines` costs, beside the number rather than nowhere: the field asked for a
+        // size with no unit and no consequence attached to it.
+        let snapshotCaption = NSTextField(wrappingLabelWithString: RemotePageCopy.snapshotCost(
+            lines: config.remoteSnapshotLines))
+        snapshotCaption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        snapshotCaption.textColor = .secondaryLabelColor
+        snapshotCaption.identifier = NSUserInterfaceItemIdentifier("remote-snapshot-lines.caption")
+        controls["remote-snapshot-lines.caption"] = snapshotCaption
+
         let rows: [(NSView, NSView)] = [
             row("", checkbox("remote", title: "Enable remote sessions")),
-            row("Device name", textField("remote-device-name", placeholder: SettingsWindowController.localHostName)),
+            // `e.g.` in front of the machine name: `localHostName` is a real name, and greyed inside
+            // an empty box it reads as the name already set rather than as the hint it is (§5.1).
+            row("Device name", textField("remote-device-name",
+                                         placeholder: "e.g. \(SettingsWindowController.localHostName)")),
             // Both 320 rather than 260: the token field's placeholder is a sentence, and at 260 it
             // was cut off mid-word ("… token file (nyx-"), which is worse than no hint at all. The
             // relay field follows so the two stay aligned.
@@ -235,12 +247,25 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
                                          placeholder: "Token from your relay\u{2019}s token file",
                                          width: 320)),
             row("Snapshot lines", stepperField("remote-snapshot-lines", min: 100, max: 20_000, step: 100)),
+            // Under the control, not the label, so it reads as a note about the number beside it.
+            row("", snapshotCaption),
         ]
         let grid = NSGridView(views: rows.map { [$0.0, $0.1] })
         grid.translatesAutoresizingMaskIntoConstraints = false
         grid.rowSpacing = 10
         grid.columnSpacing = 12
         grid.column(at: 0).xPlacement = .trailing
+
+        // The page asked for a relay URL and a token without ever saying what a remote session was
+        // or where either value comes from. Both sentences come from Core so the page and the
+        // picture of the page cannot drift apart.
+        let whatLabel = NSTextField(wrappingLabelWithString: RemotePageCopy.what)
+        let relayLabel = NSTextField(wrappingLabelWithString: RemotePageCopy.relay)
+        for label in [whatLabel, relayLabel] {
+            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            label.textColor = .secondaryLabelColor
+            label.translatesAutoresizingMaskIntoConstraints = false
+        }
 
         remoteStatusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         remoteStatusLabel.textColor = .secondaryLabelColor
@@ -284,7 +309,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
         // Two buttons and nothing saying which Mac presses which was a fifty-fifty guess in the one
         // flow where guessing wrong shows the other person an error.
         let pairCaption = NSTextField(wrappingLabelWithString:
-            "On one Mac press Pair with another device\u{2026}; on the other press Enter a code\u{2026}.")
+            "On one Mac press Pair with another device\u{2026}; on the other press Enter a code\u{2026}")
         pairCaption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         pairCaption.textColor = .secondaryLabelColor
         pairCaption.translatesAutoresizingMaskIntoConstraints = false
@@ -322,27 +347,32 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
         remoteBodyControls = ["remote-device-name", "remote-relay", "remote-relay-token",
                               "remote-snapshot-lines"].compactMap { controls[$0] }
             + [removePairedButton]
-        // The pair buttons follow `shouldRun`, not the switch. The switch alone was enough to
-        // enable them while `pairAsHost` bailed on the missing token, so pressing one opened an
-        // empty sheet -- the switch's own page says what is missing, and the buttons are dead
+        // The pair buttons follow `RemotePageStatus`, not the switch. The switch alone was enough
+        // to enable them while `pairAsHost` bailed on the missing token, so pressing one opened an
+        // empty sheet -- the sentence under them says what is missing, and the buttons are dead
         // until it is there.
         remotePairControls = [pairHostButton, pairClientButton]
 
         let view = NSView()
-        for subview in [grid, remoteStatusLabel, pairedLabel, pairedScroll, removePairedButton,
-                       pairButtons, pairCaption, activityLabel, activityScroll, note] as [NSView] {
+        for subview in [whatLabel, relayLabel, grid, remoteStatusLabel, pairedLabel, pairedScroll,
+                        removePairedButton, pairButtons, pairCaption, activityLabel, activityScroll,
+                        note] as [NSView] {
             view.addSubview(subview)
         }
         NSLayoutConstraint.activate([
-            grid.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
+            whatLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
+            whatLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
+            whatLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
+
+            relayLabel.topAnchor.constraint(equalTo: whatLabel.bottomAnchor, constant: 6),
+            relayLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
+            relayLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
+
+            grid.topAnchor.constraint(equalTo: relayLabel.bottomAnchor, constant: 12),
             grid.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
             grid.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -18),
 
-            remoteStatusLabel.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 8),
-            remoteStatusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
-            remoteStatusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
-
-            pairedLabel.topAnchor.constraint(equalTo: remoteStatusLabel.bottomAnchor, constant: 12),
+            pairedLabel.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 12),
             pairedLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
 
             pairedScroll.topAnchor.constraint(equalTo: pairedLabel.bottomAnchor, constant: 4),
@@ -360,7 +390,15 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
             pairCaption.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
             pairCaption.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
 
-            activityLabel.topAnchor.constraint(equalTo: pairCaption.bottomAnchor, constant: 12),
+            // Under the buttons it is about. A disabled primary button has to explain itself
+            // beside itself (§5.3): this sentence names the one field standing between the user and
+            // the button, and at the top of the page it was a sentence about a button nobody could
+            // see from there.
+            remoteStatusLabel.topAnchor.constraint(equalTo: pairCaption.bottomAnchor, constant: 6),
+            remoteStatusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
+            remoteStatusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
+
+            activityLabel.topAnchor.constraint(equalTo: remoteStatusLabel.bottomAnchor, constant: 12),
             activityLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
 
             activityScroll.topAnchor.constraint(equalTo: activityLabel.bottomAnchor, constant: 4),
@@ -392,8 +430,13 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
     private func refreshRemoteEnabled() {
         let on = config.remote == .on
         for control in remoteBodyControls { control.isEnabled = on }
-        let canPair = RemoteCoordinatorPolicy.shouldRun(config: config)
-        for control in remotePairControls { control.isEnabled = canPair }
+        // The same gate the sentence under the buttons states, recomputed rather than cached, so the
+        // reason shown and the buttons' enabled state cannot disagree. It is `shouldRun`'s answer in
+        // every case `shouldRun` covers and the right one in the case it does not: a token with no
+        // relay address left both buttons live and opened a sheet against the empty string.
+        let gate = RemotePageStatus.text(mode: config.remote, relay: config.remoteRelay,
+                                         token: config.remoteRelayToken)
+        for control in remotePairControls { control.isEnabled = !gate.blocksPairing }
         // The stepper is a second control beside its field, registered under its own key by
         // `stepperField`; a subview scan would break the first time the row's layout changed.
         controls["remote-snapshot-lines.stepper"]?.isEnabled = on
@@ -405,26 +448,45 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
         activityView.textColor = on ? .labelColor : .tertiaryLabelColor
     }
 
-    /// The one line under the remote settings: what the connection is actually doing.
+    /// The one line under the pairing buttons: why they are dead, or else what the connection is
+    /// actually doing.
     ///
-    /// Asked of the live coordinator, which is the only thing that knows. Without one -- a snapshot
-    /// run renders this page with no application state behind it -- the honest answer is the one
-    /// the configuration alone supports: off when it is off, and "Connecting…" when it is on but
-    /// nothing here has reached anything.
+    /// `RemotePageStatus` outranks the connection whenever it blocks, because a sentence about a
+    /// socket is no use to somebody whose Pair button will not move. Once pairing is possible the
+    /// line is asked of the live coordinator, which is the only thing that knows. Without one -- a
+    /// snapshot run renders this page with no application state behind it -- the honest answer is
+    /// the one the configuration alone supports: "Connecting…" when nothing here has reached
+    /// anything yet.
     private func refreshRemoteStatus() {
-        // The fallback is for a window with no coordinator behind it -- a snapshot run, or this
-        // window opening before the application has one. It asks the same question the coordinator
-        // does first: with an empty token nothing is connecting, and saying "Connecting…" over a
-        // socket that will never be opened is the same lie "Relay unreachable" was.
-        let connection: RemoteStatusText.Connection = RemoteCoordinatorPolicy.needsToken(config: config)
-            ? .needsToken : .connecting
-        let text = coordinator?.statusText
-            ?? RemoteStatusText.text(mode: config.remote, connection: connection,
-                                     deviceName: RemoteDeviceName.resolve(
-                                        configured: config.remoteDeviceName,
-                                        hostName: SettingsWindowController.localHostName))
+        // Why the buttons are dead comes first, and names the remedy. What the connection is doing
+        // is only interesting once there can be one.
+        let gate = RemotePageStatus.text(mode: config.remote, relay: config.remoteRelay,
+                                         token: config.remoteRelayToken)
+        let text: String
+        if gate.blocksPairing {
+            text = gate.sentence
+        } else {
+            // The fallback is for a window with no coordinator behind it -- a snapshot run, or this
+            // window opening before the application has one. It asks the same question the
+            // coordinator does first: with an empty token nothing is connecting, and saying
+            // "Connecting…" over a socket that will never be opened is the same lie "Relay
+            // unreachable" was.
+            let connection: RemoteStatusText.Connection =
+                RemoteCoordinatorPolicy.needsToken(config: config) ? .needsToken : .connecting
+            text = coordinator?.statusText
+                ?? RemoteStatusText.text(mode: config.remote, connection: connection,
+                                         deviceName: RemoteDeviceName.resolve(
+                                            configured: config.remoteDeviceName,
+                                            hostName: SettingsWindowController.localHostName))
+        }
+        // Guarded, because `remoteChanged()` calls this on every presence message and a page that
+        // repeats itself is a page nobody listens to. `Announce.say` ignores an empty string.
+        if text != remoteStatusLabel.stringValue { Announce.say(text) }
         remoteStatusLabel.stringValue = text
         remoteStatusLabel.setAccessibilityValue(text)
+        // §5.3: the same sentence on both buttons, so the reason is reachable from the control that
+        // is refusing rather than only from the label beside it.
+        for control in remotePairControls { control.setAccessibilityHelp(gate.sentence) }
     }
 
     /// Reads the real `paired.json` and the last 20 lines of `audit.log` from beside the config
@@ -504,7 +566,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
     }
 
     /// Shows a code for the other Mac to type. The real relay answers `pair_opened` before the code
-    /// is shown, so the sheet reads "Requesting a code from the relay" for as long as that takes --
+    /// is shown, so the sheet reads "Getting a code from the relay" for as long as that takes --
     /// a code shown before the relay has it is one the other Mac would be told does not exist.
     @objc private func pairAsHost(_ sender: Any?) {
         // A token typed and then Paired without pressing Return is the same lost value one step
@@ -1068,6 +1130,9 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate {
         set("remote-relay", c.remoteRelay)
         set("remote-relay-token", c.remoteRelayToken)
         set("remote-snapshot-lines", Double(c.remoteSnapshotLines), decimals: 0)
+        // Beside the field's own value: the caption quotes the number the user just typed.
+        (controls["remote-snapshot-lines.caption"] as? NSTextField)?.stringValue =
+            RemotePageCopy.snapshotCost(lines: c.remoteSnapshotLines)
         refreshRemoteStatus()
         refreshPairedDevicesAndActivity()
         refreshRemoteEnabled()

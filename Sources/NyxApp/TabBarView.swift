@@ -56,9 +56,9 @@ final class TabBarView: NSView {
     var onAddQuickAction: (() -> Void)?
     /// Right-click on a quick-action chip: its index and the event, for a menu.
     var onQuickActionContextMenu: ((Int, NSEvent) -> Void)?
-    /// A right-click on the bar itself -- the `+` button, the `≡` beside it, or the empty stretch
-    /// after the last tab. All of them used to do nothing at all, which is the wrong answer three
-    /// times: the tab bar is where a person looks for the kinds of new tab there are.
+    /// A right-click on the bar itself -- the `≡` at the leading edge, the `+` after the last tab,
+    /// or the empty stretch between them. All three used to do nothing at all, which is the wrong
+    /// answer three times: the tab bar is where a person looks for the kinds of new tab there are.
     var onBarContextMenu: ((NSEvent) -> Void)?
     /// The system switched between light and dark; the controller decides whether the theme cares.
     var onAppearanceChange: (() -> Void)?
@@ -522,10 +522,12 @@ final class TabBarView: NSView {
             switch buttons.indices.contains(index) ? buttons[index] : nil {
             case .quick(let action)?:
                 onQuickActionContextMenu?(action, event)
-            // The leading `+` and the `≡`, which are the bar's own controls rather than any tab's:
-            // a right-click on either is a right-click on the bar. `.addQuickAction` and
-            // `.overflow` keep their silence -- the first has a sheet of its own and the second is
-            // already a menu, and neither is about opening a tab.
+            // The `≡`, which is the bar's own control rather than any tab's: a right-click on it is
+            // a right-click on the bar. `.addQuickAction` -- the dashed `+` drawn beside it -- and
+            // `.overflow` keep their silence: the first has a sheet of its own and the second is
+            // already a menu, and neither is about opening a tab. `.newTab` is listed for
+            // completeness only; `rebuildLeadingButtons` never lays one out, and the `+` a user
+            // right-clicks is the one after the last tab, which arrives as `Hit.newTab` below.
             case .newTab?, .tabList?:
                 onBarContextMenu?(event)
             default:

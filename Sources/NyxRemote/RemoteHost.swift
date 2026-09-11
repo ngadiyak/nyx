@@ -28,17 +28,29 @@ public final class RemoteHost {
         /// ninety-one seconds, because that is how often the relay used to close a quiet socket.
         var suspendedAt: Date?
         /// `registration.sequence` at the moment it was held: the chunk number the client's mirror
-        /// is known to be complete up to.
+        /// is known to be complete up to. **nil when there is no such number**, which is a hold
+        /// that can never resume -- see `suspend(_:baselineIsTrustworthy:)`.
         ///
         /// A sequence rather than a "did it miss anything" boolean, because a boolean can only be
         /// set by code that runs, and the windows in which output reaches nobody are exactly the
         /// windows in which nothing on this side is watching. `deliver` bumps `sequence` for every
         /// chunk whether or not anybody is attached, so `sequence == heldAtSequence` at re-attach
-        /// time means, verifiably, that not one chunk was produced while this attachment was away.
-        /// Anything else is a re-snapshot, and the cost of being wrong in that direction is one
-        /// snapshot rather than a hole nobody can see (`E2ESession.open` checks that counters
+        /// time means, verifiably, that not one chunk was produced *and sent* while this attachment
+        /// was away. Anything else is a re-snapshot, and the cost of being wrong in that direction
+        /// is one snapshot rather than a hole nobody can see (`E2ESession.open` checks that counters
         /// increase and cannot see a gap).
         var heldAtSequence: UInt64?
+        /// The screen size this client was last told, so a resize is announced once per client
+        /// rather than on every debounced publish.
+        ///
+        /// Per attachment and not per registration, which is where it started. A resize is
+        /// announced from the *debounced* publish, so for up to `summaryDebounce` the host knows a
+        /// size nobody attached has been told; an `attach` landing in that window carries the new
+        /// size in its own `attached`, and a registration-wide record would have taken that as
+        /// having told everybody. The clients already watching would then keep the shape the host
+        /// had when *they* attached, for the life of the tab -- D2 again, re-opened by a second
+        /// viewer arriving at the wrong moment.
+        var announcedSize: GridSize
     }
 
     /// A published session and everyone attached to it. A class so the queue can mutate one in
@@ -59,9 +71,6 @@ public final class RemoteHost {
         /// a chunk fed before the snapshot but tapped after it still gets its own lower number and
         /// is therefore not sent again.
         var sequence: UInt64 = 0
-        /// The screen size the attached clients were last told, so a resize is announced once
-        /// rather than on every debounced publish.
-        var announcedSize: GridSize?
 
         init(session: TerminalSession, summary: @escaping () -> RemoteSessionInfo) {
             self.session = session
@@ -203,10 +212,20 @@ public final class RemoteHost {
             self.link.send(.paired(self.paired().ids))
             let devices = Set(self.order.compactMap { self.registrations[$0] }
                 .flatMap { $0.attachments.keys })
+            // **With no baseline**, so every one of these re-attaches is answered with a fresh
+            // snapshot. Nothing suspends when this Mac's own socket goes -- the relay tells this
+            // host about *other* devices, and its own status arrives too late and only as a status
+            // -- so `deliver` went on sealing each chunk and bumping `sequence` into a link with
+            // nowhere to put it. A baseline taken now would count exactly the chunks nobody
+            // received, the re-attach would satisfy `heldAtSequence == sequence`, and the client
+            // would resume onto a mirror permanently missing everything this host printed during
+            // the outage, silently. There is no number here that means "delivered", so there is no
+            // number.
+            //
             // `suspend` is idempotent by its own guard, which matters here: a client whose socket
-            // dropped before this host's did is already held, and re-baselining it on this host's
-            // reconnect would erase the record of what it missed.
-            for deviceID in devices.sorted() { self.suspend(deviceID) }
+            // dropped before this host's did is already held, with a baseline that *is* trustworthy
+            // -- it was taken before either socket went -- and re-holding it would throw that away.
+            for deviceID in devices.sorted() { self.suspend(deviceID, baselineIsTrustworthy: false) }
             self.publishSessions()
         }
     }
@@ -354,11 +373,21 @@ public final class RemoteHost {
             return ((existing != nil ? RemoteSnapshot.reset : "") + text,
                     terminal.cols, terminal.rows, count)
         }
-        registration.attachments[from] = Attachment(deviceID: from, e2e: e2e, startSequence: fed,
-                                                    suspendedAt: nil, heldAtSequence: nil)
-        // The size `attached` has just been told, so the announcement in `publishSessions` does not
-        // repeat it on the next publish.
-        registration.announcedSize = GridSize(cols: cols, rows: rows)
+        // `fed` for a snapshot, `registration.sequence` for a resume, and the difference is the one
+        // chunk that has been fed but whose tap has not run yet (`withTerminalAndOutputCount`
+        // documents that window: the count moves with the feed, the tap runs after the lock is
+        // dropped). A snapshot has that chunk inside its text, so `fed` is what must not be sent
+        // again. A resume has no text at all, so `fed` would put the cut-off one *above* a chunk
+        // still in flight: it would reach `deliver`, fail `startSequence <= sequence`, and be
+        // dropped -- never snapshotted and never streamed. The resume has already proved that
+        // nothing below `registration.sequence` was missed, so that is where it starts.
+        //
+        // `announcedSize` is the size `attached` is about to carry, so the next publish does not
+        // repeat it to this client -- and, being per client, does not skip it for anybody else.
+        registration.attachments[from] = Attachment(deviceID: from, e2e: e2e,
+                                                    startSequence: resuming ? registration.sequence : fed,
+                                                    suspendedAt: nil, heldAtSequence: nil,
+                                                    announcedSize: GridSize(cols: cols, rows: rows))
 
         // Sealed before anything is sent, because half a snapshot is worse than none: the client
         // would draw a screen missing its middle and never know. A seal that fails here cannot
@@ -425,7 +454,13 @@ public final class RemoteHost {
     ///
     /// Hold once. The first `suspendedAt` and the first `heldAtSequence` are the record, and the
     /// first timer is still pending with an identity check that still matches.
-    private func suspend(_ deviceID: String) {
+    ///
+    /// `baselineIsTrustworthy` is whether `registration.sequence` still means "the client's mirror
+    /// is complete up to here". It is true for a hold taken because the *client's* socket closed,
+    /// which is what `sequence` counts deliveries to. It is false for the one caller whose own
+    /// socket is the one that went: see `linkDidReconnect`. A hold with no baseline can never
+    /// resume, which is exactly what it is for.
+    private func suspend(_ deviceID: String, baselineIsTrustworthy: Bool = true) {
         let now = clock.now()
         var held = false
         for key in order {
@@ -435,7 +470,8 @@ public final class RemoteHost {
             registration.attachments[deviceID]?.suspendedAt = now
             // Per registration, because `sequence` is: a device attached to two of this Mac's
             // sessions is held on both, and each one remembers its own session's chunk number.
-            registration.attachments[deviceID]?.heldAtSequence = registration.sequence
+            registration.attachments[deviceID]?.heldAtSequence =
+                baselineIsTrustworthy ? registration.sequence : nil
             held = true
         }
         // False when everything was already held, and then no second timer is armed -- which is the
@@ -574,14 +610,17 @@ public final class RemoteHost {
     /// relay already forwards it -- a message of its own would be a fifth thing to keep in step
     /// across two repositories. A held attachment is skipped: it has no socket, and its resume
     /// will carry the size in `attached`.
+    ///
+    /// Asked per attachment rather than per session, because "who has been told" is a fact about a
+    /// client and not about a terminal: see `Attachment.announcedSize`.
     private func announceSizes() {
         for key in order {
             guard let registration = registrations[key] else { continue }
             let size = registration.session.withTerminal { GridSize(cols: $0.cols, rows: $0.rows) }
-            guard size != registration.announcedSize else { continue }
-            registration.announcedSize = size
-            for deviceID in registration.attachments.keys.sorted()
-            where registration.attachments[deviceID]?.suspendedAt == nil {
+            for deviceID in registration.attachments.keys.sorted() {
+                guard let attachment = registration.attachments[deviceID],
+                      attachment.suspendedAt == nil, attachment.announcedSize != size else { continue }
+                registration.attachments[deviceID]?.announcedSize = size
                 let role = registration.arbiter.role(of: deviceID) ?? .observer
                 link.send(.role(to: deviceID, sessionID: key, deviceID: deviceID,
                                 role: Self.name(role), cols: size.cols, rows: size.rows))

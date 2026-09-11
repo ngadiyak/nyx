@@ -19,6 +19,7 @@ private final class HostFixture {
     private let lock = NSLock()
     private var pairedIDs: [String] = []
     private var events: [AuditLine.Event] = []
+    private var duringAttach: (() -> Void)?
 
     var hostID: String { identity.deviceID }
 
@@ -40,6 +41,26 @@ private final class HostFixture {
         lock.unlock()
     }
 
+    /// Runs once, on the host's own queue, inside the pairing check at the top of the next `attach`.
+    ///
+    /// It is the only place a test can hold that queue open while the PTY reader feeds the terminal,
+    /// which is how the window `attach` reads `withTerminalAndOutputCount` in -- a chunk fed but
+    /// whose tap has not run yet -- is made to happen on purpose rather than by luck.
+    func onceDuringNextAttach(_ body: @escaping () -> Void) {
+        lock.lock()
+        duringAttach = body
+        lock.unlock()
+    }
+
+    private func takeDuringAttach() -> (() -> Void)? {
+        lock.lock()
+        defer {
+            duringAttach = nil
+            lock.unlock()
+        }
+        return duringAttach
+    }
+
     init(script: String, snapshotLines: Int = 200, debounce: TimeInterval = 0.05,
          reattachWindow: TimeInterval = 60) throws {
         identity = try testIdentity()
@@ -57,6 +78,7 @@ private final class HostFixture {
                           reattachWindow: reattachWindow, clock: clock.clock)
         pairedBox = { [weak self] in
             guard let self else { return [] }
+            self.takeDuringAttach()?()
             lock.lock()
             defer { lock.unlock() }
             return self.pairedIDs
@@ -536,6 +558,15 @@ private func waitForShell(_ f: HostFixture, containing needle: String) -> Bool {
     #expect(waitForShell(f, containing: "got:go"))
     f.host.flush()
     #expect(f.link.frames.isEmpty)
+
+    // Empty frames alone was also true of the drop this replaces, so the half the name claims is
+    // the half worth asserting: the attachment is still there, and it comes back to a snapshot that
+    // closes the hole rather than to nothing at all.
+    peer.rotateEphemeral()
+    #expect(try f.attach(peer) != nil)
+    let text = f.text(peer, f.link.frames)
+    #expect(text.hasPrefix(RemoteSnapshot.reset))
+    #expect(text.contains("got:go"))
 }
 
 /// Was `deviceWentOfflineDoesTheSameAsAPresenceMessage`, and it still does -- the meaning of both
@@ -984,4 +1015,112 @@ private func waitForShell(_ f: HostFixture, containing needle: String) -> Bool {
     f.host.flush()
     #expect(waitUntil { !f.link.messages(ofType: "sessions").isEmpty })
     #expect(f.link.messages(ofType: "role").isEmpty)
+}
+
+/// C1. The *host's* own socket dropped, which is a Wi-Fi blip or this Mac's lid, not the client's.
+///
+/// Nothing suspends when it goes: the coordinator only hears about the status, and `deliver` goes on
+/// sealing every chunk and bumping `sequence` into a socket that is not there. So the baseline
+/// `linkDidReconnect` takes afterwards already counts the chunks nobody received, the client's
+/// re-attach satisfies `heldAtSequence == sequence`, and it is answered as a clean resume with no
+/// frames at all -- a mirror permanently missing everything the host printed during the outage, and
+/// no way for either side to know. A hold taken here has no baseline it can trust: it re-snapshots.
+@Test func aHostWhoseOwnSocketDroppedReSnapshotsRatherThanResuming() throws {
+    let f = try HostFixture(script: "read x; printf \"got:$x\\n\"; sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(try f.attach(peer) != nil)
+
+    // What the host printed while its own socket was down. It was sealed and handed to a link that
+    // had nowhere to put it, and it counted.
+    f.session.send(Array("go\n".utf8))
+    #expect(waitForShell(f, containing: "got:go"))
+    f.host.flush()
+    f.host.linkDidReconnect()
+    f.host.flush()
+
+    f.link.reset()
+    peer.rotateEphemeral()
+    #expect(try f.attach(peer) != nil)
+    let text = f.text(peer, f.link.frames)
+    #expect(text.hasPrefix(RemoteSnapshot.reset))
+    #expect(text.contains("got:go"))
+    // And the role survived the outage even though the snapshot did not: the client comes back to
+    // the tab it left, it is only the screen that has to be redrawn.
+    #expect(f.link.messages(ofType: "attached").last?.role == "writer")
+}
+
+/// I1. A resize is announced from the *debounced* publish, so there is a window of up to
+/// `summaryDebounce` in which the host knows its new size and nobody attached has been told. An
+/// attach landing inside that window is told the new size in its own `attached` -- and must not let
+/// that stand for having told everybody else, or the clients that were already watching keep the
+/// shape the host had when *they* attached and every line wraps. D2, re-opened by a second viewer.
+@Test func anAttachDoesNotSwallowAResizeTheOtherClientsHaveNotBeenToldAbout() throws {
+    let f = try HostFixture(script: "sleep 30", debounce: 0.01)
+    defer { f.terminate() }
+    let first = try TestPeer()
+    let second = try TestPeer()
+    f.pair(first.deviceID)
+    f.pair(second.deviceID)
+    f.register()
+    #expect(try f.attach(first)?.cols == 80)
+
+    f.session.resize(cols: 132, rows: 40)
+    f.link.reset()
+    // The second device attaches before the publish runs, and its `attached` carries 132x40.
+    #expect(try f.attach(second)?.cols == 132)
+    f.host.summaryChanged()
+    #expect(waitUntil { f.link.messages(ofType: "role").contains { $0.to == first.deviceID && $0.cols == 132 } })
+    let role = try #require(f.link.messages(ofType: "role").last { $0.to == first.deviceID })
+    #expect(role.rows == 40)
+    #expect(role.deviceID == first.deviceID)
+    #expect(role.role == "writer")
+    // The device that was just told in `attached` is not told twice.
+    #expect(f.link.messages(ofType: "role").filter { $0.to == second.deviceID }.isEmpty)
+}
+
+/// I2. The chunk that is fed but whose tap has not run yet, at the instant the resume reads the
+/// session's counts.
+///
+/// `withTerminalAndOutputCount` returns the count the *feed* has reached; the tap that turns it into
+/// a `deliver` runs afterwards, off the lock. A full snapshot has that chunk in its text, which is
+/// why `startSequence: fed` is right there. A resume has no text at all, so the same number puts the
+/// cut-off one above the chunk still in flight: it reaches `deliver`, fails `startSequence <=
+/// sequence`, and is dropped -- never snapshotted and never streamed. The resume has already proved
+/// nothing below `registration.sequence` was missed, so that is the number it must start from.
+@Test func aResumeStreamsTheChunkThatWasFedButNotYetTapped() throws {
+    let f = try HostFixture(script: "read x; printf \"got:$x\\n\"; sleep 30")
+    defer { f.terminate() }
+    let peer = try TestPeer()
+    f.pair(peer.deviceID)
+    f.register()
+    #expect(try f.attach(peer) != nil)
+
+    f.host.handle(RemoteMessage(t: "presence", devices: [
+        RemotePresence(deviceID: peer.deviceID, name: "laptop", online: false),
+    ]))
+    f.host.flush()
+
+    // The shell prints while the host's queue is held inside this very attach, so the feed has
+    // counted the chunk and the tap's block is queued *behind* the attach. That is the window.
+    f.link.reset()
+    peer.rotateEphemeral()
+    f.onceDuringNextAttach {
+        f.session.send(Array("go\n".utf8))
+        _ = waitForShell(f, containing: "got:go")
+    }
+    let again = try f.attach(peer)
+    #expect(again != nil)
+    // A resume, because nothing had been *delivered* since the hold: no snapshot frames.
+    let order = f.link.sendOrder
+    let attachedIndex = try #require(order.lastIndex(of: "attached"))
+    let endIndex = try #require(order.lastIndex(of: "snapshot_end"))
+    #expect(endIndex == attachedIndex + 1)
+
+    // And the chunk that was in flight arrives as live bytes rather than vanishing.
+    #expect(waitUntil { !f.link.frames.isEmpty })
+    f.host.flush()
+    #expect(f.text(peer, f.link.frames) == "go\r\ngot:go\r\n")
 }

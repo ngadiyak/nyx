@@ -57,6 +57,11 @@ enum MenuSnapshot {
                   named: "menu-tab-\(name)", into: directory)
             write(menu: groupMenu(), caption: "right-click a group header", appearance: appearance,
                   named: "menu-group-\(name)", into: directory)
+            for (caseName, menu) in tabBarMenus(config: config) {
+                write(menu: menu, caption: "right-click the tab bar \u{2014} \(caseName)",
+                      appearance: appearance, named: "menu-tab-bar-\(caseName)-\(name)",
+                      into: directory)
+            }
             write(menu: quickActionMenu(), caption: "right-click a quick-action chip",
                   appearance: appearance, named: "menu-quick-action-\(name)", into: directory)
             write(menu: overflowMenu(), caption: "the ≡ overflow of buttons that did not fit",
@@ -212,6 +217,73 @@ enum MenuSnapshot {
         menu.addItem(.separator())
         menu.addItem(row("Rename Tab…"))
         menu.addItem(row("Reset Title", enabled: false))
+        // `remoteTabMenuItems`' tail, on a relay that is working: the picture would otherwise show
+        // the nine rows this menu had before the bar's menu existed, which is a picture that lies.
+        menu.addItem(.separator())
+        menu.addItem(row(TabBarMenuItem.newRemoteTab(reason: nil).title))
+        return menu
+    }
+
+    /// Two states, which are the two a person meets: a relay that is working with sessions on it,
+    /// and the feature switched off. The rows come from `TabBarMenu.items`, so a picture cannot
+    /// show a menu the product would not build.
+    private static func tabBarMenus(config: Config) -> [(String, NSMenu)] {
+        let bindings = KeyBindingTable(user: config.keybinds)
+        let now = Date()
+        let iso = ISO8601DateFormatter()
+        var live = RemoteCatalogue()
+        live.setPaired(["d1": "Mac mini (office)", "d2": "iMac (studio)"])
+        live.applyPresence([
+            RemotePresence(deviceID: "d1", name: "Mac mini (office)", online: true),
+            RemotePresence(deviceID: "d2", name: "iMac (studio)", online: false),
+        ])
+        // The same two sessions `remotePalettePanel` builds (`UISnapshot.swift`), copied because
+        // that method is `private static` in another file -- so the palette's picture and this one
+        // describe the same fixture Macs. `iso` and `now` are its two locals.
+        live.applyCatalogue(deviceID: "d1", sessions: [
+            RemoteSessionInfo(sessionID: "s1", title: "zsh", cwd: NSHomeDirectory() + "/projects/nyx",
+                              repo: "nyx", branch: "feat/remote-sessions", process: "swift test",
+                              lastCommand: "make test",
+                              lastActivity: iso.string(from: now.addingTimeInterval(-120)),
+                              cols: 120, rows: 40),
+            RemoteSessionInfo(sessionID: "s2", title: "vim Pane.swift",
+                              cwd: NSHomeDirectory() + "/projects/nyx", repo: "nyx", branch: "main",
+                              process: "vim", lastCommand: "git status",
+                              lastActivity: iso.string(from: now.addingTimeInterval(-3600)),
+                              cols: 120, rows: 40),
+        ])
+        return [
+            ("sessions", menu(rows: TabBarMenu.items(catalogue: live, remote: .on,
+                                                     relay: "wss://nyx.agentforge.cc/v1/ws",
+                                                     token: "t", refusal: nil, now: now,
+                                                     home: NSHomeDirectory()),
+                              bindings: bindings)),
+            ("off", menu(rows: TabBarMenu.items(catalogue: RemoteCatalogue(), remote: .off,
+                                                relay: "", token: "", refusal: nil,
+                                                now: now, home: NSHomeDirectory()),
+                         bindings: bindings)),
+        ]
+    }
+
+    /// `TabController.menuItems(for:bindings:)` without the targets, which a picture does not need.
+    /// The titles are `TabBarMenuItem.title` and the chord is the user's own binding for
+    /// `new_tab`, so the rows in the picture are the rows the product builds.
+    private static func menu(rows: [TabBarMenuItem], bindings: KeyBindingTable) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for item in rows {
+            guard item != .separator else {
+                menu.addItem(.separator())
+                continue
+            }
+            let made = row(item.title, enabled: item.isEnabled)
+            if case .newTab = item, let binding = bindings.binding(for: .newTab),
+               let (key, mask) = MenuShortcut.keyEquivalent(for: binding) {
+                made.keyEquivalent = key
+                made.keyEquivalentModifierMask = mask
+            }
+            menu.addItem(made)
+        }
         return menu
     }
 

@@ -136,6 +136,7 @@ final class TabController: NSViewController, NSMenuItemValidation {
         tabBar.onQuickActionContextMenu = { [weak self] index, event in
             self?.showQuickActionMenu(index, event)
         }
+        tabBar.onBarContextMenu = { [weak self] event in self?.showBarMenu(event) }
         tabBar.onAppearanceChange = { [weak self] in self?.appearanceChanged() }
         projectBar.onReview = { [weak self] in self?.reviewProjectActions() }
         projectBar.onIgnore = { [weak self] in self?.ignoreProjectActions() }
@@ -593,7 +594,129 @@ final class TabController: NSViewController, NSMenuItemValidation {
         menu.addItem(tabMenuItem("Rename Tab…", #selector(menuRenameTab(_:)), index))
         menu.addItem(tabMenuItem("Reset Title", #selector(menuResetTabTitle(_:)), index,
                                  enabled: tabs[index].customTitle != nil))
+        menu.addItem(.separator())
+        for item in remoteTabMenuItems() { menu.addItem(item) }
         NSMenu.popUpContextMenu(menu, with: event, for: tabBar)
+    }
+
+    /// The tab bar's own menu: the two kinds of tab there are, and the remote sessions that are
+    /// open right now.
+    ///
+    /// Built from `TabBarMenu.items`, not assembled here: which row is dead and what it says
+    /// instead are decisions, and `NyxApp` has no test target. A coordinator that is nil -- a
+    /// window built before the application has one, and every snapshot run -- gets the local half,
+    /// which is the honest answer rather than a menu that is missing while something loads.
+    private func showBarMenu(_ event: NSEvent) {
+        let rows = appDelegate?.remote?.tabBarMenuItems()
+            ?? [.newTab, .separator, .newRemoteTab(reason: nil)]
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for item in menuItems(for: rows, bindings: KeyBindingTable(user: config.keybinds)) {
+            menu.addItem(item)
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: tabBar)
+    }
+
+    /// `New Remote Tab…` and, when it is dead, the sentence saying why: the **tail** of the bar's
+    /// own rows, from `.newRemoteTab` onward, through the same builder and the same
+    /// row-to-`NSMenuItem` loop. One spelling, so a tab's menu and the bar's cannot disagree about
+    /// whether it is dead or why.
+    ///
+    /// One row was the first draft of this, and it was the D4 defect rebuilt: the bar's menu showed
+    /// the greyed item *and* the live sentence beneath it, and a tab's menu showed the greyed item
+    /// alone with a tooltip. A greyed row that names the user's problem and offers nothing to do
+    /// about it is exactly what this round went and fixed in the palette.
+    ///
+    /// The session rows are deliberately **not** here: a tab's menu is nine rows about that tab
+    /// already, and `New Remote Tab…` opens the list. The bar's own menu is where the sessions are.
+    private func remoteTabMenuItems() -> [NSMenuItem] {
+        let rows = appDelegate?.remote?.tabBarMenuItems() ?? [.newRemoteTab(reason: nil)]
+        let tail = rows.drop { if case .newRemoteTab = $0 { return false } else { return true } }
+        let kept = tail.filter { if case .session = $0 { return false } else { return true } }
+        return menuItems(for: Array(kept), bindings: KeyBindingTable(user: config.keybinds))
+    }
+
+    /// Turns the Core rows into `NSMenuItem`s, which is the only thing either caller does with
+    /// them. A separator row becomes `NSMenuItem.separator()`.
+    private func menuItems(for rows: [TabBarMenuItem],
+                           bindings: KeyBindingTable) -> [NSMenuItem] {
+        var made: [NSMenuItem] = []
+        for row in rows {
+            guard row != .separator else {
+                made.append(.separator())
+                continue
+            }
+            let item = NSMenuItem(title: row.title, action: selector(for: row), keyEquivalent: "")
+            item.target = self
+            item.isEnabled = row.isEnabled
+            switch row {
+            case .newTab:
+                if let binding = bindings.binding(for: .newTab),
+                   let (key, mask) = MenuShortcut.keyEquivalent(for: binding) {
+                    item.keyEquivalent = key
+                    item.keyEquivalentModifierMask = mask
+                }
+            case .newRemoteTab(let reason):
+                // On the item, so a pointer resting on the thing that will not work is answered
+                // there rather than only by the row underneath it.
+                item.toolTip = reason
+                item.setAccessibilityHelp(reason)
+            case .session(let deviceID, let sessionID, _, _):
+                // The title already carries the palette's detail -- `TabBarMenuItem.title` joins
+                // them, because `NSMenuItem.subtitle` is macOS 14.4 and this package's floor is
+                // 14.0. Nothing to set here but the two ids.
+                item.representedObject = RemoteRow(deviceID: deviceID, sessionID: sessionID)
+            case .openRemoteSettings, .separator:
+                break
+            }
+            made.append(item)
+        }
+        return made
+    }
+
+    /// One selector per kind of row. `openRemoteSettings` and the dead `newRemoteTab` share the
+    /// page they are about; the dead one is simply not enabled.
+    private func selector(for row: TabBarMenuItem) -> Selector? {
+        switch row {
+        case .newTab: return #selector(menuNewTab(_:))
+        case .newRemoteTab: return #selector(menuNewRemoteTab(_:))
+        case .openRemoteSettings: return #selector(menuOpenRemoteSettings(_:))
+        case .session: return #selector(menuAttachRemote(_:))
+        case .separator: return nil
+        }
+    }
+
+    @objc private func menuNewTab(_ sender: Any?) { newTab() }
+
+    /// The Remote rows, which is exactly what `Shell → Remote Sessions…` opens: one spelling of
+    /// "the list of remote sessions", so the menu route and the keyboard route cannot drift.
+    @objc private func menuNewRemoteTab(_ sender: Any?) { showRemoteSessions() }
+
+    @objc private func menuOpenRemoteSettings(_ sender: Any?) {
+        appDelegate?.openRemoteSettings(nil)
+    }
+
+    @objc private func menuAttachRemote(_ sender: Any?) {
+        guard let row = (sender as? NSMenuItem)?.representedObject as? RemoteRow,
+              let coordinator = appDelegate?.remote else {
+            NSSound.beep()
+            return
+        }
+        let described = coordinator.describe(deviceID: row.deviceID, sessionID: row.sessionID)
+        openRemote(deviceID: row.deviceID, sessionID: row.sessionID,
+                   hostName: described.hostName, title: described.title)
+    }
+
+    /// The two ids a session row carries. A box rather than the two strings on
+    /// `representedObject`, for the same reason `TabAndGroup` exists: a menu stays open while the
+    /// world moves, and an index would be stale by the time it is pressed. Ids are not.
+    private final class RemoteRow: NSObject {
+        let deviceID: String
+        let sessionID: String
+        init(deviceID: String, sessionID: String) {
+            self.deviceID = deviceID
+            self.sessionID = sessionID
+        }
     }
 
     /// The group half of a tab's menu. "Add to Group" is only offered when there is a group other

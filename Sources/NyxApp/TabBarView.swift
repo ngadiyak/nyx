@@ -56,6 +56,10 @@ final class TabBarView: NSView {
     var onAddQuickAction: (() -> Void)?
     /// Right-click on a quick-action chip: its index and the event, for a menu.
     var onQuickActionContextMenu: ((Int, NSEvent) -> Void)?
+    /// A right-click on the bar itself -- the `+` button, the `≡` beside it, or the empty stretch
+    /// after the last tab. All of them used to do nothing at all, which is the wrong answer three
+    /// times: the tab bar is where a person looks for the kinds of new tab there are.
+    var onBarContextMenu: ((NSEvent) -> Void)?
     /// The system switched between light and dark; the controller decides whether the theme cares.
     var onAppearanceChange: (() -> Void)?
 
@@ -515,11 +519,20 @@ final class TabBarView: NSView {
         case .expandGroup(let id), .groupHeader(let id): onGroupContextMenu?(id, event)
         case .leadingButton(let index):
             let buttons = resolvedLeading.buttons
-            if case .quick(let action)? = buttons.indices.contains(index) ? buttons[index] : nil {
+            switch buttons.indices.contains(index) ? buttons[index] : nil {
+            case .quick(let action)?:
                 onQuickActionContextMenu?(action, event)
+            // The leading `+` and the `≡`, which are the bar's own controls rather than any tab's:
+            // a right-click on either is a right-click on the bar. `.addQuickAction` and
+            // `.overflow` keep their silence -- the first has a sheet of its own and the second is
+            // already a menu, and neither is about opening a tab.
+            case .newTab?, .tabList?:
+                onBarContextMenu?(event)
+            default:
+                break
             }
-        case .newTab: break
-        case nil: break
+        case .newTab, nil:
+            onBarContextMenu?(event)
         }
     }
 

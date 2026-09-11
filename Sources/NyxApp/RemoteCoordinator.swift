@@ -210,17 +210,23 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
     /// number that stayed on the page until the *next* outage would be read as describing the
     /// connection that is working. The next refresh says plainly "Online as …".
     var statusText: String {
+        let text = statusSentence(droppedWhileOffline: droppedWhileOffline)
+        droppedWhileOffline = 0
+        return text
+    }
+
+    /// Everything `statusText` says, with the "dropped while offline" clause under the caller's
+    /// control, so a reader that is not the page or the palette can ask without spending it.
+    private func statusSentence(droppedWhileOffline: Int) -> String {
         // Asked for before anything about the socket, because there is no socket: `start()` refuses
         // to open one without a token, so every other sentence here would be describing a
         // connection that was never attempted.
         let connection: RemoteStatusText.Connection = RemoteCoordinatorPolicy.needsToken(config: config)
             ? .needsToken
             : self.connection?.status.statusText(relayHost: relayHost) ?? .unreachable(host: relayHost)
-        let text = RemoteStatusText.text(mode: config.remote, connection: connection,
-                                         deviceName: deviceName, failure: startupFailure ?? saveFailure,
-                                         droppedWhileOffline: droppedWhileOffline)
-        droppedWhileOffline = 0
-        return text
+        return RemoteStatusText.text(mode: config.remote, connection: connection,
+                                     deviceName: deviceName, failure: startupFailure ?? saveFailure,
+                                     droppedWhileOffline: droppedWhileOffline)
     }
 
     /// The palette's Remote rows. Only a status row when there is something wrong: a section headed
@@ -231,6 +237,33 @@ final class RemoteCoordinator: NSObject, RelayConnectionDelegate {
         var shown = catalogue
         shown.relayStatusText = isConnected ? nil : statusText
         return shown.paletteItems(now: now, home: NSHomeDirectory())
+    }
+
+    /// The tab bar's context menu, from the catalogue the palette's Remote rows come from.
+    ///
+    /// `paletteItems`' own `guard config.remote == .on else { return [] }` is *not* copied. An empty
+    /// list is right for a palette section -- there is nothing to search -- and wrong for a menu,
+    /// where the row saying "Remote sessions are off" is the only thing that explains why the other
+    /// row is missing. `TabBarMenu` answers the `off` case with a greyed row and its sentence, and
+    /// a test says so, because a two-row menu looks perfectly reasonable to a reader.
+    func tabBarMenuItems(now: Date = Date()) -> [TabBarMenuItem] {
+        TabBarMenu.items(catalogue: catalogue, remote: config.remote, relay: config.remoteRelay,
+                         token: config.remoteRelayToken, refusal: relayRefusal,
+                         now: now, home: NSHomeDirectory())
+    }
+
+    /// The sentence for a relay that has refused this device, or nil for every other state of the
+    /// socket -- including connecting, reconnecting and offline, which are sockets that are busy
+    /// rather than settled (see `TabBarMenu.items`).
+    ///
+    /// `statusSentence(droppedWhileOffline:)`, not `statusText`: reading `statusText` **consumes**
+    /// `droppedWhileOffline` -- the line appears once per outage -- and a right-click must not be
+    /// the thing that spends the one showing of that number the Remote page or the palette was
+    /// about to give. Passing `0` asks for the same sentence without that clause, which a menu row
+    /// has no room for anyway.
+    private var relayRefusal: String? {
+        guard case .failed = connection?.status else { return nil }
+        return statusSentence(droppedWhileOffline: 0)
     }
 
     /// What the outage this connection has just come back from cost. Written at the `.online`
